@@ -14,10 +14,11 @@ pub extern "C" fn _start() -> ! {
     x86_64::instructions::interrupts::enable();
 
     crate::vga_buffer::clear_screen();
-    println!("coolOS Shell v1.0");
+    println!("coolOS Shell v1.1");
     print!("> ");
 
     loop {
+        // Halt the CPU until the next interrupt to save power
         x86_64::instructions::hlt();
     }
 }

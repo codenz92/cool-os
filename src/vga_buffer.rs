@@ -75,6 +75,18 @@ impl Writer {
         }
     }
 
+    pub fn backspace(&mut self) {
+        if self.column_position > 2 {
+            self.column_position -= 1;
+            let row = BUFFER_HEIGHT - 1;
+            let col = self.column_position;
+            self.buffer.chars[row][col].write(ScreenChar {
+                ascii_character: b' ',
+                color_code: self.color_code,
+            });
+        }
+    }
+
     fn new_line(&mut self) {
         for row in 1..BUFFER_HEIGHT {
             for col in 0..BUFFER_WIDTH {
@@ -97,14 +109,8 @@ impl Writer {
     }
 
     pub fn clear_screen(&mut self) {
-        let blank = ScreenChar {
-            ascii_character: b' ',
-            color_code: self.color_code,
-        };
         for row in 0..BUFFER_HEIGHT {
-            for col in 0..BUFFER_WIDTH {
-                self.buffer.chars[row][col].write(blank);
-            }
+            self.clear_row(row);
         }
         self.column_position = 0;
     }
@@ -132,6 +138,9 @@ lazy_static! {
 
 pub fn clear_screen() {
     WRITER.lock().clear_screen();
+}
+pub fn backspace() {
+    WRITER.lock().backspace();
 }
 
 #[macro_export]

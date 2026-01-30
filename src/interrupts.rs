@@ -26,7 +26,6 @@ impl InterruptIndex {
     }
 }
 
-// Shell Buffer
 static mut COMMAND_BUFFER: [char; 80] = ['\0'; 80];
 static mut COMMAND_IDX: usize = 0;
 
@@ -81,20 +80,33 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
         if let Some(key) = keyboard.process_keyevent(key_event) {
             match key {
                 DecodedKey::Unicode(character) => {
-                    if character == '\n' {
-                        println!();
-                        process_command();
-                    } else {
-                        print!("{}", character);
-                        unsafe {
-                            if COMMAND_IDX < 79 {
-                                COMMAND_BUFFER[COMMAND_IDX] = character;
-                                COMMAND_IDX += 1;
+                    match character {
+                        '\n' => {
+                            println!();
+                            process_command();
+                        }
+                        '\u{0008}' => {
+                            // Backspace
+                            unsafe {
+                                if COMMAND_IDX > 0 {
+                                    COMMAND_IDX -= 1;
+                                    COMMAND_BUFFER[COMMAND_IDX] = '\0';
+                                    crate::vga_buffer::backspace();
+                                }
+                            }
+                        }
+                        c => {
+                            print!("{}", c);
+                            unsafe {
+                                if COMMAND_IDX < 79 {
+                                    COMMAND_BUFFER[COMMAND_IDX] = c;
+                                    COMMAND_IDX += 1;
+                                }
                             }
                         }
                     }
                 }
-                DecodedKey::RawKey(key) => print!("{:?}", key),
+                _ => {}
             }
         }
     }
@@ -106,22 +118,45 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
 
 fn process_command() {
     unsafe {
-        if COMMAND_IDX >= 5
-            && COMMAND_BUFFER[0] == 'c'
-            && COMMAND_BUFFER[1] == 'l'
-            && COMMAND_BUFFER[2] == 'e'
-            && COMMAND_BUFFER[3] == 'a'
-            && COMMAND_BUFFER[4] == 'r'
-        {
+        if match_command("clear") {
             crate::vga_buffer::clear_screen();
+        } else if match_command("help") {
+            println!("--- coolOS Help Menu ---");
+            println!("clear  - Wipes the display");
+            println!("reboot - Restarts the system");
+            println!("help   - Shows this menu");
+        } else if match_command("reboot") {
+            reboot();
         } else if COMMAND_IDX > 0 {
-            println!("Unknown command.");
+            println!("Unknown command");
         }
-
         COMMAND_IDX = 0;
         for i in 0..80 {
             COMMAND_BUFFER[i] = '\0';
         }
         print!("> ");
+    }
+}
+
+fn match_command(cmd: &str) -> bool {
+    unsafe {
+        let cmd_bytes = cmd.as_bytes();
+        if COMMAND_IDX != cmd_bytes.len() {
+            return false;
+        }
+        for i in 0..cmd_bytes.len() {
+            if COMMAND_BUFFER[i] as u8 != cmd_bytes[i] {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+fn reboot() {
+    use x86_64::instructions::port::Port;
+    let mut port = Port::new(0x64);
+    unsafe {
+        port.write(0xFEu8);
     }
 }
