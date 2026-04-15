@@ -1,8 +1,8 @@
 .PHONY: run build clean
 
 TARGET  := x86_64-unknown-none.json
-KERNEL  := $(CURDIR)/target/x86_64-unknown-none/debug/cool_os
-BIOS    := $(CURDIR)/target/x86_64-unknown-none/debug/bios.img
+KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
+BIOS    := $(CURDIR)/target/x86_64-unknown-none/release/bios.img
 
 run: build
 	@echo "Booting coolOS in QEMU..."
@@ -14,7 +14,7 @@ run: build
 		-debugcon stdio
 
 build:
-	cargo build --target $(TARGET) \
+	cargo build --release --target $(TARGET) \
 		-Z build-std=core,compiler_builtins,alloc \
 		-Z build-std-features=compiler-builtins-mem
 	(cd disk-image && cargo run -- "$(KERNEL)")

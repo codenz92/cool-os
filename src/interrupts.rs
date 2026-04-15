@@ -120,7 +120,10 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
     if let Ok(Some(key_event)) = keyboard.add_byte(scancode) {
         if let Some(key) = keyboard.process_keyevent(key_event) {
             if let DecodedKey::Unicode(c) = key {
-                crate::wm::handle_key(c);
+                // Push to the lock-free queue — never touch WM.lock() from
+                // interrupt context (compose() may already hold it).
+                crate::keyboard::push(c);
+                crate::wm::request_repaint();
             }
         }
     }

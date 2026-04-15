@@ -8,6 +8,7 @@ mod allocator;
 mod apps;
 mod framebuffer;
 mod interrupts;
+mod keyboard;
 mod memory;
 mod mouse;
 mod vga_buffer;
@@ -75,9 +76,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     wm::init();
 
     loop {
-        x86_64::instructions::interrupts::without_interrupts(|| {
-            wm::compose_if_needed();
-        });
+        // Do NOT disable interrupts here — the WM mutex inside compose()
+        // provides the only exclusion needed.  Holding interrupts off for
+        // an entire frame (≈2.8 M MMIO writes at 1280×720×3 bpp) would
+        // block mouse and keyboard for tens of milliseconds per frame.
+        wm::compose_if_needed();
         x86_64::instructions::hlt();
     }
 }

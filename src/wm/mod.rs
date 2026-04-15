@@ -23,10 +23,6 @@ pub fn add_window(w: AppWindow) {
     compositor::WM.lock().add_window(w);
 }
 
-pub fn handle_key(c: char) {
-    compositor::WM.lock().handle_key(c);
-}
-
 pub fn init() {
     request_repaint();
 }

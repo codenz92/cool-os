@@ -137,6 +137,16 @@ impl WindowManager {
 
     /// Full composite frame into shadow, then blit to hardware framebuffer.
     pub fn compose(&mut self) {
+        // Drain buffered keystrokes first.  Keys were queued by the IRQ handler
+        // to avoid acquiring WM.lock() from interrupt context.
+        while let Some(c) = crate::keyboard::pop() {
+            if let Some(idx) = self.focused {
+                if idx < self.windows.len() {
+                    self.windows[idx].handle_key(c);
+                }
+            }
+        }
+
         let sw = self.shadow_width;
         let sh = self.shadow_height;
         let taskbar_y = sh as i32 - TASKBAR_H;
@@ -243,7 +253,9 @@ impl WindowManager {
         self.prev_right = right;
 
         // ── Render ────────────────────────────────────────────────────────────
-
+        // Scope the mutable shadow borrow so it ends before the blit section,
+        // which needs to access self.shadow immutably alongside a scratch buffer.
+        {
         let s = &mut self.shadow;
 
         // Desktop.
@@ -301,19 +313,29 @@ impl WindowManager {
             }
         }
 
+        } // end shadow borrow — rendering done
+
         // ── Blit shadow → hardware framebuffer ────────────────────────────────
+        //
+        // 3bpp path: convert each row of u32 shadow pixels into a small stack
+        // scratch buffer (fast RAM→RAM), then flush that row with ONE
+        // copy_nonoverlapping.  This trades many volatile MMIO writes for a
+        // single bulk transfer per row, which is far faster.
+        //
+        // scratch[5120] fits up to 1706 pixels @ 3 bpp; more than enough for
+        // 1280 wide.  Allocated once in compose()'s stack frame, reused every row.
         let hw_base   = crate::framebuffer::base();
         let hw_stride = crate::framebuffer::stride();
         let hw_bpp    = crate::framebuffer::bpp();
         let hw_fmt    = crate::framebuffer::fmt();
         let is_rgb    = hw_fmt == crate::framebuffer::PixFmt::Rgb;
         if hw_base != 0 {
-            for row in 0..sh {
-                let src      = &s[row * sw..(row * sw + sw)];
-                let row_base = hw_base + (row * hw_stride * hw_bpp) as u64;
-                match hw_bpp {
-                    4 => {
-                        let dst = row_base as *mut u32;
+            match hw_bpp {
+                4 => {
+                    for row in 0..sh {
+                        let src      = &self.shadow[row * sw..row * sw + sw];
+                        let row_base = hw_base + (row * hw_stride * 4) as u64;
+                        let dst      = row_base as *mut u32;
                         if !is_rgb {
                             unsafe {
                                 core::ptr::copy_nonoverlapping(src.as_ptr(), dst, sw);
@@ -326,26 +348,38 @@ impl WindowManager {
                             }
                         }
                     }
-                    3 => {
-                        let dst = row_base as *mut u8;
-                        for col in 0..sw {
-                            let c = src[col];
-                            let (b0, b1, b2) = if !is_rgb {
-                                // BGR: write B, G, R
-                                ((c & 0xFF) as u8, ((c >> 8) & 0xFF) as u8, ((c >> 16) & 0xFF) as u8)
-                            } else {
-                                // RGB: write R, G, B
-                                (((c >> 16) & 0xFF) as u8, ((c >> 8) & 0xFF) as u8, (c & 0xFF) as u8)
-                            };
-                            unsafe {
-                                dst.add(col * 3    ).write_volatile(b0);
-                                dst.add(col * 3 + 1).write_volatile(b1);
-                                dst.add(col * 3 + 2).write_volatile(b2);
+                }
+                3 => {
+                    let row_bytes = sw * 3;
+                    let mut scratch = [0u8; 5120];
+                    for row in 0..sh {
+                        let src      = &self.shadow[row * sw..row * sw + sw];
+                        let row_base = hw_base + (row * hw_stride * 3) as u64;
+                        if !is_rgb {
+                            for col in 0..sw {
+                                let c = src[col];
+                                scratch[col * 3    ] = c as u8;
+                                scratch[col * 3 + 1] = (c >> 8) as u8;
+                                scratch[col * 3 + 2] = (c >> 16) as u8;
+                            }
+                        } else {
+                            for col in 0..sw {
+                                let c = src[col];
+                                scratch[col * 3    ] = (c >> 16) as u8;
+                                scratch[col * 3 + 1] = (c >> 8) as u8;
+                                scratch[col * 3 + 2] = c as u8;
                             }
                         }
+                        unsafe {
+                            core::ptr::copy_nonoverlapping(
+                                scratch.as_ptr(),
+                                row_base as *mut u8,
+                                row_bytes,
+                            );
+                        }
                     }
-                    _ => {} // unsupported bpp
                 }
+                _ => {}
             }
         }
     }
