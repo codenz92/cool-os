@@ -83,7 +83,7 @@ timer; no stack corruption; `hlt` in the idle task still fires when no other tas
 
 ---
 
-## Phase 8 — Userspace & System Calls
+## Phase 9 — Userspace & System Calls
 
 **Goal:** Ring-3 execution and a minimal syscall interface so that code outside the
 kernel can request kernel services without being able to crash it.
@@ -107,7 +107,7 @@ userspace generates a #PF that the kernel handles without crashing.
 
 ---
 
-## Phase 9 — Virtual Memory per Process
+## Phase 10 — Virtual Memory per Process
 
 **Goal:** Each process gets its own isolated page-table hierarchy so processes
 cannot read or corrupt each other's memory.
@@ -130,7 +130,7 @@ a write to an unmapped address in one process does not affect the other.
 
 ---
 
-## Phase 10 — Filesystem & Storage
+## Phase 11 — Filesystem & Storage
 
 **Goal:** Programs and data live on disk. The kernel can load files by name.
 
@@ -151,7 +151,7 @@ into memory via the VFS syscall interface.
 
 ---
 
-## Phase 11 — ELF Loader & Process Spawning
+## Phase 12 — ELF Loader & Process Spawning
 
 **Goal:** The kernel can load a compiled ELF binary from disk, map it into a new
 address space, and jump to its entry point.
@@ -175,7 +175,7 @@ userspace process that prints to the screen and exits cleanly.
 
 ---
 
-## Phase 12 — Inter-Process Communication
+## Phase 13 — Inter-Process Communication
 
 **Goal:** Processes can send data to each other and to the GUI without going through
 the kernel's internal Rust data structures.
@@ -198,7 +198,7 @@ any shared Rust state.
 
 ---
 
-## Phase 13 — USB & Modern Input
+## Phase 14 — USB & Modern Input
 
 **Goal:** Input works on real hardware, not just in QEMU with PS/2 emulation.
 
@@ -215,7 +215,7 @@ mouse input via USB.
 
 ---
 
-## Phase 14 — Networking
+## Phase 15 — Networking
 
 **Goal:** The kernel can send and receive Ethernet frames; userspace can open TCP
 connections.
