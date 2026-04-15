@@ -5,6 +5,7 @@
 extern crate alloc;
 
 mod allocator;
+mod apps;
 mod framebuffer;
 mod interrupts;
 mod memory;
@@ -29,12 +30,13 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
     allocator::init_heap(&mut mapper, &mut frame_allocator).expect("heap initialization failed");
 
-    // Add two demo windows.
-    wm::add_window(wm::window::Window::new(20, 20, 120, 80, "Terminal"));
-    wm::add_window(wm::window::Window::new(60, 50, 100, 60, "System Info"));
+    // Spawn a terminal window on boot.
+    // Right-click the desktop to open more.
+    let term = apps::TerminalApp::new(20, 20);
+    wm::add_window(wm::AppWindow::Terminal(term));
 
     mouse::init();
-    wm::init(); // triggers first repaint
+    wm::init(); // trigger first paint
 
     loop {
         x86_64::instructions::interrupts::without_interrupts(|| {

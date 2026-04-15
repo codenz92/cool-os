@@ -1,13 +1,9 @@
-use crate::{print, println};
-use core::ops::Deref;
+use crate::println;
 use core::sync::atomic::{AtomicU64, Ordering};
 use lazy_static::lazy_static;
 use pic8259::ChainedPics;
 use spin;
-use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame}; // Essential for .lock() on lazy_static
-
-extern crate alloc;
-use alloc::string::String;
+use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
 pub const PIC_1_OFFSET: u8 = 32;
 pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
@@ -16,6 +12,16 @@ pub static PICS: spin::Mutex<ChainedPics> =
     spin::Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });
 
 static TICKS: AtomicU64 = AtomicU64::new(0);
+
+pub fn ticks() -> u64 {
+    TICKS.load(Ordering::Relaxed)
+}
+
+pub fn reboot() -> ! {
+    let mut port = x86_64::instructions::port::Port::new(0x64u16);
+    unsafe { port.write(0xFEu8); }
+    loop { x86_64::instructions::hlt(); }
+}
 
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
@@ -35,7 +41,6 @@ impl InterruptIndex {
 }
 
 lazy_static! {
-    static ref COMMAND_BUFFER: spin::Mutex<String> = spin::Mutex::new(String::with_capacity(80));
     static ref IDT: InterruptDescriptorTable = {
         let mut idt = InterruptDescriptorTable::new();
         idt.breakpoint.set_handler_fn(breakpoint_handler);
@@ -90,88 +95,15 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
 
     if let Ok(Some(key_event)) = keyboard.add_byte(scancode) {
         if let Some(key) = keyboard.process_keyevent(key_event) {
-            match key {
-                DecodedKey::Unicode(character) => match character {
-                    '\n' => {
-                        println!();
-                        process_command();
-                    }
-                    '\u{0008}' => {
-                        if COMMAND_BUFFER.lock().pop().is_some() {
-                            crate::vga_buffer::backspace();
-                        }
-                    }
-                    c => {
-                        print!("{}", c);
-                        COMMAND_BUFFER.lock().push(c);
-                    }
-                },
-                _ => {}
+            if let DecodedKey::Unicode(c) = key {
+                crate::wm::handle_key(c);
             }
         }
     }
+
     unsafe {
         PICS.lock()
             .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
-    }
-}
-
-fn process_command() {
-    let mut cmd = COMMAND_BUFFER.lock();
-    let mut words = cmd.split_whitespace();
-
-    match words.next() {
-        Some("clear") => crate::vga_buffer::clear_screen(),
-        Some("reboot") => reboot(),
-        Some("help") => {
-            println!("--- coolOS Help ---");
-            println!("clear, reboot, help, echo [text], info, uptime, color [name]");
-        }
-        Some("echo") => {
-            for word in words {
-                print!("{} ", word);
-            }
-            println!();
-        }
-        Some("uptime") => {
-            println!("Uptime: {} ticks", TICKS.load(Ordering::Relaxed));
-        }
-        Some("info") => {
-            println!("Used Heap: {} bytes", crate::allocator::heap_used());
-            let cpuid = raw_cpuid::CpuId::new();
-            if let Some(v) = cpuid.get_vendor_info() {
-                println!("CPU: {}", v.as_str());
-            }
-        }
-        Some("color") => {
-            if let Some(c) = words.next() {
-                set_shell_color(c);
-            }
-        }
-        Some(unknown) => println!("Unknown: {}", unknown),
-        None => {}
-    }
-    cmd.clear();
-    print!("> ");
-}
-
-fn set_shell_color(name: &str) {
-    use crate::vga_buffer::{set_color, Color};
-    let color = match name {
-        "red" => Color::Red,
-        "blue" => Color::Blue,
-        "green" => Color::Green,
-        "white" => Color::White,
-        "yellow" => Color::Yellow,
-        _ => return,
-    };
-    set_color(color, Color::Black);
-}
-
-fn reboot() {
-    let mut port = x86_64::instructions::port::Port::new(0x64);
-    unsafe {
-        port.write(0xFEu8);
     }
 }
 
