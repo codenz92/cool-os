@@ -19,16 +19,20 @@ pub fn ticks() -> u64 {
 
 pub fn reboot() -> ! {
     let mut port = x86_64::instructions::port::Port::new(0x64u16);
-    unsafe { port.write(0xFEu8); }
-    loop { x86_64::instructions::hlt(); }
+    unsafe {
+        port.write(0xFEu8);
+    }
+    loop {
+        x86_64::instructions::hlt();
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
 pub enum InterruptIndex {
-    Timer    = PIC_1_OFFSET,       // 32
-    Keyboard,                       // 33
-    Mouse    = PIC_2_OFFSET + 4,   // 44  (IRQ12)
+    Timer = PIC_1_OFFSET,     // 32
+    Keyboard,                 // 33
+    Mouse = PIC_2_OFFSET + 4, // 44  (IRQ12)
 }
 
 impl InterruptIndex {
@@ -82,9 +86,7 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
 
     lazy_static! {
         static ref KEYBOARD: spin::Mutex<Keyboard<layouts::Us104Key, ScancodeSet1>> =
-            spin::Mutex::new(Keyboard::new(
-                ScancodeSet1::new(),
-                layouts::Us104Key,
+            spin::Mutex::new(Keyboard::<layouts::Us104Key, ScancodeSet1>::new(
                 HandleControl::Ignore
             ));
     }
@@ -114,11 +116,7 @@ use core::sync::atomic::AtomicU8;
 /// Which byte of the 3-byte packet we are currently collecting.
 static MOUSE_CYCLE: AtomicU8 = AtomicU8::new(0);
 /// Raw bytes of the in-flight packet.
-static MOUSE_BYTES: [AtomicU8; 3] = [
-    AtomicU8::new(0),
-    AtomicU8::new(0),
-    AtomicU8::new(0),
-];
+static MOUSE_BYTES: [AtomicU8; 3] = [AtomicU8::new(0), AtomicU8::new(0), AtomicU8::new(0)];
 
 extern "x86-interrupt" fn mouse_interrupt_handler(_sf: InterruptStackFrame) {
     use x86_64::instructions::port::Port;
@@ -128,7 +126,10 @@ extern "x86-interrupt" fn mouse_interrupt_handler(_sf: InterruptStackFrame) {
 
     // Byte 0 must have the sync bit (bit 3) set — drop it if not.
     if cycle == 0 && byte & 0x08 == 0 {
-        unsafe { PICS.lock().notify_end_of_interrupt(InterruptIndex::Mouse.as_u8()); }
+        unsafe {
+            PICS.lock()
+                .notify_end_of_interrupt(InterruptIndex::Mouse.as_u8());
+        }
         return;
     }
 
@@ -144,5 +145,8 @@ extern "x86-interrupt" fn mouse_interrupt_handler(_sf: InterruptStackFrame) {
         MOUSE_CYCLE.store(cycle + 1, Ordering::Relaxed);
     }
 
-    unsafe { PICS.lock().notify_end_of_interrupt(InterruptIndex::Mouse.as_u8()); }
+    unsafe {
+        PICS.lock()
+            .notify_end_of_interrupt(InterruptIndex::Mouse.as_u8());
+    }
 }
