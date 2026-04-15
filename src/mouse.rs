@@ -1,75 +1,55 @@
-/// PS/2 mouse driver — hardware init, 3-byte packet processing, and cursor.
+/// PS/2 mouse driver — hardware init and 3-byte packet processing.
+///
+/// The window manager owns cursor rendering; this module just tracks
+/// the logical mouse position and button state, then signals the WM
+/// that a repaint is needed.
 ///
 /// Call `init()` once after the heap is ready.  After that, the IRQ12
 /// handler in `interrupts.rs` feeds packets to `handle_packet()`.
 
-use crate::framebuffer::{self, HEIGHT, WIDTH};
+use crate::framebuffer::{HEIGHT, WIDTH};
 use spin::Mutex;
 use x86_64::instructions::port::Port;
 
-// ── Cursor shape ─────────────────────────────────────────────────────────────
-
-const CURSOR_W: usize = 8;
-const CURSOR_H: usize = 8;
-
-/// 1-bit mask per pixel row — bit 7 is the leftmost pixel.
-/// Draws a small arrow pointing top-left.
-const CURSOR_SHAPE: [u8; CURSOR_H] = [
-    0b11111110,
-    0b11111100,
-    0b11111000,
-    0b11110000,
-    0b11111000,
-    0b11001100,
-    0b10000110,
-    0b00000011,
-];
-
 // ── State ─────────────────────────────────────────────────────────────────────
 
-struct Cursor {
-    x:       usize,
-    y:       usize,
-    left:    bool,
-    right:   bool,
-    /// Pixels saved from under the cursor so we can restore them on move.
-    saved:   [u8; CURSOR_W * CURSOR_H],
-    visible: bool,
+struct MouseState {
+    x:     usize,
+    y:     usize,
+    left:  bool,
+    right: bool,
 }
 
-impl Cursor {
+impl MouseState {
     const fn new() -> Self {
-        Cursor {
-            x:       WIDTH  / 2,
-            y:       HEIGHT / 2,
-            left:    false,
-            right:   false,
-            saved:   [0u8; CURSOR_W * CURSOR_H],
-            visible: false,
+        MouseState {
+            x:     WIDTH  / 2,
+            y:     HEIGHT / 2,
+            left:  false,
+            right: false,
         }
     }
 }
 
-static CURSOR: Mutex<Cursor> = Mutex::new(Cursor::new());
+static MOUSE: Mutex<MouseState> = Mutex::new(MouseState::new());
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Initialise the PS/2 mouse and draw the cursor at the centre of the screen.
+/// Initialise the PS/2 mouse.
 pub fn init() {
     unsafe { init_hardware(); }
+}
 
-    // Draw the initial cursor with interrupts disabled.
-    //
-    // Bug fixed: after init_hardware() unmasks IRQ12, an IRQ can fire before
-    // we finish drawing the cursor.  The IRQ12 handler also locks CURSOR.
-    // If it fires while we hold the lock, the handler spins forever with
-    // interrupts disabled → deadlock.  without_interrupts prevents that.
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        let mut c = CURSOR.lock();
-        save_pixels(&mut c);
-        draw_cursor(&c);
-        c.visible = true;
-    });
+/// Returns the current cursor position as `(x, y)`.
+pub fn pos() -> (usize, usize) {
+    let m = MOUSE.lock();
+    (m.x, m.y)
+}
+
+/// Returns `(left_down, right_down)`.
+pub fn buttons() -> (bool, bool) {
+    let m = MOUSE.lock();
+    (m.left, m.right)
 }
 
 /// Process a decoded 3-byte PS/2 packet.  Called from the IRQ12 handler
@@ -89,23 +69,16 @@ pub fn handle_packet(b0: u8, b1: u8, b2: u8) {
     let left  = b0 & 0x01 != 0;
     let right = b0 & 0x02 != 0;
 
-    let mut c = CURSOR.lock();
-
-    // Restore pixels at old position.
-    if c.visible {
-        restore_pixels(&c);
+    {
+        let mut m = MOUSE.lock();
+        m.x = ((m.x as i32 + dx).max(0) as usize).min(WIDTH  - 1);
+        m.y = ((m.y as i32 - dy).max(0) as usize).min(HEIGHT - 1);
+        m.left  = left;
+        m.right = right;
     }
 
-    // Clamp new position to screen bounds.
-    c.x = ((c.x as i32 + dx).max(0) as usize).min(WIDTH  - CURSOR_W);
-    c.y = ((c.y as i32 - dy).max(0) as usize).min(HEIGHT - CURSOR_H);
-    c.left  = left;
-    c.right = right;
-
-    // Save pixels at new position and draw cursor.
-    save_pixels(&mut c);
-    draw_cursor(&c);
-    c.visible = true;
+    // Tell the compositor a frame is needed.
+    crate::wm::request_repaint();
 }
 
 // ── Hardware init ─────────────────────────────────────────────────────────────
@@ -138,10 +111,6 @@ unsafe fn init_hardware() {
 
     // 1. Disable keyboard scanning so its scancodes cannot land in the output
     //    buffer while we are waiting for PS/2 controller responses.
-    //
-    //    Bug fixed: without this, a keypress during init causes wait_for_read()
-    //    to return early and we read a scancode as the CCB.  Writing it back
-    //    clears bit 0 (keyboard IRQ enable), silencing all future keypresses.
     wait_for_write(); cmd.write(0xADu8); // disable keyboard
 
     // 2. Flush any bytes that arrived before we disabled the keyboard.
@@ -185,32 +154,4 @@ unsafe fn init_hardware() {
     let mut pic1_mask: Port<u8> = Port::new(0x21);
     let m = pic1_mask.read();
     pic1_mask.write(m & !(1 << 2));
-}
-
-// ── Cursor helpers ────────────────────────────────────────────────────────────
-
-fn save_pixels(c: &mut Cursor) {
-    for row in 0..CURSOR_H {
-        for col in 0..CURSOR_W {
-            c.saved[row * CURSOR_W + col] = framebuffer::get_pixel(c.x + col, c.y + row);
-        }
-    }
-}
-
-fn restore_pixels(c: &Cursor) {
-    for row in 0..CURSOR_H {
-        for col in 0..CURSOR_W {
-            framebuffer::put_pixel(c.x + col, c.y + row, c.saved[row * CURSOR_W + col]);
-        }
-    }
-}
-
-fn draw_cursor(c: &Cursor) {
-    for (row, &byte) in CURSOR_SHAPE.iter().enumerate() {
-        for bit in 0..8usize {
-            if byte & (0x80 >> bit) != 0 {
-                framebuffer::put_pixel(c.x + bit, c.y + row, framebuffer::WHITE);
-            }
-        }
-    }
 }

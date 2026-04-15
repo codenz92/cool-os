@@ -60,7 +60,11 @@ extern "x86-interrupt" fn double_fault_handler(sf: InterruptStackFrame, _err: u6
 }
 
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    TICKS.fetch_add(1, Ordering::Relaxed);
+    let ticks = TICKS.fetch_add(1, Ordering::Relaxed) + 1;
+    // Request a repaint at ~30 fps (timer fires at ~18.2 Hz × 2 ticks ≈ every ~55 ms).
+    // We repaint every tick to keep the cursor smooth; compose() is fast.
+    let _ = ticks;
+    crate::wm::request_repaint();
     unsafe {
         PICS.lock()
             .notify_end_of_interrupt(InterruptIndex::Timer.as_u8());

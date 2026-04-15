@@ -99,3 +99,42 @@ pub fn draw_char(col: usize, row: usize, c: char, fg: u8, bg: u8) {
         }
     }
 }
+
+/// Draw a character at pixel coordinates `(x, y)`.
+pub fn draw_char_px(x: usize, y: usize, c: char, fg: u8, bg: u8) {
+    let glyph = font8x8::BASIC_FONTS
+        .get(c)
+        .unwrap_or_else(|| font8x8::BASIC_FONTS.get(' ').unwrap());
+    for (gy, byte) in glyph.iter().enumerate() {
+        for bit in 0..8usize {
+            let color = if byte & (1 << bit) != 0 { fg } else { bg };
+            put_pixel(x + bit, y + gy, color);
+        }
+    }
+}
+
+/// Draw a string at pixel coordinates `(x, y)`, clipping at `max_x`.
+pub fn draw_str_px_clipped(x: usize, y: usize, s: &str, fg: u8, bg: u8, max_x: usize) {
+    let mut cx = x;
+    for c in s.chars() {
+        if cx + CHAR_W > max_x {
+            break;
+        }
+        draw_char_px(cx, y, c, fg, bg);
+        cx += CHAR_W;
+    }
+}
+
+/// Fill a rectangle given in i32 screen coordinates, clipping to screen bounds.
+/// Handles partially off-screen windows (negative x/y).
+pub fn fill_rect_clipped(x: i32, y: i32, w: i32, h: i32, color: u8) {
+    let x0 = x.max(0) as usize;
+    let y0 = y.max(0) as usize;
+    let x1 = ((x + w).max(0) as usize).min(WIDTH);
+    let y1 = ((y + h).max(0) as usize).min(HEIGHT);
+    for row in y0..y1 {
+        for col in x0..x1 {
+            unsafe { FB.add(row * WIDTH + col).write_volatile(color); }
+        }
+    }
+}
