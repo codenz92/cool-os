@@ -1,45 +1,39 @@
 # coolOS
 
-A 64-bit operating system kernel written in Rust that boots into a graphical
-desktop — windowed apps, a taskbar, a PS/2 mouse cursor, and a live system
-monitor, all running as bare-metal kernel code.
-
-See [ROADMAP.md](ROADMAP.md) for the full development history.
+A 64-bit operating system kernel written in Rust. Boots bare-metal into a
+graphical desktop with draggable windows, a taskbar, a PS/2 mouse cursor,
+and four built-in applications — all running as kernel-mode code with no
+scheduler and no userspace. Yet.
 
 ---
 
-## Current state (v1.5)
+## Current state — v1.5
 
-The OS boots directly into a graphical desktop running in VGA Mode 13h
-(320×200, 256 colours). A terminal window opens on boot; right-clicking the
-desktop spawns more apps from a context menu.
+The kernel boots directly into a graphical desktop at **320×200, 256 colours**
+(VGA Mode 13h). A terminal window opens on boot. Right-clicking the desktop
+opens a context menu to launch additional apps.
 
-### Features
+### What's working
 
-- **Pixel framebuffer** — VGA Mode 13h (320×200, 8 bpp) enabled by the
-  bootloader. Shadow-buffer compositing eliminates screen tearing: the full
-  frame is rendered in RAM and blitted to `0xA0000` in one `memcpy`.
-- **PS/2 mouse driver** — full hardware init sequence (CCB, 0xF6/0xF4),
-  9-bit signed X/Y deltas, IRQ12 packet collection via atomic bytes.
-- **Window manager** — z-ordered windows with focus-on-click, title-bar
-  dragging, and a close button. Each window has its own pixel back-buffer.
-- **Taskbar** — 12 px bar at the bottom; one button per open window, click
-  to raise and focus.
-- **Right-click context menu** — spawns any of the four built-in apps.
-- **Shadow cursor** — 8×8 arrow sprite drawn on top of every frame.
-- **Dynamic heap** — `LockedHeap` allocator; `String`, `Vec`, `Box` all work.
-- **4-level paging** — `OffsetPageTable` + bootloader E820 frame allocator.
-- **IDT** — Breakpoint, Double Fault, Timer (IRQ0), Keyboard (IRQ1),
-  Mouse (IRQ12).
+| Subsystem | Details |
+| :-------- | :------ |
+| **Framebuffer** | VGA Mode 13h, 8bpp, shadow-buffer compositor — full frame rendered in RAM, blitted to `0xA0000` in one `memcpy`. No tearing. |
+| **PS/2 mouse** | Full hardware init (CCB, 0xF6/0xF4), 9-bit signed X/Y deltas, IRQ12 packet collection via atomics. |
+| **Window manager** | Z-ordered windows, focus-on-click, title-bar drag, close button, per-window pixel back-buffer. |
+| **Taskbar** | 12 px bar at the bottom; one button per open window. |
+| **Context menu** | Right-click the desktop to spawn any of the four apps. |
+| **Heap** | `LockedHeap` allocator — `String`, `Vec`, `Box` all work. |
+| **Paging** | 4-level `OffsetPageTable` + bootloader E820 frame allocator. |
+| **IDT** | Breakpoint, Double Fault, Timer (IRQ0), Keyboard (IRQ1), Mouse (IRQ12). |
 
-### Apps
+### Applications
 
-| App | Open via | Description |
-| :-- | :------- | :---------- |
-| **Terminal** | boot / right-click | Interactive shell — type commands, press Enter |
-| **System Monitor** | right-click | Live CPU vendor, heap usage, and uptime |
-| **Text Viewer** | right-click | Scrollable "About" doc; `j`/`k` to scroll |
-| **Color Picker** | right-click | Clickable 16-colour VGA palette grid |
+| App | How to open | Description |
+| :-- | :---------- | :---------- |
+| **Terminal** | Boot / right-click | Interactive shell. Type commands, press Enter. |
+| **System Monitor** | Right-click | Live CPU vendor, heap usage, uptime. |
+| **Text Viewer** | Right-click | Scrollable "About" doc; `j`/`k` to scroll. |
+| **Color Picker** | Right-click | Clickable 16-colour VGA palette grid. |
 
 ### Terminal commands
 
@@ -48,23 +42,9 @@ desktop spawns more apps from a context menu.
 | `help` | List available commands |
 | `echo <text>` | Print text |
 | `info` | CPU vendor and heap usage |
-| `uptime` | Timer ticks and approximate seconds since boot |
+| `uptime` | Timer ticks and seconds since boot |
 | `clear` | Clear the terminal |
 | `reboot` | Hardware reset |
-
----
-
-## Roadmap
-
-| Phase | Deliverable | Status |
-| :---: | :---------- | :----- |
-| 1 | Pixel framebuffer + font rendering | **Done** |
-| 2 | PS/2 mouse driver + on-screen cursor | **Done** |
-| 3 | Window manager — draggable windows, focus, close | **Done** |
-| 4 | Desktop shell — taskbar, context menu, terminal app | **Done** |
-| 5 | Applications — system monitor, text viewer, color picker | **Done** |
-
-Full details and task checklists in [ROADMAP.md](ROADMAP.md).
 
 ---
 
@@ -86,14 +66,13 @@ brew install qemu
 make run
 ```
 
-Click inside the QEMU window to capture mouse input. Press **Ctrl+Alt+G** to
-release it.
+Click inside the QEMU window to capture mouse input. Press **Ctrl+Alt+G** to release it.
 
 ---
 
 ## Architecture
 
-```text
+```
 src/
   main.rs            Kernel entry point — heap init, window setup, main loop
   interrupts.rs      IDT, PIC, keyboard/timer/mouse handlers
@@ -114,6 +93,52 @@ src/
     colorpicker.rs   ColorPickerApp — clickable VGA palette swatches
 ```
 
-The bootloader sets VGA Mode 13h before jumping to the kernel. The kernel
-identity-maps the framebuffer at `0xA0000` and writes pixels directly. All
-app code runs in kernel mode — no scheduler, no privilege separation.
+All app code runs in kernel mode (ring 0). There is no scheduler, no privilege
+separation, and no system call interface. That is what the roadmap is for.
+
+---
+
+## Roadmap
+
+| Phase | Deliverable | Status |
+| :---: | :---------- | :----- |
+| 1 | Pixel framebuffer + font rendering | **Done** |
+| 2 | PS/2 mouse driver + on-screen cursor | **Done** |
+| 3 | Window manager — draggable windows, focus, close | **Done** |
+| 4 | Desktop shell — taskbar, context menu, terminal app | **Done** |
+| 5 | Applications — system monitor, text viewer, color picker | **Done** |
+| 6 | High-resolution framebuffer (Limine / UEFI GOP) | Planned |
+| 7 | Preemptive scheduler + context switching | Planned |
+| 8 | Ring-3 userspace + syscall interface | Planned |
+| 9 | Per-process virtual memory + isolation | Planned |
+| 10 | Filesystem (FAT32) + VFS + disk driver | Planned |
+| 11 | ELF loader — real programs run from disk | Planned |
+| 12 | Pipes + shared memory + IPC | Planned |
+| 13 | USB HID — real hardware input | Planned |
+| 14 | Networking — virtio-net, TCP/IP | Planned |
+
+Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).
+
+---
+
+## Design notes
+
+**Why Rust?** The `#[no_std]` ecosystem is mature enough for kernel work, and
+memory safety at the kernel level eliminates whole categories of bugs (use-after-free,
+buffer overflows) that make C kernel development painful. The borrow checker enforces
+ownership of hardware resources at compile time.
+
+**Why Mode 13h (for now)?** The `bootloader 0.9.x` crate's `vga_320x200` feature is
+the lowest-friction path to a pixel framebuffer. Upgrading to a modern UEFI/Limine
+framebuffer (Phase 6) requires rewriting `framebuffer.rs`, the compositor's layout
+constants, and the font renderer — it's a deliberate, self-contained migration.
+
+**Shadow-buffer compositing** renders the full frame — desktop fill, windows
+back-to-front, cursor sprite — into a heap-allocated buffer, then blits the finished
+frame to VGA in a single `ptr::copy_nonoverlapping`. The display sees only complete
+frames, eliminating tearing and partial redraws.
+
+**No processes (yet)** — all apps are Rust structs dispatched from the WM's main
+loop. Phase 7 (scheduler) and Phase 8 (userspace) replace this with real concurrent
+processes. Until then, a crash in any app takes down the whole kernel, which is
+expected and fine for this stage of development.

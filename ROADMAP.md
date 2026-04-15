@@ -1,144 +1,265 @@
-# coolOS Desktop Roadmap
+# coolOS Roadmap
 
-The goal is to evolve coolOS from a VGA text-mode shell into a graphical desktop OS
-with a windowing system, mouse support, and runnable applications.
+The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
+operating system — one that can load and run user programs, manage storage, and
+support multiple processes without any one of them being able to crash the machine.
 
-Each phase builds directly on the last. Nothing in a later phase is possible without
-completing the phase before it.
-
----
-
-## Phase 1 — Pixel Framebuffer
-
-**Goal:** Replace the VGA text driver with a pixel-addressable display.
-
-- [x] Add `vga_320x200` feature to the `bootloader` crate and `font8x8 = "0.2.4"` to
-      `Cargo.toml`. The bootloader sets Mode 13h (320×200, 8bpp at `0xA0000`) before
-      jumping to the kernel.
-- [x] Write `src/framebuffer.rs` — exposes `put_pixel`, `scroll_up`, and `draw_char`
-      backed by the identity-mapped `0xA0000` buffer.
-- [x] Rewrote `src/vga_buffer.rs` — `Writer` now calls `framebuffer::draw_char` instead
-      of writing to the text buffer. Public API (`println!`, `print!`) unchanged.
-- [x] Added `mod framebuffer` to `src/main.rs`.
-
-Status: COMPLETE — builds clean, shell runs in Mode 13h pixel graphics.
+Phases 1–5 are complete. Everything below builds directly on that foundation.
 
 ---
 
-## Phase 2 — PS/2 Mouse Driver
+## ✅ Phases 1–5 — Complete
 
-**Goal:** Read mouse movement and button clicks from hardware.
-
-- [x] Enable IRQ12 on the secondary PIC — unmask bit 4 of PIC2 IMR (port `0xA1`) and
-      bit 2 of PIC1 IMR (cascade line) inside `mouse::init()`.
-- [x] Write `src/mouse.rs` — full PS/2 init sequence (disable keyboard during CCB read,
-      flush buffer, enable aux device, set CCB, 0xF6 defaults, 0xF4 enable reporting).
-      `handle_packet(b0, b1, b2)` decodes 9-bit signed X/Y deltas and button state.
-- [x] Global mouse state with clamped `(x, y)`, `left`, `right` fields; public
-      `pos()` and `buttons()` getters.
-- [x] IRQ12 handler in `interrupts.rs` collects bytes via three `AtomicU8`s, validates
-      sync bit, calls `mouse::handle_packet`.
-
-Status: COMPLETE
-
-> **QEMU note:** click inside the QEMU window to capture mouse input.
-> Press **Ctrl+Alt+G** to release it.
+| Phase | Deliverable |
+| :---: | :---------- |
+| 1 | Pixel framebuffer (Mode 13h, 320×200, 8bpp) |
+| 2 | PS/2 mouse driver + on-screen cursor |
+| 3 | Window manager — shadow compositor, z-order, drag |
+| 4 | Desktop shell — taskbar, context menu, terminal |
+| 5 | Four built-in apps running as kernel-mode modules |
 
 ---
 
-## Phase 3 — Window Manager Core
+## Phase 6 — Modern Framebuffer
 
-**Goal:** Create, draw, and stack rectangular windows on screen.
+**Goal:** Replace Mode 13h (320×200, 256 colours) with a high-resolution linear
+framebuffer negotiated at boot time via the UEFI GOP or a Limine framebuffer tag.
+Nothing above 320×200 is achievable without this.
 
-- [x] Write `src/wm/window.rs` — `Window` struct with `i32` x/y, width/height, title,
-      a pixel back-buffer, and hit-test methods (`hit`, `hit_title`, `hit_close`).
-- [x] Write `src/wm/compositor.rs` — `WindowManager` with a `Vec<AppWindow>`, z-order
-      list, focused index, and drag state. `compose()` renders desktop → windows
-      back-to-front → cursor into a 64 KB shadow buffer, then blits to VGA in one
-      `ptr::copy_nonoverlapping` call (no tearing).
-- [x] Window chrome: title bar (blue when focused, dark grey otherwise), 1-px border,
-      red close button (`x`).
-- [x] Focus-on-click: hit-test title bars front-to-back, raise matching window, set focus.
-- [x] Window dragging: `DragState` tracks grabbed window + cursor offset; releases on
-      button-up. Off-screen dragging handled safely (clamped `s_fill`).
-- [x] Timer interrupt calls `wm::request_repaint()` each tick; main loop calls
-      `compose_if_needed()` then `hlt()`.
+- [ ] Switch bootloader to [Limine](https://github.com/limine-bootloader/limine)
+      (or upgrade to `bootloader 0.11`). Both can deliver a 32bpp linear framebuffer
+      at the display's native resolution before jumping to the kernel.
+- [ ] Rewrite `src/framebuffer.rs` — drop the `0xA0000` hard-code; instead accept a
+      base address, pitch, width, height, and bpp from the bootloader info struct.
+- [ ] Update `put_pixel` for 32bpp ARGB; update `draw_char` for the new stride.
+- [ ] Scale the shadow buffer and compositor to match the new resolution. Allocate
+      the shadow buffer from the heap (`Vec<u32>`) rather than a fixed 64 KB array.
+- [ ] Rewrite or replace `font8x8` with a scalable or higher-resolution bitmap font
+      (e.g. a 16×16 or PSF2 font) so text is readable at 1080p.
+- [ ] Remove all `vga_320x200` references from `Cargo.toml` and the target spec.
+- [ ] Update the compositor's layout constants (taskbar height, window chrome, cursor
+      sprite) to work at the new resolution.
 
-Status: COMPLETE — windows appear, can be raised, dragged, and closed.
-
----
-
-## Phase 4 — Desktop Shell
-
-**Goal:** A usable desktop with a taskbar and the ability to open/close windows.
-
-- [x] Taskbar at the bottom of the screen (12 px); one button per open window; click
-      to raise/focus that window.
-- [x] Right-click context menu on the desktop with app launch items.
-- [x] Close button (`x`) hit detection removes the window from the WM.
-- [x] Ported the keyboard shell into `TerminalApp` — renders output into a window's
-      pixel back-buffer. Commands: `help`, `clear`, `reboot`, `echo`, `info`, `uptime`.
-- [x] Keyboard handler routes all input through `wm::handle_key()`, which dispatches to
-      the focused window.
-
-Status: COMPLETE — boots into a desktop; right-click opens context menu;
-"Terminal" spawns a working shell window that can be moved and closed.
+**Exit criteria:** boots at ≥1280×720, draws the existing desktop UI cleanly, all
+five Phase 5 apps remain functional.
 
 ---
 
-## Phase 5 — Applications
+## Phase 7 — Preemptive Scheduler
 
-**Goal:** Multiple useful apps running as windows side-by-side.
+**Goal:** Multiple concurrent execution contexts sharing the CPU via timer-driven
+preemption. This is the hardest single phase and everything from Phase 8 onwards
+depends on it.
 
-- [x] **Terminal** — ported shell from Phase 4; all existing commands supported.
-- [x] **System Monitor** — live CPU vendor, heap used/total, and uptime; re-renders
-      its back-buffer on every compositor frame.
-- [x] **Text Viewer** — scrollable "About coolOS" document baked into the kernel
-      binary; `j`/`k` to scroll.
-- [x] **Color Picker** — 8×2 grid of all 16 VGA palette swatches; click to select;
-      status bar shows name and palette index. Demonstrates per-app content-area
-      mouse-click dispatch.
+- [ ] Define a `Task` struct: kernel stack, saved register state (all GP registers +
+      `rflags`, `rsp`, `rip`), task ID, status (`Ready` / `Running` / `Blocked`).
+- [ ] Allocate a fixed kernel stack per task (e.g. 64 KB from the heap).
+- [ ] Implement context switching — a naked `switch_context(prev: *mut Task, next: *mut Task)`
+      function in inline assembly that pushes callee-saved registers, saves `rsp`,
+      restores the next task's `rsp`, pops its registers, and returns into the next task.
+- [ ] Build a simple round-robin run-queue (`VecDeque<TaskId>`).
+- [ ] Hook the timer IRQ (IRQ0) to call the scheduler: save the interrupted task's
+      full register frame, pick the next `Ready` task, switch context.
+- [ ] Add `block()` / `unblock(id)` primitives so tasks can sleep waiting for I/O.
+- [ ] Port the existing main loop (compositor tick + `hlt`) to run as the idle task.
+- [ ] Verify: two simultaneous kernel tasks (e.g. a counter + the existing WM loop)
+      both make progress without corrupting each other.
 
-Status: COMPLETE — all four apps launch from the right-click menu and run
-side-by-side as independent windows.
+**Exit criteria:** at least two kernel tasks preempt each other correctly under the
+timer; no stack corruption; `hlt` in the idle task still fires when no other task is runnable.
 
 ---
 
-## Technical notes
+## Phase 8 — Userspace & System Calls
 
-### Shadow-buffer compositing
+**Goal:** Ring-3 execution and a minimal syscall interface so that code outside the
+kernel can request kernel services without being able to crash it.
 
-The compositor renders the full frame (desktop fill → windows → cursor) into a
-64 KB `Vec<u8>` shadow buffer in RAM. At the end of `compose()` a single
-`ptr::copy_nonoverlapping` blits the finished frame to the VGA address `0xA0000`.
-The display only ever sees complete frames, eliminating tearing and flicker.
+- [ ] Set up the GDT with four segments: kernel code (ring 0), kernel data (ring 0),
+      user code (ring 3), user data (ring 3). Load via `lgdt`.
+- [ ] Set up the TSS — populate `rsp0` with the current kernel stack pointer so that
+      hardware task-switches on interrupt save state to the right place.
+- [ ] Implement `SYSCALL`/`SYSRET` (set `STAR`, `LSTAR`, `SFMASK` MSRs). The syscall
+      entry stub saves user registers, dispatches on `rax`, and returns.
+- [ ] Initial syscall table (numbers subject to change):
+      `0 exit`, `1 write` (to terminal), `2 yield`, `3 getpid`.
+- [ ] Implement `jump_to_userspace(entry: u64, user_stack: u64)` — push a fake
+      `iretq` frame (user CS/SS, `rflags` with IF set, entry RIP, user RSP) and `iretq`.
+- [ ] Verify: a minimal Rust userspace binary (compiled with `#![no_std]`, syscall
+      via `asm!`) can call `write` to print a string and `exit` without triple-faulting.
 
-### Why not upgrade to `bootloader 0.10+`?
+**Exit criteria:** the kernel can jump to a ring-3 stub; the stub can make a
+`write` syscall that prints to the terminal window; an illegal memory access in
+userspace generates a #PF that the kernel handles without crashing.
 
-The 0.10 API is cleaner for framebuffer access but requires significant changes to
-`main.rs`, `memory.rs`, and `allocator.rs`. Staying on 0.9.23 and enabling the
-`vga_320x200` feature is the lowest-risk path and avoids churn in stable code.
+---
 
-### Target spec
+## Phase 9 — Virtual Memory per Process
 
-CPU features (`-mmx`, `-sse`, `+soft-float`) and `"rustc-abi": "softfloat"` are
-set in `x86_64-unknown-none.json` at the target-spec level rather than via
-`-Ctarget-feature` rustflags. This avoids the deprecation warnings introduced in
-Rust issue #116344.
+**Goal:** Each process gets its own isolated page-table hierarchy so processes
+cannot read or corrupt each other's memory.
 
-### No processes, no userspace
+- [ ] Extend the `Task` struct with a `PhysFrame` pointing to its top-level PML4.
+- [ ] On task creation, clone the kernel's PML4 entries into the new process's PML4
+      (so kernel mappings are shared), leaving user-space entries empty.
+- [ ] On context switch, load the new process's PML4 physical address into `cr3`.
+      Flush the TLB (or use PCID/ASID to avoid full flushes).
+- [ ] Implement `mmap(addr, len, flags)` — find free virtual pages in the process's
+      address space, allocate physical frames, insert PTEs.
+- [ ] Implement lazy allocation: map pages as present only on first access; handle
+      `#PF` by allocating and mapping the faulting page.
+- [ ] Guard pages: map a zero-size sentinel page below each stack to catch overflows.
+- [ ] Verify: two userspace processes with the same virtual addresses for their stacks
+      and data cannot read each other's values.
 
-All apps run as kernel-mode Rust code. There is no scheduler, no privilege
-separation, and no system call interface. That is a separate, later project.
+**Exit criteria:** two concurrently running userspace processes are fully isolated;
+a write to an unmapped address in one process does not affect the other.
+
+---
+
+## Phase 10 — Filesystem & Storage
+
+**Goal:** Programs and data live on disk. The kernel can load files by name.
+
+- [ ] Write a virtio-blk driver (or ATA PIO driver for real hardware) to read 512-byte
+      sectors from a virtual disk image.
+- [ ] Implement a read-only FAT32 parser — directory traversal, file lookup by path,
+      reading file data into a heap buffer.
+- [ ] Add write support to FAT32 — allocate clusters, update FAT chains, write
+      directory entries.
+- [ ] Expose a VFS layer with a minimal trait: `open(path)`, `read(fd, buf)`,
+      `write(fd, buf)`, `close(fd)`.
+- [ ] Map VFS operations to syscalls: `sys_open`, `sys_read`, `sys_write`, `sys_close`.
+- [ ] Build a disk image in the Makefile (`dd` + `mkfs.fat`) and mount it as a QEMU
+      virtio-blk device. Populate it with a `/bin/` directory.
+
+**Exit criteria:** the kernel can open `/bin/hello` from the disk and read its bytes
+into memory via the VFS syscall interface.
+
+---
+
+## Phase 11 — ELF Loader & Process Spawning
+
+**Goal:** The kernel can load a compiled ELF binary from disk, map it into a new
+address space, and jump to its entry point.
+
+- [ ] Parse ELF64 headers — validate magic, machine type (`x86_64`), entry point.
+- [ ] Walk `PT_LOAD` segments: allocate virtual pages in the process's address space,
+      read segment data from the file into those pages, set PTE flags from segment
+      flags (`R`, `W`, `X`).
+- [ ] Allocate a user stack (e.g. 1 MB starting at `0x7fff_0000_0000`) and map it.
+- [ ] Build an `argv`/`envp` array on the user stack in the System V AMD64 ABI layout.
+- [ ] Create a new `Task`, set its `rip` to the ELF entry point and `rsp` to the top
+      of the user stack, add it to the run-queue.
+- [ ] Add a `sys_exec(path)` syscall that calls the ELF loader and replaces the
+      calling process's address space.
+- [ ] Compile a minimal `hello` binary (Rust `#![no_std]` + syscall shim) and
+      ship it in `/bin/hello` on the disk image.
+- [ ] Add an `exec <path>` command to the terminal app.
+
+**Exit criteria:** typing `exec /bin/hello` in the terminal spawns a real
+userspace process that prints to the screen and exits cleanly.
+
+---
+
+## Phase 12 — Inter-Process Communication
+
+**Goal:** Processes can send data to each other and to the GUI without going through
+the kernel's internal Rust data structures.
+
+- [ ] Implement anonymous pipes — a fixed-size ring buffer in kernel memory; `sys_pipe`
+      returns two file descriptors (read end, write end).
+- [ ] Block a reader when the pipe is empty; unblock it when the writer produces data.
+- [ ] Implement shared memory — `sys_shmem_create(len)` allocates physical frames and
+      maps them into the caller's address space; `sys_shmem_map(id)` maps the same
+      frames into another process.
+- [ ] Design a simple message-passing protocol so GUI apps can send window events
+      (key presses, mouse clicks) to user processes via a pipe rather than via the
+      kernel's internal WM dispatch.
+- [ ] Port one existing built-in app (e.g. Terminal) to run as a real userspace
+      process communicating with the WM over a pipe.
+
+**Exit criteria:** a userspace terminal process receives keyboard events from the
+WM via a pipe and writes output back via `sys_write`; the WM renders it without
+any shared Rust state.
+
+---
+
+## Phase 13 — USB & Modern Input
+
+**Goal:** Input works on real hardware, not just in QEMU with PS/2 emulation.
+
+- [ ] Write an xHCI host controller driver — detect the MMIO BAR via the PCI config
+      space, initialise the command ring, event ring, and transfer rings.
+- [ ] Implement USB enumeration — detect connected devices, read descriptors,
+      assign addresses.
+- [ ] Write a USB HID class driver — parse HID report descriptors for keyboards and
+      mice; feed events into the existing keyboard/mouse state.
+- [ ] Remove the PS/2 driver dependency for systems that do not support it.
+
+**Exit criteria:** coolOS boots on real x86_64 hardware and accepts keyboard and
+mouse input via USB.
+
+---
+
+## Phase 14 — Networking
+
+**Goal:** The kernel can send and receive Ethernet frames; userspace can open TCP
+connections.
+
+- [ ] Write a virtio-net driver (MMIO or PCI) to transmit and receive raw Ethernet
+      frames.
+- [ ] Implement ARP, IPv4, ICMP (ping), UDP, and TCP in the kernel or as a userspace
+      network stack over shared memory.
+- [ ] Expose `sys_socket`, `sys_connect`, `sys_send`, `sys_recv` syscalls.
+- [ ] Ship a `wget` binary in `/bin/` as a proof-of-concept.
+
+**Exit criteria:** `wget http://93.184.216.34/` (example.com by IP) fetches a
+response and writes it to a file on disk.
 
 ---
 
 ## Milestone summary
 
-| Phase | Deliverable | Key new files |
-| :---: | :---------- | :------------ |
-| 1 | Pixel framebuffer + font rendering | `src/framebuffer.rs` |
-| 2 | Mouse cursor on screen | `src/mouse.rs` |
-| 3 | Draggable windows, shadow compositor | `src/wm/window.rs`, `src/wm/compositor.rs` |
-| 4 | Desktop + taskbar + terminal window | `src/wm/mod.rs` (expanded) |
-| 5 | Four apps: terminal, sysmon, viewer, picker | `src/apps/` |
+| Phase | Deliverable | Depends on |
+| :---: | :---------- | :--------- |
+| 6  | High-resolution framebuffer (Limine / UEFI GOP) | 1–5 |
+| 7  | Preemptive scheduler, context switching | 6 |
+| 8  | Ring-3 userspace + syscall interface | 7 |
+| 9  | Per-process virtual memory, isolation | 8 |
+| 10 | Filesystem (FAT32), VFS, disk driver | 9 |
+| 11 | ELF loader, `exec`, real user programs | 10 |
+| 12 | Pipes, shared memory, IPC | 11 |
+| 13 | USB HID — real hardware input | 8 |
+| 14 | Networking (virtio-net, TCP/IP) | 12 |
+
+---
+
+## Technical notes
+
+### The ordering is non-negotiable
+
+Phase 7 (scheduler) is the hardest gate. Every phase from 8 onwards requires
+multiple concurrent execution contexts. Don't skip it or fake it with cooperative
+yielding — preemption is what makes the OS real.
+
+### Rust in userspace
+
+Userspace binaries can be written in `#![no_std]` Rust with a thin syscall shim.
+Eventually a `libcool` crate can wrap the raw syscalls into safe Rust APIs
+(`println!`, `File::open`, etc.) and be linked into every userspace binary.
+
+### Real hardware vs QEMU
+
+Phase 6 (Limine framebuffer) and Phase 13 (USB) are the two gates to booting on
+real machines. Everything in between can be developed entirely in QEMU.
+
+### Versioning
+
+| Tag | Milestone |
+| :-- | :-------- |
+| v1.5 | Current — kernel-mode GUI, four built-in apps |
+| v2.0 | Phase 6 complete — high-res framebuffer |
+| v3.0 | Phase 8 complete — first userspace process |
+| v4.0 | Phase 11 complete — ELF binaries load from disk |
+| v5.0 | Phase 14 complete — network-capable |
