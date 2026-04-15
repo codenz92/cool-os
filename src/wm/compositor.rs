@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use lazy_static::lazy_static;
 use spin::Mutex;
 
-use crate::apps::TerminalApp;
+use crate::apps::{TerminalApp, SysMonApp, TextViewerApp, ColorPickerApp};
 use crate::framebuffer::{
     HEIGHT, WIDTH, CHAR_W,
     WHITE, BLACK, LIGHT_GRAY, DARK_GRAY, BLUE, RED,
@@ -39,33 +39,59 @@ const CURSOR_SHAPE: [u8; CURSOR_H] = [
 
 pub enum AppWindow {
     Terminal(TerminalApp),
+    SysMon(SysMonApp),
+    TextViewer(TextViewerApp),
+    ColorPicker(ColorPickerApp),
 }
 
 impl AppWindow {
     pub fn window(&self) -> &Window {
         match self {
-            AppWindow::Terminal(t) => &t.window,
+            AppWindow::Terminal(t)    => &t.window,
+            AppWindow::SysMon(s)      => &s.window,
+            AppWindow::TextViewer(v)  => &v.window,
+            AppWindow::ColorPicker(c) => &c.window,
         }
     }
 
     pub fn window_mut(&mut self) -> &mut Window {
         match self {
-            AppWindow::Terminal(t) => &mut t.window,
+            AppWindow::Terminal(t)    => &mut t.window,
+            AppWindow::SysMon(s)      => &mut s.window,
+            AppWindow::TextViewer(v)  => &mut v.window,
+            AppWindow::ColorPicker(c) => &mut c.window,
         }
     }
 
     pub fn handle_key(&mut self, c: char) {
         match self {
-            AppWindow::Terminal(t) => t.handle_key(c),
+            AppWindow::Terminal(t)   => t.handle_key(c),
+            AppWindow::TextViewer(v) => v.handle_key(c),
+            _ => {}
+        }
+    }
+
+    /// Called with content-area-local coordinates when the user clicks
+    /// inside the window's content area.
+    pub fn handle_click(&mut self, lx: i32, ly: i32) {
+        if let AppWindow::ColorPicker(cp) = self {
+            cp.handle_click(lx, ly);
+        }
+    }
+
+    /// Re-render back-buffer with current data (used for live-updating apps).
+    pub fn update(&mut self) {
+        if let AppWindow::SysMon(s) = self {
+            s.update();
         }
     }
 }
 
 // ── Context menu ──────────────────────────────────────────────────────────────
 
-const CTX_W:      i32 = 80;
+const CTX_W:      i32 = 92;
 const CTX_ITEM_H: i32 = 12;
-const CTX_ITEMS:  &[&str] = &["Terminal"];
+const CTX_ITEMS:  &[&str] = &["Terminal", "System Mon", "Text Viewer", "Color Pick"];
 
 struct ContextMenu {
     x: i32,
@@ -145,24 +171,27 @@ impl WindowManager {
 
         if left_pressed {
             if self.context_menu.is_some() {
-                // Determine which item (if any) was clicked, then drop the borrow.
-                let spawn_terminal = {
+                // Determine which item was clicked before dropping the borrow.
+                let clicked: Option<&str> = {
                     let cm = self.context_menu.as_ref().unwrap();
-                    CTX_ITEMS.iter().enumerate().any(|(i, &label)| {
+                    CTX_ITEMS.iter().find_map(|&label| {
+                        let i = CTX_ITEMS.iter().position(|&l| l == label).unwrap();
                         let item_y = cm.y + i as i32 * CTX_ITEM_H;
-                        label == "Terminal"
-                            && mx_i >= cm.x && mx_i < cm.x + CTX_W
+                        if mx_i >= cm.x && mx_i < cm.x + CTX_W
                             && my_i >= item_y && my_i < item_y + CTX_ITEM_H
+                        { Some(label) } else { None }
                     })
                 };
                 self.context_menu = None;
-                if spawn_terminal {
-                    let off = self.windows.len() as i32 * 8;
-                    let t = TerminalApp::new(
-                        (10 + off).min(WIDTH as i32 - 80),
-                        (10 + off).min(TASKBAR_Y - 30),
-                    );
-                    self.add_window(AppWindow::Terminal(t));
+                let off = self.windows.len() as i32 * 8;
+                let wx = (10 + off).min(WIDTH as i32 - 90);
+                let wy = (10 + off).min(TASKBAR_Y - 40);
+                match clicked {
+                    Some("Terminal")    => self.add_window(AppWindow::Terminal(TerminalApp::new(wx, wy))),
+                    Some("System Mon")  => self.add_window(AppWindow::SysMon(SysMonApp::new(wx, wy))),
+                    Some("Text Viewer") => self.add_window(AppWindow::TextViewer(TextViewerApp::new(wx, wy))),
+                    Some("Color Pick")  => self.add_window(AppWindow::ColorPicker(ColorPickerApp::new(wx, wy))),
+                    _ => {}
                 }
             } else {
                 // Normal window hit-test.
@@ -191,6 +220,11 @@ impl WindowManager {
                             off_x:  mx_i - self.windows[win_idx].window().x,
                             off_y:  my_i - self.windows[win_idx].window().y,
                         });
+                    } else {
+                        // Content area click — dispatch to the app.
+                        let lx = mx_i - self.windows[win_idx].window().x;
+                        let ly = my_i - (self.windows[win_idx].window().y + TITLE_H);
+                        self.windows[win_idx].handle_click(lx, ly);
                     }
                 }
 
@@ -239,6 +273,9 @@ impl WindowManager {
 
         // Desktop.
         s_fill(s, 0, 0, WIDTH as i32, TASKBAR_Y, DARK_GRAY);
+
+        // Let live-updating apps refresh their back-buffers.
+        for w in self.windows.iter_mut() { w.update(); }
 
         // Windows back-to-front (snapshot z_order to avoid borrow issues).
         let z: Vec<usize> = self.z_order.clone();
