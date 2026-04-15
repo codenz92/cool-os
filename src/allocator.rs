@@ -41,6 +41,3 @@ pub fn init_heap(
 pub fn heap_used() -> usize {
     ALLOCATOR.lock().used()
 }
-pub fn heap_free() -> usize {
-    ALLOCATOR.lock().size() - ALLOCATOR.lock().used()
-}

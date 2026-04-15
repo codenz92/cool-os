@@ -16,7 +16,6 @@ pub struct Window {
     pub title:  &'static str,
     /// Per-pixel content area back-buffer (width × (height - TITLE_H) bytes).
     pub buf:    Vec<u8>,
-    pub dirty:  bool,
 }
 
 impl Window {
@@ -27,7 +26,7 @@ impl Window {
             core::iter::repeat(crate::framebuffer::DARK_GRAY)
                 .take(width as usize * content_h),
         );
-        Window { x, y, width, height, title, buf, dirty: true }
+        Window { x, y, width, height, title, buf }
     }
 
     /// Does the pixel point `(px, py)` fall inside the title bar?

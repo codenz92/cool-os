@@ -58,6 +58,7 @@ impl Writer {
         }
     }
 
+    #[allow(dead_code)]
     pub fn backspace(&mut self) {
         // Guard: don't erase past the "> " prompt (2 chars).
         if self.col > 2 {
@@ -76,12 +77,18 @@ impl Writer {
         }
     }
 
+    #[allow(dead_code)]
     pub fn clear_screen(&mut self) {
-        framebuffer::clear(self.bg);
+        for row in 0..crate::framebuffer::ROWS {
+            for col in 0..crate::framebuffer::COLS {
+                crate::framebuffer::draw_char(col, row, ' ', self.fg, self.bg);
+            }
+        }
         self.col = 0;
         self.row = 0;
     }
 
+    #[allow(dead_code)]
     pub fn set_color(&mut self, fore: Color, back: Color) {
         self.fg = fore as u8;
         self.bg = back as u8;
@@ -113,14 +120,17 @@ lazy_static! {
 
 // ── Public helpers ────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 pub fn clear_screen() {
     WRITER.lock().clear_screen();
 }
 
+#[allow(dead_code)]
 pub fn backspace() {
     WRITER.lock().backspace();
 }
 
+#[allow(dead_code)]
 pub fn set_color(foreground: Color, background: Color) {
     WRITER.lock().set_color(foreground, background);
 }

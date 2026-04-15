@@ -9,7 +9,7 @@ use spin::Mutex;
 use crate::apps::TerminalApp;
 use crate::framebuffer::{
     HEIGHT, WIDTH, CHAR_W,
-    WHITE, BLACK, LIGHT_GRAY, DARK_GRAY, BLUE, RED, GREEN,
+    WHITE, BLACK, LIGHT_GRAY, DARK_GRAY, BLUE, RED,
 };
 use crate::wm::window::{Window, TITLE_H, CLOSE_W};
 
@@ -38,28 +38,25 @@ const CURSOR_SHAPE: [u8; CURSOR_H] = [
 // ── AppWindow ─────────────────────────────────────────────────────────────────
 
 pub enum AppWindow {
-    Plain(Window),
     Terminal(TerminalApp),
 }
 
 impl AppWindow {
     pub fn window(&self) -> &Window {
         match self {
-            AppWindow::Plain(w)    => w,
             AppWindow::Terminal(t) => &t.window,
         }
     }
 
     pub fn window_mut(&mut self) -> &mut Window {
         match self {
-            AppWindow::Plain(w)    => w,
             AppWindow::Terminal(t) => &mut t.window,
         }
     }
 
     pub fn handle_key(&mut self, c: char) {
-        if let AppWindow::Terminal(t) = self {
-            t.handle_key(c);
+        match self {
+            AppWindow::Terminal(t) => t.handle_key(c),
         }
     }
 }

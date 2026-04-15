@@ -17,22 +17,33 @@ pub const ROWS: usize = HEIGHT / CHAR_H; // 25
 const FB: *mut u8 = 0xa0000 as *mut u8;
 
 // Standard VGA Mode 13h palette indices (colours 0-15 match EGA/CGA).
-pub const BLACK: u8 = 0;
-pub const BLUE: u8 = 1;
-pub const GREEN: u8 = 2;
-pub const CYAN: u8 = 3;
-pub const RED: u8 = 4;
-pub const MAGENTA: u8 = 5;
-pub const BROWN: u8 = 6;
-pub const LIGHT_GRAY: u8 = 7;
-pub const DARK_GRAY: u8 = 8;
-pub const LIGHT_BLUE: u8 = 9;
+#[allow(dead_code)]
+pub const BLACK:       u8 = 0;
+pub const BLUE:        u8 = 1;
+#[allow(dead_code)]
+pub const GREEN:       u8 = 2;
+#[allow(dead_code)]
+pub const CYAN:        u8 = 3;
+pub const RED:         u8 = 4;
+#[allow(dead_code)]
+pub const MAGENTA:     u8 = 5;
+#[allow(dead_code)]
+pub const BROWN:       u8 = 6;
+pub const LIGHT_GRAY:  u8 = 7;
+pub const DARK_GRAY:   u8 = 8;
+#[allow(dead_code)]
+pub const LIGHT_BLUE:  u8 = 9;
+#[allow(dead_code)]
 pub const LIGHT_GREEN: u8 = 10;
-pub const LIGHT_CYAN: u8 = 11;
-pub const LIGHT_RED: u8 = 12;
-pub const PINK: u8 = 13;
-pub const YELLOW: u8 = 14;
-pub const WHITE: u8 = 15;
+#[allow(dead_code)]
+pub const LIGHT_CYAN:  u8 = 11;
+#[allow(dead_code)]
+pub const LIGHT_RED:   u8 = 12;
+#[allow(dead_code)]
+pub const PINK:        u8 = 13;
+#[allow(dead_code)]
+pub const YELLOW:      u8 = 14;
+pub const WHITE:       u8 = 15;
 
 #[inline]
 pub fn put_pixel(x: usize, y: usize, color: u8) {
@@ -41,30 +52,6 @@ pub fn put_pixel(x: usize, y: usize, color: u8) {
     }
 }
 
-#[inline]
-pub fn get_pixel(x: usize, y: usize) -> u8 {
-    if x < WIDTH && y < HEIGHT {
-        unsafe { FB.add(y * WIDTH + x).read_volatile() }
-    } else {
-        0
-    }
-}
-
-pub fn fill_rect(x: usize, y: usize, w: usize, h: usize, color: u8) {
-    let x_end = (x + w).min(WIDTH);
-    let y_end = (y + h).min(HEIGHT);
-    for row in y..y_end {
-        for col in x..x_end {
-            unsafe { FB.add(row * WIDTH + col).write_volatile(color); }
-        }
-    }
-}
-
-pub fn clear(color: u8) {
-    for i in 0..(WIDTH * HEIGHT) {
-        unsafe { FB.add(i).write_volatile(color); }
-    }
-}
 
 /// Scroll the entire screen up by one character row and fill the vacated
 /// bottom row with `bg`.
@@ -100,41 +87,3 @@ pub fn draw_char(col: usize, row: usize, c: char, fg: u8, bg: u8) {
     }
 }
 
-/// Draw a character at pixel coordinates `(x, y)`.
-pub fn draw_char_px(x: usize, y: usize, c: char, fg: u8, bg: u8) {
-    let glyph = font8x8::BASIC_FONTS
-        .get(c)
-        .unwrap_or_else(|| font8x8::BASIC_FONTS.get(' ').unwrap());
-    for (gy, byte) in glyph.iter().enumerate() {
-        for bit in 0..8usize {
-            let color = if byte & (1 << bit) != 0 { fg } else { bg };
-            put_pixel(x + bit, y + gy, color);
-        }
-    }
-}
-
-/// Draw a string at pixel coordinates `(x, y)`, clipping at `max_x`.
-pub fn draw_str_px_clipped(x: usize, y: usize, s: &str, fg: u8, bg: u8, max_x: usize) {
-    let mut cx = x;
-    for c in s.chars() {
-        if cx + CHAR_W > max_x {
-            break;
-        }
-        draw_char_px(cx, y, c, fg, bg);
-        cx += CHAR_W;
-    }
-}
-
-/// Fill a rectangle given in i32 screen coordinates, clipping to screen bounds.
-/// Handles partially off-screen windows (negative x/y).
-pub fn fill_rect_clipped(x: i32, y: i32, w: i32, h: i32, color: u8) {
-    let x0 = x.max(0) as usize;
-    let y0 = y.max(0) as usize;
-    let x1 = ((x + w).max(0) as usize).min(WIDTH);
-    let y1 = ((y + h).max(0) as usize).min(HEIGHT);
-    for row in y0..y1 {
-        for col in x0..x1 {
-            unsafe { FB.add(row * WIDTH + col).write_volatile(color); }
-        }
-    }
-}
