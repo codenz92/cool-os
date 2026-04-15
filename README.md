@@ -119,13 +119,13 @@ separation, and no system call interface. That is what the roadmap is for.
 | 6 | High-resolution framebuffer via `bootloader 0.11` (1280×720) | **Done** |
 | 7 | Input lag fixes — lock-free keyboard queue, scratch-buffer blit, release build | **Done** |
 | 8 | Preemptive scheduler + context switching | Planned |
-| 8 | Ring-3 userspace + syscall interface | Planned |
-| 9 | Per-process virtual memory + isolation | Planned |
-| 10 | Filesystem (FAT32) + VFS + disk driver | Planned |
-| 11 | ELF loader — real programs run from disk | Planned |
-| 12 | Pipes + shared memory + IPC | Planned |
-| 13 | USB HID — real hardware input | Planned |
-| 14 | Networking — virtio-net, TCP/IP | Planned |
+| 9 | Ring-3 userspace + syscall interface | Planned |
+| 10 | Per-process virtual memory + isolation | Planned |
+| 11 | Filesystem (FAT32) + VFS + disk driver | Planned |
+| 12 | ELF loader — real programs run from disk | Planned |
+| 13 | Pipes + shared memory + IPC | Planned |
+| 14 | USB HID — real hardware input | Planned |
+| 15 | Networking — virtio-net, TCP/IP | Planned |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).
 
