@@ -3,19 +3,27 @@ https://github.com/user-attachments/assets/a6491da6-a8f3-489c-a1ad-bf6abd71e81f
 
 A 64-bit operating system kernel written in Rust. Boots bare-metal into a
 graphical desktop with draggable windows, a taskbar, a PS/2 mouse cursor,
-and four built-in applications — all running as kernel-mode code with no
-scheduler and no userspace. Yet.
+and four built-in applications — now with a preemptive scheduler, ring-3
+userspace, and a SYSCALL/SYSRET interface.
 
 ---
 
-# Current state — v1.8
+# Current state — v1.9
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
 on boot. Right-clicking the desktop opens a context menu to launch additional
-apps. A preemptive round-robin scheduler runs two kernel tasks concurrently:
-the WM/idle task and a background counter task — both driven by the hardware
-timer (IRQ0).
+apps. A preemptive round-robin scheduler runs three kernel/user tasks driven by
+the PIT timer at **100 Hz**:
+
+| Task | Ring | Description |
+| :--- | :--- | :---------- |
+| **idle/wm** | 0 | The kernel boot stack — runs `compose_if_needed()` + `hlt`. |
+| **counter** | 0 | Tight loop incrementing `BACKGROUND_COUNTER`. Visible in System Monitor. |
+| **userspace** | 3 | Ring-3 stub: calls `sys_write` (prints to terminal) then `sys_exit`. |
+
+On boot, `[ring 3] Hello from userspace!` appears in the terminal window —
+proof that the SYSCALL/SYSRET path and the GDT ring-3 segments are working.
 
 ### What's working
 
@@ -27,9 +35,13 @@ timer (IRQ0).
 | **Taskbar** | 24 px bar at the bottom; one button per open window. |
 | **Context menu** | Right-click the desktop to spawn any of the four apps. |
 | **Heap** | `LockedHeap` allocator — `String`, `Vec`, `Box` all work. 32 MiB heap to accommodate large shadow and window buffers. |
-| **Paging** | 4-level `OffsetPageTable` + bootloader E820 frame allocator. |
+| **Paging** | 4-level `OffsetPageTable` + bootloader E820 frame allocator. All pages marked user-accessible for Phase 9 single-address-space model. |
 | **IDT** | Breakpoint, Double Fault, Page Fault, General Protection Fault, Invalid Opcode, Timer (IRQ0), Keyboard (IRQ1), Mouse (IRQ12). |
-| **Scheduler** | Preemptive round-robin. Naked timer ISR saves all 15 GP registers + 5-word CPU interrupt frame, switches `rsp` to the next task's saved context, and `iretq`s into it. 64 KiB heap-allocated kernel stack per task. Idle task reuses the kernel boot stack. |
+| **Scheduler** | Preemptive round-robin at 100 Hz. Naked timer ISR saves all 15 GP registers + 5-word CPU interrupt frame, switches `rsp` to the next task's saved context, and `iretq`s into it. 64 KiB heap-allocated kernel stack per task. Idle task reuses the kernel boot stack. |
+| **GDT + TSS** | Four segments (kernel code/data ring 0, user code/data ring 3) + TSS with RSP0 pointing to a dedicated 64 KiB ISR stack used when an IRQ fires during ring-3 execution. |
+| **SYSCALL/SYSRET** | EFER.SCE enabled. STAR/LSTAR/SFMASK MSRs configured. Naked `syscall_entry` saves context, switches to a dedicated 64 KiB kernel syscall stack, dispatches on rax, restores context, and executes `sysretq`. |
+| **Syscall table** | `0 exit`, `1 write`, `2 yield`, `3 getpid`. `sys_write` pushes bytes into a lock-free ring buffer; the compositor drains it into the terminal each frame. |
+| **Userspace** | Ring-3 code executes via `jump_to_userspace` (iretq with user CS/SS). The demo stub makes a `write` syscall and an `exit` syscall without triple-faulting. |
 
 ### Applications
 
@@ -39,15 +51,6 @@ timer (IRQ0).
 | **System Monitor** | Right-click | Live CPU vendor, heap usage, uptime. |
 | **Text Viewer** | Right-click | Scrollable "About" doc; `j`/`k` to scroll. |
 | **Color Picker** | Right-click | Clickable 16-colour EGA palette grid. |
-
-### Scheduler
-
-Two kernel tasks run concurrently, preempted by IRQ0 (≈18.2 Hz):
-
-| Task | Description |
-| :--- | :---------- |
-| **idle/wm** | The kernel boot stack — runs `compose_if_needed()` + `hlt` in a loop. |
-| **counter** | Tight loop incrementing `BACKGROUND_COUNTER`. Open System Monitor to watch the value climb — proof that preemption is working. |
 
 ### Terminal commands
 
@@ -94,9 +97,13 @@ release it.
 disk-image/
   src/main.rs      Host tool — wraps kernel ELF into bios.img via bootloader 0.11
 src/
-  main.rs          Kernel entry point — framebuffer init, heap, scheduler, windows, main loop
-  interrupts.rs    IDT, PIC, keyboard/timer(naked)/mouse/fault handlers
-  memory.rs        Page table init, physical frame allocator
+  main.rs          Kernel entry point — framebuffer init, GDT, heap, scheduler, main loop
+  gdt.rs           GDT (ring-0/ring-3 segments) + TSS (RSP0 for ring-3 IRQ entry)
+  interrupts.rs    IDT, PIC, PIT (100 Hz), keyboard/timer(naked)/mouse/fault handlers
+  syscall.rs       SYSCALL/SYSRET — naked entry, dispatcher, lock-free output buffer,
+                   jump_to_userspace (iretq trampoline)
+  userspace.rs     Ring-3 demo task — user_stub (write + exit syscalls)
+  memory.rs        Page table init, physical frame allocator, mark_all_user_accessible
   allocator.rs     Heap allocator (linked_list_allocator, 32 MiB)
   scheduler.rs     Preemptive scheduler — Task, Scheduler, SCHEDULER global, timer_schedule
   framebuffer.rs   Linear framebuffer driver — 3bpp/4bpp, draw_char, scroll
@@ -106,7 +113,7 @@ src/
   wm/
     mod.rs         Public WM API — request_repaint, compose_if_needed
     compositor.rs  WindowManager — shadow buffer, z-order, drag, taskbar,
-                   context menu, AppWindow enum dispatch, bpp-aware blit
+                   context menu, syscall output drain, AppWindow enum dispatch, blit
     window.rs      Window struct — back-buffer, hit tests
   apps/
     terminal.rs    TerminalApp — keyboard input, shell commands, text render
@@ -114,33 +121,6 @@ src/
     textviewer.rs  TextViewerApp — scrollable static text
     colorpicker.rs ColorPickerApp — clickable EGA palette swatches
 ```
-
-All app code runs in kernel mode (ring 0). There is no scheduler, no privilege
-separation, and no system call interface. That is what the roadmap is for.
-
----
-
-## Roadmap
-
-| Phase | Deliverable | Status |
-| :---: | :---------- | :----- |
-| 1 | Pixel framebuffer + font rendering | **Done** |
-| 2 | PS/2 mouse driver + on-screen cursor | **Done** |
-| 3 | Window manager — draggable windows, focus, close | **Done** |
-| 4 | Desktop shell — taskbar, context menu, terminal app | **Done** |
-| 5 | Applications — system monitor, text viewer, color picker | **Done** |
-| 6 | High-resolution framebuffer via `bootloader 0.11` (1280×720) | **Done** |
-| 7 | Input lag fixes — lock-free keyboard queue, scratch-buffer blit, release build | **Done** |
-| 8 | Preemptive scheduler + context switching | **Done** |
-| 9 | Ring-3 userspace + syscall interface | Planned |
-| 10 | Per-process virtual memory + isolation | Planned |
-| 11 | Filesystem (FAT32) + VFS + disk driver | Planned |
-| 12 | ELF loader — real programs run from disk | Planned |
-| 13 | Pipes + shared memory + IPC | Planned |
-| 14 | USB HID — real hardware input | Planned |
-| 15 | Networking — virtio-net, TCP/IP | Planned |
-
-Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).
 
 ---
 
@@ -178,8 +158,40 @@ registers and executing `iretq`. New tasks are given a 64 KiB heap-allocated
 kernel stack pre-populated with a fake 20-word interrupt frame so the first
 `iretq` drops straight into the entry function.
 
-**No userspace (yet)** — all apps are Rust structs dispatched from the WM's
-main loop, running in ring 0 alongside the scheduler. Phase 9 (userspace) and
-Phase 10 (per-process VM) replace this with proper isolation. Until then, a
-crash in any task takes down the whole kernel, which is expected and fine for
-this stage of development.
+**Ring-3 userspace (Phase 9).** The GDT now has four segments (kernel code
+0x08, kernel data 0x10, user data 0x18, user code 0x20) plus a TSS whose RSP0
+points to a dedicated 64 KiB ISR stack used when an IRQ fires during ring-3
+execution. SYSCALL/SYSRET is enabled via EFER.SCE; STAR is set so that
+SYSCALL enters kernel CS=0x08/SS=0x10 and SYSRET returns to user
+CS=0x20/SS=0x18. The naked `syscall_entry` stub saves user RSP in r10,
+switches to a private 64 KiB kernel syscall stack, builds a register frame,
+calls the Rust `syscall_dispatch`, and restores with `pop rsp` + `sysretq`.
+`sys_write` output goes through a lock-free ring buffer (same pattern as the
+keyboard queue) that the compositor drains into the terminal each frame —
+avoiding the deadlock that would result from locking WM from syscall context.
+Phase 9 uses a single shared address space (all pages marked user-accessible);
+Phase 10 will introduce per-process page tables.
+
+---
+
+## Roadmap
+
+| Phase | Deliverable | Status |
+| :---: | :---------- | :----- |
+| 1 | Pixel framebuffer + font rendering | **Done** |
+| 2 | PS/2 mouse driver + on-screen cursor | **Done** |
+| 3 | Window manager — draggable windows, focus, close | **Done** |
+| 4 | Desktop shell — taskbar, context menu, terminal app | **Done** |
+| 5 | Applications — system monitor, text viewer, color picker | **Done** |
+| 6 | High-resolution framebuffer via `bootloader 0.11` (1280×720) | **Done** |
+| 7 | Input lag fixes — lock-free keyboard queue, scratch-buffer blit, release build | **Done** |
+| 8 | Preemptive scheduler + context switching (100 Hz PIT) | **Done** |
+| 9 | Ring-3 userspace + SYSCALL/SYSRET interface | **Done** |
+| 10 | Per-process virtual memory + isolation | Planned |
+| 11 | Filesystem (FAT32) + VFS + disk driver | Planned |
+| 12 | ELF loader — real programs run from disk | Planned |
+| 13 | Pipes + shared memory + IPC | Planned |
+| 14 | USB HID — real hardware input | Planned |
+| 15 | Networking — virtio-net, TCP/IP | Planned |
+
+Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

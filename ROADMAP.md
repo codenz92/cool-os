@@ -4,11 +4,11 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–8 are complete. Everything below builds directly on that foundation.
+Phases 1–9 are complete. Everything below builds directly on that foundation.
 
 ---
 
-## ✅ Phases 1–8 — Complete
+## ✅ Phases 1–9 — Complete
 
 | Phase | Deliverable |
 | :---: | :---------- |
@@ -19,7 +19,8 @@ Phases 1–8 are complete. Everything below builds directly on that foundation.
 | 5 | Four built-in apps running as kernel-mode modules |
 | 6 | High-res linear framebuffer via `bootloader 0.11` — 1280×720, 3/4bpp |
 | 7 | Fluid input — lock-free keyboard queue, scratch-buffer blit, release build |
-| 8 | Preemptive scheduler — naked timer ISR, round-robin context switching, idle + counter tasks |
+| 8 | Preemptive scheduler — naked timer ISR, round-robin context switching, 100 Hz PIT |
+| 9 | Ring-3 userspace — GDT + TSS, SYSCALL/SYSRET, syscall table, iretq trampoline |
 
 ### Phase 7 implementation notes
 
@@ -116,27 +117,58 @@ timer; no stack corruption; `hlt` in the idle task still fires when no other tas
 
 ---
 
-## Phase 9 — Userspace & System Calls
+## ✅ Phase 9 — Userspace & System Calls
 
 **Goal:** Ring-3 execution and a minimal syscall interface so that code outside the
 kernel can request kernel services without being able to crash it.
 
-- [ ] Set up the GDT with four segments: kernel code (ring 0), kernel data (ring 0),
+- [x] Set up the GDT with four segments: kernel code (ring 0), kernel data (ring 0),
       user code (ring 3), user data (ring 3). Load via `lgdt`.
-- [ ] Set up the TSS — populate `rsp0` with the current kernel stack pointer so that
-      hardware task-switches on interrupt save state to the right place.
-- [ ] Implement `SYSCALL`/`SYSRET` (set `STAR`, `LSTAR`, `SFMASK` MSRs). The syscall
+- [x] Set up the TSS — populate `rsp0` with a dedicated 64 KiB ISR stack so that
+      IRQs/exceptions from ring 3 switch to a valid kernel stack.
+- [x] Implement `SYSCALL`/`SYSRET` (set `STAR`, `LSTAR`, `SFMASK` MSRs). The syscall
       entry stub saves user registers, dispatches on `rax`, and returns.
-- [ ] Initial syscall table (numbers subject to change):
-      `0 exit`, `1 write` (to terminal), `2 yield`, `3 getpid`.
-- [ ] Implement `jump_to_userspace(entry: u64, user_stack: u64)` — push a fake
+- [x] Initial syscall table: `0 exit`, `1 write` (to terminal), `2 yield`, `3 getpid`.
+- [x] Implement `jump_to_userspace(entry: u64, user_stack: u64)` — push a fake
       `iretq` frame (user CS/SS, `rflags` with IF set, entry RIP, user RSP) and `iretq`.
-- [ ] Verify: a minimal Rust userspace binary (compiled with `#![no_std]`, syscall
-      via `asm!`) can call `write` to print a string and `exit` without triple-faulting.
+- [x] Verify: a minimal Rust userspace stub (syscall via `asm!`) calls `write` to
+      print `[ring 3] Hello from userspace!` to the terminal, then calls `exit`.
 
 **Exit criteria:** the kernel can jump to a ring-3 stub; the stub can make a
 `write` syscall that prints to the terminal window; an illegal memory access in
 userspace generates a #PF that the kernel handles without crashing.
+
+### Phase 9 implementation notes
+
+- New `src/gdt.rs`: `GlobalDescriptorTable` built with `Descriptor::kernel_code_segment`
+  (0x08), `Descriptor::kernel_data_segment` (0x10), `Descriptor::user_data_segment`
+  (0x18), `Descriptor::user_code_segment` (0x20), and a 64-bit TSS descriptor (0x28).
+  `CS::set_reg` / `SS::set_reg` / `load_tss` called after `lgdt`. TSS `privilege_stack_table[0]`
+  points to the top of a static 64 KiB `ISR_STACK`; the CPU switches to this on any
+  IRQ/exception entry from ring 3.
+- STAR MSR: bits[47:32] = 0x08 (kernel CS), bits[63:48] = 0x10 (SYSRET base).
+  SYSCALL → CS=0x08, SS=0x10; SYSRET → CS=0x20|RPL3, SS=0x18|RPL3.
+- `syscall_entry` (naked): saves user RSP in r10, switches to a static 64 KiB
+  `SYSCALL_KERNEL_STACK` via `mov rsp, [rip + SYSCALL_KERNEL_STACK_TOP]`, pushes
+  user RSP/RIP(rcx)/RFLAGS(r11) + callee-saved regs, shuffles rax/rdi/rsi/rdx into
+  rdi/rsi/rdx/rcx for the SysV ABI call to `syscall_dispatch`, then restores with
+  `pop rsp` + `sysretq`.
+- `sys_write` pushes bytes into a lock-free ring buffer (`SYSCALL_OUTPUT`, same design
+  as `keyboard.rs`). The compositor drains it into the terminal at the start of each
+  `compose()` call — avoiding the WM lock deadlock that would arise if `sys_write`
+  tried to acquire `WM.lock()` while the idle/WM task already holds it.
+- `sys_exit` marks the current scheduler task `Blocked`. The naked handler still
+  sysretqs back to ring 3; the stub then spins with `core::hint::spin_loop()` until
+  the next timer tick, at which point the scheduler permanently switches away (Blocked
+  tasks are never selected as `next`).
+- `mark_all_user_accessible` (new in `memory.rs`) walks all four levels of the active
+  page table and sets `USER_ACCESSIBLE` on every present PTE, then flushes the TLB.
+  Phase 9 is a single-address-space model — the user stub lives in the kernel binary
+  and the user stack is a kernel static; making all pages user-accessible lets ring-3
+  code execute and access data without a #PF. Phase 10 replaces this with per-process
+  page tables.
+- PIT reprogrammed to 100 Hz (`init_pit(100)` in `interrupts.rs`) as part of Phase 8
+  fix: divisor = 1,193,180 / 100 = 11,931. Renders go from ~9 fps to ~50 fps.
 
 ---
 

@@ -7,11 +7,14 @@ extern crate alloc;
 mod allocator;
 mod apps;
 mod framebuffer;
+mod gdt;
 mod interrupts;
 mod keyboard;
 mod memory;
 mod mouse;
 mod scheduler;
+mod syscall;
+mod userspace;
 mod vga_buffer;
 mod wm;
 
@@ -57,8 +60,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     }
 
     // ── Core kernel services ──────────────────────────────────────────────────
+    gdt::init();
     interrupts::init_idt();
     unsafe { interrupts::PICS.lock().initialize() };
+    interrupts::init_pit(100);
+    syscall::init();
     x86_64::instructions::interrupts::enable();
 
     let phys_mem_offset = x86_64::VirtAddr::new(
@@ -76,13 +82,17 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 
     allocator::init_heap(&mut mapper, &mut frame_allocator).expect("heap init failed");
 
+    // Mark all present pages user-accessible so ring-3 code can execute the
+    // kernel-linked user stub and access the user stack (Phase 9 single-address-
+    // space model).  Phase 10 replaces this with per-process page tables.
+    unsafe { memory::mark_all_user_accessible(phys_mem_offset) };
+
     // ── Scheduler ─────────────────────────────────────────────────────────────
-    // Disable interrupts while holding the scheduler lock to avoid a deadlock
-    // if the timer ISR fires while we are mid-initialisation.
     x86_64::instructions::interrupts::without_interrupts(|| {
         let mut sched = scheduler::SCHEDULER.lock();
         sched.add_idle();
         sched.spawn("counter", counter_task);
+        sched.spawn("userspace", userspace::userspace_demo_task);
     });
 
     // ── Desktop ───────────────────────────────────────────────────────────────

@@ -17,6 +17,23 @@ pub fn ticks() -> u64 {
     TICKS.load(Ordering::Relaxed)
 }
 
+/// Reprogram the PIT channel 0 to fire at `hz` Hz.
+///
+/// Default PIT rate is ~18.2 Hz (divisor 65535). At that rate, round-robin
+/// between the idle and counter tasks gives ~9 renders/second. 100 Hz gives
+/// ~50 renders/second with the same 2-task setup.
+pub fn init_pit(hz: u32) {
+    use x86_64::instructions::port::Port;
+    // PIT input clock is 1_193_180 Hz. Clamp divisor to [1, 65535].
+    let divisor = (1_193_180_u32 / hz).clamp(1, 65535) as u16;
+    unsafe {
+        // Command: channel 0, lobyte/hibyte, mode 2 (rate generator).
+        Port::<u8>::new(0x43).write(0x34);
+        Port::<u8>::new(0x40).write((divisor & 0xFF) as u8);
+        Port::<u8>::new(0x40).write((divisor >> 8) as u8);
+    }
+}
+
 pub fn reboot() -> ! {
     let mut port = x86_64::instructions::port::Port::new(0x64u16);
     unsafe {

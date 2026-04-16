@@ -1,0 +1,198 @@
+/// SYSCALL/SYSRET interface (Phase 9).
+///
+/// Register convention on SYSCALL entry (Linux-compatible):
+///   rax = syscall number
+///   rdi = arg1, rsi = arg2, rdx = arg3
+///   rcx = saved user RIP (by CPU), r11 = saved user RFLAGS (by CPU)
+///   RSP = user stack (NOT switched by SYSCALL — we do it manually)
+///
+/// Syscall table:
+///   0  exit(code)
+///   1  write(fd, buf, len) → bytes written
+///   2  yield()
+///   3  getpid() → 0
+///
+/// Output path: sys_write pushes bytes into SYSCALL_OUTPUT (a lock-free ring
+/// buffer modelled on keyboard.rs). compositor::compose() drains it into the
+/// terminal window each frame, avoiding any lock contention with the WM.
+
+use core::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
+
+// ── Syscall output ring buffer ────────────────────────────────────────────────
+
+const OUTPUT_SIZE: usize = 1024;
+const ZERO8: AtomicU8 = AtomicU8::new(0);
+static OUTPUT_BUF: [AtomicU8; OUTPUT_SIZE] = [ZERO8; OUTPUT_SIZE];
+static OUTPUT_HEAD: AtomicUsize = AtomicUsize::new(0);
+static OUTPUT_TAIL: AtomicUsize = AtomicUsize::new(0);
+
+pub fn push_output_byte(b: u8) {
+    let head = OUTPUT_HEAD.load(Ordering::Relaxed);
+    let next = (head + 1) % OUTPUT_SIZE;
+    if next == OUTPUT_TAIL.load(Ordering::Acquire) {
+        return; // drop if full
+    }
+    OUTPUT_BUF[head].store(b, Ordering::Relaxed);
+    OUTPUT_HEAD.store(next, Ordering::Release);
+}
+
+pub fn pop_output_byte() -> Option<u8> {
+    let tail = OUTPUT_TAIL.load(Ordering::Relaxed);
+    if tail == OUTPUT_HEAD.load(Ordering::Acquire) {
+        return None;
+    }
+    let b = OUTPUT_BUF[tail].load(Ordering::Relaxed);
+    OUTPUT_TAIL.store((tail + 1) % OUTPUT_SIZE, Ordering::Release);
+    Some(b)
+}
+
+// ── Kernel syscall stack ──────────────────────────────────────────────────────
+
+const SYSCALL_STACK_SIZE: usize = 64 * 1024;
+static mut SYSCALL_KERNEL_STACK: [u8; SYSCALL_STACK_SIZE] = [0; SYSCALL_STACK_SIZE];
+// Absolute address of the top of the syscall kernel stack, written at init.
+static SYSCALL_KERNEL_STACK_TOP: AtomicU64 = AtomicU64::new(0);
+
+// ── MSR init ─────────────────────────────────────────────────────────────────
+
+pub fn init() {
+    unsafe {
+        SYSCALL_KERNEL_STACK_TOP.store(
+            core::ptr::addr_of!(SYSCALL_KERNEL_STACK) as u64 + SYSCALL_STACK_SIZE as u64,
+            Ordering::Relaxed,
+        );
+
+        let mut efer = x86_64::registers::model_specific::Msr::new(0xC000_0080);
+        efer.write(efer.read() | 1); // SCE = bit 0
+
+        // STAR bits[47:32] = kernel CS (0x08), bits[63:48] = SYSRET base (0x10).
+        let mut star = x86_64::registers::model_specific::Msr::new(0xC000_0081);
+        star.write((0x0010u64 << 48) | (0x0008u64 << 32));
+
+        let mut lstar = x86_64::registers::model_specific::Msr::new(0xC000_0082);
+        lstar.write(syscall_entry as *const () as u64);
+
+        // SFMASK: clear IF (bit 9) on SYSCALL entry so IRQs can't fire mid-handler.
+        let mut sfmask = x86_64::registers::model_specific::Msr::new(0xC000_0084);
+        sfmask.write(0x200);
+    }
+}
+
+// ── Naked syscall entry ───────────────────────────────────────────────────────
+//
+// On entry from SYSCALL: rax=nr, rdi=a1, rsi=a2, rdx=a3,
+//                        rcx=user RIP, r11=user RFLAGS, rsp=user RSP.
+// We temporarily borrow r10 (arg4, unused in our ABI) to hold the user RSP
+// while we switch onto the dedicated syscall kernel stack.
+//
+// Stack frame built on the kernel stack (each slot = 8 bytes):
+//   [rsp+64]  user RSP   (bottom — pushed first after stack switch)
+//   [rsp+56]  user RIP   (rcx — needed for sysretq)
+//   [rsp+48]  user RFLAGS(r11 — needed for sysretq)
+//   [rsp+40]  rbp
+//   [rsp+32]  rbx
+//   [rsp+24]  r12
+//   [rsp+16]  r13
+//   [rsp+ 8]  r14
+//   [rsp+ 0]  r15        (top of frame — pushed last)
+
+#[unsafe(naked)]
+unsafe extern "C" fn syscall_entry() {
+    core::arch::naked_asm!(
+        // Save user RSP in r10 (clobbers arg4 which our table doesn't use).
+        "mov r10, rsp",
+        // Switch to the dedicated kernel syscall stack.
+        "mov rsp, qword ptr [rip + {kstack}]",
+        // Build stack frame.
+        "push r10",      // user RSP  — restored by `pop rsp` before sysretq
+        "push rcx",      // user RIP  — must be in rcx for sysretq
+        "push r11",      // user RFLAGS — must be in r11 for sysretq
+        "push rbp",
+        "push rbx",
+        "push r12",
+        "push r13",
+        "push r14",
+        "push r15",
+        // Shuffle registers for dispatch(nr, a1, a2, a3) using SysV AMD64 ABI:
+        //   rdi=nr  rsi=a1  rdx=a2  rcx=a3
+        // Input: rax=nr  rdi=a1  rsi=a2  rdx=a3
+        "mov rcx, rdx",
+        "mov rdx, rsi",
+        "mov rsi, rdi",
+        "mov rdi, rax",
+        "call {dispatch}",
+        // Return value in rax.  Restore saved registers.
+        "pop r15",
+        "pop r14",
+        "pop r13",
+        "pop r12",
+        "pop rbx",
+        "pop rbp",
+        "pop r11",       // user RFLAGS → r11
+        "pop rcx",       // user RIP   → rcx
+        "pop rsp",       // restore user RSP
+        "sysretq",
+        kstack   = sym SYSCALL_KERNEL_STACK_TOP,
+        dispatch = sym syscall_dispatch,
+    );
+}
+
+// ── Dispatcher and handlers ───────────────────────────────────────────────────
+
+extern "C" fn syscall_dispatch(nr: u64, a1: u64, a2: u64, a3: u64) -> u64 {
+    match nr {
+        0 => { sys_exit(a1); 0 }
+        1 => sys_write(a1, a2 as *const u8, a3),
+        2 => { sys_yield(); 0 }
+        3 => 1,           // getpid: process 1
+        _ => u64::MAX,
+    }
+}
+
+fn sys_write(_fd: u64, buf: *const u8, len: u64) -> u64 {
+    for i in 0..len as usize {
+        push_output_byte(unsafe { *buf.add(i) });
+    }
+    crate::wm::request_repaint();
+    len
+}
+
+fn sys_exit(_code: u64) {
+    let mut sched = crate::scheduler::SCHEDULER.lock();
+    let cur = sched.current;
+    sched.tasks[cur].status = crate::scheduler::TaskStatus::Blocked;
+    // Interrupts are still disabled here (SFMASK cleared IF on SYSCALL entry).
+    // The naked handler will sysretq back to ring 3; the task spins with
+    // core::hint::spin_loop() until the timer fires and switches it out
+    // permanently (Blocked tasks are never picked by the round-robin scheduler).
+}
+
+fn sys_yield() {
+    // No-op: the preemptive timer will preempt voluntarily yielding tasks.
+}
+
+// ── jump_to_userspace ─────────────────────────────────────────────────────────
+
+/// Switch the current ring-0 context to ring-3 by pushing a synthetic iretq
+/// frame and executing iretq.  Does not return.
+///
+/// `entry`    — virtual address of the first ring-3 instruction.
+/// `user_rsp` — initial ring-3 stack pointer (must be 16-byte aligned).
+pub unsafe fn jump_to_userspace(entry: u64, user_rsp: u64) -> ! {
+    let user_cs = crate::gdt::user_code_selector().0 as u64;
+    let user_ss = crate::gdt::user_data_selector().0 as u64;
+    core::arch::asm!(
+        "push {ss}",
+        "push {rsp}",
+        "push {rflags}",
+        "push {cs}",
+        "push {rip}",
+        "iretq",
+        ss     = in(reg) user_ss,
+        rsp    = in(reg) user_rsp,
+        rflags = in(reg) 0x202u64,   // IF=1 (interrupts enabled in ring 3), reserved bit 1
+        cs     = in(reg) user_cs,
+        rip    = in(reg) entry,
+        options(noreturn),
+    );
+}

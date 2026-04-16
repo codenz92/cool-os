@@ -137,12 +137,23 @@ impl WindowManager {
 
     /// Full composite frame into shadow, then blit to hardware framebuffer.
     pub fn compose(&mut self) {
-        // Drain buffered keystrokes first.  Keys were queued by the IRQ handler
-        // to avoid acquiring WM.lock() from interrupt context.
+        // Drain buffered keystrokes.
         while let Some(c) = crate::keyboard::pop() {
             if let Some(idx) = self.focused {
                 if idx < self.windows.len() {
                     self.windows[idx].handle_key(c);
+                }
+            }
+        }
+
+        // Drain syscall write() output into the first terminal window.
+        // Uses the same lock-free pattern as the keyboard buffer to avoid
+        // deadlocking if the timer preempts compose() mid-frame.
+        while let Some(b) = crate::syscall::pop_output_byte() {
+            for w in self.windows.iter_mut() {
+                if let AppWindow::Terminal(ref mut t) = w {
+                    t.print_char(b as char);
+                    break;
                 }
             }
         }

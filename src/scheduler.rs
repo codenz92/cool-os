@@ -70,9 +70,9 @@ pub struct Task {
 // ── Scheduler ─────────────────────────────────────────────────────────────────
 
 pub struct Scheduler {
-    tasks: Vec<Task>,
+    pub tasks: Vec<Task>,
     /// Index of the currently running task.
-    current: usize,
+    pub current: usize,
 }
 
 impl Scheduler {

@@ -1,6 +1,6 @@
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
 use x86_64::{
-    structures::paging::{FrameAllocator, OffsetPageTable, PageTable, PhysFrame, Size4KiB},
+    structures::paging::{FrameAllocator, OffsetPageTable, PageTable, PageTableFlags, PhysFrame, Size4KiB},
     PhysAddr, VirtAddr,
 };
 
@@ -44,4 +44,47 @@ unsafe impl FrameAllocator<Size4KiB> for BootInfoFrameAllocator {
         self.next += 1;
         frame
     }
+}
+
+/// Mark every present PTE in the active page table as user-accessible (U/S=1).
+///
+/// Phase 9 runs a single-address-space model: the userspace stub lives in the
+/// kernel binary and the user stack is a kernel static.  Making all pages
+/// user-accessible lets ring-3 code execute and access data without a #PF.
+/// Phase 10 will replace this with per-process page tables.
+pub unsafe fn mark_all_user_accessible(phys_offset: VirtAddr) {
+    use x86_64::registers::control::Cr3;
+
+    let (l4_frame, _) = Cr3::read();
+    let l4 = table_at(phys_offset, l4_frame.start_address());
+
+    for l4e in l4.iter_mut() {
+        if l4e.is_unused() { continue; }
+        l4e.set_flags(l4e.flags() | PageTableFlags::USER_ACCESSIBLE);
+
+        let l3 = table_at(phys_offset, l4e.addr());
+        for l3e in l3.iter_mut() {
+            if l3e.is_unused() { continue; }
+            l3e.set_flags(l3e.flags() | PageTableFlags::USER_ACCESSIBLE);
+            if l3e.flags().contains(PageTableFlags::HUGE_PAGE) { continue; }
+
+            let l2 = table_at(phys_offset, l3e.addr());
+            for l2e in l2.iter_mut() {
+                if l2e.is_unused() { continue; }
+                l2e.set_flags(l2e.flags() | PageTableFlags::USER_ACCESSIBLE);
+                if l2e.flags().contains(PageTableFlags::HUGE_PAGE) { continue; }
+
+                let l1 = table_at(phys_offset, l2e.addr());
+                for l1e in l1.iter_mut() {
+                    if l1e.is_unused() { continue; }
+                    l1e.set_flags(l1e.flags() | PageTableFlags::USER_ACCESSIBLE);
+                }
+            }
+        }
+    }
+    x86_64::instructions::tlb::flush_all();
+}
+
+unsafe fn table_at(phys_offset: VirtAddr, phys: PhysAddr) -> &'static mut PageTable {
+    &mut *((phys_offset + phys.as_u64()).as_mut_ptr())
 }

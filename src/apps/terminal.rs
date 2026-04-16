@@ -106,14 +106,14 @@ impl TerminalApp {
         self.print_str("> ");
     }
 
-    fn print_char(&mut self, c: char) {
+    pub fn print_char(&mut self, c: char) {
         if c == '\n' { self.col = 0; self.advance_row(); return; }
         if self.col >= self.cols { self.col = 0; self.advance_row(); }
         self.draw_char_at(self.col, self.row, c);
         self.col += 1;
     }
 
-    fn print_str(&mut self, s: &str) { for c in s.chars() { self.print_char(c); } }
+    pub fn print_str(&mut self, s: &str) { for c in s.chars() { self.print_char(c); } }
 
     fn print_u64(&mut self, mut n: u64) {
         if n == 0 { self.print_char('0'); return; }
