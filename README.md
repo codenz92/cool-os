@@ -4,26 +4,30 @@ https://github.com/user-attachments/assets/a6491da6-a8f3-489c-a1ad-bf6abd71e81f
 A 64-bit operating system kernel written in Rust. Boots bare-metal into a
 graphical desktop with draggable windows, a taskbar, a PS/2 mouse cursor,
 and four built-in applications — now with a preemptive scheduler, ring-3
-userspace, and a SYSCALL/SYSRET interface.
+userspace, per-process virtual memory, process isolation, and a FAT32
+filesystem with VFS and syscall interface.
 
 ---
 
-# Current state — v1.9
+# Current state — v1.11
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
 on boot. Right-clicking the desktop opens a context menu to launch additional
-apps. A preemptive round-robin scheduler runs three kernel/user tasks driven by
+apps. A preemptive round-robin scheduler runs five kernel/user tasks driven by
 the PIT timer at **100 Hz**:
 
 | Task | Ring | Description |
 | :--- | :--- | :---------- |
 | **idle/wm** | 0 | The kernel boot stack — runs `compose_if_needed()` + `hlt`. |
 | **counter** | 0 | Tight loop incrementing `BACKGROUND_COUNTER`. Visible in System Monitor. |
-| **userspace** | 3 | Ring-3 stub: calls `sys_write` (prints to terminal) then `sys_exit`. |
+| **fs-test** | 0 | One-shot: reads `/bin/hello.txt` from the FAT32 disk and prints its contents, then blocks. |
+| **user1** | 3 | Own PML4 + private user stack. Writes sentinel `0xDEAD0001`, reads it back, prints `[ring3 pid=1] sentinel ok`. |
+| **user2** | 3 | Own PML4 + private user stack at the same VA as user1. Writes `0xDEAD0002` — cannot see user1's memory. |
 
-On boot, `[ring 3] Hello from userspace!` appears in the terminal window —
-proof that the SYSCALL/SYSRET path and the GDT ring-3 segments are working.
+On boot, the contents of `/bin/hello.txt` are printed to the console by the
+`fs-test` task. Both `[ring3 pid=1] sentinel ok` and `[ring3 pid=2] sentinel ok`
+appear in the terminal, proving process isolation: same virtual address, different physical frames.
 
 ### What's working
 
@@ -35,13 +39,18 @@ proof that the SYSCALL/SYSRET path and the GDT ring-3 segments are working.
 | **Taskbar** | 24 px bar at the bottom; one button per open window. |
 | **Context menu** | Right-click the desktop to spawn any of the four apps. |
 | **Heap** | `LockedHeap` allocator — `String`, `Vec`, `Box` all work. 32 MiB heap to accommodate large shadow and window buffers. |
-| **Paging** | 4-level `OffsetPageTable` + bootloader E820 frame allocator. All pages marked user-accessible for Phase 9 single-address-space model. |
-| **IDT** | Breakpoint, Double Fault, Page Fault, General Protection Fault, Invalid Opcode, Timer (IRQ0), Keyboard (IRQ1), Mouse (IRQ12). |
-| **Scheduler** | Preemptive round-robin at 100 Hz. Naked timer ISR saves all 15 GP registers + 5-word CPU interrupt frame, switches `rsp` to the next task's saved context, and `iretq`s into it. 64 KiB heap-allocated kernel stack per task. Idle task reuses the kernel boot stack. |
+| **Paging / VMM** | 4-level `OffsetPageTable` + global `BootInfoFrameAllocator`. Per-process PML4 cloned from kernel upper half; private user-space mappings in lower half. `vmm::` module exposes `new_process_pml4`, `map_page_in`, `map_region`, `switch_to`. |
+| **IDT** | Breakpoint, Double Fault, Page Fault (lazy allocator for user faults), General Protection Fault, Invalid Opcode, Timer (IRQ0), Keyboard (IRQ1), Mouse (IRQ12). |
+| **Scheduler** | Preemptive round-robin at 100 Hz. Each task carries `pml4: Option<PhysFrame>`; the scheduler calls `vmm::switch_to` on context switch when `Some`. 64 KiB heap-allocated kernel stack per task. |
+| **Process isolation** | Two user processes share the same user-stack virtual address (`0x7FFF_0010_0000`) but map it to different physical frames. Guard pages (kernel-only) sit below each stack. |
 | **GDT + TSS** | Four segments (kernel code/data ring 0, user code/data ring 3) + TSS with RSP0 pointing to a dedicated 64 KiB ISR stack used when an IRQ fires during ring-3 execution. |
 | **SYSCALL/SYSRET** | EFER.SCE enabled. STAR/LSTAR/SFMASK MSRs configured. Naked `syscall_entry` saves context, switches to a dedicated 64 KiB kernel syscall stack, dispatches on rax, restores context, and executes `sysretq`. |
-| **Syscall table** | `0 exit`, `1 write`, `2 yield`, `3 getpid`. `sys_write` pushes bytes into a lock-free ring buffer; the compositor drains it into the terminal each frame. |
-| **Userspace** | Ring-3 code executes via `jump_to_userspace` (iretq with user CS/SS). The demo stub makes a `write` syscall and an `exit` syscall without triple-faulting. |
+| **Syscall table** | `0 exit`, `1 write`, `2 yield`, `3 getpid`, `4 mmap(addr, len, flags)`, `5 open(path, len)`, `6 read(fd, buf, len)`, `7 close(fd)`. `sys_write` pushes bytes into a lock-free ring buffer; the compositor drains it into the terminal each frame. |
+| **Userspace** | Ring-3 code executes via `jump_to_userspace` (iretq with user CS/SS). Two isolated processes each write a sentinel to their private stack and read it back. |
+| **ATA PIO driver** | Primary-bus slave device (QEMU `if=ide,index=1`). LBA28 PIO reads, BSY/DRQ polling with timeout, nIEN=1 (device interrupts disabled). Wrapped in `without_interrupts` to prevent preemption mid-transfer. |
+| **FAT32 parser** | Read-only. BPB parsing, FAT chain walking, 8.3 filename lookup, directory traversal, cluster→sector mapping. `fat32::read_file(path)` returns `Option<Vec<u8>>`. |
+| **VFS** | FD table (16 slots, fds 0–2 reserved). `vfs_open` reads the whole file into a heap buffer; `vfs_read` slices it with an offset cursor; `vfs_close` drops the buffer. |
+| **Disk image** | `disk-image/src/fs-image.rs` builds `fs.img` (64 MiB FAT32) with `/bin/hello.txt` using the `fatfs` crate. The Makefile attaches it to QEMU as the IDE slave. |
 
 ### Applications
 
@@ -96,16 +105,24 @@ release it.
 ```
 disk-image/
   src/main.rs      Host tool — wraps kernel ELF into bios.img via bootloader 0.11
+  src/fs-image.rs  Host tool — builds fs.img (64 MiB FAT32) with /bin/hello.txt
 src/
   main.rs          Kernel entry point — framebuffer init, GDT, heap, scheduler, main loop
   gdt.rs           GDT (ring-0/ring-3 segments) + TSS (RSP0 for ring-3 IRQ entry)
-  interrupts.rs    IDT, PIC, PIT (100 Hz), keyboard/timer(naked)/mouse/fault handlers
+  interrupts.rs    IDT, PIC, PIT (100 Hz), IRQ masking, keyboard/timer(naked)/mouse/fault handlers
   syscall.rs       SYSCALL/SYSRET — naked entry, dispatcher, lock-free output buffer,
-                   jump_to_userspace (iretq trampoline)
-  userspace.rs     Ring-3 demo task — user_stub (write + exit syscalls)
-  memory.rs        Page table init, physical frame allocator, mark_all_user_accessible
+                   jump_to_userspace (iretq trampoline); sys_open/read/close (nr 5–7)
+  userspace.rs     Two isolated ring-3 processes — spawn_user_process(pid), user_stub
+  memory.rs        Page table init, BootInfoFrameAllocator (with next/init_from),
+                   mark_all_user_accessible
+  vmm.rs           Virtual Memory Manager — global frame alloc, new_process_pml4,
+                   map_page_in, map_region, switch_to, switch_to_boot, alloc_zeroed_frame
   allocator.rs     Heap allocator (linked_list_allocator, 32 MiB)
-  scheduler.rs     Preemptive scheduler — Task, Scheduler, SCHEDULER global, timer_schedule
+  scheduler.rs     Preemptive scheduler — Task (with pml4 field), Scheduler,
+                   SCHEDULER global, timer_schedule, spawn_with_pml4
+  ata.rs           ATA PIO driver — LBA28 read_sector, BSY/DRQ polling, nIEN disable
+  fat32.rs         Read-only FAT32 — BPB, FAT chain, 8.3 directory lookup, read_file
+  vfs.rs           VFS FD table — vfs_open/vfs_read/vfs_close, 16-slot fd table
   framebuffer.rs   Linear framebuffer driver — 3bpp/4bpp, draw_char, scroll
   vga_buffer.rs    Text layer over framebuffer — used by print!/panic handler
   mouse.rs         PS/2 mouse hardware init and packet decoder
@@ -169,8 +186,29 @@ calls the Rust `syscall_dispatch`, and restores with `pop rsp` + `sysretq`.
 `sys_write` output goes through a lock-free ring buffer (same pattern as the
 keyboard queue) that the compositor drains into the terminal each frame —
 avoiding the deadlock that would result from locking WM from syscall context.
-Phase 9 uses a single shared address space (all pages marked user-accessible);
-Phase 10 will introduce per-process page tables.
+
+**FAT32 + VFS (Phase 11).** A 64 MiB FAT32 disk image (`fs.img`) is built at
+compile time by a host-side `fs-image` tool and attached to QEMU as the IDE
+primary-bus slave (`if=ide,index=1`). The ATA PIO driver targets ports
+0x1F0–0x1F7; it sets nIEN=1 in the Device Control Register (0x3F6) before
+issuing any command so the drive never fires IRQ14. Unused PIC IRQs (including
+IRQ14/15) are masked after PIC initialisation to prevent unhandled interrupt
+vectors from reaching the CPU. The read-only FAT32 layer parses the BPB, walks
+the FAT chain, and resolves 8.3 absolute paths. A thin VFS layer wraps this
+into a 16-slot FD table. Syscalls 5–7 (`open`, `read`, `close`) expose the VFS
+to ring-3 code, and the kernel's `fs-test` task reads `/bin/hello.txt` on boot.
+
+**Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
+from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
+empty). `vmm::new_process_pml4` handles the clone; `vmm::map_page_in` / `vmm::map_region`
+insert PTEs into any address space by constructing a temporary `OffsetPageTable`
+over the target PML4 frame. The scheduler writes the winning task's PML4 into
+CR3 on every context switch. User stacks are mapped at `0x7FFF_0010_0000` in the
+lower half — L4 index 0xFF, which the kernel never populates — so two processes
+at the same VA have completely separate physical frames. A kernel-only guard page
+sits below each stack. The `#PF` handler lazily allocates zeroed frames for
+not-present user-mode faults in the lower half; protection violations and kernel
+faults still panic.
 
 ---
 
@@ -187,8 +225,8 @@ Phase 10 will introduce per-process page tables.
 | 7 | Input lag fixes — lock-free keyboard queue, scratch-buffer blit, release build | **Done** |
 | 8 | Preemptive scheduler + context switching (100 Hz PIT) | **Done** |
 | 9 | Ring-3 userspace + SYSCALL/SYSRET interface | **Done** |
-| 10 | Per-process virtual memory + isolation | Planned |
-| 11 | Filesystem (FAT32) + VFS + disk driver | Planned |
+| 10 | Per-process virtual memory + isolation | **Done** |
+| 11 | Filesystem (FAT32) + VFS + disk driver | **Done** |
 | 12 | ELF loader — real programs run from disk | Planned |
 | 13 | Pipes + shared memory + IPC | Planned |
 | 14 | USB HID — real hardware input | Planned |

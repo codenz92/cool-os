@@ -34,6 +34,20 @@ pub fn init_pit(hz: u32) {
     }
 }
 
+/// Mask all PIC IRQs except the ones we handle:
+///   IRQ0 (timer), IRQ1 (keyboard), IRQ2 (PIC2 cascade), IRQ12 (mouse).
+/// All other IRQs — including IRQ14/IRQ15 (IDE) — are masked so that
+/// unhandled interrupts cannot reach the CPU and trigger a #GP.
+pub fn mask_unused_irqs() {
+    use x86_64::instructions::port::Port;
+    unsafe {
+        // PIC1: unmask IRQ0 (timer), IRQ1 (keyboard), IRQ2 (cascade); mask IRQ3–7.
+        Port::<u8>::new(0x21).write(0xF8);
+        // PIC2: unmask IRQ12 (mouse); mask IRQ8–11 and IRQ13–15 (including IRQ14=IDE).
+        Port::<u8>::new(0xA1).write(0xEF);
+    }
+}
+
 pub fn reboot() -> ! {
     let mut port = x86_64::instructions::port::Port::new(0x64u16);
     unsafe {
@@ -101,10 +115,35 @@ extern "x86-interrupt" fn page_fault_handler(
     sf: InterruptStackFrame,
     err: x86_64::structures::idt::PageFaultErrorCode,
 ) {
-    use x86_64::registers::control::Cr2;
+    use x86_64::{registers::control::Cr2, structures::paging::PageTableFlags};
+
+    let fault_addr = Cr2::read();
+
+    // Only attempt lazy allocation for user-mode faults on unmapped pages.
+    // Conditions: not a protection violation (P bit clear in error), user-mode
+    // access (U bit set), fault address is in the lower canonical half.
+    let is_not_present = !err.contains(
+        x86_64::structures::idt::PageFaultErrorCode::PROTECTION_VIOLATION,
+    );
+    let is_user = err.contains(x86_64::structures::idt::PageFaultErrorCode::USER_MODE);
+    let is_lower_half = fault_addr.as_u64() < 0x0000_8000_0000_0000;
+
+    if is_not_present && is_user && is_lower_half {
+        // Allocate and map the missing page with user-accessible writable flags.
+        let flags = PageTableFlags::PRESENT
+            | PageTableFlags::WRITABLE
+            | PageTableFlags::USER_ACCESSIBLE;
+        let pml4 = crate::vmm::current_pml4();
+        if let Some(frame) = crate::vmm::alloc_zeroed_frame() {
+            if crate::vmm::map_page_in(pml4, fault_addr.align_down(4096u64), frame, flags).is_ok() {
+                return; // resume the faulting instruction
+            }
+        }
+    }
+
     panic!(
-        "PAGE FAULT\naddr={:?} err={:?}\n{:#?}",
-        Cr2::read(),
+        "PAGE FAULT\naddr={:#x} err={:?}\n{:#?}",
+        fault_addr.as_u64(),
         err,
         sf
     );

@@ -28,6 +28,17 @@ impl BootInfoFrameAllocator {
         BootInfoFrameAllocator { memory_regions, next: 0 }
     }
 
+    /// Start a new allocator that skips the first `start` usable frames,
+    /// picking up exactly where a previous allocator with `next == start` left off.
+    pub unsafe fn init_from(memory_regions: &'static [MemoryRegion], start: usize) -> Self {
+        BootInfoFrameAllocator { memory_regions, next: start }
+    }
+
+    /// How many frames have been allocated so far.
+    pub fn next(&self) -> usize {
+        self.next
+    }
+
     fn usable_frames(&self) -> impl Iterator<Item = PhysFrame> + '_ {
         self.memory_regions
             .iter()

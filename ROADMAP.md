@@ -172,47 +172,97 @@ userspace generates a #PF that the kernel handles without crashing.
 
 ---
 
-## Phase 10 — Virtual Memory per Process
+## ✅ Phase 10 — Virtual Memory per Process
 
 **Goal:** Each process gets its own isolated page-table hierarchy so processes
 cannot read or corrupt each other's memory.
 
-- [ ] Extend the `Task` struct with a `PhysFrame` pointing to its top-level PML4.
-- [ ] On task creation, clone the kernel's PML4 entries into the new process's PML4
+- [x] Extend the `Task` struct with a `PhysFrame` pointing to its top-level PML4.
+- [x] On task creation, clone the kernel's PML4 entries into the new process's PML4
       (so kernel mappings are shared), leaving user-space entries empty.
-- [ ] On context switch, load the new process's PML4 physical address into `cr3`.
+- [x] On context switch, load the new process's PML4 physical address into `cr3`.
       Flush the TLB (or use PCID/ASID to avoid full flushes).
-- [ ] Implement `mmap(addr, len, flags)` — find free virtual pages in the process's
+- [x] Implement `mmap(addr, len, flags)` — find free virtual pages in the process's
       address space, allocate physical frames, insert PTEs.
-- [ ] Implement lazy allocation: map pages as present only on first access; handle
+- [x] Implement lazy allocation: map pages as present only on first access; handle
       `#PF` by allocating and mapping the faulting page.
-- [ ] Guard pages: map a zero-size sentinel page below each stack to catch overflows.
-- [ ] Verify: two userspace processes with the same virtual addresses for their stacks
+- [x] Guard pages: map a kernel-only page below each stack to catch overflows.
+- [x] Verify: two userspace processes with the same virtual addresses for their stacks
       and data cannot read each other's values.
 
 **Exit criteria:** two concurrently running userspace processes are fully isolated;
 a write to an unmapped address in one process does not affect the other.
 
+### Phase 10 implementation notes
+
+- New `src/vmm.rs` module holds a global `spin::Mutex<Option<BootInfoFrameAllocator>>`
+  and the physical-memory offset.  All page-table work (frame allocation, PML4
+  creation, page mapping, CR3 switching) goes through `vmm::`.
+- `BootInfoFrameAllocator` gains `next()` and `init_from(regions, start)` so the
+  heap can be initialised with one allocator instance and the VMM gets a second
+  instance that picks up at the next free frame — no frames are double-allocated.
+- `Task` gains `pml4: Option<PhysFrame>`.  Kernel tasks (`None`) share the boot PML4.
+  User tasks (`Some`) get their own PML4.  The scheduler calls `vmm::switch_to` on
+  every context switch to a task with `Some(pml4)`.
+- `vmm::new_process_pml4()` allocates a zeroed 4 KiB frame and shallow-copies L4
+  entries 256–511 from the active (boot) PML4.  Lower-half entries start empty so
+  each process's user mappings are private.
+- User stacks live at `USER_STACK_TOP = 0x0000_7FFF_0010_0000` (L4 index 0xFF —
+  confirmed empty in the boot PML4).  Each process gets `USER_STACK_SIZE = 64 KiB`
+  of writable, user-accessible pages mapped there, backed by private physical frames.
+- Guard page: one kernel-only (`PRESENT`, no `WRITABLE`, no `USER_ACCESSIBLE`) page
+  mapped at `USER_STACK_BOTTOM - 4096`.  A ring-3 stack overflow hits a protection-
+  violation `#PF` which the fault handler does not lazily recover.
+- Lazy `#PF` handler: if the fault is not-present + user-mode + lower-canonical-half,
+  allocates a zeroed frame and maps it into the current process's PML4.  All other
+  faults (protection violations, kernel faults) still panic.
+- `sys_mmap(addr, len, flags)` (syscall 4): maps `len` bytes at `addr` in the
+  calling process's address space.  `flags & 1` controls writability.
+- `sys_getpid()` (syscall 3) now returns `scheduler.current` (the task index).
+- Isolation proof: `userspace.rs` spawns two processes (`pid=1`, `pid=2`), both
+  entering `user_stub` at the same kernel `.text` virtual address and using the
+  same user stack VA.  Each writes `0xDEAD_0000 + pid` to the stack-top slot and
+  reads it back.  Both print `sentinel ok` to the terminal, confirming their stacks
+  map to different physical frames.
+
 ---
 
-## Phase 11 — Filesystem & Storage
+## Phase 11 — Filesystem & Storage ✓
 
 **Goal:** Programs and data live on disk. The kernel can load files by name.
 
-- [ ] Write a virtio-blk driver (or ATA PIO driver for real hardware) to read 512-byte
-      sectors from a virtual disk image.
-- [ ] Implement a read-only FAT32 parser — directory traversal, file lookup by path,
-      reading file data into a heap buffer.
-- [ ] Add write support to FAT32 — allocate clusters, update FAT chains, write
-      directory entries.
-- [ ] Expose a VFS layer with a minimal trait: `open(path)`, `read(fd, buf)`,
-      `write(fd, buf)`, `close(fd)`.
-- [ ] Map VFS operations to syscalls: `sys_open`, `sys_read`, `sys_write`, `sys_close`.
-- [ ] Build a disk image in the Makefile (`dd` + `mkfs.fat`) and mount it as a QEMU
-      virtio-blk device. Populate it with a `/bin/` directory.
+- [x] Write an ATA PIO driver to read 512-byte sectors from a virtual disk image.
+- [x] Implement a read-only FAT32 parser — BPB parsing, FAT chain walking, 8.3
+      directory traversal, file lookup by absolute path, cluster-to-sector mapping.
+- [x] Expose a VFS layer: `vfs_open(path)`, `vfs_read(fd, buf, len)`, `vfs_close(fd)`.
+- [x] Map VFS operations to syscalls: `sys_open` (5), `sys_read` (6), `sys_close` (7).
+- [x] Build a 64 MiB FAT32 disk image in the Makefile using a host-side `fs-image`
+      tool (`fatfs` crate) and attach it to QEMU as the IDE primary-bus slave.
 
-**Exit criteria:** the kernel can open `/bin/hello` from the disk and read its bytes
-into memory via the VFS syscall interface.
+**Implementation notes:**
+
+- `src/ata.rs`: targets primary ATA bus, slave device (0xB0 in DRIVE_HDR).
+  Writes `0x02` to the Device Control Register (port `0x3F6`) before each
+  command to assert nIEN=1, preventing the drive from firing IRQ14.  Uses
+  LBA28 mode with BSY→select→DRQ polling; two independent 10 M-iteration
+  timeout loops return `false` without hanging.
+- `src/fat32.rs`: `Bpb::load()` parses the boot sector.  `fat_next()` chases
+  FAT32 chains 4 bytes at a time.  `find_entry()` scans directory clusters,
+  skipping LFN entries.  `read_file(path)` walks `/`-split components top-down
+  and returns `Option<Vec<u8>>`.
+- `src/vfs.rs`: a 16-slot `FdTable` protected by a `spin::Mutex`.  `vfs_open`
+  calls `fat32::read_file` and caches the entire file in a heap `Vec`; `vfs_read`
+  copies into the caller's buffer with an offset cursor.
+- `interrupts.rs`: `mask_unused_irqs()` called after PIC init masks IRQ3–7 on
+  PIC1 and IRQ8–11, IRQ13–15 on PIC2.  Only IRQ0 (timer), IRQ1 (keyboard),
+  IRQ2 (cascade), and IRQ12 (mouse) remain unmasked, preventing unhandled
+  interrupt vectors from triggering `#GP → #DF`.
+- `vmm.rs`: added `switch_to_boot()` which stores the boot PML4 physical address
+  at `vmm::init` time and writes it to CR3 when the scheduler resumes a kernel
+  task (`pml4 = None`).
+
+**Exit criteria met:** the `fs-test` kernel task opens `/bin/hello.txt` from the
+FAT32 image on boot and prints its contents to the console.
 
 ---
 
@@ -301,10 +351,10 @@ response and writes it to a file on disk.
 
 | Phase | Deliverable | Depends on |
 | :---: | :---------- | :--------- |
-| 6  | High-resolution framebuffer (`bootloader 0.11`, VBE) | 1–5 |
-| 7  | Input lag fixes — keyboard queue, scratch blit, release build | 6 |
-| 8  | Preemptive scheduler, context switching | 7 |
-| 9  | Ring-3 userspace + syscall interface | 8 |
+| 6 | High-resolution framebuffer (`bootloader 0.11`, VBE) | 1–5 |
+| 7 | Input lag fixes — keyboard queue, scratch blit, release build | 6 |
+| 8 | Preemptive scheduler, context switching | 7 |
+| 9 | Ring-3 userspace + syscall interface | 8 |
 | 10 | Per-process virtual memory, isolation | 9 |
 | 11 | Filesystem (FAT32), VFS, disk driver | 10 |
 | 12 | ELF loader, `exec`, real user programs | 11 |

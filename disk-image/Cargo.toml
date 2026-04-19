@@ -9,5 +9,10 @@ edition = "2021"
 name = "disk-image"
 path = "src/main.rs"
 
+[[bin]]
+name = "fs-image"
+path = "src/fs_image.rs"
+
 [dependencies]
 bootloader = { version = "0.11", features = ["bios"] }
+fatfs = "0.3"

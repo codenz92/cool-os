@@ -29,6 +29,7 @@
 ///   [stack_ptr + 152]  SS
 use alloc::vec::Vec;
 use core::sync::atomic::AtomicU64;
+use x86_64::structures::paging::PhysFrame;
 
 extern crate alloc;
 
@@ -65,6 +66,8 @@ pub struct Task {
     /// preemption.
     pub stack_ptr: usize,
     pub status: TaskStatus,
+    /// Per-process PML4 frame.  None = kernel task, shares the boot PML4.
+    pub pml4: Option<PhysFrame>,
 }
 
 // ── Scheduler ─────────────────────────────────────────────────────────────────
@@ -93,16 +96,24 @@ impl Scheduler {
     pub fn add_idle(&mut self) {
         self.tasks.push(Task {
             name: "idle",
-            stack: Vec::new(), // uses the existing kernel boot stack
-            stack_ptr: 0,      // written on first preemption
+            stack: Vec::new(),
+            stack_ptr: 0,
             status: TaskStatus::Running,
+            pml4: None,
         });
     }
 
     /// Allocate a 64 KiB kernel stack for a new task, pre-populate its saved
     /// context so that the first `iretq` begins execution at `entry`, and
     /// add the task to the run queue as `Ready`.
+    /// Spawn a kernel-mode task (shares the boot PML4, ring 0).
     pub fn spawn(&mut self, name: &'static str, entry: fn() -> !) {
+        self.spawn_with_pml4(name, entry, None);
+    }
+
+    /// Spawn a task with an optional private PML4.  When `pml4` is `Some`,
+    /// the scheduler loads it into CR3 whenever this task is scheduled.
+    pub fn spawn_with_pml4(&mut self, name: &'static str, entry: fn() -> !, pml4: Option<PhysFrame>) {
         // Allocate and zero-initialise the stack buffer.
         let mut stack: Vec<u8> = Vec::new();
         stack.resize(STACK_SIZE, 0u8);
@@ -151,6 +162,7 @@ impl Scheduler {
             stack,
             stack_ptr: stack_ptr_addr,
             status: TaskStatus::Ready,
+            pml4,
         });
     }
 
@@ -193,6 +205,15 @@ impl Scheduler {
         // ── Activate the winner ──────────────────────────────────────────────
         self.tasks[next].status = TaskStatus::Running;
         self.current = next;
+
+        // Switch address space: load the winning task's PML4, or restore the
+        // boot PML4 for kernel tasks (pml4=None) so they never run with a
+        // user process's address space accidentally loaded.
+        match self.tasks[next].pml4 {
+            Some(pml4) => unsafe { crate::vmm::switch_to(pml4) },
+            None       => unsafe { crate::vmm::switch_to_boot() },
+        }
+
         self.tasks[next].stack_ptr
     }
 }

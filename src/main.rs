@@ -6,6 +6,8 @@ extern crate alloc;
 
 mod allocator;
 mod apps;
+mod ata;
+mod fat32;
 mod framebuffer;
 mod gdt;
 mod interrupts;
@@ -15,7 +17,9 @@ mod mouse;
 mod scheduler;
 mod syscall;
 mod userspace;
+mod vfs;
 mod vga_buffer;
+mod vmm;
 mod wm;
 
 use bootloader_api::{config::Mapping, entry_point, BootInfo, BootloaderConfig};
@@ -64,6 +68,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     interrupts::init_idt();
     unsafe { interrupts::PICS.lock().initialize() };
     interrupts::init_pit(100);
+    interrupts::mask_unused_irqs();
     syscall::init();
     x86_64::instructions::interrupts::enable();
 
@@ -78,13 +83,26 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     // Convert the bootloader's MemoryRegions to a plain &'static slice.
     let regions: &'static [bootloader_api::info::MemoryRegion] =
         unsafe { core::mem::transmute(boot_info.memory_regions.as_ref()) };
-    let mut frame_allocator = unsafe { memory::BootInfoFrameAllocator::init(regions) };
+    // We need two separate frame allocators: one consumed by heap init, one kept
+    // for the VMM.  The BootInfoFrameAllocator is cheap to reconstruct from the
+    // same regions slice; each tracks its own `next` index independently.
+    let mut heap_frame_allocator = unsafe { memory::BootInfoFrameAllocator::init(regions) };
 
-    allocator::init_heap(&mut mapper, &mut frame_allocator).expect("heap init failed");
+    allocator::init_heap(&mut mapper, &mut heap_frame_allocator).expect("heap init failed");
 
-    // Mark all present pages user-accessible so ring-3 code can execute the
-    // kernel-linked user stub and access the user stack (Phase 9 single-address-
-    // space model).  Phase 10 replaces this with per-process page tables.
+    // Build a fresh allocator starting after the frames consumed by the heap
+    // (the heap allocator's `next` counter tells us how many frames it used).
+    let vmm_frame_allocator = unsafe {
+        memory::BootInfoFrameAllocator::init_from(regions, heap_frame_allocator.next())
+    };
+
+    // Initialise the VMM with the physical-memory offset and the remaining
+    // frame supply.  From here on, all page-table work goes through vmm::.
+    vmm::init(phys_mem_offset, vmm_frame_allocator);
+
+    // Mark all present pages user-accessible so ring-3 code (living in the
+    // kernel .text) can execute.  Per-process stacks are mapped separately
+    // with USER_ACCESSIBLE in their private PML4.
     unsafe { memory::mark_all_user_accessible(phys_mem_offset) };
 
     // ── Scheduler ─────────────────────────────────────────────────────────────
@@ -92,8 +110,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         let mut sched = scheduler::SCHEDULER.lock();
         sched.add_idle();
         sched.spawn("counter", counter_task);
-        sched.spawn("userspace", userspace::userspace_demo_task);
+        // fs_test runs on its own 64 KiB kernel stack — avoids blowing the
+        // limited boot stack with the 512-byte sector buffers.
+        sched.spawn("fs-test", fs_test_task);
     });
+
+    // Spawn two isolated user processes (each gets its own PML4 + user stack).
+    userspace::spawn_user_process(1);
+    userspace::spawn_user_process(2);
 
     // ── Desktop ───────────────────────────────────────────────────────────────
     let term = apps::TerminalApp::new(20, 20);
@@ -110,6 +134,27 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         wm::compose_if_needed();
         x86_64::instructions::hlt();
     }
+}
+
+/// One-shot task: reads /bin/hello.txt from the FAT32 disk and prints it.
+fn fs_test_task() -> ! {
+    println!("[fs] task started");
+    match fat32::read_file("/bin/hello.txt") {
+        Some(bytes) => {
+            print!("[fs] /bin/hello.txt: ");
+            for b in &bytes {
+                vga_buffer::_print(core::format_args!("{}", *b as char));
+            }
+        }
+        None => println!("[fs] /bin/hello.txt: NOT FOUND"),
+    }
+    // Block this task so it doesn't spin forever.
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut sched = scheduler::SCHEDULER.lock();
+        let cur = sched.current;
+        sched.tasks[cur].status = scheduler::TaskStatus::Blocked;
+    });
+    loop { x86_64::instructions::hlt(); }
 }
 
 /// Background task: increments BACKGROUND_COUNTER as fast as possible.

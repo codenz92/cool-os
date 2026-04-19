@@ -10,7 +10,11 @@
 ///   0  exit(code)
 ///   1  write(fd, buf, len) → bytes written
 ///   2  yield()
-///   3  getpid() → 0
+///   3  getpid() → current task id
+///   4  mmap(addr, len, flags) → addr on success, u64::MAX on failure
+///   5  open(path_ptr, path_len) → fd on success, u64::MAX on failure
+///   6  read(fd, buf_ptr, len) → bytes read, u64::MAX on error
+///   7  close(fd) → 0
 ///
 /// Output path: sys_write pushes bytes into SYSCALL_OUTPUT (a lock-free ring
 /// buffer modelled on keyboard.rs). compositor::compose() drains it into the
@@ -144,17 +148,53 @@ extern "C" fn syscall_dispatch(nr: u64, a1: u64, a2: u64, a3: u64) -> u64 {
         0 => { sys_exit(a1); 0 }
         1 => sys_write(a1, a2 as *const u8, a3),
         2 => { sys_yield(); 0 }
-        3 => 1,           // getpid: process 1
+        3 => sys_getpid(),
+        4 => sys_mmap(a1, a2, a3),
+        5 => sys_open(a1 as *const u8, a2),
+        6 => sys_read(a1, a2 as *mut u8, a3),
+        7 => { sys_close(a1); 0 }
         _ => u64::MAX,
     }
 }
 
 fn sys_write(_fd: u64, buf: *const u8, len: u64) -> u64 {
     for i in 0..len as usize {
-        push_output_byte(unsafe { *buf.add(i) });
+        let b = unsafe { *buf.add(i) };
+        push_output_byte(b);
+        // Mirror to QEMU debugcon (port 0xE9) for headless verification.
+        unsafe { x86_64::instructions::port::Port::<u8>::new(0xE9).write(b) };
     }
     crate::wm::request_repaint();
     len
+}
+
+fn sys_getpid() -> u64 {
+    let sched = crate::scheduler::SCHEDULER.lock();
+    sched.current as u64
+}
+
+/// Map `len` bytes at virtual address `addr` in the calling process's address
+/// space with the given protection flags (bit 0 = writable).  Allocates
+/// physical frames and inserts PTEs.  Returns `addr` on success, `u64::MAX`
+/// on failure.
+fn sys_mmap(addr: u64, len: u64, flags: u64) -> u64 {
+    use x86_64::{structures::paging::PageTableFlags, VirtAddr};
+
+    if addr == 0 || len == 0 { return u64::MAX; }
+
+    // Round length up to page boundary.
+    let len_aligned = (len + 4095) & !4095;
+
+    let mut pte_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+    if flags & 1 != 0 { pte_flags |= PageTableFlags::WRITABLE; }
+
+    // Determine the current process's PML4.
+    let pml4 = crate::vmm::current_pml4();
+
+    match crate::vmm::map_region(pml4, VirtAddr::new(addr), len_aligned, pte_flags) {
+        Ok(()) => addr,
+        Err(_) => u64::MAX,
+    }
 }
 
 fn sys_exit(_code: u64) {
@@ -165,6 +205,30 @@ fn sys_exit(_code: u64) {
     // The naked handler will sysretq back to ring 3; the task spins with
     // core::hint::spin_loop() until the timer fires and switches it out
     // permanently (Blocked tasks are never picked by the round-robin scheduler).
+}
+
+/// Open a file by path.  `path_ptr` is a user-space pointer to a UTF-8 string
+/// of length `path_len` (no nul terminator required).
+fn sys_open(path_ptr: *const u8, path_len: u64) -> u64 {
+    let bytes = unsafe { core::slice::from_raw_parts(path_ptr, path_len as usize) };
+    match core::str::from_utf8(bytes) {
+        Ok(path) => {
+            let fd = crate::vfs::vfs_open(path);
+            if fd == usize::MAX { u64::MAX } else { fd as u64 }
+        }
+        Err(_) => u64::MAX,
+    }
+}
+
+/// Read up to `len` bytes from `fd` into the user buffer at `buf_ptr`.
+fn sys_read(fd: u64, buf_ptr: *mut u8, len: u64) -> u64 {
+    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, len as usize) };
+    let n = crate::vfs::vfs_read(fd as usize, buf, len as usize);
+    if n == usize::MAX { u64::MAX } else { n as u64 }
+}
+
+fn sys_close(fd: u64) {
+    crate::vfs::vfs_close(fd as usize);
 }
 
 fn sys_yield() {
