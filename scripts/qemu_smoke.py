@@ -20,6 +20,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--smp", default="1", help="QEMU SMP CPU count")
     parser.add_argument("--vga", default="std", help="QEMU VGA adapter")
     parser.add_argument("--usb", action="store_true", help="Attach xHCI with USB keyboard and mouse")
+    parser.add_argument("--net", action="store_true", help="Attach legacy virtio-net with QEMU user networking")
     parser.add_argument(
         "--expect",
         action="append",
@@ -111,6 +112,15 @@ def build_command(args: argparse.Namespace, monitor_socket: str | None = None) -
                 "usb-kbd,bus=xhci.0",
                 "-device",
                 "usb-mouse,bus=xhci.0",
+            ]
+        )
+    if args.net:
+        cmd.extend(
+            [
+                "-netdev",
+                "user,id=net0",
+                "-device",
+                "virtio-net-pci,netdev=net0,disable-modern=on,disable-legacy=off",
             ]
         )
     return cmd

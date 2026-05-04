@@ -348,6 +348,22 @@ impl TerminalApp {
                 }
             },
 
+            Some("ping") => match words.next() {
+                Some(host) => match crate::net::dns_resolve(host).and_then(crate::net::icmp_ping) {
+                    Ok(()) => self.cmd_lines("PING", alloc::vec![alloc::format!("{} ok", host)]),
+                    Err(err) => {
+                        self.set_fg(FG_ERROR);
+                        self.print_str("ping: ");
+                        self.print_str(err);
+                        self.print_char('\n');
+                    }
+                },
+                None => {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("usage: ping <host-or-ip>\n");
+                }
+            },
+
             Some("power") => self.cmd_power(words.next()),
 
             Some("log") => self.cmd_log(),
@@ -727,6 +743,7 @@ impl TerminalApp {
             ("netproto", "ARP/IP/UDP/DNS/HTTP status"),
             ("netapi", "network/settings API toggles"),
             ("dns <host>", "resolve host with staged DNS"),
+            ("ping <host>", "send ICMP echo request"),
             ("http <host> [path]", "run userspace HTTP client API"),
             ("power <op>", "ACPI power status"),
             ("log", "kernel log tail"),

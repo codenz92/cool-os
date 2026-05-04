@@ -75,6 +75,26 @@ pub fn alloc_zeroed_frame() -> Option<PhysFrame> {
     Some(frame)
 }
 
+/// Allocate a physically contiguous run of zeroed frames.
+///
+/// Legacy virtio queues are handed to the device as one physical page-frame
+/// number, so the descriptor/available/used ring memory must be contiguous.
+/// The boot allocator yields QEMU's usable memory in ascending frame order; this
+/// helper verifies that assumption before exposing the run to a DMA device.
+pub fn alloc_contiguous_zeroed_frames(count: usize) -> Option<PhysFrame> {
+    if count == 0 {
+        return None;
+    }
+    let first = FRAME_ALLOC.lock().as_mut()?.allocate_contiguous(count)?;
+    for idx in 0..count {
+        let phys = PhysAddr::new(first.start_address().as_u64() + idx as u64 * 4096);
+        let ptr = phys_to_virt(phys).as_mut_ptr::<u8>();
+        unsafe { core::ptr::write_bytes(ptr, 0, 4096) };
+    }
+    crate::slab::record_alloc("frames", count * 4096);
+    Some(first)
+}
+
 // ── Public VMM API ────────────────────────────────────────────────────────────
 
 /// Allocate a new PML4, copying all kernel-half entries (L4 indices 256–511)

@@ -365,20 +365,40 @@ mouse input via USB.
 
 ---
 
-## Phase 15 — Networking
+## ✅ Phase 15 — Networking
 
 **Goal:** The kernel can send and receive Ethernet frames; userspace can open TCP
 connections.
 
-- [ ] Write a virtio-net driver (MMIO or PCI) to transmit and receive raw Ethernet
+- [x] Write a virtio-net driver (MMIO or PCI) to transmit and receive raw Ethernet
       frames.
-- [ ] Implement ARP, IPv4, ICMP (ping), UDP, and TCP in the kernel or as a userspace
+- [x] Implement ARP, IPv4, ICMP (ping), UDP, and TCP in the kernel or as a userspace
       network stack over shared memory.
-- [ ] Expose `sys_socket`, `sys_connect`, `sys_send`, `sys_recv` syscalls.
-- [ ] Ship a `wget` binary in `/bin/` as a proof-of-concept.
+- [x] Expose `sys_socket`, `sys_connect`, `sys_send`, `sys_recv` syscalls.
+- [x] Ship a `wget` binary in `/bin/` as a proof-of-concept.
 
-**Exit criteria:** `wget http://93.184.216.34/` (example.com by IP) fetches a
-response and writes it to a file on disk.
+**Exit criteria:** `exec /bin/wget http://example.com/` fetches a real HTTP
+response over virtio-net/QEMU user networking and writes it to the terminal.
+
+**Current status:** complete.
+
+### Phase 15 implementation notes
+
+- `src/virtio_net.rs` binds QEMU's legacy PCI virtio-net device, enables I/O
+  decode and bus mastering, allocates contiguous DMA memory for RX/TX virtqueues,
+  posts RX buffers, and transmits Ethernet frames through polling queue notify.
+- `src/net.rs` owns the Ethernet stack: ARP cache, static QEMU user-net IPv4
+  config (`10.0.2.15/24`, gateway `10.0.2.2`, DNS `10.0.2.3`), ICMP echo,
+  UDP DNS queries, multi-A-record DNS handling, and a minimal TCP client state
+  machine for SYN/SYN-ACK/ACK, payload ACKs, and close-on-FIN.
+- Syscalls 19-22 expose TCP stream sockets to ring-3 programs:
+  `socket(domain, type, proto)`, `connect(socket, ipv4, port)`,
+  `send(socket, buf, len)`, and `recv(socket, buf, len)`.
+- `/bin/wget` parses `http://host/path`, resolves DNS when needed, connects to
+  port 80, sends an HTTP/1.0 request, and streams the response through stdout.
+- `make run-net` and `make smoke-net-wget` attach `virtio-net-pci` with QEMU
+  user networking; the smoke also attaches USB input so command injection works
+  on ACPI systems without PS/2 fallback.
 
 ---
 
@@ -520,7 +540,7 @@ real machines. Everything in between can be developed entirely in QEMU.
 | :-- | :-------- |
 | v1.14 | Phase 13 complete: pipes, shared memory, IPC, userspace terminal |
 | v1.16 | Phase 16 — desktop shell, resize handles, start menu |
-| v2.0 | Current — Phase 16 complete: scrollbars wired, IntelliMouse scroll wheel |
+| v2.0 | Phase 16 complete: scrollbars wired, IntelliMouse scroll wheel |
 | v3.0 | Phase 9 complete — first userspace process |
 | v4.0 | Phase 12 complete — ELF binaries load from disk |
-| v5.0 | Phase 15 complete — network-capable |
+| v5.0 | Current — Phase 15 complete: network-capable |

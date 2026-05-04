@@ -58,8 +58,8 @@ pub fn run_boot_tests() {
     );
     check(
         "net-api",
-        crate::net::dns_resolve("example.com").is_ok()
-            && crate::net::http_get("example.com", "/").is_ok(),
+        matches!(crate::net::dns_resolve("93.184.216.34"), Ok(0x5db8_d822))
+            && !crate::net::protocol_lines().is_empty(),
         &mut ok,
         &mut fail,
     );

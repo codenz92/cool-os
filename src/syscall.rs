@@ -26,6 +26,10 @@
 ///   16 abi_version() → kernel/user ABI version
 ///   17 dns_resolve(host_ptr, host_len) → IPv4 u32 on success, u64::MAX on failure
 ///   18 http_get(host_ptr, host_len) → request bytes written to stdout
+///   19 socket(domain, type, proto) → socket fd on success, u64::MAX on failure
+///   20 connect(socket, ipv4_be, port) → 0 on success, u64::MAX on failure
+///   21 send(socket, buf_ptr, len) → bytes sent, u64::MAX on failure
+///   22 recv(socket, buf_ptr, len) → bytes read, 0 on EOF/timeout, u64::MAX on failure
 ///
 /// Output path: sys_write pushes bytes into SYSCALL_OUTPUT (a lock-free ring
 /// buffer modelled on keyboard.rs). compositor::compose() drains it into the
@@ -220,6 +224,10 @@ extern "C" fn syscall_dispatch(
         16 => crate::abi::version(),
         17 => sys_dns_resolve(a1 as *const u8, a2),
         18 => sys_http_get(a1 as *const u8, a2),
+        19 => sys_socket(a1, a2, a3),
+        20 => sys_connect(a1, a2, a3),
+        21 => sys_send(a1, a2 as *const u8, a3),
+        22 => sys_recv(a1, a2 as *mut u8, a3),
         _ => u64::MAX,
     }
 }
@@ -341,7 +349,60 @@ fn sys_read(fd: u64, buf_ptr: *mut u8, len: u64) -> u64 {
 }
 
 fn sys_close(fd: u64) {
-    crate::vfs::vfs_close(fd as usize);
+    let owner = crate::scheduler::current_task_id();
+    if !crate::net::socket_close(owner, fd) {
+        crate::vfs::vfs_close(fd as usize);
+    }
+}
+
+fn sys_socket(domain: u64, socket_type: u64, protocol: u64) -> u64 {
+    let owner = crate::scheduler::current_task_id();
+    crate::net::socket_open(owner, domain, socket_type, protocol).unwrap_or(u64::MAX)
+}
+
+fn sys_connect(socket: u64, ipv4_be: u64, port: u64) -> u64 {
+    if ipv4_be > u32::MAX as u64 || port > u16::MAX as u64 {
+        return u64::MAX;
+    }
+    let owner = crate::scheduler::current_task_id();
+    match crate::net::socket_connect(owner, socket, ipv4_be as u32, port as u16) {
+        Ok(()) => 0,
+        Err(_) => u64::MAX,
+    }
+}
+
+fn sys_send(socket: u64, buf: *const u8, len: u64) -> u64 {
+    if len == 0 {
+        return 0;
+    }
+    let Some(bytes) = user_slice(buf, len, MAX_USER_BUFFER) else {
+        return u64::MAX;
+    };
+    let owner = crate::scheduler::current_task_id();
+    match crate::net::socket_send(owner, socket, bytes) {
+        Ok(n) => n as u64,
+        Err(err) => {
+            crate::println!("[net] sys_send failed: {}", err);
+            u64::MAX
+        }
+    }
+}
+
+fn sys_recv(socket: u64, buf: *mut u8, len: u64) -> u64 {
+    if len == 0 {
+        return 0;
+    }
+    let Some(out) = user_slice_mut(buf, len, MAX_USER_BUFFER) else {
+        return u64::MAX;
+    };
+    let owner = crate::scheduler::current_task_id();
+    match crate::net::socket_recv(owner, socket, out) {
+        Ok(n) => n as u64,
+        Err(err) => {
+            crate::println!("[net] sys_recv failed: {}", err);
+            u64::MAX
+        }
+    }
 }
 
 fn sys_waitpid(pid: u64, status_ptr: *mut u64) -> u64 {

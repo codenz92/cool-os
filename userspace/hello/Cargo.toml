@@ -11,6 +11,10 @@ path = "src/bin/terminal.rs"
 name = "netdemo"
 path = "src/bin/netdemo.rs"
 
+[[bin]]
+name = "wget"
+path = "src/bin/wget.rs"
+
 [profile.dev]
 panic = "abort"
 

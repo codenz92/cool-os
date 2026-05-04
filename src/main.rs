@@ -56,6 +56,7 @@ mod usb;
 mod userspace;
 mod vfs;
 mod vga_buffer;
+mod virtio_net;
 mod vmm;
 mod wait_queue;
 mod wm;
@@ -173,7 +174,6 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         boot_info.rsdp_addr.as_ref().copied(),
         phys_mem_offset.as_u64(),
     );
-    net::init();
     services::init();
     deferred::enqueue(deferred::DeferredWork::RefreshSearchIndex);
     deferred::enqueue(deferred::DeferredWork::FlushWriteback);
@@ -200,9 +200,10 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     unsafe { memory::mark_all_user_accessible(phys_mem_offset) };
     boot_splash::show("enabling user pages", 10, boot_splash::BOOT_PROGRESS_TOTAL);
 
-    // USB probing needs heap/VMM/interrupts, but it should not be gated on the
-    // scheduler or first desktop frame. Running it here keeps headless device
-    // smoke tests deterministic even as later shell setup grows more complex.
+    // DMA-backed hardware probing needs heap/VMM/interrupts, but it should not
+    // be gated on the scheduler or first desktop frame. Running it here keeps
+    // headless device smoke tests deterministic as shell setup grows.
+    net::init();
     usb::init();
     let _ = klog::flush_to_disk();
 

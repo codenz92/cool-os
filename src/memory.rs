@@ -47,6 +47,44 @@ impl BootInfoFrameAllocator {
         self.next
     }
 
+    pub fn allocate_contiguous(&mut self, count: usize) -> Option<PhysFrame> {
+        if count == 0 {
+            return None;
+        }
+
+        let mut run_start_index = 0usize;
+        let mut run_start_frame = None;
+        let mut run_len = 0usize;
+        let mut last_addr = 0u64;
+
+        let mut found = None;
+        {
+            for (idx, frame) in self.usable_frames().enumerate().skip(self.next) {
+                let addr = frame.start_address().as_u64();
+                if run_len == 0 || addr != last_addr + 4096 {
+                    run_start_index = idx;
+                    run_start_frame = Some(frame);
+                    run_len = 1;
+                } else {
+                    run_len += 1;
+                }
+                last_addr = addr;
+
+                if run_len == count {
+                    found = run_start_frame.map(|frame| (run_start_index + count, frame));
+                    break;
+                }
+            }
+        }
+
+        if let Some((next, frame)) = found {
+            self.next = next;
+            Some(frame)
+        } else {
+            None
+        }
+    }
+
     fn usable_frames(&self) -> impl Iterator<Item = PhysFrame> + '_ {
         self.memory_regions
             .iter()

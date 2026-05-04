@@ -116,13 +116,27 @@ pub fn bar(loc: Location, index: u8) -> Option<u64> {
     }
 }
 
+/// Resolve one of the six BAR slots of a type-0 header into an I/O port base.
+///
+/// Legacy virtio PCI devices expose their register block through an I/O BAR,
+/// so Phase 15 needs this alongside the MMIO-only `bar()` helper used by xHCI.
+pub fn io_bar(loc: Location, index: u8) -> Option<u16> {
+    assert!(index < 6, "BAR index out of range");
+    let offset = 0x10 + index * 4;
+    let low = read32(loc, offset);
+    if low & 0x1 == 0 {
+        return None;
+    }
+    Some((low & 0xFFFF_FFFC) as u16)
+}
+
 /// Enable bus-mastering and memory decoding in the command register so the
 /// device can DMA to host memory and respond to MMIO cycles.
 #[allow(dead_code)]
 pub fn enable_bus_master(loc: Location) {
     let cmd = read32(loc, 0x04);
-    // Bit 1: memory space enable, bit 2: bus master enable.
-    write32(loc, 0x04, cmd | 0x0006);
+    // Bit 0: I/O space enable, bit 1: memory space enable, bit 2: bus master.
+    write32(loc, 0x04, cmd | 0x0007);
 }
 
 pub fn interrupt_caps(loc: Location) -> InterruptCaps {

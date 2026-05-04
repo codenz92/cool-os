@@ -1,7 +1,7 @@
 /// Host-side tool: creates a FAT32 disk image and populates it with
 /// /bin/hello.txt (and any other files needed by Phase 11+).
 ///
-/// Usage: fs-image <output-path> [hello-elf] [exec-elf] [pipe-elf] [read-elf] [piperd-elf] [pipewr-elf] [keyecho-elf] [terminal-elf] [netdemo-elf]
+/// Usage: fs-image <output-path> [hello-elf] [exec-elf] [pipe-elf] [read-elf] [piperd-elf] [pipewr-elf] [keyecho-elf] [terminal-elf] [netdemo-elf] [wget-elf]
 /// Output: a 64 MiB raw FAT32 disk image ready to attach as a QEMU IDE drive.
 
 use std::io::Write;
@@ -20,6 +20,7 @@ fn main() {
     let keyecho_elf = args.next();
     let terminal_elf = args.next();
     let netdemo_elf = args.next();
+    let wget_elf = args.next();
 
     // Create or truncate the file, set it to the desired size.
     let file = std::fs::OpenOptions::new()
@@ -153,6 +154,16 @@ fn main() {
         netdemo_bin
             .write_all(&netdemo_bytes)
             .expect("failed to write netdemo");
+    }
+
+    if let Some(wget_path) = wget_elf {
+        let wget_bytes = std::fs::read(&wget_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {}", wget_path, e));
+        let mut wget_bin = bin.create_file("wget").expect("failed to create wget");
+        wget_bin.truncate().unwrap();
+        wget_bin
+            .write_all(&wget_bytes)
+            .expect("failed to write wget");
     }
 
     println!("{}", out_path);

@@ -12,7 +12,7 @@ layer with pipes, shared memory, and per-task fd tables.
 
 ---
 
-# Current state — v1.19
+# Current state — v1.20
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -44,7 +44,9 @@ anonymous pipes, `ipc` allocates a fresh shared pipe and launches the
 reader/writer demo pair by inheriting one pipe end into each child, `keydemo`
 streams focused terminal keystrokes into a userspace process over an inherited
 pipe, and `exec /bin/read` exercises userspace `open/read/close` against the
-FAT32-backed VFS.
+FAT32-backed VFS. With QEMU virtio networking enabled, `exec /bin/wget
+http://example.com/` resolves DNS, opens a TCP socket, fetches the HTTP
+response, and streams it to the terminal.
 
 ### What's working
 
@@ -61,15 +63,16 @@ FAT32-backed VFS.
 | **Process isolation** | Two user processes share the same user-stack virtual address (`0x7FFF_0010_0000`) but map it to different physical frames. Guard pages (kernel-only) sit below each stack. |
 | **GDT + TSS** | Four segments (kernel code/data ring 0, user code/data ring 3) + TSS with RSP0 pointing to a dedicated 64 KiB ISR stack used when an IRQ fires during ring-3 execution. |
 | **SYSCALL/SYSRET** | EFER.SCE enabled. STAR/LSTAR/SFMASK MSRs configured. Naked `syscall_entry` saves context, switches to the currently scheduled task's private kernel stack top, dispatches on rax, restores context, and executes `sysretq`. |
-| **Syscall table** | `0 exit`, `1 write`, `2 yield`, `3 getpid`, `4 mmap(addr, len, flags)`, `5 open(path, len)`, `6 read(fd, buf, len)`, `7 close(fd)`, `8 exec(path, len)`, `9 pipe(fds_ptr)`, `10 dup(fd)`, `11 shmem_create(len)`, `12 shmem_map(id)`, `13 waitpid(pid, status_ptr)`. `sys_write` writes to stdout/stderr through the compositor ring buffer or to pipe write-ends through the VFS fd table. |
+| **Syscall table** | `0 exit`, `1 write`, `2 yield`, `3 getpid`, `4 mmap(addr, len, flags)`, `5 open(path, len)`, `6 read(fd, buf, len)`, `7 close(fd)`, `8 exec(path, len)`, `9 pipe(fds_ptr)`, `10 dup(fd)`, `11 shmem_create(len)`, `12 shmem_map(id)`, `13 waitpid(pid, status_ptr)`, `14 spawn(path, len)`, `15 sleep_ms(ms)`, `16 abi_version()`, `17 dns_resolve(host, len)`, `18 http_get(host, len)`, `19 socket(domain, type, proto)`, `20 connect(socket, ipv4, port)`, `21 send(socket, buf, len)`, `22 recv(socket, buf, len)`. `sys_write` writes to stdout/stderr through the compositor ring buffer or to pipe write-ends through the VFS fd table. |
 | **Userspace** | Ring-3 code can run either as the original isolation stubs or as real ELF64 binaries loaded from `/bin`. `sys_exec` replaces the current userspace image in-place by swapping CR3 and rewriting the saved syscall return frame. `keydemo` relays fixed-size key and click event packets into a userspace child over a pipe. Shared memory (`sys_shmem_create`/`sys_shmem_map`) maps a region of physical frames into the caller's address space at a fixed VA. |
 | **ELF loader** | Validates ELF64 headers, maps `PT_LOAD` segments into a fresh address space, allocates a private user stack, builds an initial `argc/argv/envp` stack frame, and can either spawn a new task or prepare an image for `sys_exec`. |
 | **ATA PIO driver** | Primary-bus slave device (QEMU `if=ide,index=1`). LBA28 PIO reads, BSY/DRQ polling with timeout, nIEN=1 (device interrupts disabled). Wrapped in `without_interrupts` to prevent preemption mid-transfer. |
 | **FAT32 layer** | BPB parsing, FAT chain walking, short-name and long-filename lookup, directory traversal, cluster→sector mapping, create/write/rename/delete/copy helpers, temp-write+rename safe writes, free-space stats, and a basic `fsck` consistency summary. `fat32::read_file(path)` returns `Option<Vec<u8>>`. |
 | **VFS** | Task-local fd tables (16 slots, fds 0–2 reserved) backed by shared file/pipe/shmem objects. `vfs_open` reads whole files into heap buffers; `vfs_pipe` allocates a 512-byte kernel ring buffer and returns per-task read/write fds; `vfs_read_blocking` blocks tasks on empty pipes and wakes them on write/EOF; `ipc` selectively inherits pipe ends into child processes; `vfs_shmem_create`/`vfs_shmem_map` manage a shared memory region pool indexed by ID. |
-| **Kernel services** | Persistent kernel log buffer flushed to `/LOGS/KERNEL.TXT`, crash-screen log tail, central device registry for PCI/USB/system devices, package/app metadata and file associations, networking status foundation, and ACPI power-control status foundation. |
+| **Networking** | Legacy PCI virtio-net driver for QEMU user networking, polling RX/TX virtqueues, Ethernet framing, ARP cache, IPv4, ICMP echo, UDP DNS queries, minimal TCP client sockets, and userspace socket syscalls. |
+| **Kernel services** | Persistent kernel log buffer flushed to `/LOGS/KERNEL.TXT`, crash-screen log tail, central device registry for PCI/USB/system devices, package/app metadata and file associations, networking status, and ACPI power-control status foundation. |
 | **Applications** | Terminal, System Monitor, Text Viewer, Color Picker, and File Manager. |
-| **Disk image** | `disk-image/src/fs-image.rs` builds `fs.img` (64 MiB FAT32) with `/bin/hello.txt`, `/bin/hello`, `/bin/exec`, `/bin/pipe`, `/bin/piperd`, `/bin/pipewr`, `/bin/keyecho`, `/bin/read`, and `/bin/terminal`. The Makefile attaches it to QEMU as the IDE slave. |
+| **Disk image** | `disk-image/src/fs-image.rs` builds `fs.img` (64 MiB FAT32) with `/bin/hello.txt`, `/bin/hello`, `/bin/exec`, `/bin/pipe`, `/bin/piperd`, `/bin/pipewr`, `/bin/keyecho`, `/bin/read`, `/bin/terminal`, `/bin/netdemo`, and `/bin/wget`. The Makefile attaches it to QEMU as the IDE slave. |
 
 ### Applications
 
@@ -119,6 +122,10 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `info` | CPU vendor and heap usage |
 | `devices` | Print the central PCI/USB/system device registry |
 | `net` | Print network adapter/protocol status |
+| `netproto` | Print ARP/IPv4/ICMP/UDP/TCP protocol status |
+| `dns <host>` | Resolve a host through the network DNS API |
+| `ping <host>` | Send an ICMP echo request |
+| `http <host> [path]` | Fetch an HTTP response through the kernel network API |
 | `power [reboot\|shutdown\|sleep]` | Print or request power-control actions |
 | `log` | Flush and print the kernel log tail |
 | `fsck` | Print FAT32 consistency and root-entry summary |
@@ -149,6 +156,12 @@ brew install qemu
 make run
 ```
 
+For virtio networking in QEMU:
+
+```bash
+make run-net
+```
+
 The build process compiles the kernel ELF, compiles the userspace ELF binaries
 in `userspace/hello/`, wraps the kernel into a BIOS-bootable `bios.img`, and
 builds `fs.img` with the userspace binaries embedded into `/bin`.
@@ -165,7 +178,7 @@ disk-image/
   src/main.rs      Host tool — wraps kernel ELF into bios.img via bootloader 0.11
 src/fs-image.rs  Host tool — builds fs.img (64 MiB FAT32) with /bin/hello.txt,
                     /bin/hello, /bin/exec, /bin/pipe, /bin/piperd, /bin/pipewr,
-                    /bin/keyecho, and /bin/read (Phase 13 binaries)
+                    /bin/keyecho, /bin/read, /bin/terminal, /bin/netdemo, /bin/wget
 src/
   main.rs          Kernel entry point — framebuffer init, GDT, heap, scheduler, main loop
   gdt.rs           GDT (ring-0/ring-3 segments) + TSS (RSP0 for ring-3 IRQ entry)
@@ -191,7 +204,8 @@ vfs.rs           VFS — task-local fd tables over shared file/pipe/shmem object
   notifications.rs Desktop notification queue used by USB/task/filesystem events
   clipboard.rs     Shared text/path clipboard service
   device_registry.rs Central PCI/USB/system device table
-  net.rs           Network adapter detection/status foundation
+  net.rs           Ethernet/ARP/IPv4/ICMP/UDP/DNS/TCP network stack
+  virtio_net.rs    Legacy PCI virtio-net driver over polling virtqueues
   acpi.rs          Power-control status foundation
   app_metadata.rs  App/package metadata and file associations
   shortcuts.rs     /CONFIG/SHORTCUT.CFG global shortcut loader
@@ -218,6 +232,8 @@ userspace/
     src/bin/pipewr.rs `/bin/pipewr` — userspace shared-pipe writer demo
     src/bin/keyecho.rs `/bin/keyecho` — userspace WM key/click event packet demo
     src/bin/read.rs `/bin/read` — userspace VFS demo that opens and reads `/bin/motd.txt`
+    src/bin/netdemo.rs `/bin/netdemo` — userspace DNS/HTTP syscall demo
+    src/bin/wget.rs `/bin/wget` — userspace TCP socket HTTP client
     linker.ld      Fixed-address linker script for the userspace ELF binaries
 ```
 
@@ -315,7 +331,7 @@ faults still panic.
 | 11 | Filesystem (FAT32) + VFS + disk driver | **Done** |
 | 12 | ELF loader — real programs run from disk | **Done** |
 | 13 | Pipes + shared memory + IPC | **Done** |
-| 14 | USB HID — real hardware input | In progress |
-| 15 | Networking — virtio-net, TCP/IP | Planned |
+| 14 | USB HID — real hardware input | **Done** |
+| 15 | Networking — virtio-net, TCP/IP | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).
