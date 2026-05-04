@@ -1,9 +1,9 @@
-/// xHCI host controller driver — Phase 14 slices 1–4.
+/// xHCI host controller driver — Phase 14.
 ///
-/// Default boot stays on a passive probe so the existing PS/2 input path
-/// remains stable. An opt-in build (`COOLOS_XHCI_ACTIVE_INIT=1`) exercises the
-/// real host-controller bring-up sequence: ownership handoff, reset, DCBAA,
-/// command ring, event ring, and controller run.
+/// Full active init runs on every boot: ownership handoff, reset, DCBAA,
+/// scratchpad buffers, command ring, event ring, device enumeration, and
+/// HID boot-protocol interrupt transfers. PS/2 fallback is kept alive only
+/// when ACPI FADT reports an 8042 controller and no USB device takes over.
 extern crate alloc;
 
 use alloc::{format, string::String, vec, vec::Vec};
@@ -122,7 +122,6 @@ const DESCRIPTOR_BUFFER_BYTES: usize = 4096;
 const BOOT_KEYBOARD_REPORT_BYTES: usize = 8;
 const BOOT_MOUSE_REPORT_BYTES: usize = 4;
 
-const ACTIVE_INIT: bool = option_env!("COOLOS_XHCI_ACTIVE_INIT").is_some();
 const SPIN_TIMEOUT: u64 = 10_000_000;
 
 #[derive(Clone)]
@@ -201,6 +200,7 @@ struct TransferRingState {
     virt: u64,
     enqueue_idx: usize,
     cycle: bool,
+    size: usize,
 }
 
 struct EventRingState {
@@ -329,16 +329,7 @@ pub fn probe() -> Vec<String> {
         loc.bus, loc.device, loc.function, hdr.vendor_id, hdr.device_id,
     ));
 
-    if ACTIVE_INIT {
-        pci::enable_bus_master(loc);
-        println!("[xhci] active init enabled");
-        status.push(String::from("USB: active controller init enabled"));
-    } else {
-        pci::enable_memory_space(loc);
-        status.push(String::from(
-            "USB: passive probe only; PS/2 remains primary input",
-        ));
-    }
+    pci::enable_bus_master(loc);
 
     let mmio_virt = crate::vmm::phys_to_virt(x86_64::PhysAddr::new(mmio_phys)).as_u64();
     let info = read_info(mmio_virt);
@@ -361,29 +352,24 @@ pub fn probe() -> Vec<String> {
         info.version, info.max_slots, info.max_ports, info.scratchpad_count, info.ac64 as u8,
     ));
 
-    if ACTIVE_INIT {
-        match active_init(&info) {
-            Ok(state) => {
-                println!(
-                    "[xhci] active init ready dcbaa={:#x} cmd={:#x} evt={:#x} erst={:#x}",
-                    state.dcbaa_phys, state.cmd_ring_phys, state.event_ring_phys, state.erst_phys,
-                );
-                status.push(String::from("USB: active init ready"));
-                *RUNTIME.lock() = Some(state);
-                runtime_started = true;
-            }
-            Err(err) => {
-                println!("[xhci] active init failed: {}", err);
-                status.push(format!("USB: active init failed: {}", err));
-            }
+    match active_init(&info) {
+        Ok(state) => {
+            println!(
+                "[xhci] active init ready dcbaa={:#x} cmd={:#x} evt={:#x} erst={:#x}",
+                state.dcbaa_phys, state.cmd_ring_phys, state.event_ring_phys, state.erst_phys,
+            );
+            status.push(String::from("USB: active init ready"));
+            *RUNTIME.lock() = Some(state);
+            runtime_started = true;
+        }
+        Err(err) => {
+            println!("[xhci] active init failed: {}; falling back to passive scan", err);
+            status.push(format!("USB: active init failed: {}", err));
         }
     }
 
     if !runtime_started {
         status.extend(scan_ports(&info));
-    }
-    if !ACTIVE_INIT {
-        println!("[xhci] passive probe only; controller bring-up disabled to preserve PS/2 input");
     }
     status
 }
@@ -527,10 +513,6 @@ fn read_info(mmio_virt: u64) -> XhciInfo {
 }
 
 fn active_init(info: &XhciInfo) -> Result<ActiveState, &'static str> {
-    if info.scratchpad_count != 0 {
-        return Err("scratchpad buffers not implemented");
-    }
-
     let pagesize = unsafe { read_u32(info.op_base + OP_PAGESIZE) };
     if pagesize & 0x1 == 0 {
         return Err("4KiB pages not supported by controller");
@@ -552,6 +534,23 @@ fn active_init(info: &XhciInfo) -> Result<ActiveState, &'static str> {
     }
 
     let (dcbaa_phys, dcbaa_virt) = alloc_zeroed_phys().ok_or("dcbaa alloc failed")?;
+
+    // Scratchpad buffers: one 4 KiB page per entry, pointers written into a
+    // page-aligned array whose physical address goes in DCBAA slot 0.
+    if info.scratchpad_count > 512 {
+        return Err("scratchpad count exceeds one-page array capacity");
+    }
+    if info.scratchpad_count > 0 {
+        let (sb_array_phys, sb_array_virt) =
+            alloc_zeroed_phys().ok_or("scratchpad array alloc failed")?;
+        unsafe { write_u64(dcbaa_virt, sb_array_phys); }
+        for i in 0..info.scratchpad_count {
+            let (sb_phys, _) = alloc_zeroed_phys().ok_or("scratchpad page alloc failed")?;
+            unsafe { write_u64(sb_array_virt + i as u64 * 8, sb_phys); }
+        }
+        println!("[xhci] allocated {} scratchpad pages", info.scratchpad_count);
+    }
+
     let (cmd_ring_phys, cmd_ring_virt) = alloc_zeroed_phys().ok_or("command ring alloc failed")?;
     let (event_ring_phys, event_ring_virt) =
         alloc_zeroed_phys().ok_or("event ring alloc failed")?;
@@ -1053,6 +1052,7 @@ fn build_default_control_device(
             virt: transfer_ring_virt,
             enqueue_idx: 0,
             cycle: true,
+            size: CONTROL_RING_TRBS,
         },
         descriptor_phys,
         descriptor_virt,
@@ -1428,6 +1428,7 @@ fn activate_hid_interface(
             virt: report_ring_virt,
             enqueue_idx: 0,
             cycle: true,
+            size: INTERRUPT_RING_TRBS,
         },
         report_buffer_phys,
         report_buffer_virt,
@@ -1998,7 +1999,7 @@ fn push_transfer_trb(
     }
 
     ring.enqueue_idx += 1;
-    if ring.enqueue_idx == CONTROL_RING_TRBS - 1 {
+    if ring.enqueue_idx == ring.size - 1 {
         ring.enqueue_idx = 0;
         ring.cycle = !ring.cycle;
     }

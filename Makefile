@@ -4,10 +4,8 @@ TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
 BIOS    := $(CURDIR)/target/x86_64-unknown-none/release/bios.img
 FSIMG   := $(CURDIR)/target/x86_64-unknown-none/release/fs.img
-USB_INIT_TARGET_DIR := $(CURDIR)/target/usb-init
-USB_INIT_KERNEL := $(USB_INIT_TARGET_DIR)/x86_64-unknown-none/release/cool_os
-USB_INIT_BIOS := $(USB_INIT_TARGET_DIR)/x86_64-unknown-none/release/bios.img
-USB_INIT_FSIMG := $(USB_INIT_TARGET_DIR)/x86_64-unknown-none/release/fs.img
+USB_INIT_BIOS := $(BIOS)
+USB_INIT_FSIMG := $(FSIMG)
 USER_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/hello_user
 USER_EXEC_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/exec
 USER_PIPE_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/pipe
@@ -267,7 +265,7 @@ smoke-kernel-units: build
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--seconds $(SMOKE_SECONDS) \
-		--expect "[selftest] kernel unit checks ok=9 fail=0" \
+		--expect "[selftest] kernel unit checks ok=11 fail=0" \
 		--expect "[boot] desktop ready"
 
 smoke-boot-budget: build
@@ -322,19 +320,7 @@ build:
 	(cd disk-image && cargo run --bin disk-image -- "$(KERNEL)")
 	(cd disk-image && cargo run --bin fs-image -- "$(FSIMG)" "$(USER_TARGET)" "$(USER_EXEC_TARGET)" "$(USER_PIPE_TARGET)" "$(USER_READ_TARGET)" "$(USER_PIPERD_TARGET)" "$(USER_PIPEWR_TARGET)" "$(USER_KEYECHO_TARGET)" "$(USER_TERMINAL_TARGET)" "$(USER_NETDEMO_TARGET)")
 
-build-usb-init:
-	COOLOS_XHCI_ACTIVE_INIT=1 cargo build --release --target $(TARGET) \
-		--target-dir $(USB_INIT_TARGET_DIR) \
-		-Z build-std=core,compiler_builtins,alloc \
-		-Z build-std-features=compiler-builtins-mem
-	RUSTFLAGS="-C link-arg=-T$(CURDIR)/userspace/hello/linker.ld" \
-		COOLOS_XHCI_ACTIVE_INIT=1 cargo build --manifest-path $(CURDIR)/userspace/hello/Cargo.toml \
-		--release \
-		--target $(TARGET) \
-		--target-dir $(CURDIR)/target/userspace/hello \
-		-Z build-std=core,compiler_builtins
-	(cd disk-image && COOLOS_XHCI_ACTIVE_INIT=1 cargo run --bin disk-image -- "$(USB_INIT_KERNEL)")
-	(cd disk-image && COOLOS_XHCI_ACTIVE_INIT=1 cargo run --bin fs-image -- "$(USB_INIT_FSIMG)" "$(USER_TARGET)" "$(USER_EXEC_TARGET)" "$(USER_PIPE_TARGET)" "$(USER_READ_TARGET)" "$(USER_PIPERD_TARGET)" "$(USER_PIPEWR_TARGET)" "$(USER_KEYECHO_TARGET)" "$(USER_TERMINAL_TARGET)" "$(USER_NETDEMO_TARGET)")
+build-usb-init: build
 
 clean:
 	cargo clean

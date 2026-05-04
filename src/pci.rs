@@ -125,13 +125,6 @@ pub fn enable_bus_master(loc: Location) {
     write32(loc, 0x04, cmd | 0x0006);
 }
 
-/// Enable memory decoding in the command register without enabling DMA.
-pub fn enable_memory_space(loc: Location) {
-    let cmd = read32(loc, 0x04);
-    // Bit 1: memory space enable.
-    write32(loc, 0x04, cmd | 0x0002);
-}
-
 pub fn interrupt_caps(loc: Location) -> InterruptCaps {
     let status_command = read32(loc, 0x04);
     if status_command & (1 << 20) == 0 {

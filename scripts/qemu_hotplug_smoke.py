@@ -218,12 +218,12 @@ def main() -> int:
             if not output.wait_for("[xhci] active init ready", args.boot_timeout):
                 raise RuntimeError("xHCI controller did not reach active init ready")
             if not output.wait_for(
-                "[input] no USB keyboard detected; enabling PS/2 keyboard fallback",
+                "[input] no USB keyboard detected",
                 args.boot_timeout,
             ):
                 raise RuntimeError("kernel did not reach the no-USB-keyboard fallback path")
             if not output.wait_for(
-                "[input] no USB mouse detected; enabling PS/2 mouse fallback",
+                "[input] no USB mouse detected",
                 args.boot_timeout,
             ):
                 raise RuntimeError("kernel did not reach the no-USB-mouse fallback path")
@@ -256,7 +256,7 @@ def main() -> int:
                 args,
                 device_id="hotkbd",
                 remove_message="keyboard detach",
-                fallback_message="[input] no USB keyboard detected; enabling PS/2 keyboard fallback",
+                fallback_message="[input] no USB keyboard detected",
             )
 
             unplug_device(
@@ -265,7 +265,7 @@ def main() -> int:
                 args,
                 device_id="hotmouse",
                 remove_message="mouse detach",
-                fallback_message="[input] no USB mouse detected; enabling PS/2 mouse fallback",
+                fallback_message="[input] no USB mouse detected",
             )
 
             rc = terminate_qemu(proc, reader)

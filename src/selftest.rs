@@ -63,6 +63,18 @@ pub fn run_boot_tests() {
         &mut ok,
         &mut fail,
     );
+    check(
+        "ps2-kbd-fallback",
+        ps2_kbd_fallback_roundtrip(),
+        &mut ok,
+        &mut fail,
+    );
+    check(
+        "ps2-mouse-fallback",
+        ps2_mouse_fallback_roundtrip(),
+        &mut ok,
+        &mut fail,
+    );
     crate::println!("[selftest] kernel unit checks ok={} fail={}", ok, fail);
     crate::klog::log_owned(format!("selftest: ok={} fail={}", ok, fail));
 }
@@ -99,6 +111,18 @@ fn fat32_mutation_roundtrip() -> bool {
     crate::fat32::read_file(path)
         .map(|bytes| bytes.as_slice() == b"selftest\n")
         .unwrap_or(false)
+}
+
+fn ps2_kbd_fallback_roundtrip() -> bool {
+    crate::keyboard::enable_ps2_fallback();
+    crate::keyboard::disable_ps2_fallback();
+    true
+}
+
+fn ps2_mouse_fallback_roundtrip() -> bool {
+    crate::mouse::enable_ps2_fallback();
+    crate::mouse::disable_ps2_fallback();
+    true
 }
 
 fn vfs_write_enforcement() -> bool {

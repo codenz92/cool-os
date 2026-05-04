@@ -16,7 +16,7 @@ use spin::Mutex;
 use x86_64::instructions::port::Port;
 
 const QUEUE_SIZE: usize = 64;
-const USB_DEBUG_LOGS: bool = option_env!("COOLOS_XHCI_ACTIVE_INIT").is_some();
+const USB_DEBUG_LOGS: bool = false;
 
 pub const MOD_SHIFT: u8 = 1 << 0;
 pub const MOD_CTRL: u8 = 1 << 1;

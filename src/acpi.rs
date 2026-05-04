@@ -12,6 +12,15 @@ static PM1A_CNT_BLK: AtomicU64 = AtomicU64::new(0);
 static RESET_REG_SPACE: AtomicU64 = AtomicU64::new(0);
 static RESET_REG_ADDR: AtomicU64 = AtomicU64::new(0);
 static RESET_VALUE: AtomicU64 = AtomicU64::new(0);
+// Default true: conservatively assume PS/2 is present if FADT does not say otherwise.
+static HAS_8042: AtomicBool = AtomicBool::new(true);
+
+/// Returns whether the FADT IAPC_BOOT_ARCH field reports an 8042-compatible
+/// PS/2 controller.  Defaults to `true` (PS/2 assumed present) until ACPI
+/// tables are parsed.  Call only after `acpi::init()`.
+pub fn has_8042() -> bool {
+    HAS_8042.load(Ordering::Relaxed)
+}
 
 pub fn init(rsdp_addr: Option<u64>, phys_offset: u64) {
     PHYS_OFFSET.store(phys_offset, Ordering::Relaxed);
@@ -178,6 +187,23 @@ unsafe fn discover_fadt(phys_offset: u64) {
 }
 
 unsafe fn parse_fadt(ptr: *const u8) {
+    let fadt_len = u32::from_le_bytes([
+        ptr.add(4).read_volatile(),
+        ptr.add(5).read_volatile(),
+        ptr.add(6).read_volatile(),
+        ptr.add(7).read_volatile(),
+    ]) as usize;
+    // IAPC_BOOT_ARCH lives at offset 109 (2 bytes); only present in FADT >= 1.0
+    // with length >= 111.  Bit 1 = 8042 PS/2 controller present.
+    if fadt_len >= 111 {
+        let iapc = u16::from_le_bytes([
+            ptr.add(109).read_volatile(),
+            ptr.add(110).read_volatile(),
+        ]);
+        HAS_8042.store(iapc & 0x0002 != 0, Ordering::Relaxed);
+    }
+    // If FADT is too short the field is absent; HAS_8042 stays true (conservative).
+
     let pm1a = u32::from_le_bytes([
         ptr.add(64).read_volatile(),
         ptr.add(65).read_volatile(),

@@ -354,9 +354,11 @@ All Phase 13 items done.
 - [x] Implement USB enumeration — detect connected devices, read device/configuration
       descriptors, and identify boot HID keyboard/mouse interfaces plus interrupt IN
       endpoints.
-- [ ] Finish the USB HID runtime — switch devices into a usable protocol, configure
+- [x] Finish the USB HID runtime — switch devices into a usable protocol, configure
       interrupt endpoints, and feed keyboard/mouse events into the existing input path.
-- [ ] Remove the PS/2 driver dependency for systems that do not support it.
+- [x] Remove the PS/2 driver dependency for systems that do not support it — ACPI
+      FADT IAPC_BOOT_ARCH bit 1 is read; PS/2 fallback is only enabled when the
+      hardware reports an 8042-compatible controller.
 
 **Exit criteria:** coolOS boots on real x86_64 hardware and accepts keyboard and
 mouse input via USB.

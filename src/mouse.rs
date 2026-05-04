@@ -16,7 +16,7 @@ static MOUSE_X: AtomicUsize = AtomicUsize::new(0);
 static MOUSE_Y: AtomicUsize = AtomicUsize::new(0);
 static MOUSE_LEFT: AtomicBool = AtomicBool::new(false);
 static MOUSE_RIGHT: AtomicBool = AtomicBool::new(false);
-const USB_DEBUG_LOGS: bool = option_env!("COOLOS_XHCI_ACTIVE_INIT").is_some();
+const USB_DEBUG_LOGS: bool = false;
 static USB_MOUSE_LOG_COUNT: AtomicI32 = AtomicI32::new(0);
 static PS2_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
