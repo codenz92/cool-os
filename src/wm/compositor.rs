@@ -9,8 +9,8 @@ use lazy_static::lazy_static;
 use spin::Mutex;
 
 use crate::apps::{
-    ColorPickerApp, DisplaySettingsApp, FileManagerApp, FileManagerOpenRequest, PersonalizeApp,
-    SysMonApp, TerminalApp, TextViewerApp,
+    BrowserApp, ColorPickerApp, DisplaySettingsApp, FileManagerApp, FileManagerOpenRequest,
+    PersonalizeApp, SysMonApp, TerminalApp, TextViewerApp,
 };
 use crate::desktop_settings::{self, DesktopSortMode, WallpaperPreset};
 use crate::framebuffer::{BLACK, WHITE};
@@ -351,7 +351,7 @@ struct DesktopIconSpec {
     type_rank: u8,
 }
 
-const DESKTOP_ICON_SPECS: [DesktopIconSpec; 5] = [
+const DESKTOP_ICON_SPECS: [DesktopIconSpec; 6] = [
     DesktopIconSpec {
         label: "Terminal",
         app: "Terminal",
@@ -371,6 +371,11 @@ const DESKTOP_ICON_SPECS: [DesktopIconSpec; 5] = [
         label: "Viewer",
         app: "Text Viewer",
         type_rank: 3,
+    },
+    DesktopIconSpec {
+        label: "Browser",
+        app: "Web Browser",
+        type_rank: 1,
     },
     DesktopIconSpec {
         label: "Colors",
@@ -401,6 +406,7 @@ fn canonical_app_title(name: &str) -> &str {
         "System Mon" | "System Monitor" => "System Monitor",
         "Diag" | "Diagnostics" => "Diagnostics",
         "Text View" | "Text Viewer" => "Text Viewer",
+        "Browser" | "Web" | "Web Browser" => "Web Browser",
         "Color Pick" | "Color Picker" => "Color Picker",
         "Display Settings" => "Display Settings",
         "Personalize" => "Personalize",
@@ -419,6 +425,7 @@ fn window_accent(title: &str) -> u32 {
         "System Monitor" => ICON_MON_ACC,
         "Diagnostics" => 0x00_55_FF_CC,
         "Text Viewer" => ICON_TXT_ACC,
+        "Web Browser" => 0x00_33_CC_99,
         "Color Picker" => ICON_COL_ACC,
         "Display Settings" => 0x00_66_CC_FF,
         "Personalize" => 0x00_CC_66_FF,
@@ -437,6 +444,7 @@ fn window_glyph(title: &str) -> &'static str {
         "System Monitor" => "M#",
         "Diagnostics" => "D!",
         "Text Viewer" => "Tx",
+        "Web Browser" => "WB",
         "Color Picker" => "CP",
         "Display Settings" => "DS",
         "Personalize" => "P*",
@@ -502,14 +510,6 @@ fn merge_spans(a: (usize, usize), b: (usize, usize)) -> (usize, usize) {
         (false, true) => b,
         (true, true) => (a.0.min(b.0), a.1.max(b.1)),
     }
-}
-
-fn should_show_welcome() -> bool {
-    crate::config_store::read("/CONFIG/WELCOME.SEEN").is_none()
-}
-
-fn mark_welcome_seen() {
-    let _ = crate::config_store::safe_write("/CONFIG/WELCOME.SEEN", b"1\n");
 }
 
 fn start_menu_banner_clock(uptime_ticks: u64) -> (String, String) {
@@ -682,6 +682,7 @@ pub enum AppWindow {
     Terminal(TerminalApp),
     SysMon(SysMonApp),
     TextViewer(TextViewerApp),
+    Browser(BrowserApp),
     ColorPicker(ColorPickerApp),
     DisplaySettings(DisplaySettingsApp),
     Personalize(PersonalizeApp),
@@ -694,6 +695,7 @@ impl AppWindow {
             AppWindow::Terminal(t) => &t.window,
             AppWindow::SysMon(s) => &s.window,
             AppWindow::TextViewer(v) => &v.window,
+            AppWindow::Browser(b) => &b.window,
             AppWindow::ColorPicker(c) => &c.window,
             AppWindow::DisplaySettings(d) => &d.window,
             AppWindow::Personalize(p) => &p.window,
@@ -705,6 +707,7 @@ impl AppWindow {
             AppWindow::Terminal(t) => &mut t.window,
             AppWindow::SysMon(s) => &mut s.window,
             AppWindow::TextViewer(v) => &mut v.window,
+            AppWindow::Browser(b) => &mut b.window,
             AppWindow::ColorPicker(c) => &mut c.window,
             AppWindow::DisplaySettings(d) => &mut d.window,
             AppWindow::Personalize(p) => &mut p.window,
@@ -715,6 +718,7 @@ impl AppWindow {
         match self {
             AppWindow::Terminal(t) => t.handle_key(c),
             AppWindow::TextViewer(v) => v.handle_key(c),
+            AppWindow::Browser(b) => b.handle_key(c),
             AppWindow::FileManager(f) => f.handle_key(c),
             _ => {}
         }
@@ -726,6 +730,7 @@ impl AppWindow {
             AppWindow::DisplaySettings(ds) => ds.handle_click(lx, ly),
             AppWindow::FileManager(fm) => fm.handle_click(lx, ly),
             AppWindow::Personalize(p) => p.handle_click(lx, ly),
+            AppWindow::Browser(b) => b.handle_click(lx, ly),
             _ => {}
         }
         self.window_mut().mark_dirty_all();
@@ -764,6 +769,7 @@ impl AppWindow {
         match self {
             AppWindow::TextViewer(v) => v.handle_scroll(delta),
             AppWindow::FileManager(f) => f.handle_scroll(delta),
+            AppWindow::Browser(b) => b.handle_scroll(delta),
             _ => {}
         }
         self.window_mut().mark_dirty_all();
@@ -773,6 +779,7 @@ impl AppWindow {
             AppWindow::Terminal(t) => t.update(),
             AppWindow::SysMon(s) => s.update(),
             AppWindow::TextViewer(v) => v.update(),
+            AppWindow::Browser(b) => b.update(),
             AppWindow::ColorPicker(c) => c.update(),
             AppWindow::DisplaySettings(d) => d.update(),
             AppWindow::FileManager(f) => f.update(),
@@ -926,17 +933,6 @@ impl WindowManager {
             wallpaper,
             wallpaper_preset: settings.wallpaper,
         };
-        wm.restore_session();
-        if wm.windows.is_empty() {
-            wm.launch_startup_apps();
-        }
-        if should_show_welcome() {
-            wm.launch_app("Welcome", 72, 72);
-            mark_welcome_seen();
-        }
-        if wm.windows.is_empty() {
-            wm.add_window(AppWindow::Terminal(TerminalApp::new(24, 24)));
-        }
         wm.session_ready = true;
         wm
     }
@@ -1042,8 +1038,10 @@ impl WindowManager {
                     let dir = if extra.is_empty() { "/" } else { extra };
                     self.launch_file_manager_at(dir, x, y);
                 }
-                "Terminal" | "System Monitor" | "Diagnostics" | "Text Viewer" | "Color Picker"
-                | "Display Settings" | "Personalize" => self.launch_app(title, x, y),
+                "Terminal" | "System Monitor" | "Diagnostics" | "Text Viewer" | "Web Browser"
+                | "Color Picker" | "Display Settings" | "Personalize" => {
+                    self.launch_app(title, x, y)
+                }
                 _ => {}
             }
 
@@ -1119,6 +1117,7 @@ impl WindowManager {
                 TextViewerApp::diagnostics_viewer(wx, wy),
             )),
             "Text Viewer" => self.add_window(AppWindow::TextViewer(TextViewerApp::new(wx, wy))),
+            "Web Browser" => self.add_window(AppWindow::Browser(BrowserApp::new(wx, wy))),
             "Color Picker" => self.add_window(AppWindow::ColorPicker(ColorPickerApp::new(wx, wy))),
             "Display Settings" => {
                 self.add_window(AppWindow::DisplaySettings(DisplaySettingsApp::new(wx, wy)))
@@ -1140,16 +1139,6 @@ impl WindowManager {
         if self.windows.len() > before {
             crate::app_lifecycle::record_app(canonical_app_title(name));
             self.apply_remembered_geometry(self.windows.len() - 1);
-        }
-    }
-
-    fn launch_startup_apps(&mut self) {
-        let taskbar_y = self.shadow_height as i32 - TASKBAR_H;
-        for app in crate::app_lifecycle::startup_apps().iter() {
-            let off = self.windows.len() as i32 * 16;
-            let wx = (24 + off).min(self.shadow_width as i32 - 220);
-            let wy = (24 + off).min(taskbar_y - 120);
-            self.launch_app(app, wx, wy);
         }
     }
 
@@ -2977,13 +2966,6 @@ impl WindowManager {
             let s: &mut [u32] = self.shadow.as_mut_slice();
 
             // ── Desktop icons — drawn BEFORE windows so windows can cover them ────
-            let icon_data: [(u32, u32); 5] = [
-                (ICON_TERM_BG, ICON_TERM_ACC),  // Terminal
-                (ICON_MON_BG, ICON_MON_ACC),    // Monitor
-                (0x00_00_0E_20, 0x00_55_DD_FF), // Files (File Manager)
-                (ICON_TXT_BG, ICON_TXT_ACC),    // Viewer (Text Viewer)
-                (ICON_COL_BG, ICON_COL_ACC),    // Colors (Color Picker)
-            ];
             for (i, icon) in desktop_icons.iter().enumerate() {
                 let selected =
                     self.icon_selected == Some(i) || self.desktop_multi_selected.contains(&i);
@@ -2996,7 +2978,16 @@ impl WindowManager {
                     .iter()
                     .any(|w| w.window().title == canonical_app_title(icon.app));
 
-                let (icon_bg, icon_acc) = icon_data[i];
+                let app_title = canonical_app_title(icon.app);
+                let (icon_bg, icon_acc) = match app_title {
+                    "Terminal" => (ICON_TERM_BG, ICON_TERM_ACC),
+                    "System Monitor" => (ICON_MON_BG, ICON_MON_ACC),
+                    "File Manager" => (0x00_00_0E_20, 0x00_55_DD_FF),
+                    "Text Viewer" => (ICON_TXT_BG, ICON_TXT_ACC),
+                    "Web Browser" => (0x00_04_1A_17, 0x00_33_CC_99),
+                    "Color Picker" => (ICON_COL_BG, ICON_COL_ACC),
+                    _ => (ICON_TXT_BG, ACCENT),
+                };
 
                 // Drop shadow
                 s_fill(
@@ -3072,8 +3063,8 @@ impl WindowManager {
                 );
 
                 // ── Per-app pixel-art icon ────────────────────────────────────────
-                match i {
-                    0 => {
+                match app_title {
+                    "Terminal" => {
                         // Terminal — ">" prompt + underscore cursor
                         let bx = icon.x + 8;
                         let by = icon.y + 14;
@@ -3084,7 +3075,7 @@ impl WindowManager {
                         s_fill(s, sw, bx, by + 12, 6, 3, icon_acc);
                         s_fill(s, sw, icon.x + 8, icon.y + 38, 22, 2, icon_acc);
                     }
-                    1 => {
+                    "System Monitor" => {
                         // Monitor — bar chart
                         let base_y = icon.y + 44;
                         let bar_w = 8i32;
@@ -3093,7 +3084,7 @@ impl WindowManager {
                         s_fill(s, sw, icon.x + 30, base_y - 18, bar_w, 18, icon_acc);
                         s_fill(s, sw, icon.x + 4, base_y, 36, 2, icon_acc);
                     }
-                    2 => {
+                    "File Manager" => {
                         // Files — folder with content lines
                         s_fill(s, sw, icon.x + 4, icon.y + 10, 36, 30, icon_acc);
                         s_fill(s, sw, icon.x + 2, icon.y + 18, 40, 24, icon_acc);
@@ -3101,7 +3092,7 @@ impl WindowManager {
                         s_fill(s, sw, icon.x + 8, icon.y + 26, 28, 2, 0x00_00_0B_20);
                         s_fill(s, sw, icon.x + 8, icon.y + 32, 28, 2, 0x00_00_0B_20);
                     }
-                    3 => {
+                    "Text Viewer" => {
                         // Viewer — document page with text lines
                         draw_rect_border(s, sw, icon.x + 8, icon.y + 6, 36, 40, icon_acc);
                         s_fill(s, sw, icon.x + 11, icon.y + 10, 28, 2, icon_acc);
@@ -3110,7 +3101,17 @@ impl WindowManager {
                         s_fill(s, sw, icon.x + 11, icon.y + 28, 16, 2, icon_acc);
                         s_fill(s, sw, icon.x + 11, icon.y + 34, 22, 2, icon_acc);
                     }
-                    4 => {
+                    "Web Browser" => {
+                        // Browser — page frame with network globe
+                        draw_rect_border(s, sw, icon.x + 7, icon.y + 9, 38, 32, icon_acc);
+                        s_fill(s, sw, icon.x + 8, icon.y + 10, 36, 5, icon_acc);
+                        draw_circle_outline(s, sw, icon.x + 27, icon.y + 28, 11, icon_acc);
+                        s_fill(s, sw, icon.x + 17, icon.y + 27, 20, 2, icon_acc);
+                        s_fill(s, sw, icon.x + 26, icon.y + 18, 2, 21, icon_acc);
+                        s_fill(s, sw, icon.x + 18, icon.y + 21, 18, 2, icon_acc);
+                        s_fill(s, sw, icon.x + 18, icon.y + 34, 18, 2, icon_acc);
+                    }
+                    "Color Picker" => {
                         // Colors — four colour quadrants
                         s_fill(s, sw, icon.x + 6, icon.y + 8, 16, 16, 0x00_FF_50_50);
                         s_fill(s, sw, icon.x + 26, icon.y + 8, 16, 16, 0x00_50_FF_50);
@@ -3118,7 +3119,7 @@ impl WindowManager {
                         s_fill(s, sw, icon.x + 26, icon.y + 28, 16, 16, 0x00_FF_FF_50);
                         s_fill(s, sw, icon.x + 20, icon.y + 20, 10, 10, icon_acc);
                     }
-                    _ => unreachable!(),
+                    _ => {}
                 }
 
                 // Selection / hover ring
@@ -6205,23 +6206,31 @@ fn launcher_matches(query: &str) -> Vec<LauncherMatch> {
             .unwrap_or(false);
         let detail = app_launcher_detail(app);
         let mut score = if category_match { Some(80) } else { None };
-        if score.is_none() {
-            score = launcher_score(app.name, &detail, search_query);
+        if let Some(app_score) = launcher_score(app.name, &detail, search_query) {
+            score = Some(score.unwrap_or(0).max(app_score));
         }
-        if score.is_none() {
-            for alias in app.aliases {
-                if let Some(alias_score) = launcher_score(alias, &detail, search_query) {
-                    score = Some(alias_score.saturating_sub(1));
-                    break;
-                }
+        for alias in app.aliases {
+            if let Some(alias_score) = launcher_score(alias, &detail, search_query) {
+                score = Some(score.unwrap_or(0).max(alias_score.saturating_sub(1)));
             }
         }
         if let Some(score) = score {
+            let exact_boost = if app.command.eq_ignore_ascii_case(search_query)
+                || app.name.eq_ignore_ascii_case(search_query)
+                || app
+                    .aliases
+                    .iter()
+                    .any(|alias| alias.eq_ignore_ascii_case(search_query))
+            {
+                30
+            } else {
+                0
+            };
             matches.push(LauncherMatch {
                 label: String::from(app.name),
                 detail,
                 kind: LauncherMatchKind::App(String::from(app.name)),
-                score: score + recent_app_boost(app.name),
+                score: score + exact_boost + recent_app_boost(app.name),
             });
         }
     }
@@ -6237,11 +6246,18 @@ fn launcher_matches(query: &str) -> Vec<LauncherMatch> {
             } else {
                 launcher_score(&manifest.name, &detail, search_query).unwrap_or(1)
             };
+            let exact_boost = if manifest.command.eq_ignore_ascii_case(search_query)
+                || manifest.name.eq_ignore_ascii_case(search_query)
+            {
+                20
+            } else {
+                0
+            };
             matches.push(LauncherMatch {
                 label: manifest.name.clone(),
                 detail,
                 kind: LauncherMatchKind::App(manifest.name.clone()),
-                score,
+                score: score + exact_boost,
             });
         }
     }
@@ -6959,6 +6975,30 @@ fn draw_rect_border(s: &mut [u32], sw: usize, x: i32, y: i32, w: i32, h: i32, co
     s_fill(s, sw, x, y + h - 1, w, 1, color); // bottom
     s_fill(s, sw, x, y, 1, h, color); // left
     s_fill(s, sw, x + w - 1, y, 1, h, color); // right
+}
+
+fn draw_circle_outline(s: &mut [u32], sw: usize, cx: i32, cy: i32, r: i32, color: u32) {
+    let mut x = r;
+    let mut y = 0;
+    let mut err = 0;
+    let sh = if sw > 0 { s.len() / sw } else { 0 };
+    while x >= y {
+        s_put(s, sw, sh, cx + x, cy + y, color);
+        s_put(s, sw, sh, cx + y, cy + x, color);
+        s_put(s, sw, sh, cx - y, cy + x, color);
+        s_put(s, sw, sh, cx - x, cy + y, color);
+        s_put(s, sw, sh, cx - x, cy - y, color);
+        s_put(s, sw, sh, cx - y, cy - x, color);
+        s_put(s, sw, sh, cx + y, cy - x, color);
+        s_put(s, sw, sh, cx + x, cy - y, color);
+        y += 1;
+        if err <= 0 {
+            err += 2 * y + 1;
+        } else {
+            x -= 1;
+            err += 2 * (y - x) + 1;
+        }
+    }
 }
 
 fn draw_usb_tray_icon(s: &mut [u32], sw: usize, x: i32, y: i32, color: u32) {

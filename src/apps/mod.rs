@@ -1,3 +1,4 @@
+pub mod browser;
 pub mod colorpicker;
 pub mod displaysettings;
 pub mod filemanager;
@@ -6,6 +7,7 @@ pub mod sysmon;
 pub mod terminal;
 pub mod textviewer;
 
+pub use browser::BrowserApp;
 pub use colorpicker::ColorPickerApp;
 pub use displaysettings::DisplaySettingsApp;
 pub use filemanager::{FileManagerApp, FileManagerOpenRequest};

@@ -126,6 +126,16 @@ pub const APPS: &[AppMetadata] = &[
         associations: &["TXT", "MD", "LOG", "CFG", "RS"],
     },
     AppMetadata {
+        id: "app.browser",
+        name: "Web Browser",
+        glyph: "WB",
+        command: "browser",
+        category: AppCategory::Network,
+        permission: "network",
+        aliases: &["browser", "web", "www", "internet", "http"],
+        associations: &["HTML", "HTM", "URL"],
+    },
+    AppMetadata {
         id: "app.colors",
         name: "Color Picker",
         glyph: "CP",
@@ -229,6 +239,11 @@ pub const LAUNCHER_ENTRIES: &[LauncherEntry] = &[
         label: "System Monitor",
         detail: "runtime dashboard",
         kind: LauncherKind::App("System Monitor"),
+    },
+    LauncherEntry {
+        label: "Web Browser",
+        detail: "open HTTP web pages",
+        kind: LauncherKind::App("Web Browser"),
     },
     LauncherEntry {
         label: "Diagnostics",

@@ -81,7 +81,7 @@ pub fn load_from_disk() {
             .iter()
             .map(|app| String::from(*app))
             .collect(),
-        startup_apps: alloc::vec![String::from("Terminal")],
+        startup_apps: Vec::new(),
         recent_apps: Vec::new(),
         recent_files: Vec::new(),
         recent_commands: Vec::new(),
