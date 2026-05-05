@@ -1,4 +1,4 @@
-.PHONY: run run-net run-usb run-usb-init run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
+.PHONY: run run-net run-usb run-usb-init run-remote run-vnc run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -7,6 +7,7 @@ FSIMG   := $(CURDIR)/target/x86_64-unknown-none/release/fs.img
 USB_INIT_BIOS := $(BIOS)
 USB_INIT_FSIMG := $(FSIMG)
 QEMU_CPU ?= max
+QEMU_VNC ?= 127.0.0.1:1
 USER_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/hello_user
 USER_EXEC_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/exec
 USER_PIPE_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/pipe
@@ -74,6 +75,34 @@ run-usb-init: build-usb-init
 		-device qemu-xhci,id=xhci \
 		-device usb-kbd,bus=xhci.0 \
 		-device usb-mouse,bus=xhci.0 \
+		-display cocoa \
+		-debugcon stdio
+
+run-vnc: build-usb-init
+	@echo "Booting coolOS in QEMU VNC with USB tablet input on $(QEMU_VNC)..."
+	qemu-system-x86_64 \
+		-drive format=raw,file="$(USB_INIT_BIOS)",snapshot=on \
+		-drive file="$(USB_INIT_FSIMG)",if=ide,format=raw,index=1,snapshot=on \
+		-m 512M \
+		-cpu "$(QEMU_CPU)" \
+		-vga std \
+		-device qemu-xhci,id=xhci \
+		-device usb-kbd,bus=xhci.0 \
+		-device usb-tablet,bus=xhci.0 \
+		-display vnc="$(QEMU_VNC)" \
+		-debugcon stdio
+
+run-remote: build-usb-init
+	@echo "Booting coolOS in a QEMU window with USB tablet input for remote desktop..."
+	qemu-system-x86_64 \
+		-drive format=raw,file="$(USB_INIT_BIOS)",snapshot=on \
+		-drive file="$(USB_INIT_FSIMG)",if=ide,format=raw,index=1,snapshot=on \
+		-m 512M \
+		-cpu "$(QEMU_CPU)" \
+		-vga std \
+		-device qemu-xhci,id=xhci \
+		-device usb-kbd,bus=xhci.0 \
+		-device usb-tablet,bus=xhci.0 \
 		-display cocoa \
 		-debugcon stdio
 

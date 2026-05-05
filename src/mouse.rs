@@ -168,6 +168,35 @@ pub fn handle_usb_boot_report(report: &[u8]) {
     crate::wm::request_repaint();
 }
 
+/// Process QEMU's USB tablet report:
+/// buttons, absolute X/Y in the range 0..=0x7fff, then relative wheel.
+pub fn handle_usb_tablet_report(report: &[u8]) {
+    if report.len() < 6 {
+        return;
+    }
+
+    let buttons = report[0];
+    let raw_x = u16::from_le_bytes([report[1], report[2]]) as u32;
+    let raw_y = u16::from_le_bytes([report[3], report[4]]) as u32;
+    let max = 0x7fffu32;
+    let w = crate::framebuffer::width().saturating_sub(1) as u32;
+    let h = crate::framebuffer::height().saturating_sub(1) as u32;
+    let x = ((raw_x.min(max) * w + (max / 2)) / max) as usize;
+    let y = ((raw_y.min(max) * h + (max / 2)) / max) as usize;
+
+    MOUSE_X.store(x, Ordering::Relaxed);
+    MOUSE_Y.store(y, Ordering::Relaxed);
+    MOUSE_LEFT.store(buttons & 0x01 != 0, Ordering::Relaxed);
+    MOUSE_RIGHT.store(buttons & 0x02 != 0, Ordering::Relaxed);
+
+    let wheel = report[5] as i8 as i32;
+    if wheel != 0 {
+        SCROLL_ACCUM.fetch_sub(wheel, Ordering::Relaxed);
+    }
+
+    crate::wm::request_repaint();
+}
+
 fn apply_motion(dx: i32, dy: i32, left: bool, right: bool) {
     let w = crate::framebuffer::width().saturating_sub(1) as i32;
     let h = crate::framebuffer::height().saturating_sub(1) as i32;

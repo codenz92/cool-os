@@ -118,9 +118,13 @@ const USB_CLASS_HID: u8 = 0x03;
 const USB_HID_SUBCLASS_BOOT: u8 = 0x01;
 const USB_HID_PROTOCOL_KEYBOARD: u8 = 0x01;
 const USB_HID_PROTOCOL_MOUSE: u8 = 0x02;
+const HID_KIND_KEYBOARD: u8 = 1;
+const HID_KIND_MOUSE: u8 = 2;
+const HID_KIND_TABLET: u8 = 3;
 const DESCRIPTOR_BUFFER_BYTES: usize = 4096;
 const BOOT_KEYBOARD_REPORT_BYTES: usize = 8;
 const BOOT_MOUSE_REPORT_BYTES: usize = 4;
+const TABLET_REPORT_BYTES: usize = 6;
 
 const SPIN_TIMEOUT: u64 = 10_000_000;
 
@@ -281,7 +285,7 @@ struct DeviceDescriptor {
 struct HidInterface {
     number: u8,
     alternate_setting: u8,
-    protocol: u8,
+    kind: u8,
     endpoint_address: u8,
     max_packet_size: u16,
     interval: u8,
@@ -291,7 +295,7 @@ struct HidInterface {
 struct HidDeviceState {
     port_num: u8,
     slot_id: u8,
-    protocol: u8,
+    kind: u8,
     interface_number: u8,
     endpoint_address: u8,
     endpoint_dci: u8,
@@ -363,7 +367,10 @@ pub fn probe() -> Vec<String> {
             runtime_started = true;
         }
         Err(err) => {
-            println!("[xhci] active init failed: {}; falling back to passive scan", err);
+            println!(
+                "[xhci] active init failed: {}; falling back to passive scan",
+                err
+            );
             status.push(format!("USB: active init failed: {}", err));
         }
     }
@@ -441,7 +448,7 @@ pub fn runtime_status_lines() -> Vec<String> {
             "USB: runtime port={} slot={} {} ep={:#04x} reports={} last={}B errors={} cc={}",
             device.port_num,
             device.slot_id,
-            hid_protocol_name(device.protocol),
+            hid_kind_name(device.kind),
             device.endpoint_address,
             device.report_count,
             device.last_report_len,
@@ -461,9 +468,9 @@ pub fn runtime_input_presence() -> (bool, bool) {
     let mut keyboard = false;
     let mut mouse = false;
     for device in runtime.devices.iter() {
-        if device.protocol == USB_HID_PROTOCOL_KEYBOARD {
+        if device.kind == HID_KIND_KEYBOARD {
             keyboard = true;
-        } else if device.protocol == USB_HID_PROTOCOL_MOUSE {
+        } else if device.kind == HID_KIND_MOUSE || device.kind == HID_KIND_TABLET {
             mouse = true;
         }
     }
@@ -543,12 +550,19 @@ fn active_init(info: &XhciInfo) -> Result<ActiveState, &'static str> {
     if info.scratchpad_count > 0 {
         let (sb_array_phys, sb_array_virt) =
             alloc_zeroed_phys().ok_or("scratchpad array alloc failed")?;
-        unsafe { write_u64(dcbaa_virt, sb_array_phys); }
+        unsafe {
+            write_u64(dcbaa_virt, sb_array_phys);
+        }
         for i in 0..info.scratchpad_count {
             let (sb_phys, _) = alloc_zeroed_phys().ok_or("scratchpad page alloc failed")?;
-            unsafe { write_u64(sb_array_virt + i as u64 * 8, sb_phys); }
+            unsafe {
+                write_u64(sb_array_virt + i as u64 * 8, sb_phys);
+            }
         }
-        println!("[xhci] allocated {} scratchpad pages", info.scratchpad_count);
+        println!(
+            "[xhci] allocated {} scratchpad pages",
+            info.scratchpad_count
+        );
     }
 
     let (cmd_ring_phys, cmd_ring_virt) = alloc_zeroed_phys().ok_or("command ring alloc failed")?;
@@ -895,7 +909,7 @@ fn prime_default_control_endpoint(
         }
     };
 
-    let hid_interfaces = parse_boot_hid_interfaces(&config);
+    let hid_interfaces = parse_hid_interfaces(&config);
     let mut status = Vec::new();
     let mut devices = Vec::new();
     let config_value = config
@@ -974,7 +988,7 @@ fn prime_default_control_endpoint(
         println!(
             "[xhci] slot {} hid {} iface={} alt={} ep={:#04x} mps={} interval={} report_desc={}",
             slot_id,
-            hid_protocol_name(configured.protocol),
+            hid_kind_name(configured.kind),
             configured.interface_number,
             hid.alternate_setting,
             configured.endpoint_address,
@@ -986,7 +1000,7 @@ fn prime_default_control_endpoint(
             "USB: port {} slot={} HID {} iface={} alt={} ep={:#04x} mps={} interval={} report_desc={}",
             port_num,
             slot_id,
-            hid_protocol_name(configured.protocol),
+            hid_kind_name(configured.kind),
             configured.interface_number,
             hid.alternate_setting,
             configured.endpoint_address,
@@ -1373,14 +1387,16 @@ fn activate_hid_interface(
     hid: &HidInterface,
     device: &mut PrimedDevice,
 ) -> Result<HidDeviceState, &'static str> {
-    set_boot_protocol(
-        info,
-        event_ring,
-        slot_id,
-        &mut device.transfer_ring,
-        hid.number,
-    )?;
-    if hid.protocol == USB_HID_PROTOCOL_KEYBOARD {
+    if hid.kind == HID_KIND_KEYBOARD || hid.kind == HID_KIND_MOUSE {
+        set_boot_protocol(
+            info,
+            event_ring,
+            slot_id,
+            &mut device.transfer_ring,
+            hid.number,
+        )?;
+    }
+    if hid.kind == HID_KIND_KEYBOARD || hid.kind == HID_KIND_TABLET {
         let _ = set_idle(
             info,
             event_ring,
@@ -1418,7 +1434,7 @@ fn activate_hid_interface(
     let mut hid_state = HidDeviceState {
         port_num,
         slot_id,
-        protocol: hid.protocol,
+        kind: hid.kind,
         interface_number: hid.number,
         endpoint_address: hid.endpoint_address,
         endpoint_dci,
@@ -1629,7 +1645,7 @@ fn read_descriptor(
     )
 }
 
-fn parse_boot_hid_interfaces(config: &[u8]) -> Vec<HidInterface> {
+fn parse_hid_interfaces(config: &[u8]) -> Vec<HidInterface> {
     let mut interfaces = Vec::new();
     let mut current_number = 0u8;
     let mut current_alternate_setting = 0u8;
@@ -1670,25 +1686,27 @@ fn parse_boot_hid_interfaces(config: &[u8]) -> Vec<HidInterface> {
                     desc_off += 3;
                 }
             }
-            USB_DESC_TYPE_ENDPOINT
-                if len >= 7
-                    && current_class == USB_CLASS_HID
-                    && current_subclass == USB_HID_SUBCLASS_BOOT
-                    && (current_protocol == USB_HID_PROTOCOL_KEYBOARD
-                        || current_protocol == USB_HID_PROTOCOL_MOUSE) =>
-            {
+            USB_DESC_TYPE_ENDPOINT if len >= 7 && current_class == USB_CLASS_HID => {
                 let endpoint_address = config[offset + 2];
                 let attributes = config[offset + 3] & 0x03;
-                if endpoint_address & 0x80 != 0 && attributes == USB_ENDPOINT_ATTR_INTERRUPT {
+                let max_packet_size =
+                    u16::from_le_bytes([config[offset + 4], config[offset + 5]]) & 0x07ff;
+                let kind = hid_interface_kind(
+                    current_subclass,
+                    current_protocol,
+                    current_report_descriptor_len,
+                    max_packet_size,
+                );
+                if endpoint_address & 0x80 != 0
+                    && attributes == USB_ENDPOINT_ATTR_INTERRUPT
+                    && kind != 0
+                {
                     interfaces.push(HidInterface {
                         number: current_number,
                         alternate_setting: current_alternate_setting,
-                        protocol: current_protocol,
+                        kind,
                         endpoint_address,
-                        max_packet_size: u16::from_le_bytes([
-                            config[offset + 4],
-                            config[offset + 5],
-                        ]) & 0x07ff,
+                        max_packet_size,
                         interval: config[offset + 6],
                         report_descriptor_len: current_report_descriptor_len,
                     });
@@ -1701,6 +1719,25 @@ fn parse_boot_hid_interfaces(config: &[u8]) -> Vec<HidInterface> {
     }
 
     interfaces
+}
+
+fn hid_interface_kind(
+    subclass: u8,
+    protocol: u8,
+    report_descriptor_len: u16,
+    max_packet_size: u16,
+) -> u8 {
+    if subclass == USB_HID_SUBCLASS_BOOT && protocol == USB_HID_PROTOCOL_KEYBOARD {
+        return HID_KIND_KEYBOARD;
+    }
+    if subclass == USB_HID_SUBCLASS_BOOT && protocol == USB_HID_PROTOCOL_MOUSE {
+        return HID_KIND_MOUSE;
+    }
+    if protocol == 0 && report_descriptor_len == 74 && max_packet_size >= TABLET_REPORT_BYTES as u16
+    {
+        return HID_KIND_TABLET;
+    }
+    0
 }
 
 fn usb_setup_packet(request_type: u8, request: u8, value: u16, index: u16, length: u16) -> u64 {
@@ -1722,20 +1759,22 @@ fn max_packet_size0_from_descriptor(usb_bcd: u16, raw: u8) -> u16 {
     }
 }
 
-fn hid_protocol_name(protocol: u8) -> &'static str {
-    match protocol {
-        USB_HID_PROTOCOL_KEYBOARD => "keyboard",
-        USB_HID_PROTOCOL_MOUSE => "mouse",
+fn hid_kind_name(kind: u8) -> &'static str {
+    match kind {
+        HID_KIND_KEYBOARD => "keyboard",
+        HID_KIND_MOUSE => "mouse",
+        HID_KIND_TABLET => "tablet",
         _ => "unknown",
     }
 }
 
 fn interrupt_report_len(hid: &HidInterface) -> usize {
-    match hid.protocol {
-        USB_HID_PROTOCOL_KEYBOARD => BOOT_KEYBOARD_REPORT_BYTES,
-        USB_HID_PROTOCOL_MOUSE => BOOT_MOUSE_REPORT_BYTES
+    match hid.kind {
+        HID_KIND_KEYBOARD => BOOT_KEYBOARD_REPORT_BYTES,
+        HID_KIND_MOUSE => BOOT_MOUSE_REPORT_BYTES
             .min(hid.max_packet_size as usize)
             .max(3),
+        HID_KIND_TABLET => TABLET_REPORT_BYTES.min(hid.max_packet_size as usize),
         _ => hid.max_packet_size as usize,
     }
 }
@@ -2184,7 +2223,7 @@ fn handle_runtime_transfer_event(runtime: &mut ActiveState, event: EventTrb) {
     runtime.last_runtime_note = format!(
         "slot {} {} {}B",
         device.slot_id,
-        hid_protocol_name(device.protocol),
+        hid_kind_name(device.kind),
         actual_len,
     );
     dispatch_hid_report(device, actual_len);
@@ -2371,12 +2410,15 @@ fn dispatch_hid_report(device: &mut HidDeviceState, actual_len: usize) {
         };
     }
 
-    match device.protocol {
-        USB_HID_PROTOCOL_KEYBOARD if len >= BOOT_KEYBOARD_REPORT_BYTES => {
+    match device.kind {
+        HID_KIND_KEYBOARD if len >= BOOT_KEYBOARD_REPORT_BYTES => {
             crate::keyboard::handle_usb_boot_report(&report);
         }
-        USB_HID_PROTOCOL_MOUSE if len >= 3 => {
+        HID_KIND_MOUSE if len >= 3 => {
             crate::mouse::handle_usb_boot_report(&report[..len]);
+        }
+        HID_KIND_TABLET if len >= TABLET_REPORT_BYTES => {
+            crate::mouse::handle_usb_tablet_report(&report[..len]);
         }
         _ => {}
     }
