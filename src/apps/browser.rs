@@ -870,7 +870,7 @@ impl BrowserApp {
                     }
                 }
             };
-            if let Some(slot) = line.image_slot {
+            let image_rendered = if let Some(slot) = line.image_slot {
                 if let Some(image) = self.inline_images.get(slot).map(|inline| &inline.image) {
                     let available_h = (doc_y + doc_h)
                         .saturating_sub(y + LINE_H + 3)
@@ -888,23 +888,30 @@ impl BrowserApp {
                             image,
                         );
                     }
+                    true
+                } else {
+                    false
                 }
-            }
-            let mut text = line.text;
-            truncate_chars(&mut text, self.cols);
-            self.put_str(stride, PAD_X, y, &text, color);
-            if line.kind == BrowserLineKind::Heading {
-                self.put_str(stride, PAD_X + 1, y, &text, color);
-            }
-            if line.link.is_some() {
-                self.fill_rect(
-                    stride,
-                    PAD_X,
-                    y + 10,
-                    text.len().min(self.cols) * CHAR_W,
-                    1,
-                    LINK,
-                );
+            } else {
+                false
+            };
+            if !image_rendered {
+                let mut text = line.text;
+                truncate_chars(&mut text, self.cols);
+                self.put_str(stride, PAD_X, y, &text, color);
+                if line.kind == BrowserLineKind::Heading {
+                    self.put_str(stride, PAD_X + 1, y, &text, color);
+                }
+                if line.link.is_some() {
+                    self.fill_rect(
+                        stride,
+                        PAD_X,
+                        y + 10,
+                        text.len().min(self.cols) * CHAR_W,
+                        1,
+                        LINK,
+                    );
+                }
             }
         }
 
@@ -1858,7 +1865,8 @@ fn is_inline_tag(name: &str) -> bool {
         "span" | "strong" | "em" | "b" | "i" | "small" | "big" | "sub" | "sup" | "s" | "u"
             | "del" | "ins" | "mark" | "cite" | "abbr" | "time" | "var" | "samp" | "kbd"
             | "wbr" | "bdi" | "bdo" | "data" | "q" | "dfn" | "label" | "output" | "meter"
-            | "progress"
+            | "progress" | "nobr" | "font" | "tt" | "acronym" | "strike" | "blink"
+            | "marquee"
     )
 }
 
@@ -2013,7 +2021,7 @@ fn handle_tag(
         "br" => push_blank_line(out),
         "hr" => out.push(kind_line(&rule_line(cols), BrowserLineKind::Muted)),
         "p" | "div" | "section" | "article" | "main" | "aside" | "header" | "footer" | "nav"
-        | "figure" | "figcaption" | "address" | "dl" | "dt" | "dd" => {
+        | "figure" | "figcaption" | "address" | "dl" | "dt" | "dd" | "center" => {
             push_blank_line(out);
         }
         _ => {}
@@ -2166,6 +2174,33 @@ fn handle_table_cell_tag(
             state.table_cell_text.push(' ');
             state.table_cell_text.push_str(&label);
             state.table_cell_text.push(']');
+        }
+        "input" if !closing => {
+            let input_type = attr_value(tag, "type").unwrap_or_else(|| String::from("text"));
+            let input_type = lowercase_ascii(input_type.trim());
+            if input_type == "hidden" {
+                return;
+            }
+            let label = form_control_label(tag, &input_type);
+            if !state.table_cell_text.is_empty() && !state.table_cell_text.ends_with(' ') {
+                state.table_cell_text.push(' ');
+            }
+            match input_type.as_str() {
+                "submit" | "button" | "reset" => {
+                    state.table_cell_text.push_str("[btn:");
+                    state.table_cell_text.push_str(&label);
+                    state.table_cell_text.push(']');
+                }
+                _ => {
+                    state.table_cell_text.push('[');
+                    state.table_cell_text.push_str(&input_type);
+                    if !label.is_empty() && label != input_type {
+                        state.table_cell_text.push(':');
+                        state.table_cell_text.push_str(&label);
+                    }
+                    state.table_cell_text.push(']');
+                }
+            }
         }
         _ => {}
     }
@@ -2586,11 +2621,70 @@ fn decode_entities(input: &str) -> String {
                     }
                 }
             }
+            // generic named entity fallback (&copy; &mdash; etc.)
+            if let Some(semi) = input[i + 1..].find(';') {
+                if semi < 24 {
+                    let name = &input[i + 1..i + 1 + semi];
+                    if name.bytes().all(|b| b.is_ascii_alphabetic()) {
+                        if let Some(s) = named_entity_str(name) {
+                            out.push_str(s);
+                            i += semi + 2;
+                            continue;
+                        }
+                    }
+                }
+            }
         }
         out.push(bytes[i] as char);
         i += 1;
     }
     out
+}
+
+fn named_entity_str(name: &str) -> Option<&'static str> {
+    match name {
+        "copy" => Some("(c)"),
+        "reg" => Some("(R)"),
+        "trade" => Some("(TM)"),
+        "apos" => Some("'"),
+        "lsquo" | "rsquo" | "sbquo" => Some("'"),
+        "ldquo" | "rdquo" | "bdquo" => Some("\""),
+        "ndash" | "minus" => Some("-"),
+        "mdash" => Some("--"),
+        "hellip" => Some("..."),
+        "bull" | "middot" => Some("*"),
+        "laquo" => Some("<<"),
+        "raquo" => Some(">>"),
+        "euro" => Some("EUR"),
+        "pound" => Some("GBP"),
+        "yen" => Some("JPY"),
+        "cent" => Some("c"),
+        "deg" => Some("deg"),
+        "times" => Some("x"),
+        "divide" => Some("/"),
+        "plusmn" => Some("+/-"),
+        "rarr" | "rArr" => Some("->"),
+        "larr" | "lArr" => Some("<-"),
+        "harr" | "hArr" => Some("<->"),
+        "uarr" => Some("^"),
+        "darr" => Some("v"),
+        "frac12" => Some("1/2"),
+        "frac14" => Some("1/4"),
+        "frac34" => Some("3/4"),
+        "sup2" => Some("^2"),
+        "sup3" => Some("^3"),
+        "alpha" => Some("alpha"),
+        "beta" => Some("beta"),
+        "gamma" => Some("gamma"),
+        "pi" => Some("pi"),
+        "infin" => Some("inf"),
+        "ne" => Some("!="),
+        "le" => Some("<="),
+        "ge" => Some(">="),
+        "and" => Some("&&"),
+        "or" => Some("||"),
+        _ => None,
+    }
 }
 
 fn parse_entity_number(input: &str, radix: u32) -> Option<char> {
