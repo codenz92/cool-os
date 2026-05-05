@@ -1,4 +1,4 @@
-.PHONY: run run-net run-usb run-usb-init run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-net-api smoke-net-wget smoke-net-https smoke-net-browser-https smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
+.PHONY: run run-net run-usb run-usb-init run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -304,6 +304,20 @@ smoke-net-https: build
 		--expect "[net] virtio-net ready driver=virtio-net" \
 		--expect "[tls] https example.com/ via" \
 		--expect "root=AAA Certificate Services" \
+		--expect "[boot] desktop ready"
+
+smoke-net-https-negative: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds 30 \
+		--hmp "sendkey ctrl-spc" \
+		--type-text "> tlscheck\n" \
+		--post-hmp-delay 2.0 \
+		--expect "TLS hostname negative ok" \
 		--expect "[boot] desktop ready"
 
 smoke-net-browser-https: build

@@ -3,7 +3,6 @@
 ///
 /// Usage: fs-image <output-path> [hello-elf] [exec-elf] [pipe-elf] [read-elf] [piperd-elf] [pipewr-elf] [keyecho-elf] [terminal-elf] [netdemo-elf] [wget-elf]
 /// Output: a 64 MiB raw FAT32 disk image ready to attach as a QEMU IDE drive.
-
 use std::io::Write;
 
 const IMAGE_SIZE: u64 = 64 * 1024 * 1024; // 64 MiB
@@ -31,15 +30,14 @@ fn main() {
         .open(&out_path)
         .unwrap_or_else(|e| panic!("cannot open {}: {}", out_path, e));
 
-    file.set_len(IMAGE_SIZE)
-        .expect("failed to set image size");
+    file.set_len(IMAGE_SIZE).expect("failed to set image size");
 
     // Format as FAT32.
     fatfs::format_volume(
         &file,
         fatfs::FormatVolumeOptions::new()
             .fat_type(fatfs::FatType::Fat32)
-            .volume_label(*b"COOLOS     ")  // 11 ASCII bytes
+            .volume_label(*b"COOLOS     "), // 11 ASCII bytes
     )
     .expect("FAT32 format failed");
 
@@ -48,20 +46,28 @@ fn main() {
         .expect("failed to open FAT32 filesystem");
 
     let root = fs.root_dir();
+    for dir in ["CONFIG", "LOGS", "APPS", "DEV", "TMP", "Trash", "Downloads"] {
+        root.create_dir(dir)
+            .unwrap_or_else(|e| panic!("failed to create /{}: {}", dir, e));
+    }
 
     // /bin/
     root.create_dir("bin").expect("failed to create /bin");
     let bin = root.open_dir("bin").expect("failed to open /bin");
 
     // /bin/hello.txt
-    let mut hello = bin.create_file("hello.txt").expect("failed to create hello.txt");
+    let mut hello = bin
+        .create_file("hello.txt")
+        .expect("failed to create hello.txt");
     hello.truncate().unwrap();
     hello
         .write_all(b"Hello from /bin/hello.txt!\n")
         .expect("failed to write hello.txt");
 
     // /bin/motd.txt — message of the day, for a second file test
-    let mut motd = bin.create_file("motd.txt").expect("failed to create motd.txt");
+    let mut motd = bin
+        .create_file("motd.txt")
+        .expect("failed to create motd.txt");
     motd.truncate().unwrap();
     motd.write_all(b"coolOS Phase 11 - filesystem alive!\n")
         .expect("failed to write motd.txt");
@@ -129,7 +135,9 @@ fn main() {
     if let Some(keyecho_path) = keyecho_elf {
         let keyecho_bytes = std::fs::read(&keyecho_path)
             .unwrap_or_else(|e| panic!("failed to read {}: {}", keyecho_path, e));
-        let mut keyecho_bin = bin.create_file("keyecho").expect("failed to create keyecho");
+        let mut keyecho_bin = bin
+            .create_file("keyecho")
+            .expect("failed to create keyecho");
         keyecho_bin.truncate().unwrap();
         keyecho_bin
             .write_all(&keyecho_bytes)
@@ -139,7 +147,9 @@ fn main() {
     if let Some(terminal_path) = terminal_elf {
         let terminal_bytes = std::fs::read(&terminal_path)
             .unwrap_or_else(|e| panic!("failed to read {}: {}", terminal_path, e));
-        let mut terminal_bin = bin.create_file("terminal").expect("failed to create terminal");
+        let mut terminal_bin = bin
+            .create_file("terminal")
+            .expect("failed to create terminal");
         terminal_bin.truncate().unwrap();
         terminal_bin
             .write_all(&terminal_bytes)
@@ -149,7 +159,9 @@ fn main() {
     if let Some(netdemo_path) = netdemo_elf {
         let netdemo_bytes = std::fs::read(&netdemo_path)
             .unwrap_or_else(|e| panic!("failed to read {}: {}", netdemo_path, e));
-        let mut netdemo_bin = bin.create_file("netdemo").expect("failed to create netdemo");
+        let mut netdemo_bin = bin
+            .create_file("netdemo")
+            .expect("failed to create netdemo");
         netdemo_bin.truncate().unwrap();
         netdemo_bin
             .write_all(&netdemo_bytes)

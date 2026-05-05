@@ -309,6 +309,14 @@ impl TerminalApp {
 
             Some("netproto") => self.cmd_lines("NETWORK PROTOCOLS", crate::net::protocol_lines()),
 
+            Some("tlscheck") => {
+                let lines = crate::tls::selftest_lines();
+                for line in &lines {
+                    crate::println!("{}", line);
+                }
+                self.cmd_lines("TLS HOSTNAME CHECK", lines);
+            }
+
             Some("netapi") => {
                 self.cmd_lines("NETWORK API SETTINGS", crate::settings_state::lines())
             }
@@ -741,6 +749,7 @@ impl TerminalApp {
             ("drivers", "driver binding + /DEV nodes"),
             ("net", "network stack status"),
             ("netproto", "ARP/IP/UDP/DNS/HTTP status"),
+            ("tlscheck", "TLS hostname negative checks"),
             ("netapi", "network/settings API toggles"),
             ("dns <host>", "resolve host with staged DNS"),
             ("ping <host>", "send ICMP echo request"),

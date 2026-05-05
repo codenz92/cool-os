@@ -19,8 +19,12 @@ const TCP_MSS: usize = 1200;
 const SOCKET_BASE: u64 = 1024;
 pub(crate) const KERNEL_SOCKET_OWNER: usize = usize::MAX;
 const POLL_SPINS: usize = 3_000_000;
+const TCP_RETRY_SPINS: usize = POLL_SPINS / 3;
+const TCP_MAX_RETRIES: usize = 3;
 const HTTP_MAX_BYTES: usize = 128 * 1024;
 const HTTP_MAX_REDIRECTS: usize = 5;
+const DNS_CACHE_MAX: usize = 16;
+const DNS_CACHE_TTL_TICKS: u64 = crate::interrupts::ticks_for_millis(300_000);
 
 #[derive(Clone)]
 pub struct NetAdapter {
@@ -41,7 +45,14 @@ pub struct HttpResponse {
     pub tls_trust_root: Option<&'static str>,
     pub request: String,
     pub status_line: String,
+    pub content_type: Option<String>,
     pub body: String,
+    pub body_bytes: Vec<u8>,
+}
+
+struct NormalizedHttpResponse {
+    text: String,
+    body_bytes: Vec<u8>,
 }
 
 #[derive(Clone)]
@@ -55,6 +66,13 @@ struct DnsWait {
     txid: u16,
     port: u16,
     result: Option<Vec<u32>>,
+}
+
+#[derive(Clone)]
+struct DnsCacheEntry {
+    host: String,
+    addrs: Vec<u32>,
+    tick: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -71,6 +89,7 @@ struct TcpSocket {
     remote_ip: u32,
     remote_port: u16,
     seq: u32,
+    tx_acked: u32,
     ack: u32,
     state: TcpState,
     rx: Vec<u8>,
@@ -97,6 +116,7 @@ static NET_STATE: Mutex<NetState> = Mutex::new(NetState {
     next_port: 49152,
     next_dns_txid: 0x4300,
     arp_entries: Vec::new(),
+    dns_cache: Vec::new(),
     dns_waits: Vec::new(),
     sockets: Vec::new(),
     icmp_wait: None,
@@ -113,6 +133,7 @@ struct NetState {
     next_port: u16,
     next_dns_txid: u16,
     arp_entries: Vec<ArpEntry>,
+    dns_cache: Vec<DnsCacheEntry>,
     dns_waits: Vec<DnsWait>,
     sockets: Vec<Option<TcpSocket>>,
     icmp_wait: Option<u16>,
@@ -247,6 +268,7 @@ pub fn status_lines() -> Vec<String> {
         ipv4_string(GATEWAY_ADDR),
         ipv4_string(DNS_ADDR)
     ));
+    lines.push(format!("dns cache: {} entrie(s)", state.dns_cache.len()));
     for entry in state.arp_entries.iter().take(4) {
         lines.push(format!(
             "arp {} -> {} tick={}",
@@ -277,10 +299,11 @@ pub fn protocol_lines() -> Vec<String> {
             if state.last_ping_ok { "ok" } else { "none" }
         ),
         format!(
-            "UDP: tx_packets={} rx_packets={} dns_waits={}",
+            "UDP: tx_packets={} rx_packets={} dns_waits={} dns_cache={}",
             state.tx_packets,
             state.rx_packets,
-            state.dns_waits.len()
+            state.dns_waits.len(),
+            state.dns_cache.len()
         ),
         format!("TCP: open_socket(s)={} mss={}", open_sockets, TCP_MSS),
         String::from("TLS: TLS 1.3 over kernel TCP with verified certificate chains"),
@@ -339,10 +362,16 @@ pub(crate) fn resolve_host_addrs(host: &str) -> Result<Vec<u32>, &'static str> {
         return Err("invalid host");
     }
 
+    if let Some(addrs) = dns_cache_lookup(host) {
+        return Ok(addrs);
+    }
+
     if !has_link() {
         if settings.network_offline_api && host == "example.com" {
             queue_tx_packet("dns-offline", host.len());
-            return Ok(vec![EXAMPLE_ADDR]);
+            let addrs = vec![EXAMPLE_ADDR];
+            dns_cache_remember(host, &addrs);
+            return Ok(addrs);
         }
         return Err("no network adapter");
     }
@@ -362,12 +391,51 @@ pub(crate) fn resolve_host_addrs(host: &str) -> Result<Vec<u32>, &'static str> {
     for _ in 0..POLL_SPINS {
         poll();
         if let Some(addr) = take_dns_result(txid, port) {
+            dns_cache_remember(host, &addr);
             return Ok(addr);
         }
         core::hint::spin_loop();
     }
     remove_dns_wait(txid, port);
     Err("DNS timeout")
+}
+
+fn dns_cache_lookup(host: &str) -> Option<Vec<u32>> {
+    let now = crate::interrupts::ticks();
+    let mut state = NET_STATE.lock();
+    state
+        .dns_cache
+        .retain(|entry| now.wrapping_sub(entry.tick) <= DNS_CACHE_TTL_TICKS);
+    state
+        .dns_cache
+        .iter()
+        .find(|entry| entry.host.eq_ignore_ascii_case(host))
+        .map(|entry| entry.addrs.clone())
+}
+
+fn dns_cache_remember(host: &str, addrs: &[u32]) {
+    if addrs.is_empty() {
+        return;
+    }
+    let now = crate::interrupts::ticks();
+    let mut state = NET_STATE.lock();
+    if let Some(entry) = state
+        .dns_cache
+        .iter_mut()
+        .find(|entry| entry.host.eq_ignore_ascii_case(host))
+    {
+        entry.addrs = addrs.to_vec();
+        entry.tick = now;
+        return;
+    }
+    state.dns_cache.push(DnsCacheEntry {
+        host: String::from(host),
+        addrs: addrs.to_vec(),
+        tick: now,
+    });
+    if state.dns_cache.len() > DNS_CACHE_MAX {
+        state.dns_cache.remove(0);
+    }
 }
 
 pub fn http_get(host: &str, path: &str) -> Result<String, &'static str> {
@@ -403,7 +471,7 @@ fn http_get_response_follow(
     request.push_str(path);
     request.push_str(" HTTP/1.1\r\nHost: ");
     request.push_str(host);
-    request.push_str("\r\nUser-Agent: coolOS/18\r\nAccept: text/html,text/plain,*/*\r\nConnection: close\r\n\r\n");
+    request.push_str("\r\nUser-Agent: coolOS/19\r\nAccept: text/html,text/plain,image/*,*/*\r\nAccept-Encoding: gzip, identity\r\nConnection: close\r\n\r\n");
 
     if scheme == "https" {
         if !has_link() {
@@ -417,7 +485,7 @@ fn http_get_response_follow(
             ipv4_string(exchange.resolved_addr),
             exchange.trust_root
         );
-        let body = normalize_http_response(&String::from_utf8_lossy(&exchange.raw_response));
+        let body = normalize_http_response_bytes(&exchange.raw_response)?;
         return finish_web_response(
             scheme,
             host,
@@ -440,6 +508,9 @@ fn http_get_response_follow(
                 host,
                 ipv4_string(resolved_addr)
             );
+            let body_bytes = response_body_bytes(body.as_bytes())
+                .unwrap_or_else(|| body.as_bytes())
+                .to_vec();
             return Ok(HttpResponse {
                 host: String::from(host),
                 path: String::from(path),
@@ -449,7 +520,9 @@ fn http_get_response_follow(
                 tls_trust_root: None,
                 request,
                 status_line: String::from("HTTP/1.1 200 OK (offline)"),
+                content_type: Some(String::from("text/plain")),
                 body,
+                body_bytes,
             });
         }
         return Err("no network adapter");
@@ -469,7 +542,11 @@ fn http_get_response_follow(
                 loop {
                     let n = socket_recv(KERNEL_SOCKET_OWNER, socket, &mut buf)?;
                     if n == 0 {
-                        break;
+                        if socket_peer_closed(KERNEL_SOCKET_OWNER, socket) {
+                            break;
+                        }
+                        let _ = socket_close(KERNEL_SOCKET_OWNER, socket);
+                        return Err("HTTP response timeout");
                     }
                     body_bytes.extend_from_slice(&buf[..n]);
                     if body_bytes.len() > HTTP_MAX_BYTES {
@@ -489,7 +566,7 @@ fn http_get_response_follow(
         return Err(last_err);
     }
 
-    let body = normalize_http_response(&String::from_utf8_lossy(&body_bytes));
+    let body = normalize_http_response_bytes(&body_bytes)?;
     finish_web_response(
         scheme,
         host,
@@ -510,20 +587,22 @@ fn finish_web_response(
     connected_addr: u32,
     tls_trust_root: Option<&'static str>,
     request: String,
-    body: String,
+    body: NormalizedHttpResponse,
 ) -> Result<HttpResponse, &'static str> {
     let status_line = String::from(
-        body.split('\n')
+        body.text
+            .split('\n')
             .next()
             .map(|line| line.trim_end_matches('\r'))
             .unwrap_or("HTTP response"),
     );
+    let content_type = http_header_value(&body.text, "content-type");
     let status = http_status_code(&status_line).unwrap_or(0);
     if is_redirect_status(status) {
         if redirect_count >= HTTP_MAX_REDIRECTS {
             return Err("HTTP redirect limit reached");
         }
-        let Some(location) = http_header_value(&body, "location") else {
+        let Some(location) = http_header_value(&body.text, "location") else {
             return Err("HTTP redirect missing Location");
         };
         let (next_scheme, next_host, next_path) =
@@ -540,7 +619,9 @@ fn finish_web_response(
         tls_trust_root,
         request,
         status_line,
-        body,
+        content_type,
+        body: body.text,
+        body_bytes: body.body_bytes,
     })
 }
 
@@ -572,33 +653,61 @@ fn http_header_value(response: &str, name: &str) -> Option<String> {
     None
 }
 
-fn normalize_http_response(response: &str) -> String {
-    let Some((headers, body, sep)) = split_http_response(response) else {
-        return String::from(response);
+fn normalize_http_response_bytes(response: &[u8]) -> Result<NormalizedHttpResponse, &'static str> {
+    let Some((headers, body, sep)) = split_http_response_bytes(response) else {
+        return Ok(NormalizedHttpResponse {
+            text: String::from_utf8_lossy(response).into_owned(),
+            body_bytes: response.to_vec(),
+        });
     };
-    if http_header_value(response, "transfer-encoding")
+    let headers_text = String::from_utf8_lossy(headers);
+    let mut body_bytes = body.to_vec();
+    if http_header_value(&headers_text, "transfer-encoding")
         .map(|value| header_contains_token(&value, "chunked"))
         .unwrap_or(false)
     {
-        if let Ok(decoded) = decode_chunked_body(body) {
-            let mut out = headers_without_transfer_encoding(headers);
-            out.push_str(sep);
-            out.push_str(&decoded);
-            return out;
+        body_bytes = decode_chunked_body_bytes(&body_bytes)?;
+    }
+    if let Some(length) = http_header_value(&headers_text, "content-length")
+        .and_then(|value| value.trim().parse::<usize>().ok())
+    {
+        if body_bytes.len() >= length {
+            body_bytes.truncate(length);
         }
     }
-    String::from(response)
+    let decoded_gzip = http_header_value(&headers_text, "content-encoding")
+        .map(|value| header_contains_token(&value, "gzip"))
+        .unwrap_or(false);
+    if decoded_gzip {
+        body_bytes = decode_gzip_body(&body_bytes)?;
+    }
+
+    let mut out = headers_without_body_framing(&headers_text);
+    if decoded_gzip {
+        out.push_str("\r\nContent-Encoding: identity");
+        out.push_str("\r\nX-coolOS-Decoded-Encoding: gzip");
+    }
+    out.push_str("\r\nContent-Length: ");
+    push_decimal(&mut out, body_bytes.len() as u64);
+    out.push_str(sep);
+    out.push_str(&String::from_utf8_lossy(&body_bytes));
+    Ok(NormalizedHttpResponse {
+        text: out,
+        body_bytes,
+    })
 }
 
-fn headers_without_transfer_encoding(headers: &str) -> String {
+fn headers_without_body_framing(headers: &str) -> String {
     let mut out = String::new();
     for line in headers.lines() {
-        let is_transfer_encoding = line
-            .split_once(':')
-            .map(|(name, _)| name.trim().eq_ignore_ascii_case("transfer-encoding"))
-            .unwrap_or(false);
-        if is_transfer_encoding {
-            continue;
+        if let Some((name, _)) = line.split_once(':') {
+            let name = name.trim();
+            if name.eq_ignore_ascii_case("transfer-encoding")
+                || name.eq_ignore_ascii_case("content-length")
+                || name.eq_ignore_ascii_case("content-encoding")
+            {
+                continue;
+            }
         }
         if !out.is_empty() {
             out.push_str("\r\n");
@@ -608,14 +717,24 @@ fn headers_without_transfer_encoding(headers: &str) -> String {
     out
 }
 
-fn split_http_response(response: &str) -> Option<(&str, &str, &'static str)> {
-    if let Some((headers, body)) = response.split_once("\r\n\r\n") {
-        Some((headers, body, "\r\n\r\n"))
-    } else {
-        response
-            .split_once("\n\n")
-            .map(|(headers, body)| (headers, body, "\n\n"))
+fn response_body_bytes(response: &[u8]) -> Option<&[u8]> {
+    split_http_response_bytes(response).map(|(_, body, _)| body)
+}
+
+fn split_http_response_bytes(response: &[u8]) -> Option<(&[u8], &[u8], &'static str)> {
+    if let Some(pos) = find_bytes(response, b"\r\n\r\n") {
+        return Some((&response[..pos], &response[pos + 4..], "\r\n\r\n"));
     }
+    find_bytes(response, b"\n\n").map(|pos| (&response[..pos], &response[pos + 2..], "\n\n"))
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return None;
+    }
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 fn header_contains_token(value: &str, token: &str) -> bool {
@@ -624,35 +743,34 @@ fn header_contains_token(value: &str, token: &str) -> bool {
         .any(|part| part.trim().eq_ignore_ascii_case(token))
 }
 
-fn decode_chunked_body(body: &str) -> Result<String, &'static str> {
-    let bytes = body.as_bytes();
+fn decode_chunked_body_bytes(body: &[u8]) -> Result<Vec<u8>, &'static str> {
     let mut out = Vec::new();
     let mut pos = 0usize;
     loop {
-        if pos >= bytes.len() {
+        if pos >= body.len() {
             return if out.is_empty() {
                 Err("bad chunk header")
             } else {
-                Ok(String::from_utf8_lossy(&out).into_owned())
+                Ok(out)
             };
         }
-        let line_end = find_crlf(bytes, pos).ok_or("bad chunk header")?;
-        let header = core::str::from_utf8(&bytes[pos..line_end]).map_err(|_| "bad chunk header")?;
+        let line_end = find_crlf(body, pos).ok_or("bad chunk header")?;
+        let header = core::str::from_utf8(&body[pos..line_end]).map_err(|_| "bad chunk header")?;
         let size_text = header.split(';').next().unwrap_or("").trim();
         let size = parse_hex_usize(size_text).ok_or("bad chunk size")?;
-        pos = line_end + crlf_len(bytes, line_end);
+        pos = line_end + crlf_len(body, line_end);
         if size == 0 {
             break;
         }
-        if pos + size > bytes.len() {
+        if pos + size > body.len() {
             return Err("truncated chunk body");
         }
-        out.extend_from_slice(&bytes[pos..pos + size]);
+        out.extend_from_slice(&body[pos..pos + size]);
         pos += size;
-        if pos < bytes.len() {
-            if bytes.get(pos) == Some(&b'\r') && bytes.get(pos + 1) == Some(&b'\n') {
+        if pos < body.len() {
+            if body.get(pos) == Some(&b'\r') && body.get(pos + 1) == Some(&b'\n') {
                 pos += 2;
-            } else if bytes.get(pos) == Some(&b'\n') {
+            } else if body.get(pos) == Some(&b'\n') {
                 pos += 1;
             } else {
                 return Err("bad chunk terminator");
@@ -662,7 +780,47 @@ fn decode_chunked_body(body: &str) -> Result<String, &'static str> {
             return Err("decoded response too large");
         }
     }
-    Ok(String::from_utf8_lossy(&out).into_owned())
+    Ok(out)
+}
+
+fn decode_gzip_body(body: &[u8]) -> Result<Vec<u8>, &'static str> {
+    if body.len() < 18 || body[0] != 0x1f || body[1] != 0x8b || body[2] != 8 {
+        return Err("bad gzip response");
+    }
+    let flags = body[3];
+    let mut pos = 10usize;
+    if flags & 0x04 != 0 {
+        if pos + 2 > body.len() {
+            return Err("bad gzip extra");
+        }
+        let extra_len = u16::from_le_bytes([body[pos], body[pos + 1]]) as usize;
+        pos += 2 + extra_len;
+    }
+    if flags & 0x08 != 0 {
+        pos = skip_gzip_cstring(body, pos)?;
+    }
+    if flags & 0x10 != 0 {
+        pos = skip_gzip_cstring(body, pos)?;
+    }
+    if flags & 0x02 != 0 {
+        pos = pos.checked_add(2).ok_or("bad gzip header")?;
+    }
+    if pos >= body.len().saturating_sub(8) {
+        return Err("bad gzip payload");
+    }
+    let compressed = &body[pos..body.len() - 8];
+    miniz_oxide::inflate::decompress_to_vec_with_limit(compressed, HTTP_MAX_BYTES)
+        .map_err(|_| "gzip decode failed")
+}
+
+fn skip_gzip_cstring(body: &[u8], mut pos: usize) -> Result<usize, &'static str> {
+    while pos < body.len() {
+        if body[pos] == 0 {
+            return Ok(pos + 1);
+        }
+        pos += 1;
+    }
+    Err("bad gzip header")
 }
 
 fn find_crlf(bytes: &[u8], start: usize) -> Option<usize> {
@@ -702,6 +860,22 @@ fn parse_hex_usize(input: &str) -> Option<usize> {
         saw_digit = true;
     }
     saw_digit.then_some(value)
+}
+
+fn push_decimal(out: &mut String, mut value: u64) {
+    let mut digits = [0u8; 20];
+    let mut len = 0usize;
+    loop {
+        digits[len] = b'0' + (value % 10) as u8;
+        len += 1;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    for idx in (0..len).rev() {
+        out.push(digits[idx] as char);
+    }
 }
 
 fn parse_web_url(url: &str) -> Result<(String, String, String), &'static str> {
@@ -830,6 +1004,7 @@ pub fn socket_open(
         remote_ip: 0,
         remote_port: 0,
         seq: 0x1000_0000u32.wrapping_add(local_port as u32),
+        tx_acked: 0x1000_0000u32.wrapping_add(local_port as u32),
         ack: 0,
         state: TcpState::Closed,
         rx: Vec::new(),
@@ -862,14 +1037,15 @@ pub fn socket_connect(
         socket.state = TcpState::SynSent;
         (socket.local_port, socket.seq)
     };
-    send_tcp_segment(local_port, remote_ip, remote_port, seq, 0, 0x02, &[])?;
-
-    for _ in 0..POLL_SPINS {
-        poll();
-        if socket_state(owner, socket_fd) == Some(TcpState::Established) {
-            return Ok(());
+    for _attempt in 0..TCP_MAX_RETRIES {
+        send_tcp_segment(local_port, remote_ip, remote_port, seq, 0, 0x02, &[])?;
+        for _ in 0..TCP_RETRY_SPINS {
+            poll();
+            if socket_state(owner, socket_fd) == Some(TcpState::Established) {
+                return Ok(());
+            }
+            core::hint::spin_loop();
         }
-        core::hint::spin_loop();
     }
     Err("TCP connect timeout")
 }
@@ -897,15 +1073,33 @@ pub fn socket_send(owner: usize, socket_fd: u64, bytes: &[u8]) -> Result<usize, 
                 socket.ack,
             )
         };
-        send_tcp_segment(
-            local_port,
-            remote_ip,
-            remote_port,
-            seq,
-            ack,
-            0x18,
-            &bytes[sent..sent + take],
-        )?;
+        let target_ack = seq.wrapping_add(take as u32);
+        let mut delivered = false;
+        for _attempt in 0..TCP_MAX_RETRIES {
+            send_tcp_segment(
+                local_port,
+                remote_ip,
+                remote_port,
+                seq,
+                ack,
+                0x18,
+                &bytes[sent..sent + take],
+            )?;
+            for _ in 0..TCP_RETRY_SPINS {
+                poll();
+                if socket_tx_acked(owner, socket_fd, target_ack)? {
+                    delivered = true;
+                    break;
+                }
+                core::hint::spin_loop();
+            }
+            if delivered {
+                break;
+            }
+        }
+        if !delivered {
+            return Err("TCP send timeout");
+        }
         sent += take;
     }
     Ok(sent)
@@ -933,6 +1127,19 @@ pub fn socket_recv(owner: usize, socket_fd: u64, out: &mut [u8]) -> Result<usize
         core::hint::spin_loop();
     }
     Ok(0)
+}
+
+pub fn socket_peer_closed(owner: usize, socket_fd: u64) -> bool {
+    let state = NET_STATE.lock();
+    let Some(idx) = socket_index(socket_fd) else {
+        return true;
+    };
+    state
+        .sockets
+        .get(idx)
+        .and_then(Option::as_ref)
+        .map(|socket| socket.owner == owner && socket.peer_closed)
+        .unwrap_or(true)
 }
 
 pub fn socket_close(owner: usize, socket_fd: u64) -> bool {
@@ -1137,6 +1344,7 @@ fn handle_tcp(src_ip: u32, packet: &[u8]) {
                 socket.remote_ip = src_ip;
                 socket.remote_port = src_port;
                 socket.seq = ack_no;
+                socket.tx_acked = ack_no;
                 socket.ack = seq.wrapping_add(1);
                 socket.state = TcpState::Established;
                 reply = Some(TcpReply {
@@ -1151,6 +1359,9 @@ fn handle_tcp(src_ip: u32, packet: &[u8]) {
             }
 
             if socket.state == TcpState::Established || socket.state == TcpState::CloseWait {
+                if flags & 0x10 != 0 && seq_at_or_after(ack_no, socket.tx_acked) {
+                    socket.tx_acked = ack_no;
+                }
                 let mut ack = socket.ack;
                 if !payload.is_empty() && seq == socket.ack {
                     socket.rx.extend_from_slice(payload);
@@ -1464,6 +1675,24 @@ fn socket_state(owner: usize, socket_fd: u64) -> Option<TcpState> {
     } else {
         None
     }
+}
+
+fn socket_tx_acked(owner: usize, socket_fd: u64, target_ack: u32) -> Result<bool, &'static str> {
+    let state = NET_STATE.lock();
+    let idx = socket_index(socket_fd).ok_or("bad socket")?;
+    let socket = state
+        .sockets
+        .get(idx)
+        .and_then(Option::as_ref)
+        .ok_or("bad socket")?;
+    if socket.owner != owner {
+        return Err("socket owner mismatch");
+    }
+    Ok(seq_at_or_after(socket.tx_acked, target_ack))
+}
+
+fn seq_at_or_after(current: u32, target: u32) -> bool {
+    current == target || current.wrapping_sub(target) < 0x8000_0000
 }
 
 fn socket_mut_locked<'a>(

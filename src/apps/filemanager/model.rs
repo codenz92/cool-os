@@ -304,6 +304,7 @@ struct ClipboardState {
 }
 
 pub enum FileManagerOpenRequest {
+    Dir(String),
     File(String),
     Exec(String),
     App(&'static str),

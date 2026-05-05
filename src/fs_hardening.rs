@@ -11,7 +11,7 @@ static JOURNAL: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static DIRTY: AtomicBool = AtomicBool::new(false);
 
 pub fn init() {
-    for dir in ["/CONFIG", "/LOGS", "/APPS", "/DEV", "/TMP"] {
+    for dir in ["/CONFIG", "/LOGS", "/APPS", "/DEV", "/TMP", "/Downloads"] {
         let _ = crate::fat32::create_dir(dir);
     }
     replay_journal();
@@ -80,7 +80,15 @@ pub fn status_lines() -> Vec<String> {
 
 pub fn repair() -> Vec<String> {
     let mut lines = Vec::new();
-    for dir in ["/CONFIG", "/LOGS", "/APPS", "/DEV", "/TMP", "/Trash"] {
+    for dir in [
+        "/CONFIG",
+        "/LOGS",
+        "/APPS",
+        "/DEV",
+        "/TMP",
+        "/Trash",
+        "/Downloads",
+    ] {
         match crate::fat32::create_dir(dir) {
             Ok(()) => lines.push(format!("created {}", dir)),
             Err(crate::fat32::FsError::AlreadyExists) => lines.push(format!("ok {}", dir)),

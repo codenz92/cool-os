@@ -2,6 +2,7 @@ extern crate alloc;
 
 use alloc::{format, string::String, vec, vec::Vec};
 
+use super::filemanager::FileManagerOpenRequest;
 use crate::wm::window::{Window, TITLE_H};
 
 pub const BROWSER_W: i32 = 760;
@@ -17,6 +18,7 @@ const REFRESH_BUTTON_W: i32 = 72;
 const ADDRESS_X: i32 = 162;
 const SEARCH_BUTTON_W: i32 = 72;
 const BOOKMARKS_PATH: &str = "/CONFIG/BROWSER.CFG";
+const DOWNLOADS_DIR: &str = "/Downloads";
 const MAX_BOOKMARKS: usize = 32;
 
 const BG: u32 = 0x00_03_06_10;
@@ -31,10 +33,30 @@ const BUTTON_DIM: u32 = 0x00_19_2A_38;
 const BUTTON_HOT: u32 = 0x00_00_9C_DD;
 const WHITE: u32 = 0x00_FF_FF_FF;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BrowserLineKind {
+    Text,
+    Heading,
+    Muted,
+    Link,
+    Image,
+    Code,
+    Error,
+}
+
 #[derive(Clone)]
 struct BrowserLine {
     text: String,
     link: Option<String>,
+    kind: BrowserLineKind,
+}
+
+#[derive(Clone)]
+struct CachedPage {
+    url: String,
+    body: String,
+    body_bytes: Vec<u8>,
+    content_type: Option<String>,
 }
 
 pub struct BrowserApp {
@@ -53,6 +75,8 @@ pub struct BrowserApp {
     address_selected: bool,
     last_width: i32,
     last_height: i32,
+    last_page: Option<CachedPage>,
+    pending_open: Option<FileManagerOpenRequest>,
 }
 
 impl BrowserApp {
@@ -74,6 +98,8 @@ impl BrowserApp {
             address_selected: true,
             last_width: BROWSER_W,
             last_height: BROWSER_H,
+            last_page: None,
+            pending_open: None,
         };
         app.render();
         app
@@ -120,8 +146,11 @@ impl BrowserApp {
             'k' | 'K' => self.scroll_by(-1),
             'r' | 'R' => self.reload(),
             'b' | 'B' => self.bookmark_current(),
+            'd' | 'D' => self.save_current_page(false),
             'h' | 'H' => self.navigate("browser://history", true),
             'm' | 'M' => self.navigate("browser://bookmarks", true),
+            'o' | 'O' => self.open_downloads_folder(),
+            's' | 'S' => self.save_current_page(true),
             'g' | 'G' => {
                 self.address_focused = true;
                 self.address_selected = true;
@@ -162,6 +191,9 @@ impl BrowserApp {
             if let Some(line) = self.lines.get(idx) {
                 if let Some(link) = line.link.clone() {
                     let resolved = resolve_url(&self.address, &link);
+                    if self.open_file_url(&resolved) {
+                        return;
+                    }
                     self.navigate(&resolved, true);
                     return;
                 }
@@ -189,10 +221,20 @@ impl BrowserApp {
         }
     }
 
+    pub fn take_open_request(&mut self) -> Option<FileManagerOpenRequest> {
+        self.pending_open.take()
+    }
+
     fn navigate(&mut self, url: &str, add_history: bool) {
         let url = normalize_address_input(url);
         self.address = url.clone();
         if self.render_internal_page(&url, add_history) {
+            return;
+        }
+        if self.open_file_url(&url) {
+            if add_history {
+                self.push_history(url);
+            }
             return;
         }
         self.status = String::from("Loading...");
@@ -200,6 +242,7 @@ impl BrowserApp {
         self.lines = vec![BrowserLine {
             text: format!("Loading {}", url),
             link: None,
+            kind: BrowserLineKind::Muted,
         }];
         self.scroll = 0;
         self.render();
@@ -231,12 +274,22 @@ impl BrowserApp {
                             security
                         )
                     };
-                    self.lines =
-                        render_document(&response.final_url, &response.body, self.cols.max(48));
+                    self.last_page = Some(CachedPage {
+                        url: response.final_url.clone(),
+                        body: response.body.clone(),
+                        body_bytes: response.body_bytes.clone(),
+                        content_type: response.content_type.clone(),
+                    });
+                    self.lines = if is_image_content(response.content_type.as_deref()) {
+                        image_response_lines(&response)
+                    } else {
+                        render_document(&response.final_url, &response.body, self.cols.max(48))
+                    };
                     if self.lines.is_empty() {
                         self.lines.push(BrowserLine {
                             text: String::from("(empty response)"),
                             link: None,
+                            kind: BrowserLineKind::Muted,
                         });
                     }
                     if add_history {
@@ -246,33 +299,28 @@ impl BrowserApp {
                 Err(err) => {
                     self.title = String::from("Load failed");
                     self.status = format!("Network error: {}", err);
+                    self.last_page = None;
                     self.lines = vec![
-                        BrowserLine {
-                            text: String::from("Unable to load page"),
-                            link: None,
-                        },
-                        BrowserLine {
-                            text: format!("{}{}", host, path),
-                            link: None,
-                        },
-                        BrowserLine {
-                            text: String::from(err),
-                            link: None,
-                        },
+                        kind_line("Unable to load page", BrowserLineKind::Error),
+                        line(&format!("{}{}", host, path)),
+                        kind_line(err, BrowserLineKind::Muted),
                     ];
                 }
             },
             Err(err) => {
                 self.title = String::from("Unsupported URL");
                 self.status = String::from(err);
+                self.last_page = None;
                 self.lines = vec![
                     BrowserLine {
                         text: String::from("Enter an http:// or https:// URL."),
                         link: None,
+                        kind: BrowserLineKind::Text,
                     },
                     BrowserLine {
                         text: String::from("Try https://example.com/"),
                         link: Some(String::from("https://example.com/")),
+                        kind: BrowserLineKind::Link,
                     },
                 ];
             }
@@ -289,6 +337,7 @@ impl BrowserApp {
         self.scroll = 0;
         self.address_focused = false;
         self.address_selected = false;
+        self.last_page = None;
         if add_history {
             self.push_history(String::from(url));
         }
@@ -307,6 +356,11 @@ impl BrowserApp {
                 self.title = String::from("Bookmarks");
                 self.status = format!("{} bookmark(s)", self.bookmarks.len());
                 self.lines = bookmark_lines(&self.bookmarks);
+            }
+            "browser://downloads" => {
+                self.title = String::from("Downloads");
+                self.status = String::from(DOWNLOADS_DIR);
+                self.lines = downloads_lines();
             }
             _ if url.starts_with("browser://search?q=") => {
                 let query = decode_query(&url["browser://search?q=".len()..]);
@@ -385,6 +439,75 @@ impl BrowserApp {
             self.status = format!("Already bookmarked {}", url);
         }
         self.render();
+    }
+
+    fn save_current_page(&mut self, source: bool) {
+        let Some(page) = self.last_page.clone() else {
+            self.status = String::from("Nothing loaded to save");
+            self.render();
+            return;
+        };
+        let _ = crate::vfs::vfs_create_dir(DOWNLOADS_DIR);
+        let filename = download_filename(&page.url, page.content_type.as_deref(), source);
+        let mut path = String::from(DOWNLOADS_DIR);
+        path.push('/');
+        path.push_str(&filename);
+        let data = if source {
+            response_body_text(&page.body)
+                .unwrap_or(page.body.as_str())
+                .as_bytes()
+                .to_vec()
+        } else {
+            page.body_bytes
+        };
+        match crate::vfs::vfs_safe_write_file(&path, &data) {
+            Ok(()) => {
+                self.status = format!("Saved {}", path);
+                self.lines = vec![
+                    kind_line("Saved download", BrowserLineKind::Heading),
+                    line(""),
+                    link_line(&path, &file_url_for_path(&path)),
+                    link_line("Open Downloads", "browser://downloads"),
+                ];
+            }
+            Err(err) => {
+                self.status = format!("Save failed: {}", err.as_str());
+            }
+        }
+        self.render();
+    }
+
+    fn open_downloads_folder(&mut self) {
+        let _ = crate::vfs::vfs_create_dir(DOWNLOADS_DIR);
+        self.pending_open = Some(FileManagerOpenRequest::Dir(String::from(DOWNLOADS_DIR)));
+        self.status = String::from("Opening Downloads in File Manager");
+        self.render();
+    }
+
+    fn open_file_url(&mut self, url: &str) -> bool {
+        let Some(path) = url.strip_prefix("file://") else {
+            return false;
+        };
+        let path = if path.is_empty() { "/" } else { path };
+        if crate::vfs::vfs_list_dir(path).is_some() {
+            self.pending_open = Some(FileManagerOpenRequest::Dir(String::from(path)));
+            self.status = format!("Opening {}", path);
+        } else if crate::vfs::vfs_read_file(path).is_some() {
+            self.pending_open = Some(FileManagerOpenRequest::File(String::from(path)));
+            self.status = format!("Opening {}", path);
+        } else {
+            self.title = String::from("File not found");
+            self.status = format!("Missing {}", path);
+            self.lines = vec![
+                kind_line("File not found", BrowserLineKind::Error),
+                kind_line(path, BrowserLineKind::Muted),
+                link_line("Downloads", "browser://downloads"),
+            ];
+        }
+        self.address_focused = false;
+        self.address_selected = false;
+        self.render();
+        true
     }
 
     fn search_lines(&self, query: &str) -> Vec<BrowserLine> {
@@ -540,10 +663,27 @@ impl BrowserApp {
                 break;
             };
             let y = doc_y + row * LINE_H;
-            let color = if line.link.is_some() { LINK } else { TEXT };
+            let color = match line.kind {
+                BrowserLineKind::Heading => 0x00_04_24_3A,
+                BrowserLineKind::Muted => MUTED,
+                BrowserLineKind::Link => LINK,
+                BrowserLineKind::Image => 0x00_7A_3B_00,
+                BrowserLineKind::Code => 0x00_22_33_33,
+                BrowserLineKind::Error => 0x00_AA_20_20,
+                BrowserLineKind::Text => {
+                    if line.link.is_some() {
+                        LINK
+                    } else {
+                        TEXT
+                    }
+                }
+            };
             let mut text = line.text;
             truncate_chars(&mut text, self.cols);
             self.put_str(stride, PAD_X, y, &text, color);
+            if line.kind == BrowserLineKind::Heading {
+                self.put_str(stride, PAD_X + 1, y, &text, color);
+            }
             if line.link.is_some() {
                 self.fill_rect(
                     stride,
@@ -639,13 +779,14 @@ impl BrowserApp {
 
 fn welcome_lines() -> Vec<BrowserLine> {
     vec![
-        line("coolOS Browser"),
+        kind_line("coolOS Browser", BrowserLineKind::Heading),
         line(""),
-        line("Quick links"),
+        kind_line("Quick links", BrowserLineKind::Muted),
         line(""),
         link_line("Example Domain", "https://example.com/"),
         link_line("History", "browser://history"),
         link_line("Bookmarks", "browser://bookmarks"),
+        link_line("Downloads", "browser://downloads"),
     ]
 }
 
@@ -690,11 +831,12 @@ fn save_bookmarks(bookmarks: &[String]) {
 }
 
 fn history_lines(history: &[String]) -> Vec<BrowserLine> {
-    let mut out = vec![line("History"), line("")];
+    let mut out = vec![kind_line("History", BrowserLineKind::Heading), line("")];
     if history.is_empty() {
-        out.push(line("No pages visited yet."));
+        out.push(kind_line("No pages visited yet.", BrowserLineKind::Muted));
         return out;
     }
+    out.push(kind_line("Recently visited", BrowserLineKind::Muted));
     for url in history.iter().rev().take(32) {
         out.push(link_line(url, url));
     }
@@ -702,21 +844,205 @@ fn history_lines(history: &[String]) -> Vec<BrowserLine> {
 }
 
 fn bookmark_lines(bookmarks: &[String]) -> Vec<BrowserLine> {
-    let mut out = vec![line("Bookmarks"), line("")];
+    let mut out = vec![kind_line("Bookmarks", BrowserLineKind::Heading), line("")];
     if bookmarks.is_empty() {
-        out.push(line("No bookmarks yet."));
+        out.push(kind_line("No bookmarks yet.", BrowserLineKind::Muted));
         return out;
     }
+    out.push(kind_line("Saved pages", BrowserLineKind::Muted));
     for url in bookmarks {
         out.push(link_line(url, url));
     }
     out
 }
 
+fn downloads_lines() -> Vec<BrowserLine> {
+    let _ = crate::vfs::vfs_create_dir(DOWNLOADS_DIR);
+    let mut out = vec![
+        kind_line("Downloads", BrowserLineKind::Heading),
+        line(""),
+        link_line(
+            "Open Downloads in File Manager",
+            &file_url_for_path(DOWNLOADS_DIR),
+        ),
+        line(""),
+    ];
+    let Some(mut entries) = crate::vfs::vfs_list_dir(DOWNLOADS_DIR) else {
+        out.push(kind_line(
+            "Downloads folder unavailable.",
+            BrowserLineKind::Error,
+        ));
+        return out;
+    };
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    if entries.is_empty() {
+        out.push(kind_line(
+            "No downloaded files yet.",
+            BrowserLineKind::Muted,
+        ));
+        return out;
+    }
+    out.push(kind_line("Files", BrowserLineKind::Muted));
+    for entry in entries.into_iter().take(48) {
+        let mut path = String::from(DOWNLOADS_DIR);
+        path.push('/');
+        path.push_str(&entry.name);
+        let label = if entry.is_dir {
+            format!("{}/", entry.name)
+        } else {
+            format!("{}  {} bytes", entry.name, entry.size)
+        };
+        out.push(link_line(&label, &file_url_for_path(&path)));
+    }
+    out
+}
+
+fn image_response_lines(response: &crate::net::HttpResponse) -> Vec<BrowserLine> {
+    let mut out = vec![
+        kind_line("Image", BrowserLineKind::Heading),
+        kind_line(
+            response.content_type.as_deref().unwrap_or("image/*"),
+            BrowserLineKind::Muted,
+        ),
+        line(""),
+    ];
+    out.push(BrowserLine {
+        text: format!("{} bytes received", response.body_bytes.len()),
+        link: None,
+        kind: BrowserLineKind::Image,
+    });
+    out.push(link_line("Image source URL", &response.final_url));
+    out
+}
+
+fn is_image_content(content_type: Option<&str>) -> bool {
+    content_type
+        .map(|value| value.trim().to_ascii_lowercase().starts_with("image/"))
+        .unwrap_or(false)
+}
+
+fn response_body_text(response: &str) -> Option<&str> {
+    response
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .or_else(|| response.split_once("\n\n").map(|(_, body)| body))
+}
+
+fn file_url_for_path(path: &str) -> String {
+    let mut out = String::from("file://");
+    out.push_str(path);
+    out
+}
+
+fn download_filename(url: &str, content_type: Option<&str>, source: bool) -> String {
+    let (_scheme, host, path) = parse_web_url(url).unwrap_or_else(|_| {
+        (
+            String::from("web"),
+            String::from("download"),
+            String::from("/index"),
+        )
+    });
+    let ext = if source {
+        "html"
+    } else {
+        extension_for_content_type(content_type).unwrap_or_else(|| extension_from_path(&path))
+    };
+    let mut stem = String::new();
+    stem.push_str(&sanitize_filename_part(&host));
+    let leaf = path
+        .split('?')
+        .next()
+        .unwrap_or("/")
+        .rsplit('/')
+        .find(|part| !part.is_empty())
+        .unwrap_or("index");
+    stem.push('-');
+    stem.push_str(&sanitize_filename_part(leaf));
+    if stem.len() > 72 {
+        stem.truncate(72);
+    }
+    if stem.ends_with('-') {
+        stem.push_str("page");
+    }
+    stem.push('.');
+    stem.push_str(ext);
+    stem
+}
+
+fn extension_for_content_type(content_type: Option<&str>) -> Option<&'static str> {
+    let value = content_type?.split(';').next()?.trim();
+    if value.eq_ignore_ascii_case("text/html") {
+        Some("html")
+    } else if value.eq_ignore_ascii_case("text/plain") {
+        Some("txt")
+    } else if value.eq_ignore_ascii_case("image/png") {
+        Some("png")
+    } else if value.eq_ignore_ascii_case("image/jpeg") || value.eq_ignore_ascii_case("image/jpg") {
+        Some("jpg")
+    } else if value.eq_ignore_ascii_case("image/gif") {
+        Some("gif")
+    } else if value.eq_ignore_ascii_case("image/webp") {
+        Some("webp")
+    } else {
+        None
+    }
+}
+
+fn extension_from_path(path: &str) -> &'static str {
+    let leaf = path.split('?').next().unwrap_or(path);
+    if leaf.ends_with(".html") || leaf.ends_with(".htm") {
+        "html"
+    } else if leaf.ends_with(".txt") {
+        "txt"
+    } else if leaf.ends_with(".png") {
+        "png"
+    } else if leaf.ends_with(".jpg") || leaf.ends_with(".jpeg") {
+        "jpg"
+    } else if leaf.ends_with(".gif") {
+        "gif"
+    } else {
+        "bin"
+    }
+}
+
+fn sanitize_filename_part(input: &str) -> String {
+    let mut out = String::new();
+    for b in input.bytes() {
+        let b = b.to_ascii_lowercase();
+        if b.is_ascii_alphanumeric() {
+            out.push(b as char);
+        } else if matches!(b, b'.' | b'-' | b'_') {
+            out.push(b as char);
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    while out.starts_with('.') || out.starts_with('-') {
+        out.remove(0);
+    }
+    while out.ends_with('.') || out.ends_with('-') {
+        out.pop();
+    }
+    if out.is_empty() {
+        String::from("download")
+    } else {
+        out
+    }
+}
+
 fn line(text: &str) -> BrowserLine {
     BrowserLine {
         text: String::from(text),
         link: None,
+        kind: BrowserLineKind::Text,
+    }
+}
+
+fn kind_line(text: &str, kind: BrowserLineKind) -> BrowserLine {
+    BrowserLine {
+        text: String::from(text),
+        link: None,
+        kind,
     }
 }
 
@@ -724,12 +1050,14 @@ fn link_line(text: &str, url: &str) -> BrowserLine {
     BrowserLine {
         text: String::from(text),
         link: Some(String::from(url)),
+        kind: BrowserLineKind::Link,
     }
 }
 
 fn normalize_address_input(input: &str) -> String {
     let trimmed = input.trim();
     if trimmed.starts_with("browser://")
+        || trimmed.starts_with("file://")
         || trimmed.starts_with("http://")
         || trimmed.starts_with("https://")
     {
@@ -748,6 +1076,7 @@ fn normalize_address_input(input: &str) -> String {
 fn normalize_url(input: &str) -> String {
     let trimmed = input.trim();
     if trimmed.starts_with("browser://")
+        || trimmed.starts_with("file://")
         || trimmed.starts_with("http://")
         || trimmed.starts_with("https://")
     {
@@ -866,6 +1195,9 @@ fn render_document(base_url: &str, response: &str, cols: usize) -> Vec<BrowserLi
     let mut out = Vec::new();
     let mut text = String::new();
     let mut link: Option<String> = None;
+    let mut kind = BrowserLineKind::Text;
+    let mut pending_prefix: Option<String> = None;
+    let mut preformatted = false;
     let mut skip_until: Option<String> = None;
     let bytes = body.as_bytes();
     let mut i = 0usize;
@@ -881,28 +1213,44 @@ fn render_document(base_url: &str, response: &str, cols: usize) -> Vec<BrowserLi
                     i += end_rel + 1;
                     continue;
                 }
-                flush_text(&mut out, &mut text, cols, link.clone());
-                if lower_tag.starts_with("script") {
-                    skip_until = Some(String::from("/script"));
+                flush_text(
+                    &mut out,
+                    &mut text,
+                    cols,
+                    link.clone(),
+                    kind,
+                    pending_prefix.take(),
+                );
+                let lower_name = tag_name_of(&lower_tag);
+                if lower_name == "script"
+                    || lower_name == "style"
+                    || lower_name == "head"
+                    || (tag_is_hidden(&lower_tag) && !lower_tag.starts_with("input"))
+                {
+                    skip_until = Some(closing_tag_for(&lower_tag));
                     i += end_rel + 1;
                     continue;
                 }
-                if lower_tag.starts_with("style") {
-                    skip_until = Some(String::from("/style"));
-                    i += end_rel + 1;
-                    continue;
-                }
-                handle_tag(tag, &mut out, &mut link, base_url, cols);
+                handle_tag(
+                    tag,
+                    &mut out,
+                    &mut link,
+                    &mut kind,
+                    &mut pending_prefix,
+                    &mut preformatted,
+                    base_url,
+                    cols,
+                );
                 i += end_rel + 1;
                 continue;
             }
         }
         if skip_until.is_none() {
-            push_text_char(&mut text, bytes[i] as char);
+            push_text_char(&mut text, bytes[i] as char, preformatted);
         }
         i += 1;
     }
-    flush_text(&mut out, &mut text, cols, link);
+    flush_text(&mut out, &mut text, cols, link, kind, pending_prefix);
     compact_lines(out)
 }
 
@@ -910,13 +1258,27 @@ fn handle_tag(
     tag: &str,
     out: &mut Vec<BrowserLine>,
     link: &mut Option<String>,
+    kind: &mut BrowserLineKind,
+    pending_prefix: &mut Option<String>,
+    preformatted: &mut bool,
     base_url: &str,
-    cols: usize,
+    _cols: usize,
 ) {
     let tag = tag.trim();
     let lower = lowercase_ascii(tag);
     if lower.starts_with("/a") {
         *link = None;
+        return;
+    }
+    if lower.starts_with("/h") {
+        *kind = BrowserLineKind::Text;
+        push_blank_line(out);
+        return;
+    }
+    if lower.starts_with("/pre") || lower.starts_with("/code") {
+        *preformatted = false;
+        *kind = BrowserLineKind::Text;
+        push_blank_line(out);
         return;
     }
     if lower.starts_with("a ") || lower == "a" {
@@ -925,45 +1287,126 @@ fn handle_tag(
         }
         return;
     }
-    if lower.starts_with("img") {
-        if let Some(alt) = attr_value(tag, "alt") {
-            let mut text = String::from("[image: ");
-            text.push_str(&decode_entities(&alt));
-            text.push(']');
-            out.extend(wrap_plain_text(&text, cols, None));
-        }
+    if lower.starts_with("h1") || lower.starts_with("h2") || lower.starts_with("h3") {
+        push_blank_line(out);
+        *kind = BrowserLineKind::Heading;
         return;
     }
-    if lower.starts_with("br")
-        || lower.starts_with("/p")
+    if lower.starts_with("pre") || lower.starts_with("code") {
+        push_blank_line(out);
+        *preformatted = true;
+        *kind = BrowserLineKind::Code;
+        return;
+    }
+    if lower.starts_with("img") {
+        let src = attr_value(tag, "src").map(|src| resolve_url(base_url, &src));
+        let label = attr_value(tag, "alt")
+            .map(|alt| decode_entities(&alt))
+            .filter(|alt| !alt.trim().is_empty())
+            .unwrap_or_else(|| src.clone().unwrap_or_else(|| String::from("image")));
+        let mut text = String::from("[image] ");
+        text.push_str(&label);
+        out.push(BrowserLine {
+            text,
+            link: src,
+            kind: BrowserLineKind::Image,
+        });
+        return;
+    }
+    if lower.starts_with("li") {
+        push_blank_line(out);
+        *pending_prefix = Some(String::from("* "));
+        return;
+    }
+    if lower.starts_with("br") {
+        push_blank_line(out);
+        return;
+    }
+    if lower.starts_with("/p")
         || lower.starts_with("p")
         || lower.starts_with("/div")
         || lower.starts_with("div")
-        || lower.starts_with("/h")
-        || lower.starts_with("h1")
-        || lower.starts_with("h2")
-        || lower.starts_with("h3")
-        || lower.starts_with("li")
+        || lower.starts_with("/section")
+        || lower.starts_with("section")
+        || lower.starts_with("/article")
+        || lower.starts_with("article")
+        || lower.starts_with("/main")
+        || lower.starts_with("main")
+        || lower.starts_with("/tr")
+        || lower.starts_with("tr")
+        || lower.starts_with("/ul")
+        || lower.starts_with("/ol")
+        || lower.starts_with("ul")
+        || lower.starts_with("ol")
     {
-        if out.last().map(|line| !line.text.is_empty()).unwrap_or(true) {
-            out.push(BrowserLine {
-                text: String::new(),
-                link: None,
-            });
-        }
+        push_blank_line(out);
     }
 }
 
-fn flush_text(out: &mut Vec<BrowserLine>, text: &mut String, cols: usize, link: Option<String>) {
-    let decoded = decode_entities(text.trim());
+fn push_blank_line(out: &mut Vec<BrowserLine>) {
+    if out.last().map(|line| !line.text.is_empty()).unwrap_or(true) {
+        out.push(BrowserLine {
+            text: String::new(),
+            link: None,
+            kind: BrowserLineKind::Text,
+        });
+    }
+}
+
+fn tag_is_hidden(lower_tag: &str) -> bool {
+    lower_tag.contains("hidden")
+        || lower_tag.contains("display:none")
+        || lower_tag.contains("display: none")
+}
+
+fn tag_name_of(lower_tag: &str) -> &str {
+    lower_tag
+        .trim_start_matches('/')
+        .split(|c: char| c.is_whitespace() || c == '>' || c == '/')
+        .next()
+        .unwrap_or("")
+}
+
+fn closing_tag_for(lower_tag: &str) -> String {
+    let mut out = String::from("/");
+    out.push_str(tag_name_of(lower_tag));
+    out
+}
+
+fn flush_text(
+    out: &mut Vec<BrowserLine>,
+    text: &mut String,
+    cols: usize,
+    link: Option<String>,
+    kind: BrowserLineKind,
+    prefix: Option<String>,
+) {
+    let trimmed = if kind == BrowserLineKind::Code {
+        text.trim_matches('\n')
+    } else {
+        text.trim()
+    };
+    let mut decoded = decode_entities(trimmed);
     text.clear();
     if decoded.is_empty() {
         return;
     }
-    out.extend(wrap_plain_text(&decoded, cols, link));
+    if let Some(prefix) = prefix {
+        decoded.insert_str(0, &prefix);
+    }
+    out.extend(wrap_plain_text_kind(&decoded, cols, link, kind));
 }
 
 fn wrap_plain_text(text: &str, cols: usize, link: Option<String>) -> Vec<BrowserLine> {
+    wrap_plain_text_kind(text, cols, link, BrowserLineKind::Text)
+}
+
+fn wrap_plain_text_kind(
+    text: &str,
+    cols: usize,
+    link: Option<String>,
+    kind: BrowserLineKind,
+) -> Vec<BrowserLine> {
     let cols = cols.clamp(20, 120);
     let mut out = Vec::new();
     let mut line = String::new();
@@ -973,6 +1416,7 @@ fn wrap_plain_text(text: &str, cols: usize, link: Option<String>) -> Vec<Browser
                 out.push(BrowserLine {
                     text: line,
                     link: link.clone(),
+                    kind: line_kind_for_link(&link, kind),
                 });
                 line = String::new();
             }
@@ -982,6 +1426,7 @@ fn wrap_plain_text(text: &str, cols: usize, link: Option<String>) -> Vec<Browser
                     out.push(BrowserLine {
                         text: chunk,
                         link: link.clone(),
+                        kind: line_kind_for_link(&link, kind),
                     });
                     chunk = String::new();
                 }
@@ -997,6 +1442,7 @@ fn wrap_plain_text(text: &str, cols: usize, link: Option<String>) -> Vec<Browser
             out.push(BrowserLine {
                 text: line,
                 link: link.clone(),
+                kind: line_kind_for_link(&link, kind),
             });
             line = String::new();
         }
@@ -1006,9 +1452,22 @@ fn wrap_plain_text(text: &str, cols: usize, link: Option<String>) -> Vec<Browser
         line.push_str(word);
     }
     if !line.is_empty() {
-        out.push(BrowserLine { text: line, link });
+        let kind = line_kind_for_link(&link, kind);
+        out.push(BrowserLine {
+            text: line,
+            link,
+            kind,
+        });
     }
     out
+}
+
+fn line_kind_for_link(link: &Option<String>, fallback: BrowserLineKind) -> BrowserLineKind {
+    if link.is_some() {
+        BrowserLineKind::Link
+    } else {
+        fallback
+    }
 }
 
 fn compact_lines(lines: Vec<BrowserLine>) -> Vec<BrowserLine> {
@@ -1025,8 +1484,12 @@ fn compact_lines(lines: Vec<BrowserLine>) -> Vec<BrowserLine> {
     out
 }
 
-fn push_text_char(out: &mut String, c: char) {
-    if c == '\n' || c == '\r' || c == '\t' {
+fn push_text_char(out: &mut String, c: char, preformatted: bool) {
+    if preformatted && (c == '\n' || c == '\r') {
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+    } else if c == '\n' || c == '\r' || c == '\t' {
         if !out.ends_with(' ') {
             out.push(' ');
         }
@@ -1143,7 +1606,10 @@ fn attr_value(tag: &str, name: &str) -> Option<String> {
 }
 
 fn resolve_url(base: &str, href: &str) -> String {
-    if href.starts_with("browser://") || href.starts_with("http://") || href.starts_with("https://")
+    if href.starts_with("browser://")
+        || href.starts_with("file://")
+        || href.starts_with("http://")
+        || href.starts_with("https://")
     {
         return String::from(href);
     }

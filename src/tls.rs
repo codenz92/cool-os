@@ -1,6 +1,6 @@
 extern crate alloc;
 
-use alloc::{format, string::String, vec::Vec};
+use alloc::{format, string::String, vec, vec::Vec};
 use embedded_io::{ErrorKind, ErrorType, Read, Write};
 use embedded_tls::blocking::{
     Aes128GcmSha256, Certificate, CryptoProvider, TlsConfig, TlsConnection, TlsContext, TlsError,
@@ -9,9 +9,19 @@ use embedded_tls::blocking::{
 use embedded_tls::pki::CertVerifier;
 use embedded_tls::TlsClock;
 use rand_core::{CryptoRng, RngCore};
+use spin::Mutex;
 
 const TLS_RECORD_BUF: usize = 16_640;
 const CERT_CHAIN_BUF: usize = 8 * 1024;
+const TLS_ROOT_CACHE_MAX: usize = 16;
+
+#[derive(Clone)]
+struct RootCacheEntry {
+    host: String,
+    root_name: &'static str,
+}
+
+static ROOT_CACHE: Mutex<Vec<RootCacheEntry>> = Mutex::new(Vec::new());
 
 pub struct TlsHttpExchange {
     pub resolved_addr: u32,
@@ -35,9 +45,24 @@ pub fn https_exchange(
     let addrs = crate::net::resolve_host_addrs(host)?;
     let mut last_err = "TLS connect failed";
     for addr in addrs {
-        for root in crate::tls_roots::TRUST_ROOTS {
+        let cached_name = cached_root_name(host);
+        if let Some(root) = cached_root(host) {
             match https_exchange_with_root(host, path, request, max_bytes, addr, root) {
                 Ok(exchange) => return Ok(exchange),
+                Err(err) if err == "TLS hostname validation failed" => return Err(err),
+                Err(err) => last_err = err,
+            }
+        }
+        for root in crate::tls_roots::TRUST_ROOTS {
+            if cached_name == Some(root.name) {
+                continue;
+            }
+            match https_exchange_with_root(host, path, request, max_bytes, addr, root) {
+                Ok(exchange) => {
+                    remember_root(host, root.name);
+                    return Ok(exchange);
+                }
+                Err(err) if err == "TLS hostname validation failed" => return Err(err),
                 Err(err) => last_err = err,
             }
         }
@@ -48,13 +73,95 @@ pub fn https_exchange(
 pub fn status_lines() -> Vec<String> {
     let mut lines = crate::entropy::status_lines();
     lines.push(format!(
-        "tls: TLS 1.3 client roots={} cipher=TLS_AES_128_GCM_SHA256 group=P-256",
-        crate::tls_roots::TRUST_ROOTS.len()
+        "tls: TLS 1.3 client roots={} root_cache={} cipher=TLS_AES_128_GCM_SHA256 group=P-256",
+        crate::tls_roots::TRUST_ROOTS.len(),
+        ROOT_CACHE.lock().len()
     ));
     for root in crate::tls_roots::TRUST_ROOTS {
         lines.push(format!("trust root: {}", root.name));
     }
     lines
+}
+
+pub fn selftest_lines() -> Vec<String> {
+    let exact =
+        embedded_tls::pki::hostname_matches_for_test("example.com", None, &["example.com"], &[]);
+    let wildcard = embedded_tls::pki::hostname_matches_for_test(
+        "www.badssl.com",
+        None,
+        &["*.badssl.com"],
+        &[],
+    );
+    let wildcard_rejects_extra_label = !embedded_tls::pki::hostname_matches_for_test(
+        "wrong.host.badssl.com",
+        None,
+        &["*.badssl.com"],
+        &[],
+    );
+    let san_blocks_wrong_cn = !embedded_tls::pki::hostname_matches_for_test(
+        "legacy.example",
+        Some("legacy.example"),
+        &["modern.example"],
+        &[],
+    );
+    let cn_fallback = embedded_tls::pki::hostname_matches_for_test(
+        "legacy.example",
+        Some("legacy.example"),
+        &[],
+        &[],
+    );
+    let ip_san =
+        embedded_tls::pki::hostname_matches_for_test("192.0.2.1", None, &[], &[[192, 0, 2, 1]]);
+    let ok = exact
+        && wildcard
+        && wildcard_rejects_extra_label
+        && san_blocks_wrong_cn
+        && cn_fallback
+        && ip_san;
+    vec![
+        format!(
+            "TLS hostname exact={} wildcard={} wildcard-negative={}",
+            exact, wildcard, wildcard_rejects_extra_label
+        ),
+        format!(
+            "TLS SAN-first={} CN-fallback={} IP-SAN={}",
+            san_blocks_wrong_cn, cn_fallback, ip_san
+        ),
+        format!("TLS hostname negative {}", if ok { "ok" } else { "failed" }),
+    ]
+}
+
+fn cached_root(host: &str) -> Option<&'static crate::tls_roots::TrustRoot> {
+    let root_name = cached_root_name(host)?;
+    crate::tls_roots::TRUST_ROOTS
+        .iter()
+        .find(|root| root.name == root_name)
+}
+
+fn cached_root_name(host: &str) -> Option<&'static str> {
+    ROOT_CACHE
+        .lock()
+        .iter()
+        .find(|entry| entry.host.eq_ignore_ascii_case(host))
+        .map(|entry| entry.root_name)
+}
+
+fn remember_root(host: &str, root_name: &'static str) {
+    let mut cache = ROOT_CACHE.lock();
+    if let Some(entry) = cache
+        .iter_mut()
+        .find(|entry| entry.host.eq_ignore_ascii_case(host))
+    {
+        entry.root_name = root_name;
+        return;
+    }
+    cache.push(RootCacheEntry {
+        host: String::from(host),
+        root_name,
+    });
+    if cache.len() > TLS_ROOT_CACHE_MAX {
+        cache.remove(0);
+    }
 }
 
 fn https_exchange_with_root(
@@ -276,6 +383,7 @@ impl Write for KernelTcpStream {
 fn tls_error_label(err: TlsError) -> &'static str {
     match err {
         TlsError::InvalidCertificate => "TLS certificate validation failed",
+        TlsError::InvalidCertificateRequest => "TLS hostname validation failed",
         TlsError::InvalidSignature => "TLS certificate signature invalid",
         TlsError::InvalidSignatureScheme => "TLS signature scheme unsupported",
         TlsError::InvalidCipherSuite => "TLS cipher suite unsupported",

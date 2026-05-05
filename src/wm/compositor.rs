@@ -761,6 +761,7 @@ impl AppWindow {
     }
     pub fn take_open_request(&mut self) -> Option<FileManagerOpenRequest> {
         match self {
+            AppWindow::Browser(browser) => browser.take_open_request(),
             AppWindow::FileManager(fm) => fm.take_open_request(),
             _ => None,
         }
@@ -1602,6 +1603,12 @@ impl WindowManager {
         };
 
         match request {
+            FileManagerOpenRequest::Dir(path) => {
+                let off = self.windows.len() as i32 * 16;
+                let wx = (20 + off).min(sw as i32 - 220);
+                let wy = (20 + off).min(taskbar_y - 120);
+                self.launch_file_manager_at(&path, wx, wy);
+            }
             FileManagerOpenRequest::File(path) => {
                 crate::app_lifecycle::record_file(&path);
                 let off = self.windows.len() as i32 * 16;
