@@ -5,14 +5,14 @@
 
 A 64-bit operating system kernel written in Rust. Boots bare-metal into a
 graphical desktop with draggable and resizable windows, a taskbar, a start
-menu, a PS/2 mouse cursor, and five built-in applications — now with a preemptive scheduler, ring-3
+menu, a PS/2 mouse cursor, and six built-in applications — now with a preemptive scheduler, ring-3
 userspace, per-process virtual memory, process isolation, a FAT32
 filesystem with VFS/syscalls, an ELF loader with `exec`, and a full IPC
 layer with pipes, shared memory, and per-task fd tables.
 
 ---
 
-# Current state — v1.20
+# Current state — v5.2
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -47,8 +47,11 @@ pipe, and `exec /bin/read` exercises userspace `open/read/close` against the
 FAT32-backed VFS. With QEMU virtio networking enabled, `exec /bin/wget
 http://example.com/` resolves DNS, opens a TCP socket, fetches the HTTP
 response, and streams it to the terminal. The native Web Browser app can open
-plain HTTP pages, follow HTTP redirects, decode chunked responses, render basic
-HTML text, and keep session history plus persistent local bookmarks.
+HTTP and HTTPS pages, follow redirects, decode chunked responses, render basic
+HTML text, and keep session history plus persistent local bookmarks. HTTPS uses
+a no_std TLS 1.3 client over the kernel TCP stack with hardware RNG entropy,
+RTC-backed certificate validity checks, and X.509 chain validation against the
+built-in trust roots.
 
 ### What's working
 
@@ -71,7 +74,7 @@ HTML text, and keep session history plus persistent local bookmarks.
 | **ATA PIO driver** | Primary-bus slave device (QEMU `if=ide,index=1`). LBA28 PIO reads, BSY/DRQ polling with timeout, nIEN=1 (device interrupts disabled). Wrapped in `without_interrupts` to prevent preemption mid-transfer. |
 | **FAT32 layer** | BPB parsing, FAT chain walking, short-name and long-filename lookup, directory traversal, cluster→sector mapping, create/write/rename/delete/copy helpers, temp-write+rename safe writes, free-space stats, and a basic `fsck` consistency summary. `fat32::read_file(path)` returns `Option<Vec<u8>>`. |
 | **VFS** | Task-local fd tables (16 slots, fds 0–2 reserved) backed by shared file/pipe/shmem objects. `vfs_open` reads whole files into heap buffers; `vfs_pipe` allocates a 512-byte kernel ring buffer and returns per-task read/write fds; `vfs_read_blocking` blocks tasks on empty pipes and wakes them on write/EOF; `ipc` selectively inherits pipe ends into child processes; `vfs_shmem_create`/`vfs_shmem_map` manage a shared memory region pool indexed by ID. |
-| **Networking** | Legacy PCI virtio-net driver for QEMU user networking, polling RX/TX virtqueues, Ethernet framing, ARP cache, IPv4, ICMP echo, UDP DNS queries, minimal TCP client sockets, userspace socket syscalls, and an HTTP/1.1 client with redirects and chunked-transfer decoding. |
+| **Networking** | Legacy PCI virtio-net driver for QEMU user networking, polling RX/TX virtqueues, Ethernet framing, ARP cache, IPv4, ICMP echo, UDP DNS queries, minimal TCP client sockets, userspace socket syscalls, HTTP/1.1, and verified TLS 1.3 HTTPS for the native browser/terminal path. |
 | **Kernel services** | Persistent kernel log buffer flushed to `/LOGS/KERNEL.TXT`, crash-screen log tail, central device registry for PCI/USB/system devices, package/app metadata and file associations, networking status, and ACPI power-control status foundation. |
 | **Applications** | Terminal, System Monitor, Text Viewer, Color Picker, File Manager, and Web Browser. |
 | **Disk image** | `disk-image/src/fs-image.rs` builds `fs.img` (64 MiB FAT32) with `/bin/hello.txt`, `/bin/hello`, `/bin/exec`, `/bin/pipe`, `/bin/piperd`, `/bin/pipewr`, `/bin/keyecho`, `/bin/read`, `/bin/terminal`, `/bin/netdemo`, and `/bin/wget`. The Makefile attaches it to QEMU as the IDE slave. |
@@ -85,7 +88,7 @@ HTML text, and keep session history plus persistent local bookmarks.
 | **Text Viewer** | Right-click | Scrollable "About" doc; `j`/`k` to scroll. |
 | **Color Picker** | Right-click | Clickable 16-colour EGA palette grid. |
 | **File Manager** | Right-click / desktop icon | Browse and mutate the FAT32 disk image with breadcrumbs, recursive search, sorting, multi-select, clipboard copy/cut/paste, Trash-backed delete, properties, text editing, and ELF launch routing. |
-| **Web Browser** | Launcher / desktop icon | Native HTTP browser with address/search bar, redirects, decoded chunked responses, basic HTML text rendering, clickable links, session history, and persistent bookmarks. |
+| **Web Browser** | Launcher / desktop icon | Native HTTP/HTTPS browser with address/search bar, redirects, decoded chunked responses, basic HTML text rendering, clickable links, session history, visible TLS trust-root status, and persistent bookmarks. |
 
 ### Desktop shortcuts
 
@@ -128,7 +131,8 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `netproto` | Print ARP/IPv4/ICMP/UDP/TCP protocol status |
 | `dns <host>` | Resolve a host through the network DNS API |
 | `ping <host>` | Send an ICMP echo request |
-| `http <host> [path]` | Fetch an HTTP response through the kernel network API |
+| `http <host-or-url> [path]` | Fetch an HTTP response through the kernel network API |
+| `https <host-or-url> [path]` | Fetch an HTTPS response through the verified kernel TLS client |
 | `power [reboot\|shutdown\|sleep]` | Print or request power-control actions |
 | `log` | Flush and print the kernel log tail |
 | `fsck` | Print FAT32 consistency and root-entry summary |
@@ -208,6 +212,9 @@ vfs.rs           VFS — task-local fd tables over shared file/pipe/shmem object
   clipboard.rs     Shared text/path clipboard service
   device_registry.rs Central PCI/USB/system device table
   net.rs           Ethernet/ARP/IPv4/ICMP/UDP/DNS/TCP network stack
+  entropy.rs       RDRAND-backed kernel entropy source for TLS handshakes
+  tls.rs           TLS 1.3 HTTPS client over kernel TCP sockets
+  tls_roots.rs     Built-in DER trust roots for certificate validation
   virtio_net.rs    Legacy PCI virtio-net driver over polling virtqueues
   acpi.rs          Power-control status foundation
   app_metadata.rs  App/package metadata and file associations
@@ -338,5 +345,6 @@ faults still panic.
 | 15 | Networking — virtio-net, TCP/IP | **Done** |
 | 16 | UI polish — desktop shell, launcher, taskbar, settings | **Done** |
 | 17 | Browser foundation — HTTP/1.1, redirects, chunked responses, local browser UX | **Done** |
+| 18 | HTTPS/TLS foundation — TLS 1.3, certificate validation, browser/terminal integration | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

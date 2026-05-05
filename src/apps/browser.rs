@@ -79,6 +79,12 @@ impl BrowserApp {
         app
     }
 
+    pub fn open_url(x: i32, y: i32, url: &str) -> Self {
+        let mut app = Self::new(x, y);
+        app.navigate(url, true);
+        app
+    }
+
     pub fn handle_key(&mut self, c: char) {
         if self.address_focused {
             match c {
@@ -198,23 +204,31 @@ impl BrowserApp {
         self.scroll = 0;
         self.render();
 
-        match parse_http_url(&url) {
-            Ok((host, path)) => match crate::net::http_get_response(&host, &path) {
+        match parse_web_url(&url) {
+            Ok((_scheme, host, path)) => match crate::net::web_get_response(&url) {
                 Ok(response) => {
                     self.title = extract_title(&response.body).unwrap_or_else(|| host.clone());
                     self.address = response.final_url.clone();
+                    let security = match response.tls_trust_root {
+                        Some(root) => format!("  TLS root: {}", root),
+                        None => String::new(),
+                    };
                     self.status = if response.redirect_count > 0 {
                         format!(
-                            "{}  {} redirect(s) -> {}",
-                            response.status_line, response.redirect_count, response.final_url
+                            "{}  {} redirect(s) -> {}{}",
+                            response.status_line,
+                            response.redirect_count,
+                            response.final_url,
+                            security
                         )
                     } else {
                         format!(
-                            "{}  {}{} -> {}",
+                            "{}  {}{} -> {}{}",
                             response.status_line,
                             response.host,
                             response.path,
-                            crate::net::ipv4_string(response.resolved_addr)
+                            crate::net::ipv4_string(response.resolved_addr),
+                            security
                         )
                     };
                     self.lines =
@@ -253,12 +267,12 @@ impl BrowserApp {
                 self.status = String::from(err);
                 self.lines = vec![
                     BrowserLine {
-                        text: String::from("Only plain HTTP URLs are supported in this milestone."),
+                        text: String::from("Enter an http:// or https:// URL."),
                         link: None,
                     },
                     BrowserLine {
-                        text: String::from("Try http://example.com/"),
-                        link: Some(String::from("http://example.com/")),
+                        text: String::from("Try https://example.com/"),
+                        link: Some(String::from("https://example.com/")),
                     },
                 ];
             }
@@ -390,7 +404,10 @@ impl BrowserApp {
             out.push(line("No local matches."));
             if looks_like_url(query) {
                 out.push(line(""));
-                out.push(link_line("Open as HTTP URL", &normalize_address_input(query)));
+                out.push(link_line(
+                    "Open as web URL",
+                    &normalize_address_input(query),
+                ));
             }
         }
         out
@@ -494,8 +511,22 @@ impl BrowserApp {
 
         let doc_y = TOOLBAR_H + 10;
         let doc_h = content_h.saturating_sub(TOOLBAR_H + STATUS_H + 18);
-        self.fill_rect(stride, 10, TOOLBAR_H + 6, width.saturating_sub(20), doc_h + 8, PAGE);
-        self.draw_rect(stride, 10, TOOLBAR_H + 6, width.saturating_sub(20), doc_h + 8, 0x00_BB_C6_CC);
+        self.fill_rect(
+            stride,
+            10,
+            TOOLBAR_H + 6,
+            width.saturating_sub(20),
+            doc_h + 8,
+            PAGE,
+        );
+        self.draw_rect(
+            stride,
+            10,
+            TOOLBAR_H + 6,
+            width.saturating_sub(20),
+            doc_h + 8,
+            0x00_BB_C6_CC,
+        );
 
         self.rows = doc_h / LINE_H;
         self.cols = width.saturating_sub(PAD_X * 2 + 28) / CHAR_W;
@@ -514,7 +545,14 @@ impl BrowserApp {
             truncate_chars(&mut text, self.cols);
             self.put_str(stride, PAD_X, y, &text, color);
             if line.link.is_some() {
-                self.fill_rect(stride, PAD_X, y + 10, text.len().min(self.cols) * CHAR_W, 1, LINK);
+                self.fill_rect(
+                    stride,
+                    PAD_X,
+                    y + 10,
+                    text.len().min(self.cols) * CHAR_W,
+                    1,
+                    LINK,
+                );
             }
         }
 
@@ -542,10 +580,23 @@ impl BrowserApp {
     ) {
         let bg = if enabled { BUTTON } else { BUTTON_DIM };
         self.fill_rect(stride, x, y, w, h, bg);
-        self.draw_rect(stride, x, y, w, h, if enabled { BUTTON_HOT } else { BORDER });
+        self.draw_rect(
+            stride,
+            x,
+            y,
+            w,
+            h,
+            if enabled { BUTTON_HOT } else { BORDER },
+        );
         let label_x = x + 6;
         let label_y = y + 8;
-        self.put_str(stride, label_x, label_y, label, if enabled { WHITE } else { MUTED });
+        self.put_str(
+            stride,
+            label_x,
+            label_y,
+            label,
+            if enabled { WHITE } else { MUTED },
+        );
     }
 
     fn fill_rect(&mut self, stride: usize, x: usize, y: usize, w: usize, h: usize, color: u32) {
@@ -592,7 +643,7 @@ fn welcome_lines() -> Vec<BrowserLine> {
         line(""),
         line("Quick links"),
         line(""),
-        link_line("Example Domain", "http://example.com/"),
+        link_line("Example Domain", "https://example.com/"),
         link_line("History", "browser://history"),
         link_line("Bookmarks", "browser://bookmarks"),
     ]
@@ -610,7 +661,7 @@ fn load_bookmarks() -> Vec<String> {
                     continue;
                 }
                 let url = value.trim();
-                if url.starts_with("http://")
+                if (url.starts_with("http://") || url.starts_with("https://"))
                     && !out.iter().any(|existing| existing == url)
                     && out.len() < MAX_BOOKMARKS
                 {
@@ -620,7 +671,7 @@ fn load_bookmarks() -> Vec<String> {
         }
     }
     if out.is_empty() {
-        out.push(String::from("http://example.com/"));
+        out.push(String::from("https://example.com/"));
     }
     out
 }
@@ -628,7 +679,7 @@ fn load_bookmarks() -> Vec<String> {
 fn save_bookmarks(bookmarks: &[String]) {
     let mut out = String::new();
     for bookmark in bookmarks.iter().take(MAX_BOOKMARKS) {
-        if !bookmark.starts_with("http://") {
+        if !(bookmark.starts_with("http://") || bookmark.starts_with("https://")) {
             continue;
         }
         out.push_str("bookmark=");
@@ -684,7 +735,7 @@ fn normalize_address_input(input: &str) -> String {
     {
         String::from(trimmed)
     } else if looks_like_url(trimmed) {
-        let mut out = String::from("http://");
+        let mut out = String::from("https://");
         out.push_str(trimmed);
         out
     } else {
@@ -770,23 +821,36 @@ fn hex_value(value: u8) -> Option<u8> {
     }
 }
 
-fn parse_http_url(url: &str) -> Result<(String, String), &'static str> {
-    if url.starts_with("https://") {
-        return Err("HTTPS requires TLS support, which is not implemented yet");
+fn parse_web_url(url: &str) -> Result<(String, String, String), &'static str> {
+    if let Some(rest) = url.strip_prefix("http://") {
+        let (host, path) = parse_web_host_path("http", rest)?;
+        return Ok((String::from("http"), host, path));
     }
-    let rest = url.strip_prefix("http://").ok_or("URL must start with http://")?;
+    if let Some(rest) = url.strip_prefix("https://") {
+        let (host, path) = parse_web_host_path("https", rest)?;
+        return Ok((String::from("https"), host, path));
+    }
+    Err("URL must start with http:// or https://")
+}
+
+fn parse_web_host_path(scheme: &str, rest: &str) -> Result<(String, String), &'static str> {
     let slash = rest.find('/').unwrap_or(rest.len());
     let mut host = rest[..slash].trim();
     if host.is_empty() {
         return Err("missing host");
     }
     if let Some((name, port)) = host.rsplit_once(':') {
-        if port != "80" {
-            return Err("only HTTP port 80 is supported");
+        let expected_port = if scheme == "https" { "443" } else { "80" };
+        if port != expected_port {
+            return Err("only default web ports are supported");
         }
         host = name;
     }
-    let path = if slash < rest.len() { &rest[slash..] } else { "/" };
+    let path = if slash < rest.len() {
+        &rest[slash..]
+    } else {
+        "/"
+    };
     Ok((String::from(host), String::from(path)))
 }
 
@@ -1083,11 +1147,12 @@ fn resolve_url(base: &str, href: &str) -> String {
     {
         return String::from(href);
     }
-    let Ok((host, path)) = parse_http_url(base) else {
+    let Ok((scheme, host, path)) = parse_web_url(base) else {
         return normalize_url(href);
     };
     if href.starts_with('/') {
-        let mut out = String::from("http://");
+        let mut out = scheme;
+        out.push_str("://");
         out.push_str(&host);
         out.push_str(href);
         return out;
@@ -1096,7 +1161,8 @@ fn resolve_url(base: &str, href: &str) -> String {
     if let Some(pos) = dir.rfind('/') {
         dir.truncate(pos + 1);
     }
-    let mut out = String::from("http://");
+    let mut out = scheme;
+    out.push_str("://");
     out.push_str(&host);
     out.push_str(&dir);
     out.push_str(href);

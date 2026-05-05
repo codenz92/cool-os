@@ -313,14 +313,14 @@ impl TerminalApp {
                 self.cmd_lines("NETWORK API SETTINGS", crate::settings_state::lines())
             }
 
-            Some("http") => {
+            Some(cmd @ ("http" | "https")) => {
                 let host = words.next();
                 let path = words.next().unwrap_or("/");
                 match host {
-                    Some(host) => self.cmd_http(host, path),
+                    Some(host) => self.cmd_http(cmd, host, path),
                     None => {
                         self.set_fg(FG_ERROR);
-                        self.print_str("usage: http <host> [path]\n");
+                        self.print_str("usage: http|https <host-or-url> [path]\n");
                     }
                 }
             }
@@ -744,7 +744,7 @@ impl TerminalApp {
             ("netapi", "network/settings API toggles"),
             ("dns <host>", "resolve host with staged DNS"),
             ("ping <host>", "send ICMP echo request"),
-            ("http <host> [path]", "run userspace HTTP client API"),
+            ("http|https <host-or-url> [path]", "run kernel web client"),
             ("power <op>", "ACPI power status"),
             ("log", "kernel log tail"),
             ("logs", "open combined log summary"),
@@ -1076,8 +1076,23 @@ impl TerminalApp {
         }
     }
 
-    fn cmd_http(&mut self, host: &str, path: &str) {
-        match crate::net::http_get_response(host, path) {
+    fn cmd_http(&mut self, scheme: &str, host: &str, path: &str) {
+        let result = if host.starts_with("http://") || host.starts_with("https://") {
+            crate::net::web_get_response(host)
+        } else if scheme == "https" {
+            let mut url = String::from("https://");
+            url.push_str(host);
+            if path.starts_with('/') {
+                url.push_str(path);
+            } else {
+                url.push('/');
+                url.push_str(path);
+            }
+            crate::net::web_get_response(&url)
+        } else {
+            crate::net::http_get_response(host, path)
+        };
+        match result {
             Ok(response) => {
                 self.set_fg(FG_ACCENT);
                 self.print_str("HTTP CLIENT\n");
@@ -1090,6 +1105,11 @@ impl TerminalApp {
                 self.print_str(" -> ");
                 self.print_str(&crate::net::ipv4_string(response.resolved_addr));
                 self.print_char('\n');
+                if let Some(root) = response.tls_trust_root {
+                    self.print_str("tls root ");
+                    self.print_str(root);
+                    self.print_char('\n');
+                }
                 if response.redirect_count > 0 {
                     self.print_str("final ");
                     self.print_str(&response.final_url);

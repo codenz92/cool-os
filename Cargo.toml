@@ -21,6 +21,10 @@ pic8259 = "0.10.1"
 pc-keyboard = "0.6"
 linked_list_allocator = "0.9.0"
 raw-cpuid = "10.6.0"
+der = { version = "0.8", features = ["heapless"] }
+embedded-io = { version = "0.7", default-features = false }
+embedded-tls = { version = "0.18", default-features = false, features = ["alloc", "rsa", "rustpki"] }
+rand_core = { version = "0.6", default-features = false }
 
 [profile.release]
 # opt-level 3 currently sends the monolithic no_std kernel crate into a very

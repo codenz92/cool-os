@@ -1446,6 +1446,9 @@ impl WindowManager {
         } else if action == "reboot" {
             crate::notifications::push("Power", "reboot requested");
             crate::acpi::reboot();
+        } else if let Some(url) = action.strip_prefix("browser-url:") {
+            self.add_window(AppWindow::Browser(BrowserApp::open_url(wx, wy, url)));
+            crate::app_lifecycle::record_app("Web Browser");
         } else if let Some(page) = action.strip_prefix("settings:") {
             self.add_window(AppWindow::DisplaySettings(DisplaySettingsApp::with_page(
                 wx, wy, page,
@@ -6431,7 +6434,12 @@ fn command_palette_matches(query: &str) -> Vec<LauncherMatch> {
             launcher_inline("Reboot", "power action", "reboot", 40),
             launcher_inline("Shutdown", "power action", "shutdown", 38),
             launcher_command("Run fsck", "filesystem check", "fsck", 36),
-            launcher_command("HTTP example.com", "userspace HTTP", "http example.com", 34),
+            launcher_command(
+                "HTTPS example.com",
+                "TLS browser stack",
+                "https example.com",
+                34
+            ),
             launcher_path("Open /Documents", "open folder", "/Documents", 32),
         ];
     }
@@ -6442,6 +6450,17 @@ fn command_palette_matches(query: &str) -> Vec<LauncherMatch> {
         let mut cmd = String::from("http ");
         cmd.push_str(rest.trim());
         return alloc::vec![launcher_command(&cmd, "HTTP client", &cmd, 70)];
+    }
+    if let Some(rest) = command.strip_prefix("https ") {
+        let mut cmd = String::from("https ");
+        cmd.push_str(rest.trim());
+        return alloc::vec![launcher_command(&cmd, "HTTPS client", &cmd, 70)];
+    }
+    if let Some(rest) = command.strip_prefix("browser ") {
+        let url = rest.trim();
+        let mut action = String::from("browser-url:");
+        action.push_str(url);
+        return alloc::vec![launcher_inline("Open in Browser", url, &action, 72)];
     }
     if let Some(rest) = command.strip_prefix("dns ") {
         let mut cmd = String::from("dns ");

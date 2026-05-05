@@ -418,6 +418,7 @@ response over virtio-net/QEMU user networking and writes it to the terminal.
 | 15 | Networking (virtio-net, TCP/IP) | 13 |
 | 16 | UI Polish — desktop surface, window chrome, taskbar & start menu | 12 |
 | 17 | Browser Foundation — HTTP/1.1, redirects, chunked responses, browser UX | 15, 16 |
+| 18 | HTTPS/TLS Foundation — verified TLS 1.3 over kernel TCP | 15, 17 |
 
 ---
 
@@ -541,9 +542,8 @@ TLS and JavaScript exist before the crypto/rendering foundations are in place.
 - [x] Keep boot clean: the desktop starts with no app windows open, but manual session
       restore remains available from the launcher.
 
-**Current status:** complete for plain HTTP browsing. HTTPS is explicitly blocked
-until a real TLS/X.509/crypto layer lands; no fake port-443 passthrough is counted
-as browser support.
+**Current status:** complete. Phase 18 adds real TLS/X.509/crypto support for
+HTTPS rather than a fake port-443 passthrough.
 
 ### Phase 17 implementation notes
 
@@ -554,9 +554,59 @@ as browser support.
   pages for local state.
 - `/bin/wget` now sends an HTTP/1.1 request with a coolOS user agent, keeping it as a
   raw userspace socket demo.
-- The next browser phase is TLS: entropy, hashes, AES-GCM/ChaCha20-Poly1305,
-  ECDHE/X25519 or P-256, certificate parsing, trust roots, hostname verification,
-  and a TLS 1.2/1.3 state machine.
+- The next browser phase is richer page rendering and broader web compatibility:
+  a larger trust store, stronger hostname matching coverage, CSS/layout, images,
+  and eventually JavaScript.
+
+---
+
+## ✅ Phase 18 — HTTPS/TLS Foundation
+
+**Goal:** Give the native browser and terminal a real HTTPS path without
+pretending encryption or certificate checks exist.
+
+- [x] Add a no_std TLS 1.3 client over the existing kernel TCP socket layer.
+- [x] Use hardware RNG entropy for TLS key material; fail closed when `RDRAND`
+      is unavailable instead of falling back to predictable bytes.
+- [x] Use the RTC clock for certificate validity checks.
+- [x] Validate X.509 certificate chains against built-in DER trust roots.
+- [x] Enable server-name verification through the TLS verifier and surface the
+      selected trust root in Browser status text and Terminal output.
+- [x] Add HTTPS URL parsing and redirect handling across `http://` and
+      `https://` locations.
+- [x] Add a `https` terminal command and make Browser URL/search defaults prefer
+      `https://example.com/`.
+- [x] Keep the build reproducible for the custom kernel target by pinning crypto
+      crates to portable software backends in `.cargo/config.toml`.
+- [x] Add `make smoke-net-https` and `make smoke-net-browser-https`, which boot
+      QEMU with virtio-net/USB and verify both terminal and Browser HTTPS paths.
+
+**Current status:** complete for the initial verified HTTPS path. The trust store
+is intentionally small in this phase: it ships the `AAA Certificate Services`
+root needed by the current `example.com` chain and reports the active root in the
+UI. Expanding to a full root bundle and stricter modern SAN-first hostname
+matching is the next trust-store hardening step; HTTPS support here is still real
+TLS 1.3 with chain/signature/time checks, not plaintext port-443 fetching.
+
+### Phase 18 implementation notes
+
+- `src/tls.rs` wraps `embedded-tls` blocking TLS over a `KernelTcpStream` adapter
+  backed by `net::socket_open/connect/send/recv`.
+- `src/entropy.rs` provides RDRAND-backed `rand_core::RngCore` entropy for the
+  TLS provider. QEMU smoke runs use `-cpu max` so the instruction is exposed.
+- `src/tls_roots.rs` embeds DER trust roots in the kernel image. `net status`
+  lists the TLS cipher/group and loaded roots.
+- HTTPS requests reuse the same HTTP/1.1 request builder, response cap, redirect
+  limit, and chunked decoder as plain HTTP.
+- `src/apps/browser.rs` now accepts both HTTP and HTTPS URLs, resolves relative
+  links against the final scheme, defaults URL-looking input to HTTPS, and shows
+  the TLS trust root in the status line for verified HTTPS responses.
+- `src/apps/terminal.rs` now supports both `http` and `https` commands. HTTPS
+  output includes the resolved address and trust root before printing the
+  response.
+- The smoke paths log `[tls] https example.com/ via ... root=AAA Certificate Services`
+  to QEMU debugcon so CI can verify the encrypted path; the Browser smoke also
+  captures a framebuffer and asserts an application window is visible.
 
 ---
 
@@ -589,4 +639,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v3.0 | Phase 9 complete — first userspace process |
 | v4.0 | Phase 12 complete — ELF binaries load from disk |
 | v5.0 | Phase 15 complete: network-capable |
-| v5.1 | Current — Phase 17 complete: native plain-HTTP browser foundation |
+| v5.1 | Phase 17 complete: native plain-HTTP browser foundation |
+| v5.2 | Current — Phase 18 complete: verified HTTPS/TLS foundation |

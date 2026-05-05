@@ -1,4 +1,4 @@
-.PHONY: run run-net run-usb run-usb-init run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-net-api smoke-net-wget smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
+.PHONY: run run-net run-usb run-usb-init run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-net-api smoke-net-wget smoke-net-https smoke-net-browser-https smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -6,6 +6,7 @@ BIOS    := $(CURDIR)/target/x86_64-unknown-none/release/bios.img
 FSIMG   := $(CURDIR)/target/x86_64-unknown-none/release/fs.img
 USB_INIT_BIOS := $(BIOS)
 USB_INIT_FSIMG := $(FSIMG)
+QEMU_CPU ?= max
 USER_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/hello_user
 USER_EXEC_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/exec
 USER_PIPE_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/pipe
@@ -30,6 +31,7 @@ run: build
 		-drive format=raw,file="$(BIOS)",snapshot=on \
 		-drive file="$(FSIMG)",if=ide,format=raw,index=1,snapshot=on \
 		-m 512M \
+		-cpu "$(QEMU_CPU)" \
 		-vga std \
 		-display cocoa \
 		-debugcon stdio
@@ -40,6 +42,7 @@ run-net: build
 		-drive format=raw,file="$(BIOS)",snapshot=on \
 		-drive file="$(FSIMG)",if=ide,format=raw,index=1,snapshot=on \
 		-m 512M \
+		-cpu "$(QEMU_CPU)" \
 		-vga std \
 		-netdev user,id=net0 \
 		-device virtio-net-pci,netdev=net0,disable-modern=on,disable-legacy=off \
@@ -52,6 +55,7 @@ run-usb: build
 		-drive format=raw,file="$(BIOS)",snapshot=on \
 		-drive file="$(FSIMG)",if=ide,format=raw,index=1,snapshot=on \
 		-m 512M \
+		-cpu "$(QEMU_CPU)" \
 		-vga std \
 		-device qemu-xhci,id=xhci \
 		-device usb-kbd,bus=xhci.0 \
@@ -65,6 +69,7 @@ run-usb-init: build-usb-init
 		-drive format=raw,file="$(USB_INIT_BIOS)",snapshot=on \
 		-drive file="$(USB_INIT_FSIMG)",if=ide,format=raw,index=1,snapshot=on \
 		-m 512M \
+		-cpu "$(QEMU_CPU)" \
 		-vga std \
 		-device qemu-xhci,id=xhci \
 		-device usb-kbd,bus=xhci.0 \
@@ -78,6 +83,7 @@ run-headless: build
 		-drive format=raw,file="$(BIOS)",snapshot=on \
 		-drive file="$(FSIMG)",if=ide,format=raw,index=1,snapshot=on \
 		-m 512M \
+		-cpu "$(QEMU_CPU)" \
 		-vga std \
 		-display none \
 		-debugcon stdio
@@ -88,6 +94,7 @@ run-headless-net: build
 		-drive format=raw,file="$(BIOS)",snapshot=on \
 		-drive file="$(FSIMG)",if=ide,format=raw,index=1,snapshot=on \
 		-m 512M \
+		-cpu "$(QEMU_CPU)" \
 		-vga std \
 		-netdev user,id=net0 \
 		-device virtio-net-pci,netdev=net0,disable-modern=on,disable-legacy=off \
@@ -100,6 +107,7 @@ run-headless-usb: build
 		-drive format=raw,file="$(BIOS)",snapshot=on \
 		-drive file="$(FSIMG)",if=ide,format=raw,index=1,snapshot=on \
 		-m 512M \
+		-cpu "$(QEMU_CPU)" \
 		-vga std \
 		-device qemu-xhci,id=xhci \
 		-device usb-kbd,bus=xhci.0 \
@@ -113,6 +121,7 @@ run-headless-usb-init: build-usb-init
 		-drive format=raw,file="$(USB_INIT_BIOS)",snapshot=on \
 		-drive file="$(USB_INIT_FSIMG)",if=ide,format=raw,index=1,snapshot=on \
 		-m 512M \
+		-cpu "$(QEMU_CPU)" \
 		-vga std \
 		-device qemu-xhci,id=xhci \
 		-device usb-kbd,bus=xhci.0 \
@@ -278,6 +287,42 @@ smoke-net-wget: build
 		--post-hmp-delay 8.0 \
 		--expect "[net] virtio-net ready driver=virtio-net" \
 		--expect "HTTP/" \
+		--expect "[boot] desktop ready"
+
+smoke-net-https: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--net \
+		--usb \
+		--seconds 90 \
+		--hmp "sendkey ctrl-spc" \
+		--type-text "> https example.com\n" \
+		--post-hmp-delay 20.0 \
+		--expect "[net] virtio-net ready driver=virtio-net" \
+		--expect "[tls] https example.com/ via" \
+		--expect "root=AAA Certificate Services" \
+		--expect "[boot] desktop ready"
+
+smoke-net-browser-https: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--net \
+		--usb \
+		--seconds 100 \
+		--hmp "sendkey ctrl-spc" \
+		--type-text "> browser https://example.com/\n" \
+		--post-hmp-delay 24.0 \
+		--screendump "$(SMOKE_ARTIFACT_DIR)/browser-https-smoke.ppm" \
+		--expect-framebuffer-window \
+		--expect "[net] virtio-net ready driver=virtio-net" \
+		--expect "[tls] https example.com/ via" \
+		--expect "root=AAA Certificate Services" \
 		--expect "[boot] desktop ready"
 
 smoke-usb-init: build-usb-init

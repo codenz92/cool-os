@@ -3,3 +3,15 @@
 json-target-spec = true
 # build-std is passed via -Z flags in the Makefile so it only applies to the
 # kernel build, not to the host-side disk-image tool.
+
+[target.x86_64-unknown-none]
+# The RustCrypto AES-GCM stack otherwise selects SIMD/u128 paths that currently
+# hit an LLVM backend failure for our custom no_std kernel target.
+rustflags = [
+    "--cfg",
+    "aes_force_soft",
+    "--cfg",
+    "polyval_force_soft",
+    "--cfg",
+    "curve25519_dalek_backend=\"serial\"",
+]

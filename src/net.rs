@@ -17,7 +17,7 @@ const EXAMPLE_ADDR: u32 = 0x5db8_d822; // 93.184.216.34
 const BROADCAST_MAC: [u8; 6] = [0xff; 6];
 const TCP_MSS: usize = 1200;
 const SOCKET_BASE: u64 = 1024;
-const KERNEL_SOCKET_OWNER: usize = usize::MAX;
+pub(crate) const KERNEL_SOCKET_OWNER: usize = usize::MAX;
 const POLL_SPINS: usize = 3_000_000;
 const HTTP_MAX_BYTES: usize = 128 * 1024;
 const HTTP_MAX_REDIRECTS: usize = 5;
@@ -38,6 +38,7 @@ pub struct HttpResponse {
     pub final_url: String,
     pub redirect_count: usize,
     pub resolved_addr: u32,
+    pub tls_trust_root: Option<&'static str>,
     pub request: String,
     pub status_line: String,
     pub body: String,
@@ -255,8 +256,9 @@ pub fn status_lines() -> Vec<String> {
         ));
     }
     lines.push(String::from(
-        "stack: Ethernet, ARP, IPv4, ICMP, UDP, DNS, TCP sockets, HTTP/wget",
+        "stack: Ethernet, ARP, IPv4, ICMP, UDP, DNS, TCP sockets, HTTP, TLS, wget",
     ));
+    lines.extend(crate::tls::status_lines());
     lines
 }
 
@@ -281,6 +283,7 @@ pub fn protocol_lines() -> Vec<String> {
             state.dns_waits.len()
         ),
         format!("TCP: open_socket(s)={} mss={}", open_sockets, TCP_MSS),
+        String::from("TLS: TLS 1.3 over kernel TCP with verified certificate chains"),
         String::from("Socket syscalls: socket/connect/send/recv exposed as 19-22"),
     ]
 }
@@ -324,7 +327,7 @@ pub fn dns_resolve(host: &str) -> Result<u32, &'static str> {
     addrs.first().copied().ok_or("DNS returned no address")
 }
 
-fn resolve_host_addrs(host: &str) -> Result<Vec<u32>, &'static str> {
+pub(crate) fn resolve_host_addrs(host: &str) -> Result<Vec<u32>, &'static str> {
     if let Some(addr) = parse_ipv4_literal(host) {
         return Ok(vec![addr]);
     }
@@ -371,11 +374,17 @@ pub fn http_get(host: &str, path: &str) -> Result<String, &'static str> {
     http_get_response(host, path).map(|response| response.request)
 }
 
+pub fn web_get_response(url: &str) -> Result<HttpResponse, &'static str> {
+    let (scheme, host, path) = parse_web_url(url)?;
+    http_get_response_follow(&scheme, &host, &path, 0)
+}
+
 pub fn http_get_response(host: &str, path: &str) -> Result<HttpResponse, &'static str> {
-    http_get_response_follow(host, path, 0)
+    http_get_response_follow("http", host, path, 0)
 }
 
 fn http_get_response_follow(
+    scheme: &str,
     host: &str,
     path: &str,
     redirect_count: usize,
@@ -389,14 +398,40 @@ fn http_get_response_follow(
         return Err("invalid host");
     }
     let path = if path.is_empty() { "/" } else { path };
-    let addrs = resolve_host_addrs(host)?;
-    let resolved_addr = *addrs.first().ok_or("DNS returned no address")?;
 
     let mut request = String::from("GET ");
     request.push_str(path);
     request.push_str(" HTTP/1.1\r\nHost: ");
     request.push_str(host);
-    request.push_str("\r\nUser-Agent: coolOS/17\r\nAccept: text/html,text/plain,*/*\r\nConnection: close\r\n\r\n");
+    request.push_str("\r\nUser-Agent: coolOS/18\r\nAccept: text/html,text/plain,*/*\r\nConnection: close\r\n\r\n");
+
+    if scheme == "https" {
+        if !has_link() {
+            return Err("HTTPS requires a network adapter");
+        }
+        let exchange = crate::tls::https_exchange(host, path, &request, HTTP_MAX_BYTES)?;
+        crate::println!(
+            "[tls] https {}{} via {} root={}",
+            host,
+            path,
+            ipv4_string(exchange.resolved_addr),
+            exchange.trust_root
+        );
+        let body = normalize_http_response(&String::from_utf8_lossy(&exchange.raw_response));
+        return finish_web_response(
+            scheme,
+            host,
+            path,
+            redirect_count,
+            exchange.resolved_addr,
+            Some(exchange.trust_root),
+            request,
+            body,
+        );
+    }
+
+    let addrs = resolve_host_addrs(host)?;
+    let resolved_addr = *addrs.first().ok_or("DNS returned no address")?;
 
     if !has_link() {
         if settings.network_offline_api {
@@ -408,9 +443,10 @@ fn http_get_response_follow(
             return Ok(HttpResponse {
                 host: String::from(host),
                 path: String::from(path),
-                final_url: format!("http://{}{}", host, path),
+                final_url: format!("{}://{}{}", scheme, host, path),
                 redirect_count,
                 resolved_addr,
+                tls_trust_root: None,
                 request,
                 status_line: String::from("HTTP/1.1 200 OK (offline)"),
                 body,
@@ -454,6 +490,28 @@ fn http_get_response_follow(
     }
 
     let body = normalize_http_response(&String::from_utf8_lossy(&body_bytes));
+    finish_web_response(
+        scheme,
+        host,
+        path,
+        redirect_count,
+        connected_addr,
+        None,
+        request,
+        body,
+    )
+}
+
+fn finish_web_response(
+    scheme: &str,
+    host: &str,
+    path: &str,
+    redirect_count: usize,
+    connected_addr: u32,
+    tls_trust_root: Option<&'static str>,
+    request: String,
+    body: String,
+) -> Result<HttpResponse, &'static str> {
     let status_line = String::from(
         body.split('\n')
             .next()
@@ -468,16 +526,18 @@ fn http_get_response_follow(
         let Some(location) = http_header_value(&body, "location") else {
             return Err("HTTP redirect missing Location");
         };
-        let (next_host, next_path) = resolve_http_location(host, path, &location)?;
-        return http_get_response_follow(&next_host, &next_path, redirect_count + 1);
+        let (next_scheme, next_host, next_path) =
+            resolve_web_location(scheme, host, path, &location)?;
+        return http_get_response_follow(&next_scheme, &next_host, &next_path, redirect_count + 1);
     }
 
     Ok(HttpResponse {
         host: String::from(host),
         path: String::from(path),
-        final_url: format!("http://{}{}", host, path),
+        final_url: format!("{}://{}{}", scheme, host, path),
         redirect_count,
         resolved_addr: connected_addr,
+        tls_trust_root,
         request,
         status_line,
         body,
@@ -644,23 +704,43 @@ fn parse_hex_usize(input: &str) -> Option<usize> {
     saw_digit.then_some(value)
 }
 
-fn resolve_http_location(
+fn parse_web_url(url: &str) -> Result<(String, String, String), &'static str> {
+    if let Some(rest) = url.trim().strip_prefix("http://") {
+        let (host, path) = split_web_host_path("http", rest)?;
+        return Ok((String::from("http"), host, path));
+    }
+    if let Some(rest) = url.trim().strip_prefix("https://") {
+        let (host, path) = split_web_host_path("https", rest)?;
+        return Ok((String::from("https"), host, path));
+    }
+    Err("URL must start with http:// or https://")
+}
+
+fn resolve_web_location(
+    base_scheme: &str,
     base_host: &str,
     base_path: &str,
     location: &str,
-) -> Result<(String, String), &'static str> {
+) -> Result<(String, String, String), &'static str> {
     let location = location.trim();
-    if location.starts_with("https://") {
-        return Err("HTTPS redirect requires TLS");
+    if let Some(rest) = location.strip_prefix("https://") {
+        let (host, path) = split_web_host_path("https", rest)?;
+        return Ok((String::from("https"), host, path));
     }
     if let Some(rest) = location.strip_prefix("http://") {
-        return split_http_host_path(rest);
+        let (host, path) = split_web_host_path("http", rest)?;
+        return Ok((String::from("http"), host, path));
     }
     if let Some(rest) = location.strip_prefix("//") {
-        return split_http_host_path(rest);
+        let (host, path) = split_web_host_path(base_scheme, rest)?;
+        return Ok((String::from(base_scheme), host, path));
     }
     if location.starts_with('/') {
-        return Ok((String::from(base_host), String::from(location)));
+        return Ok((
+            String::from(base_scheme),
+            String::from(base_host),
+            String::from(location),
+        ));
     }
     let mut dir = String::from(base_path);
     if let Some(pos) = dir.rfind('/') {
@@ -669,26 +749,35 @@ fn resolve_http_location(
         dir = String::from("/");
     }
     dir.push_str(location);
-    Ok((String::from(base_host), dir))
+    Ok((String::from(base_scheme), String::from(base_host), dir))
 }
 
-fn split_http_host_path(rest: &str) -> Result<(String, String), &'static str> {
+fn split_web_host_path(scheme: &str, rest: &str) -> Result<(String, String), &'static str> {
     let slash = rest.find('/').unwrap_or(rest.len());
     let host = rest[..slash].trim();
     if host.is_empty() || host.len() > 253 || host.contains(' ') {
         return Err("invalid redirect host");
     }
     if let Some((name, port)) = host.rsplit_once(':') {
-        if port != "80" {
-            return Err("HTTP redirect port unsupported");
+        let expected_port = if scheme == "https" { "443" } else { "80" };
+        if port != expected_port {
+            return Err("web redirect port unsupported");
         }
         if name.is_empty() {
             return Err("invalid redirect host");
         }
-        let path = if slash < rest.len() { &rest[slash..] } else { "/" };
+        let path = if slash < rest.len() {
+            &rest[slash..]
+        } else {
+            "/"
+        };
         return Ok((String::from(name), String::from(path)));
     }
-    let path = if slash < rest.len() { &rest[slash..] } else { "/" };
+    let path = if slash < rest.len() {
+        &rest[slash..]
+    } else {
+        "/"
+    };
     Ok((String::from(host), String::from(path)))
 }
 
