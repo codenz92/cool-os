@@ -88,6 +88,18 @@ pub fn run_boot_tests() {
         &mut fail,
     );
     check("png-decode", png_decode_roundtrip(), &mut ok, &mut fail);
+    check(
+        "browser-html-render",
+        browser_html_render_roundtrip(),
+        &mut ok,
+        &mut fail,
+    );
+    check(
+        "tls-hostname-edges",
+        crate::tls::hostname_selftest_passes(),
+        &mut ok,
+        &mut fail,
+    );
     crate::println!("[selftest] kernel unit checks ok={} fail={}", ok, fail);
     crate::klog::log_owned(format!("selftest: ok={} fail={}", ok, fail));
 }
@@ -209,7 +221,26 @@ fn png_decode_roundtrip() -> bool {
     };
     let _ = crate::vfs::vfs_create_dir("/TMP");
     let _ = crate::vfs::vfs_safe_write_file("/TMP/PNGTEST.PNG", PNG);
+    let _ = crate::vfs::vfs_safe_write_file(
+        "/TMP/PHASE19.HTML",
+        b"<!doctype html><html><head><title>Phase 19</title></head><body><h1>Phase 19</h1><blockquote>quoted text</blockquote><table><tr><th>Name</th><th>Status</th></tr><tr><td>PNG</td><td>ready</td></tr></table><p><img src=\"PNGTEST.PNG\" alt=\"checker\"></p></body></html>",
+    );
     image.width == 2
         && image.height == 2
         && image.pixels.as_slice() == [0x00ff0000, 0x0000ff00, 0x000000ff, 0x00ffffff]
+}
+
+fn browser_html_render_roundtrip() -> bool {
+    let html = "<!doctype html><html><body><h1>Heading</h1><blockquote>Quoted words</blockquote><ul><li>First</li></ul><table><tr><th>Name</th><th>Status</th></tr><tr><td>PNG</td><td>ready</td></tr></table><img src=\"PNGTEST.PNG\" alt=\"checker\"></body></html>";
+    let lines =
+        crate::apps::browser::render_document_debug_for_test("file:///TMP/PHASE19.HTML", html, 72);
+    let has_heading = lines.iter().any(|line| line == "Heading");
+    let has_quote = lines.iter().any(|line| line.contains("> Quoted words"));
+    let has_table = lines
+        .iter()
+        .any(|line| line.contains("| Name") && line.contains("Status"));
+    let has_image = lines
+        .iter()
+        .any(|line| line.contains("[image] checker") && line.contains("file:///TMP/PNGTEST.PNG"));
+    has_heading && has_quote && has_table && has_image
 }

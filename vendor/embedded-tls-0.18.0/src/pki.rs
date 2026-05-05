@@ -665,7 +665,10 @@ fn dns_name_matches(pattern: &str, host: &str) -> bool {
     let pattern = trim_trailing_dot(pattern);
     let host = trim_trailing_dot(host);
     if let Some(suffix) = pattern.strip_prefix("*.") {
-        let Some(rest) = host.strip_suffix(suffix) else {
+        if !suffix.contains('.') {
+            return false;
+        }
+        let Some(rest) = strip_suffix_ascii_ignore_case(host, suffix) else {
             return false;
         };
         return rest.ends_with('.') && rest[..rest.len() - 1].find('.').is_none();
@@ -683,6 +686,14 @@ fn ascii_eq_ignore_case(left: &str, right: &str) -> bool {
             .bytes()
             .zip(right.bytes())
             .all(|(l, r)| l.to_ascii_lowercase() == r.to_ascii_lowercase())
+}
+
+fn strip_suffix_ascii_ignore_case<'a>(value: &'a str, suffix: &str) -> Option<&'a str> {
+    if suffix.len() > value.len() {
+        return None;
+    }
+    let start = value.len() - suffix.len();
+    ascii_eq_ignore_case(&value[start..], suffix).then_some(&value[..start])
 }
 
 fn parse_ipv4_host(host: &str) -> Option<[u8; 4]> {

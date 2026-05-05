@@ -84,51 +84,115 @@ pub fn status_lines() -> Vec<String> {
 }
 
 pub fn selftest_lines() -> Vec<String> {
-    let exact =
-        embedded_tls::pki::hostname_matches_for_test("example.com", None, &["example.com"], &[]);
-    let wildcard = embedded_tls::pki::hostname_matches_for_test(
-        "www.badssl.com",
-        None,
-        &["*.badssl.com"],
-        &[],
-    );
-    let wildcard_rejects_extra_label = !embedded_tls::pki::hostname_matches_for_test(
-        "wrong.host.badssl.com",
-        None,
-        &["*.badssl.com"],
-        &[],
-    );
-    let san_blocks_wrong_cn = !embedded_tls::pki::hostname_matches_for_test(
-        "legacy.example",
-        Some("legacy.example"),
-        &["modern.example"],
-        &[],
-    );
-    let cn_fallback = embedded_tls::pki::hostname_matches_for_test(
-        "legacy.example",
-        Some("legacy.example"),
-        &[],
-        &[],
-    );
-    let ip_san =
-        embedded_tls::pki::hostname_matches_for_test("192.0.2.1", None, &[], &[[192, 0, 2, 1]]);
-    let ok = exact
-        && wildcard
-        && wildcard_rejects_extra_label
-        && san_blocks_wrong_cn
-        && cn_fallback
-        && ip_san;
+    let detail = hostname_selftest_detail();
+    let ok = detail.iter().all(|(_, passed)| *passed);
     vec![
         format!(
             "TLS hostname exact={} wildcard={} wildcard-negative={}",
-            exact, wildcard, wildcard_rejects_extra_label
+            test_value(&detail, "exact"),
+            test_value(&detail, "wildcard"),
+            test_value(&detail, "wildcard-extra-label")
         ),
         format!(
             "TLS SAN-first={} CN-fallback={} IP-SAN={}",
-            san_blocks_wrong_cn, cn_fallback, ip_san
+            test_value(&detail, "san-over-cn"),
+            test_value(&detail, "cn-fallback"),
+            test_value(&detail, "ip-san")
         ),
         format!("TLS hostname negative {}", if ok { "ok" } else { "failed" }),
     ]
+}
+
+pub fn hostname_selftest_passes() -> bool {
+    hostname_selftest_detail().iter().all(|(_, passed)| *passed)
+}
+
+fn hostname_selftest_detail() -> Vec<(&'static str, bool)> {
+    vec![
+        (
+            "exact",
+            embedded_tls::pki::hostname_matches_for_test(
+                "example.com",
+                None,
+                &["example.com"],
+                &[],
+            ),
+        ),
+        (
+            "case-insensitive",
+            embedded_tls::pki::hostname_matches_for_test(
+                "WWW.BADSSL.COM",
+                None,
+                &["*.badssl.com"],
+                &[],
+            ),
+        ),
+        (
+            "trailing-dot",
+            embedded_tls::pki::hostname_matches_for_test(
+                "example.com.",
+                None,
+                &["example.com"],
+                &[],
+            ),
+        ),
+        (
+            "wildcard",
+            embedded_tls::pki::hostname_matches_for_test(
+                "www.badssl.com",
+                None,
+                &["*.badssl.com"],
+                &[],
+            ),
+        ),
+        (
+            "wildcard-extra-label",
+            !embedded_tls::pki::hostname_matches_for_test(
+                "wrong.host.badssl.com",
+                None,
+                &["*.badssl.com"],
+                &[],
+            ),
+        ),
+        (
+            "wildcard-tld",
+            !embedded_tls::pki::hostname_matches_for_test("example.com", None, &["*.com"], &[]),
+        ),
+        (
+            "san-over-cn",
+            !embedded_tls::pki::hostname_matches_for_test(
+                "legacy.example",
+                Some("legacy.example"),
+                &["modern.example"],
+                &[],
+            ),
+        ),
+        (
+            "cn-fallback",
+            embedded_tls::pki::hostname_matches_for_test(
+                "legacy.example",
+                Some("legacy.example"),
+                &[],
+                &[],
+            ),
+        ),
+        (
+            "ip-san",
+            embedded_tls::pki::hostname_matches_for_test("192.0.2.1", None, &[], &[[192, 0, 2, 1]]),
+        ),
+        (
+            "ip-no-cn-fallback",
+            !embedded_tls::pki::hostname_matches_for_test("192.0.2.1", Some("192.0.2.1"), &[], &[]),
+        ),
+    ]
+}
+
+fn test_value(detail: &[(&'static str, bool)], name: &str) -> bool {
+    detail
+        .iter()
+        .find(|(candidate, _)| *candidate == name)
+        .map(|(_, passed)| *passed)
+        .unwrap_or(false)
 }
 
 fn cached_root(host: &str) -> Option<&'static crate::tls_roots::TrustRoot> {

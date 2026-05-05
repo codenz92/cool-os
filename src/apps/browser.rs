@@ -21,6 +21,9 @@ const BOOKMARKS_PATH: &str = "/CONFIG/BROWSER.CFG";
 const DOWNLOADS_DIR: &str = "/Downloads";
 const MAX_BOOKMARKS: usize = 32;
 const MAX_INLINE_PNG_PIXELS: usize = 1_048_576;
+const MAX_HTML_INLINE_IMAGES: usize = 4;
+const INLINE_IMAGE_MAX_H: usize = 168;
+const INLINE_IMAGE_RESERVED_ROWS: usize = 14;
 
 const BG: u32 = 0x00_03_06_10;
 const PAGE: u32 = 0x00_F2_F6_F8;
@@ -41,6 +44,7 @@ enum BrowserLineKind {
     Muted,
     Link,
     Image,
+    Quote,
     Code,
     Error,
 }
@@ -50,6 +54,7 @@ struct BrowserLine {
     text: String,
     link: Option<String>,
     kind: BrowserLineKind,
+    image_slot: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -58,6 +63,11 @@ struct CachedPage {
     body: String,
     body_bytes: Vec<u8>,
     content_type: Option<String>,
+}
+
+#[derive(Clone)]
+struct InlineImage {
+    image: crate::png::PngImage,
 }
 
 pub struct BrowserApp {
@@ -78,6 +88,7 @@ pub struct BrowserApp {
     last_height: i32,
     last_page: Option<CachedPage>,
     image_preview: Option<crate::png::PngImage>,
+    inline_images: Vec<InlineImage>,
     pending_open: Option<FileManagerOpenRequest>,
 }
 
@@ -102,6 +113,7 @@ impl BrowserApp {
             last_height: BROWSER_H,
             last_page: None,
             image_preview: None,
+            inline_images: Vec::new(),
             pending_open: None,
         };
         app.render();
@@ -243,10 +255,12 @@ impl BrowserApp {
         self.status = String::from("Loading...");
         self.title = String::from("Loading");
         self.image_preview = None;
+        self.inline_images.clear();
         self.lines = vec![BrowserLine {
             text: format!("Loading {}", url),
             link: None,
             kind: BrowserLineKind::Muted,
+            image_slot: None,
         }];
         self.scroll = 0;
         self.render();
@@ -285,6 +299,7 @@ impl BrowserApp {
                         content_type: response.content_type.clone(),
                     });
                     self.lines = if is_image_content(response.content_type.as_deref()) {
+                        self.inline_images.clear();
                         let preview_status = self.decode_image_preview(&response);
                         image_response_lines(
                             &response.final_url,
@@ -294,13 +309,20 @@ impl BrowserApp {
                         )
                     } else {
                         self.image_preview = None;
-                        render_document(&response.final_url, &response.body, self.cols.max(48))
+                        let mut lines =
+                            render_document(&response.final_url, &response.body, self.cols.max(48));
+                        let images = self.attach_html_images(&mut lines);
+                        if images > 0 {
+                            self.status.push_str(&format!("  images={}", images));
+                        }
+                        lines
                     };
                     if self.lines.is_empty() {
                         self.lines.push(BrowserLine {
                             text: String::from("(empty response)"),
                             link: None,
                             kind: BrowserLineKind::Muted,
+                            image_slot: None,
                         });
                     }
                     if add_history {
@@ -312,6 +334,7 @@ impl BrowserApp {
                     self.status = format!("Network error: {}", err);
                     self.last_page = None;
                     self.image_preview = None;
+                    self.inline_images.clear();
                     self.lines = vec![
                         kind_line("Unable to load page", BrowserLineKind::Error),
                         line(&format!("{}{}", host, path)),
@@ -324,16 +347,19 @@ impl BrowserApp {
                 self.status = String::from(err);
                 self.last_page = None;
                 self.image_preview = None;
+                self.inline_images.clear();
                 self.lines = vec![
                     BrowserLine {
                         text: String::from("Enter an http:// or https:// URL."),
                         link: None,
                         kind: BrowserLineKind::Text,
+                        image_slot: None,
                     },
                     BrowserLine {
                         text: String::from("Try https://example.com/"),
                         link: Some(String::from("https://example.com/")),
                         kind: BrowserLineKind::Link,
+                        image_slot: None,
                     },
                 ];
             }
@@ -352,6 +378,7 @@ impl BrowserApp {
         self.address_selected = false;
         self.last_page = None;
         self.image_preview = None;
+        self.inline_images.clear();
         if add_history {
             self.push_history(String::from(url));
         }
@@ -489,6 +516,7 @@ impl BrowserApp {
             }
         }
         self.image_preview = None;
+        self.inline_images.clear();
         self.render();
     }
 
@@ -512,6 +540,10 @@ impl BrowserApp {
                 self.show_local_image(path, bytes);
                 return true;
             }
+            if is_html_path(path) || looks_like_html_bytes(&bytes) {
+                self.show_local_html(path, bytes);
+                return true;
+            }
             self.pending_open = Some(FileManagerOpenRequest::File(String::from(path)));
             self.status = format!("Opening {}", path);
         } else {
@@ -523,6 +555,7 @@ impl BrowserApp {
                 link_line("Downloads", "browser://downloads"),
             ];
             self.image_preview = None;
+            self.inline_images.clear();
         }
         self.address_focused = false;
         self.address_selected = false;
@@ -535,6 +568,7 @@ impl BrowserApp {
         self.address = url.clone();
         self.title = String::from("Image");
         self.status = format!("Local image {}", path);
+        self.inline_images.clear();
         self.last_page = Some(CachedPage {
             url: url.clone(),
             body: String::new(),
@@ -558,6 +592,35 @@ impl BrowserApp {
             bytes.len(),
             preview_status.as_deref(),
         );
+        self.address_focused = false;
+        self.address_selected = false;
+        self.render();
+    }
+
+    fn show_local_html(&mut self, path: &str, bytes: Vec<u8>) {
+        let url = file_url_for_path(path);
+        let body = String::from_utf8_lossy(&bytes).into_owned();
+        self.address = url.clone();
+        self.title = extract_title(&body).unwrap_or_else(|| String::from("Local HTML"));
+        self.status = format!("Local HTML {}", path);
+        self.image_preview = None;
+        self.inline_images.clear();
+        self.last_page = Some(CachedPage {
+            url: url.clone(),
+            body: body.clone(),
+            body_bytes: bytes,
+            content_type: Some(String::from("text/html")),
+        });
+        let mut lines = render_document(&url, &body, self.cols.max(48));
+        let images = self.attach_html_images(&mut lines);
+        if images > 0 {
+            self.status.push_str(&format!("  images={}", images));
+        }
+        self.lines = if lines.is_empty() {
+            vec![kind_line("(empty document)", BrowserLineKind::Muted)]
+        } else {
+            lines
+        };
         self.address_focused = false;
         self.address_selected = false;
         self.render();
@@ -602,6 +665,52 @@ impl BrowserApp {
             }
             Err(err) => Some(format!("PNG preview unavailable: {}", err)),
         }
+    }
+
+    fn attach_html_images(&mut self, lines: &mut Vec<BrowserLine>) -> usize {
+        self.inline_images.clear();
+        let mut idx = 0usize;
+        while idx < lines.len() && self.inline_images.len() < MAX_HTML_INLINE_IMAGES {
+            let should_try = lines
+                .get(idx)
+                .map(|line| line.kind == BrowserLineKind::Image && line.link.is_some())
+                .unwrap_or(false);
+            if !should_try {
+                idx += 1;
+                continue;
+            }
+            let Some(url) = lines[idx].link.clone() else {
+                idx += 1;
+                continue;
+            };
+            let alt = image_alt_from_line(&lines[idx].text);
+            match fetch_png_for_browser(&url) {
+                Ok((image, source_url, byte_len)) => {
+                    let slot = self.inline_images.len();
+                    let rows = inline_image_reserved_rows_for(
+                        image.width,
+                        image.height,
+                        self.cols.max(48),
+                    );
+                    lines[idx].image_slot = Some(slot);
+                    lines[idx].text = format!(
+                        "[image] {}  {}x{}  {} bytes",
+                        alt, image.width, image.height, byte_len
+                    );
+                    lines[idx].link = Some(source_url);
+                    self.inline_images.push(InlineImage { image });
+                    for _ in 1..rows {
+                        lines.insert(idx + 1, inline_image_spacer(slot, &url));
+                    }
+                    idx += rows;
+                }
+                Err(err) => {
+                    lines[idx].text = format!("{} ({})", lines[idx].text, err);
+                    idx += 1;
+                }
+            }
+        }
+        self.inline_images.len()
     }
 
     fn scroll_by(&mut self, delta: i32) {
@@ -753,6 +862,7 @@ impl BrowserApp {
                 BrowserLineKind::Muted => MUTED,
                 BrowserLineKind::Link => LINK,
                 BrowserLineKind::Image => 0x00_7A_3B_00,
+                BrowserLineKind::Quote => 0x00_40_55_5D,
                 BrowserLineKind::Code => 0x00_22_33_33,
                 BrowserLineKind::Error => 0x00_AA_20_20,
                 BrowserLineKind::Text => {
@@ -763,6 +873,26 @@ impl BrowserApp {
                     }
                 }
             };
+            if let Some(slot) = line.image_slot {
+                if let Some(image) = self.inline_images.get(slot).map(|inline| &inline.image) {
+                    let available_h = (doc_y + doc_h)
+                        .saturating_sub(y + LINE_H + 3)
+                        .min(INLINE_IMAGE_MAX_H);
+                    if available_h > 0 {
+                        draw_image_preview_pixels(
+                            &mut self.window.buf,
+                            width,
+                            content_h,
+                            stride,
+                            PAD_X,
+                            y + LINE_H + 3,
+                            width.saturating_sub(PAD_X * 2 + 28),
+                            available_h,
+                            image,
+                        );
+                    }
+                }
+            }
             let mut text = line.text;
             truncate_chars(&mut text, self.cols);
             self.put_str(stride, PAD_X, y, &text, color);
@@ -857,64 +987,17 @@ impl BrowserApp {
         max_h: usize,
         image: &crate::png::PngImage,
     ) -> usize {
-        if image.width == 0 || image.height == 0 || max_w < 8 || max_h < 8 {
-            return 0;
-        }
-        let (mut draw_w, mut draw_h) = if image.width <= max_w && image.height <= max_h {
-            let mut scale = 1usize;
-            while scale < 16
-                && image.width.saturating_mul(scale + 1) <= max_w
-                && image.height.saturating_mul(scale + 1) <= max_h
-                && image.width.saturating_mul(scale) < 320
-                && image.height.saturating_mul(scale) < 220
-            {
-                scale += 1;
-            }
-            (
-                image.width.saturating_mul(scale),
-                image.height.saturating_mul(scale),
-            )
-        } else {
-            let mut draw_w = image.width.min(max_w);
-            let mut draw_h = image.height.saturating_mul(draw_w) / image.width;
-            if draw_h > max_h {
-                draw_h = max_h;
-                draw_w = image.width.saturating_mul(draw_h) / image.height;
-            }
-            (draw_w, draw_h)
-        };
-        if draw_w > max_w {
-            draw_w = max_w;
-            draw_h = image.height.saturating_mul(draw_w) / image.width;
-        }
-        if draw_h > max_h {
-            draw_h = max_h;
-            draw_w = image.width.saturating_mul(draw_h) / image.height;
-        }
-        draw_w = draw_w.max(1);
-        draw_h = draw_h.max(1);
-
-        let frame_w = draw_w + 8;
-        let frame_h = draw_h + 8;
-        self.fill_rect(stride, x, y, frame_w, frame_h, 0x00_E8_EF_F3);
-        self.draw_rect(stride, x, y, frame_w, frame_h, 0x00_91_A6_B5);
-
-        for dy in 0..draw_h {
-            let src_y = dy.saturating_mul(image.height) / draw_h;
-            for dx in 0..draw_w {
-                let src_x = dx.saturating_mul(image.width) / draw_w;
-                let Some(&color) = image.pixels.get(src_y * image.width + src_x) else {
-                    continue;
-                };
-                let px = x + 4 + dx;
-                let py = y + 4 + dy;
-                let idx = py.saturating_mul(stride).saturating_add(px);
-                if idx < self.window.buf.len() {
-                    self.window.buf[idx] = color;
-                }
-            }
-        }
-        frame_h
+        draw_image_preview_pixels(
+            &mut self.window.buf,
+            self.window.width.max(0) as usize,
+            (self.window.height - TITLE_H).max(0) as usize,
+            stride,
+            x,
+            y,
+            max_w,
+            max_h,
+            image,
+        )
     }
 
     fn put_str(&mut self, stride: usize, px: usize, py: usize, s: &str, color: u32) {
@@ -929,6 +1012,109 @@ impl BrowserApp {
             crate::font::UI_FONT,
         );
     }
+}
+
+fn draw_image_preview_pixels(
+    buf: &mut [u32],
+    surface_w: usize,
+    surface_h: usize,
+    stride: usize,
+    x: usize,
+    y: usize,
+    max_w: usize,
+    max_h: usize,
+    image: &crate::png::PngImage,
+) -> usize {
+    if image.width == 0 || image.height == 0 || max_w < 8 || max_h < 8 {
+        return 0;
+    }
+    let (mut draw_w, mut draw_h) = scaled_image_size(image.width, image.height, max_w, max_h);
+    draw_w = draw_w.max(1);
+    draw_h = draw_h.max(1);
+
+    let frame_w = draw_w + 8;
+    let frame_h = draw_h + 8;
+    fill_pixels(
+        buf,
+        surface_w,
+        surface_h,
+        stride,
+        x,
+        y,
+        frame_w,
+        frame_h,
+        0x00_E8_EF_F3,
+    );
+    draw_pixel_rect(
+        buf,
+        surface_w,
+        surface_h,
+        stride,
+        x,
+        y,
+        frame_w,
+        frame_h,
+        0x00_91_A6_B5,
+    );
+
+    for dy in 0..draw_h {
+        let src_y = dy.saturating_mul(image.height) / draw_h;
+        for dx in 0..draw_w {
+            let src_x = dx.saturating_mul(image.width) / draw_w;
+            let Some(&color) = image.pixels.get(src_y * image.width + src_x) else {
+                continue;
+            };
+            let px = x + 4 + dx;
+            let py = y + 4 + dy;
+            let idx = py.saturating_mul(stride).saturating_add(px);
+            if px < surface_w && py < surface_h && idx < buf.len() {
+                buf[idx] = color;
+            }
+        }
+    }
+    frame_h
+}
+
+fn fill_pixels(
+    buf: &mut [u32],
+    surface_w: usize,
+    surface_h: usize,
+    stride: usize,
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
+    color: u32,
+) {
+    for row in y..(y + h).min(surface_h) {
+        let base = row.saturating_mul(stride);
+        for col in x..(x + w).min(surface_w) {
+            let idx = base.saturating_add(col);
+            if idx < buf.len() {
+                buf[idx] = color;
+            }
+        }
+    }
+}
+
+fn draw_pixel_rect(
+    buf: &mut [u32],
+    surface_w: usize,
+    surface_h: usize,
+    stride: usize,
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
+    color: u32,
+) {
+    if w == 0 || h == 0 {
+        return;
+    }
+    fill_pixels(buf, surface_w, surface_h, stride, x, y, w, 1, color);
+    fill_pixels(buf, surface_w, surface_h, stride, x, y + h - 1, w, 1, color);
+    fill_pixels(buf, surface_w, surface_h, stride, x, y, 1, h, color);
+    fill_pixels(buf, surface_w, surface_h, stride, x + w - 1, y, 1, h, color);
 }
 
 fn welcome_lines() -> Vec<BrowserLine> {
@@ -1069,6 +1255,7 @@ fn image_response_lines(
         text: format!("{} bytes received", byte_len),
         link: None,
         kind: BrowserLineKind::Image,
+        image_slot: None,
     });
     out.push(link_line("Image source URL", url));
     out
@@ -1091,6 +1278,88 @@ fn is_png_content(content_type: Option<&str>, url: &str) -> bool {
                 .eq_ignore_ascii_case("image/png")
         })
         .unwrap_or_else(|| extension_from_path(url).eq_ignore_ascii_case("png"))
+}
+
+fn is_html_path(path: &str) -> bool {
+    matches!(extension_from_path(path), "html")
+}
+
+fn looks_like_html_bytes(bytes: &[u8]) -> bool {
+    let sample_len = bytes.len().min(512);
+    let sample = String::from_utf8_lossy(&bytes[..sample_len]);
+    let lower = lowercase_ascii(&sample);
+    lower.contains("<html") || lower.contains("<!doctype html") || lower.contains("<body")
+}
+
+fn inline_image_spacer(_slot: usize, url: &str) -> BrowserLine {
+    BrowserLine {
+        text: String::new(),
+        link: Some(String::from(url)),
+        kind: BrowserLineKind::Image,
+        image_slot: None,
+    }
+}
+
+fn inline_image_reserved_rows_for(width: usize, height: usize, cols: usize) -> usize {
+    let max_w = cols.saturating_mul(CHAR_W).max(80);
+    let (_draw_w, draw_h) = scaled_image_size(width, height, max_w, INLINE_IMAGE_MAX_H);
+    (draw_h / LINE_H + 3).clamp(4, INLINE_IMAGE_RESERVED_ROWS)
+}
+
+fn scaled_image_size(image_w: usize, image_h: usize, max_w: usize, max_h: usize) -> (usize, usize) {
+    if image_w == 0 || image_h == 0 || max_w == 0 || max_h == 0 {
+        return (0, 0);
+    }
+    if image_w <= max_w && image_h <= max_h {
+        let mut scale = 1usize;
+        while scale < 16
+            && image_w.saturating_mul(scale + 1) <= max_w
+            && image_h.saturating_mul(scale + 1) <= max_h
+            && image_w.saturating_mul(scale) < 320
+            && image_h.saturating_mul(scale) < 220
+        {
+            scale += 1;
+        }
+        return (image_w.saturating_mul(scale), image_h.saturating_mul(scale));
+    }
+    let mut draw_w = image_w.min(max_w);
+    let mut draw_h = image_h.saturating_mul(draw_w) / image_w;
+    if draw_h > max_h {
+        draw_h = max_h;
+        draw_w = image_w.saturating_mul(draw_h) / image_h;
+    }
+    (draw_w.min(max_w), draw_h.min(max_h))
+}
+
+fn image_alt_from_line(text: &str) -> String {
+    text.strip_prefix("[image]")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(String::from)
+        .unwrap_or_else(|| String::from("image"))
+}
+
+fn fetch_png_for_browser(url: &str) -> Result<(crate::png::PngImage, String, usize), &'static str> {
+    if let Some(path) = url.strip_prefix("file://") {
+        let bytes = crate::vfs::vfs_read_file(path).ok_or("image file missing")?;
+        if !is_png_content(None, path) && !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+            return Err("preview skipped: not PNG");
+        }
+        let image = crate::png::decode_rgb8(&bytes, MAX_INLINE_PNG_PIXELS)?;
+        return Ok((image, file_url_for_path(path), bytes.len()));
+    }
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err("preview skipped: unsupported image URL");
+    }
+    if matches!(extension_from_path(url), "jpg" | "gif" | "webp") {
+        return Err("preview skipped: not PNG");
+    }
+    let response = crate::net::web_get_response(url)?;
+    if !is_png_content(response.content_type.as_deref(), &response.final_url) {
+        return Err("preview skipped: not PNG");
+    }
+    let image = crate::png::decode_rgb8(&response.body_bytes, MAX_INLINE_PNG_PIXELS)?;
+    Ok((image, response.final_url, response.body_bytes.len()))
 }
 
 fn response_body_text(response: &str) -> Option<&str> {
@@ -1162,16 +1431,19 @@ fn extension_for_content_type(content_type: Option<&str>) -> Option<&'static str
 
 fn extension_from_path(path: &str) -> &'static str {
     let leaf = path.split('?').next().unwrap_or(path);
-    if leaf.ends_with(".html") || leaf.ends_with(".htm") {
+    let lower = lowercase_ascii(leaf);
+    if lower.ends_with(".html") || lower.ends_with(".htm") {
         "html"
-    } else if leaf.ends_with(".txt") {
+    } else if lower.ends_with(".txt") {
         "txt"
-    } else if leaf.ends_with(".png") {
+    } else if lower.ends_with(".png") {
         "png"
-    } else if leaf.ends_with(".jpg") || leaf.ends_with(".jpeg") {
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
         "jpg"
-    } else if leaf.ends_with(".gif") {
+    } else if lower.ends_with(".gif") {
         "gif"
+    } else if lower.ends_with(".webp") {
+        "webp"
     } else {
         "bin"
     }
@@ -1207,6 +1479,7 @@ fn line(text: &str) -> BrowserLine {
         text: String::from(text),
         link: None,
         kind: BrowserLineKind::Text,
+        image_slot: None,
     }
 }
 
@@ -1215,6 +1488,7 @@ fn kind_line(text: &str, kind: BrowserLineKind) -> BrowserLine {
         text: String::from(text),
         link: None,
         kind,
+        image_slot: None,
     }
 }
 
@@ -1223,6 +1497,7 @@ fn link_line(text: &str, url: &str) -> BrowserLine {
         text: String::from(text),
         link: Some(String::from(url)),
         kind: BrowserLineKind::Link,
+        image_slot: None,
     }
 }
 
@@ -1366,11 +1641,7 @@ fn render_document(base_url: &str, response: &str, cols: usize) -> Vec<BrowserLi
     }
     let mut out = Vec::new();
     let mut text = String::new();
-    let mut link: Option<String> = None;
-    let mut kind = BrowserLineKind::Text;
-    let mut pending_prefix: Option<String> = None;
-    let mut preformatted = false;
-    let mut skip_until: Option<String> = None;
+    let mut state = HtmlRenderState::new();
     let bytes = body.as_bytes();
     let mut i = 0usize;
     while i < bytes.len() {
@@ -1378,140 +1649,393 @@ fn render_document(base_url: &str, response: &str, cols: usize) -> Vec<BrowserLi
             if let Some(end_rel) = body[i..].find('>') {
                 let tag = &body[i + 1..i + end_rel];
                 let lower_tag = lowercase_ascii(tag.trim());
-                if let Some(end_tag) = skip_until.as_ref() {
+                if let Some(end_tag) = state.skip_until.as_ref() {
                     if lower_tag.starts_with(end_tag) {
-                        skip_until = None;
+                        state.skip_until = None;
                     }
                     i += end_rel + 1;
                     continue;
                 }
-                flush_text(
-                    &mut out,
-                    &mut text,
-                    cols,
-                    link.clone(),
-                    kind,
-                    pending_prefix.take(),
-                );
                 let lower_name = tag_name_of(&lower_tag);
                 if lower_name == "script"
                     || lower_name == "style"
+                    || lower_name == "noscript"
                     || lower_name == "head"
                     || (tag_is_hidden(&lower_tag) && !lower_tag.starts_with("input"))
                 {
-                    skip_until = Some(closing_tag_for(&lower_tag));
+                    flush_flow_text(&mut out, &mut text, cols, &mut state);
+                    state.skip_until = Some(closing_tag_for(&lower_tag));
                     i += end_rel + 1;
                     continue;
                 }
-                handle_tag(
-                    tag,
-                    &mut out,
-                    &mut link,
-                    &mut kind,
-                    &mut pending_prefix,
-                    &mut preformatted,
-                    base_url,
-                    cols,
-                );
+                handle_tag(tag, &mut out, &mut text, &mut state, base_url, cols);
                 i += end_rel + 1;
                 continue;
             }
         }
-        if skip_until.is_none() {
-            push_text_char(&mut text, bytes[i] as char, preformatted);
+        if state.skip_until.is_none() {
+            if state.in_table_cell {
+                push_text_char(&mut state.table_cell_text, bytes[i] as char, false);
+            } else {
+                push_text_char(&mut text, bytes[i] as char, state.preformatted);
+            }
         }
         i += 1;
     }
-    flush_text(&mut out, &mut text, cols, link, kind, pending_prefix);
+    if state.in_table_cell {
+        finish_table_cell(&mut state);
+    }
+    if state.in_table {
+        finish_table_row(&mut out, &mut state, cols);
+    }
+    flush_flow_text(&mut out, &mut text, cols, &mut state);
     compact_lines(out)
+}
+
+pub fn render_document_debug_for_test(base_url: &str, response: &str, cols: usize) -> Vec<String> {
+    render_document(base_url, response, cols)
+        .into_iter()
+        .filter(|line| !line.text.is_empty())
+        .map(|line| {
+            if let Some(link) = line.link {
+                format!("{} -> {}", line.text, link)
+            } else {
+                line.text
+            }
+        })
+        .collect()
+}
+
+struct HtmlRenderState {
+    link: Option<String>,
+    kind: BrowserLineKind,
+    pending_prefix: Option<String>,
+    preformatted: bool,
+    skip_until: Option<String>,
+    quote_depth: usize,
+    list_depth: usize,
+    ordered_stack: Vec<usize>,
+    in_table: bool,
+    in_table_cell: bool,
+    table_cell_is_header: bool,
+    table_cell_text: String,
+    table_row: Vec<TableCell>,
+}
+
+impl HtmlRenderState {
+    fn new() -> Self {
+        Self {
+            link: None,
+            kind: BrowserLineKind::Text,
+            pending_prefix: None,
+            preformatted: false,
+            skip_until: None,
+            quote_depth: 0,
+            list_depth: 0,
+            ordered_stack: Vec::new(),
+            in_table: false,
+            in_table_cell: false,
+            table_cell_is_header: false,
+            table_cell_text: String::new(),
+            table_row: Vec::new(),
+        }
+    }
+}
+
+struct TableCell {
+    text: String,
+    header: bool,
 }
 
 fn handle_tag(
     tag: &str,
     out: &mut Vec<BrowserLine>,
-    link: &mut Option<String>,
-    kind: &mut BrowserLineKind,
-    pending_prefix: &mut Option<String>,
-    preformatted: &mut bool,
+    text: &mut String,
+    state: &mut HtmlRenderState,
     base_url: &str,
-    _cols: usize,
+    cols: usize,
 ) {
     let tag = tag.trim();
     let lower = lowercase_ascii(tag);
-    if lower.starts_with("/a") {
-        *link = None;
+    let name = tag_name_of(&lower);
+    let closing = lower.starts_with('/');
+
+    if state.in_table_cell {
+        handle_table_cell_tag(tag, out, state, base_url, cols, name, closing);
         return;
     }
-    if lower.starts_with("/h") {
-        *kind = BrowserLineKind::Text;
-        push_blank_line(out);
-        return;
-    }
-    if lower.starts_with("/pre") || lower.starts_with("/code") {
-        *preformatted = false;
-        *kind = BrowserLineKind::Text;
-        push_blank_line(out);
-        return;
-    }
-    if lower.starts_with("a ") || lower == "a" {
-        if let Some(href) = attr_value(tag, "href") {
-            *link = Some(resolve_url(base_url, &href));
+
+    flush_flow_text(out, text, cols, state);
+
+    match name {
+        "a" => {
+            if closing {
+                state.link = None;
+            } else if let Some(href) = attr_value(tag, "href") {
+                state.link = Some(resolve_url(base_url, &href));
+            }
         }
+        "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+            if closing {
+                state.kind = BrowserLineKind::Text;
+                push_blank_line(out);
+            } else {
+                push_blank_line(out);
+                state.kind = BrowserLineKind::Heading;
+            }
+        }
+        "pre" => {
+            if closing {
+                state.preformatted = false;
+                state.kind = BrowserLineKind::Text;
+                push_blank_line(out);
+            } else {
+                push_blank_line(out);
+                state.preformatted = true;
+                state.kind = BrowserLineKind::Code;
+            }
+        }
+        "code" => {
+            state.kind = if closing {
+                BrowserLineKind::Text
+            } else {
+                BrowserLineKind::Code
+            };
+        }
+        "blockquote" => {
+            if closing {
+                state.quote_depth = state.quote_depth.saturating_sub(1);
+                state.kind = BrowserLineKind::Text;
+                push_blank_line(out);
+            } else {
+                push_blank_line(out);
+                state.quote_depth = state.quote_depth.saturating_add(1);
+                state.kind = BrowserLineKind::Quote;
+            }
+        }
+        "ul" => {
+            if closing {
+                state.list_depth = state.list_depth.saturating_sub(1);
+            } else {
+                state.list_depth = state.list_depth.saturating_add(1);
+            }
+            push_blank_line(out);
+        }
+        "ol" => {
+            if closing {
+                state.ordered_stack.pop();
+                state.list_depth = state.list_depth.saturating_sub(1);
+            } else {
+                state.ordered_stack.push(1);
+                state.list_depth = state.list_depth.saturating_add(1);
+            }
+            push_blank_line(out);
+        }
+        "li" => {
+            push_blank_line(out);
+            state.pending_prefix = Some(list_prefix(state));
+        }
+        "img" => push_image_line(out, tag, base_url),
+        "table" => {
+            if closing {
+                finish_table_row(out, state, cols);
+                state.in_table = false;
+                push_blank_line(out);
+            } else {
+                push_blank_line(out);
+                state.in_table = true;
+                state.table_row.clear();
+            }
+        }
+        "tr" => {
+            if closing {
+                finish_table_row(out, state, cols);
+            } else {
+                state.in_table = true;
+                state.table_row.clear();
+            }
+        }
+        "td" | "th" => {
+            state.in_table = true;
+            state.in_table_cell = true;
+            state.table_cell_is_header = name == "th";
+            state.table_cell_text.clear();
+        }
+        "br" => push_blank_line(out),
+        "hr" => out.push(kind_line(&rule_line(cols), BrowserLineKind::Muted)),
+        "p" | "div" | "section" | "article" | "main" | "aside" | "header" | "footer" | "nav"
+        | "figure" | "figcaption" | "address" | "dl" | "dt" | "dd" => {
+            push_blank_line(out);
+        }
+        _ => {}
+    }
+}
+
+fn handle_table_cell_tag(
+    tag: &str,
+    out: &mut Vec<BrowserLine>,
+    state: &mut HtmlRenderState,
+    base_url: &str,
+    cols: usize,
+    name: &str,
+    closing: bool,
+) {
+    match name {
+        "td" | "th" if closing => finish_table_cell(state),
+        "tr" if closing => {
+            finish_table_cell(state);
+            finish_table_row(out, state, cols);
+        }
+        "table" if closing => {
+            finish_table_cell(state);
+            finish_table_row(out, state, cols);
+            state.in_table = false;
+            push_blank_line(out);
+        }
+        "br" => {
+            if !state.table_cell_text.ends_with(' ') {
+                state.table_cell_text.push(' ');
+            }
+        }
+        "img" => {
+            let src = attr_value(tag, "src").map(|src| resolve_url(base_url, &src));
+            let label = attr_value(tag, "alt")
+                .map(|alt| decode_entities(&alt))
+                .filter(|alt| !alt.trim().is_empty())
+                .unwrap_or_else(|| src.unwrap_or_else(|| String::from("image")));
+            if !state.table_cell_text.ends_with(' ') && !state.table_cell_text.is_empty() {
+                state.table_cell_text.push(' ');
+            }
+            state.table_cell_text.push_str("[image ");
+            state.table_cell_text.push_str(&label);
+            state.table_cell_text.push(']');
+        }
+        _ => {}
+    }
+}
+
+fn push_image_line(out: &mut Vec<BrowserLine>, tag: &str, base_url: &str) {
+    let src = attr_value(tag, "src").map(|src| resolve_url(base_url, &src));
+    let label = attr_value(tag, "alt")
+        .map(|alt| decode_entities(&alt))
+        .filter(|alt| !alt.trim().is_empty())
+        .unwrap_or_else(|| src.clone().unwrap_or_else(|| String::from("image")));
+    let mut text = String::from("[image] ");
+    text.push_str(&label);
+    out.push(BrowserLine {
+        text,
+        link: src,
+        kind: BrowserLineKind::Image,
+        image_slot: None,
+    });
+}
+
+fn list_prefix(state: &mut HtmlRenderState) -> String {
+    let mut out = String::new();
+    for _ in 1..state.list_depth {
+        out.push_str("  ");
+    }
+    if let Some(next) = state.ordered_stack.last_mut() {
+        out.push_str(&format!("{}. ", *next));
+        *next = next.saturating_add(1);
+    } else {
+        out.push_str("* ");
+    }
+    out
+}
+
+fn rule_line(cols: usize) -> String {
+    let mut out = String::new();
+    for _ in 0..cols.clamp(20, 80) {
+        out.push('-');
+    }
+    out
+}
+
+fn finish_table_cell(state: &mut HtmlRenderState) {
+    if !state.in_table_cell {
         return;
     }
-    if lower.starts_with("h1") || lower.starts_with("h2") || lower.starts_with("h3") {
-        push_blank_line(out);
-        *kind = BrowserLineKind::Heading;
+    let text = clean_inline_text(&decode_entities(&state.table_cell_text));
+    state.table_row.push(TableCell {
+        text,
+        header: state.table_cell_is_header,
+    });
+    state.table_cell_text.clear();
+    state.table_cell_is_header = false;
+    state.in_table_cell = false;
+}
+
+fn finish_table_row(out: &mut Vec<BrowserLine>, state: &mut HtmlRenderState, cols: usize) {
+    if state.table_row.is_empty() {
         return;
     }
-    if lower.starts_with("pre") || lower.starts_with("code") {
-        push_blank_line(out);
-        *preformatted = true;
-        *kind = BrowserLineKind::Code;
-        return;
+    let header = state.table_row.iter().any(|cell| cell.header);
+    let row = format_table_row(&state.table_row, cols);
+    out.push(kind_line(
+        &row,
+        if header {
+            BrowserLineKind::Heading
+        } else {
+            BrowserLineKind::Code
+        },
+    ));
+    if header {
+        out.push(kind_line(
+            &format_table_separator(&state.table_row, cols),
+            BrowserLineKind::Muted,
+        ));
     }
-    if lower.starts_with("img") {
-        let src = attr_value(tag, "src").map(|src| resolve_url(base_url, &src));
-        let label = attr_value(tag, "alt")
-            .map(|alt| decode_entities(&alt))
-            .filter(|alt| !alt.trim().is_empty())
-            .unwrap_or_else(|| src.clone().unwrap_or_else(|| String::from("image")));
-        let mut text = String::from("[image] ");
-        text.push_str(&label);
-        out.push(BrowserLine {
-            text,
-            link: src,
-            kind: BrowserLineKind::Image,
-        });
-        return;
+    state.table_row.clear();
+}
+
+fn format_table_row(cells: &[TableCell], cols: usize) -> String {
+    let width = table_cell_width(cells.len(), cols);
+    let mut out = String::from("|");
+    for cell in cells {
+        out.push(' ');
+        push_truncated_padded(&mut out, &cell.text, width);
+        out.push(' ');
+        out.push('|');
     }
-    if lower.starts_with("li") {
-        push_blank_line(out);
-        *pending_prefix = Some(String::from("* "));
-        return;
+    out
+}
+
+fn format_table_separator(cells: &[TableCell], cols: usize) -> String {
+    let width = table_cell_width(cells.len(), cols);
+    let mut out = String::from("+");
+    for _ in cells {
+        for _ in 0..(width + 2) {
+            out.push('-');
+        }
+        out.push('+');
     }
-    if lower.starts_with("br") {
-        push_blank_line(out);
-        return;
+    out
+}
+
+fn table_cell_width(cell_count: usize, cols: usize) -> usize {
+    if cell_count == 0 {
+        return cols.clamp(8, 40);
     }
-    if lower.starts_with("/p")
-        || lower.starts_with("p")
-        || lower.starts_with("/div")
-        || lower.starts_with("div")
-        || lower.starts_with("/section")
-        || lower.starts_with("section")
-        || lower.starts_with("/article")
-        || lower.starts_with("article")
-        || lower.starts_with("/main")
-        || lower.starts_with("main")
-        || lower.starts_with("/tr")
-        || lower.starts_with("tr")
-        || lower.starts_with("/ul")
-        || lower.starts_with("/ol")
-        || lower.starts_with("ul")
-        || lower.starts_with("ol")
-    {
-        push_blank_line(out);
+    let chrome = cell_count.saturating_mul(3).saturating_add(1);
+    cols.saturating_sub(chrome)
+        .saturating_div(cell_count)
+        .clamp(8, 32)
+}
+
+fn push_truncated_padded(out: &mut String, input: &str, width: usize) {
+    let mut written = 0usize;
+    for c in input.chars().take(width) {
+        out.push(c);
+        written += 1;
+    }
+    if input.chars().count() > width && width > 0 {
+        out.pop();
+        out.push('>');
+    }
+    while written < width {
+        out.push(' ');
+        written += 1;
     }
 }
 
@@ -1521,6 +2045,7 @@ fn push_blank_line(out: &mut Vec<BrowserLine>) {
             text: String::new(),
             link: None,
             kind: BrowserLineKind::Text,
+            image_slot: None,
         });
     }
 }
@@ -1543,6 +2068,32 @@ fn closing_tag_for(lower_tag: &str) -> String {
     let mut out = String::from("/");
     out.push_str(tag_name_of(lower_tag));
     out
+}
+
+fn flush_flow_text(
+    out: &mut Vec<BrowserLine>,
+    text: &mut String,
+    cols: usize,
+    state: &mut HtmlRenderState,
+) {
+    let mut prefix = state.pending_prefix.take();
+    if state.quote_depth > 0 && state.kind != BrowserLineKind::Code {
+        let mut quote = String::new();
+        for _ in 0..state.quote_depth.min(3) {
+            quote.push_str("> ");
+        }
+        if let Some(existing) = prefix {
+            quote.push_str(&existing);
+        }
+        prefix = Some(quote);
+    }
+    let kind =
+        if state.quote_depth > 0 && state.kind == BrowserLineKind::Text && state.link.is_none() {
+            BrowserLineKind::Quote
+        } else {
+            state.kind
+        };
+    flush_text(out, text, cols, state.link.clone(), kind, prefix);
 }
 
 fn flush_text(
@@ -1569,6 +2120,17 @@ fn flush_text(
     out.extend(wrap_plain_text_kind(&decoded, cols, link, kind));
 }
 
+fn clean_inline_text(input: &str) -> String {
+    let mut out = String::new();
+    for word in input.split_whitespace() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(word);
+    }
+    out
+}
+
 fn wrap_plain_text(text: &str, cols: usize, link: Option<String>) -> Vec<BrowserLine> {
     wrap_plain_text_kind(text, cols, link, BrowserLineKind::Text)
 }
@@ -1589,6 +2151,7 @@ fn wrap_plain_text_kind(
                     text: line,
                     link: link.clone(),
                     kind: line_kind_for_link(&link, kind),
+                    image_slot: None,
                 });
                 line = String::new();
             }
@@ -1599,6 +2162,7 @@ fn wrap_plain_text_kind(
                         text: chunk,
                         link: link.clone(),
                         kind: line_kind_for_link(&link, kind),
+                        image_slot: None,
                     });
                     chunk = String::new();
                 }
@@ -1615,6 +2179,7 @@ fn wrap_plain_text_kind(
                 text: line,
                 link: link.clone(),
                 kind: line_kind_for_link(&link, kind),
+                image_slot: None,
             });
             line = String::new();
         }
@@ -1629,6 +2194,7 @@ fn wrap_plain_text_kind(
             text: line,
             link,
             kind,
+            image_slot: None,
         });
     }
     out
@@ -1754,36 +2320,103 @@ fn extract_title(response: &str) -> Option<String> {
 }
 
 fn attr_value(tag: &str, name: &str) -> Option<String> {
-    let lower = lowercase_ascii(tag);
-    let needle = {
-        let mut n = String::from(name);
-        n.push('=');
-        n
-    };
-    let pos = lower.find(&needle)? + needle.len();
     let bytes = tag.as_bytes();
-    if pos >= bytes.len() {
-        return None;
+    let name_bytes = name.as_bytes();
+    let mut pos = 0usize;
+    while pos < bytes.len() {
+        while pos < bytes.len()
+            && (bytes[pos].is_ascii_whitespace() || matches!(bytes[pos], b'/' | b'<'))
+        {
+            pos += 1;
+        }
+        let start = pos;
+        while pos < bytes.len()
+            && (bytes[pos].is_ascii_alphanumeric() || matches!(bytes[pos], b'-' | b'_'))
+        {
+            pos += 1;
+        }
+        if start == pos {
+            pos = pos.saturating_add(1);
+            continue;
+        }
+        let key = &bytes[start..pos];
+        while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+        if bytes.get(pos) != Some(&b'=') {
+            continue;
+        }
+        pos += 1;
+        while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+        let value = if matches!(bytes.get(pos), Some(b'"' | b'\'')) {
+            let quote = bytes[pos];
+            pos += 1;
+            let value_start = pos;
+            while pos < bytes.len() && bytes[pos] != quote {
+                pos += 1;
+            }
+            String::from(&tag[value_start..pos])
+        } else {
+            let value_start = pos;
+            while pos < bytes.len() && !bytes[pos].is_ascii_whitespace() && bytes[pos] != b'>' {
+                pos += 1;
+            }
+            String::from(&tag[value_start..pos])
+        };
+        if ascii_bytes_eq_ignore_case(key, name_bytes) {
+            return Some(value);
+        }
     }
-    let quote = bytes[pos];
-    if quote == b'"' || quote == b'\'' {
-        let rest = &tag[pos + 1..];
-        let end = rest.find(quote as char)?;
-        Some(String::from(&rest[..end]))
-    } else {
-        let rest = &tag[pos..];
-        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
-        Some(String::from(&rest[..end]))
-    }
+    None
 }
 
 fn resolve_url(base: &str, href: &str) -> String {
+    let href = href.trim();
     if href.starts_with("browser://")
         || href.starts_with("file://")
         || href.starts_with("http://")
         || href.starts_with("https://")
     {
         return String::from(href);
+    }
+    if href.starts_with("//") {
+        let scheme = if base.starts_with("https://") {
+            "https:"
+        } else if base.starts_with("http://") {
+            "http:"
+        } else {
+            "https:"
+        };
+        let mut out = String::from(scheme);
+        out.push_str(href);
+        return out;
+    }
+    if href.starts_with('#') {
+        let mut out = String::from(base);
+        if let Some(hash) = out.find('#') {
+            out.truncate(hash);
+        }
+        out.push_str(href);
+        return out;
+    }
+    if let Some(path) = base.strip_prefix("file://") {
+        let resolved = if href.starts_with('/') {
+            crate::vfs::normalize_path(href)
+        } else {
+            let dir = path.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("");
+            let mut joined = String::new();
+            if dir.is_empty() {
+                joined.push('/');
+            } else {
+                joined.push_str(dir);
+                joined.push('/');
+            }
+            joined.push_str(href);
+            crate::vfs::normalize_path(&joined)
+        };
+        return file_url_for_path(&resolved);
     }
     let Ok((scheme, host, path)) = parse_web_url(base) else {
         return normalize_url(href);
@@ -1812,6 +2445,14 @@ fn lowercase_ascii(input: &str) -> String {
         .bytes()
         .map(|b| if b.is_ascii_uppercase() { b + 32 } else { b } as char)
         .collect()
+}
+
+fn ascii_bytes_eq_ignore_case(left: &[u8], right: &[u8]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right.iter())
+            .all(|(l, r)| l.to_ascii_lowercase() == r.to_ascii_lowercase())
 }
 
 fn truncate_chars(s: &mut String, max: usize) {

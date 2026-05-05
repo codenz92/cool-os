@@ -12,7 +12,7 @@ layer with pipes, shared memory, and per-task fd tables.
 
 ---
 
-# Current state — v5.2
+# Current state — v5.3
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -47,11 +47,12 @@ pipe, and `exec /bin/read` exercises userspace `open/read/close` against the
 FAT32-backed VFS. With QEMU virtio networking enabled, `exec /bin/wget
 http://example.com/` resolves DNS, opens a TCP socket, fetches the HTTP
 response, and streams it to the terminal. The native Web Browser app can open
-HTTP and HTTPS pages, follow redirects, decode chunked responses, render basic
-HTML text, and keep session history plus persistent local bookmarks. HTTPS uses
-a no_std TLS 1.3 client over the kernel TCP stack with hardware RNG entropy,
-RTC-backed certificate validity checks, and X.509 chain validation against the
-built-in trust roots.
+HTTP, HTTPS, and local HTML pages, follow redirects, decode chunked responses,
+render headings, lists, block quotes, simple tables, and bounded inline PNG
+images, and keep session history plus persistent local bookmarks. HTTPS uses a
+no_std TLS 1.3 client over the kernel TCP stack with hardware RNG entropy,
+RTC-backed certificate validity checks, X.509 chain validation against the
+built-in trust roots, and SAN-first hostname validation coverage.
 
 ### What's working
 
@@ -89,7 +90,7 @@ built-in trust roots.
 | **Text Viewer** | Right-click | Scrollable "About" doc; `j`/`k` to scroll. |
 | **Color Picker** | Right-click | Clickable 16-colour EGA palette grid. |
 | **File Manager** | Right-click / desktop icon | Browse and mutate the FAT32 disk image with breadcrumbs, recursive search, sorting, multi-select, clipboard copy/cut/paste, Trash-backed delete, properties, text editing, and ELF launch routing. |
-| **Web Browser** | Launcher / desktop icon | Native HTTP/HTTPS browser with address/search bar, redirects, decoded chunked responses, basic HTML text rendering, clickable links, session history, visible TLS trust-root status, and persistent bookmarks. |
+| **Web Browser** | Launcher / desktop icon | Native HTTP/HTTPS/local-file browser with address/search bar, redirects, decoded chunked responses, headings/lists/quotes/tables, direct and HTML-sourced inline PNG previews, clickable links, session history, visible TLS trust-root status, and persistent bookmarks. |
 
 ### Desktop shortcuts
 
@@ -348,6 +349,6 @@ faults still panic.
 | 16 | UI polish — desktop shell, launcher, taskbar, settings | **Done** |
 | 17 | Browser foundation — HTTP/1.1, redirects, chunked responses, local browser UX | **Done** |
 | 18 | HTTPS/TLS foundation — TLS 1.3, certificate validation, browser/terminal integration | **Done** |
-| 19 | Browser rendering — inline PNG image previews and trust hardening | **In progress** |
+| 19 | Browser rendering — inline PNG image previews and trust hardening | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).
