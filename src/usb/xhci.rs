@@ -1965,19 +1965,21 @@ fn ring_device_doorbell(info: &XhciInfo, slot_id: u8, dci: u8) {
 fn push_command_trb(ring: &mut CommandRingState, parameter: u64, status: u32, control: u32) -> u64 {
     let trb_phys = ring.phys + ring.enqueue_idx as u64 * 16;
     let trb_virt = ring.virt + ring.enqueue_idx as u64 * 16;
+    let (next_enqueue_idx, next_cycle, wraps) =
+        next_ring_enqueue_state(ring.enqueue_idx, ring.cycle, COMMAND_RING_TRBS);
     let control = control | if ring.cycle { TRB_CYCLE } else { 0 };
 
     unsafe {
         write_u64(trb_virt, parameter);
         write_u32(trb_virt + 8, status);
+        if wraps {
+            write_link_trb_cycle(ring.virt, COMMAND_RING_TRBS, ring.cycle);
+        }
         write_u32(trb_virt + 12, control);
     }
 
-    ring.enqueue_idx += 1;
-    if ring.enqueue_idx == COMMAND_RING_TRBS - 1 {
-        ring.enqueue_idx = 0;
-        ring.cycle = !ring.cycle;
-    }
+    ring.enqueue_idx = next_enqueue_idx;
+    ring.cycle = next_cycle;
 
     trb_phys
 }
@@ -1990,21 +1992,58 @@ fn push_transfer_trb(
 ) -> u64 {
     let trb_phys = ring.phys + ring.enqueue_idx as u64 * 16;
     let trb_virt = ring.virt + ring.enqueue_idx as u64 * 16;
+    let (next_enqueue_idx, next_cycle, wraps) =
+        next_ring_enqueue_state(ring.enqueue_idx, ring.cycle, ring.size);
     let control = control | if ring.cycle { TRB_CYCLE } else { 0 };
 
     unsafe {
         write_u64(trb_virt, parameter);
         write_u32(trb_virt + 8, status);
+        if wraps {
+            write_link_trb_cycle(ring.virt, ring.size, ring.cycle);
+        }
         write_u32(trb_virt + 12, control);
     }
 
-    ring.enqueue_idx += 1;
-    if ring.enqueue_idx == ring.size - 1 {
-        ring.enqueue_idx = 0;
-        ring.cycle = !ring.cycle;
-    }
+    ring.enqueue_idx = next_enqueue_idx;
+    ring.cycle = next_cycle;
 
     trb_phys
+}
+
+fn next_ring_enqueue_state(
+    enqueue_idx: usize,
+    cycle: bool,
+    ring_size: usize,
+) -> (usize, bool, bool) {
+    let next_idx = enqueue_idx + 1;
+    if next_idx == ring_size - 1 {
+        (0, !cycle, true)
+    } else {
+        (next_idx, cycle, false)
+    }
+}
+
+pub fn transfer_ring_cycle_refresh_for_test() -> bool {
+    let mut enqueue_idx = 0usize;
+    let mut cycle = true;
+    let mut wraps = 0usize;
+    let mut observed = [false; 4];
+
+    for _ in 0..12 {
+        let (next_idx, next_cycle, wrapped) = next_ring_enqueue_state(enqueue_idx, cycle, 5);
+        if wrapped {
+            if wraps >= observed.len() {
+                return false;
+            }
+            observed[wraps] = cycle;
+            wraps += 1;
+        }
+        enqueue_idx = next_idx;
+        cycle = next_cycle;
+    }
+
+    wraps == 3 && observed[0] && !observed[1] && observed[2]
 }
 
 fn wait_for_command_completion(
@@ -2748,5 +2787,16 @@ unsafe fn init_link_trb(ring_phys: u64, ring_size: usize, target_phys: u64) {
     write_u32(last_trb, (target_phys & 0xFFFF_FFFF) as u32);
     write_u32(last_trb + 4, (target_phys >> 32) as u32);
     write_u32(last_trb + 8, 0);
-    write_u32(last_trb + 12, (TRB_TYPE_LINK << 10) | TRB_TC | TRB_CYCLE);
+    write_link_trb_cycle(
+        crate::vmm::phys_to_virt(x86_64::PhysAddr::new(ring_phys)).as_u64(),
+        ring_size,
+        true,
+    );
+}
+
+unsafe fn write_link_trb_cycle(ring_virt: u64, ring_size: usize, cycle: bool) {
+    let last_trb = ring_virt + ((ring_size - 1) * 16) as u64;
+    // Link TRBs are owned by cycle bit too; refresh this before each ring wrap.
+    let control = (TRB_TYPE_LINK << 10) | TRB_TC | (if cycle { TRB_CYCLE } else { 0 });
+    write_u32(last_trb + 12, control);
 }

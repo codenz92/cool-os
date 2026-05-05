@@ -366,7 +366,7 @@ smoke-kernel-units: build
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--seconds $(SMOKE_SECONDS) \
-		--expect "[selftest] kernel unit checks ok=11 fail=0" \
+		--expect "[selftest] kernel unit checks ok=12 fail=0" \
 		--expect "[boot] desktop ready"
 
 smoke-boot-budget: build
