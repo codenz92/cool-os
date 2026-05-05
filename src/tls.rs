@@ -29,6 +29,11 @@ pub struct TlsHttpExchange {
     pub trust_root: &'static str,
 }
 
+enum TlsExchangeError {
+    Handshake(&'static str),
+    Established(&'static str),
+}
+
 pub fn https_exchange(
     host: &str,
     path: &str,
@@ -44,13 +49,22 @@ pub fn https_exchange(
 
     let addrs = crate::net::resolve_host_addrs(host)?;
     let mut last_err = "TLS connect failed";
-    for addr in addrs {
+    'addr_loop: for addr in addrs {
         let cached_name = cached_root_name(host);
         if let Some(root) = cached_root(host) {
             match https_exchange_with_root(host, path, request, max_bytes, addr, root) {
                 Ok(exchange) => return Ok(exchange),
-                Err(err) if err == "TLS hostname validation failed" => return Err(err),
-                Err(err) => last_err = err,
+                Err(TlsExchangeError::Handshake(err))
+                    if err == "TLS hostname validation failed" =>
+                {
+                    return Err(err)
+                }
+                Err(TlsExchangeError::Handshake(err)) => last_err = err,
+                Err(TlsExchangeError::Established(err)) if err == "TLS response timeout" => {
+                    last_err = err;
+                    continue 'addr_loop;
+                }
+                Err(TlsExchangeError::Established(err)) => return Err(err),
             }
         }
         for root in crate::tls_roots::TRUST_ROOTS {
@@ -62,8 +76,17 @@ pub fn https_exchange(
                     remember_root(host, root.name);
                     return Ok(exchange);
                 }
-                Err(err) if err == "TLS hostname validation failed" => return Err(err),
-                Err(err) => last_err = err,
+                Err(TlsExchangeError::Handshake(err))
+                    if err == "TLS hostname validation failed" =>
+                {
+                    return Err(err)
+                }
+                Err(TlsExchangeError::Handshake(err)) => last_err = err,
+                Err(TlsExchangeError::Established(err)) if err == "TLS response timeout" => {
+                    last_err = err;
+                    continue 'addr_loop;
+                }
+                Err(TlsExchangeError::Established(err)) => return Err(err),
             }
         }
     }
@@ -107,7 +130,36 @@ pub fn hostname_selftest_passes() -> bool {
     hostname_selftest_detail().iter().all(|(_, passed)| *passed)
 }
 
+pub fn http_response_selftest_passes() -> bool {
+    http_response_complete(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+        && http_response_complete(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello")
+        && !http_response_complete(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhell")
+        && http_response_complete(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+        )
+        && !http_response_complete(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhel")
+}
+
 fn hostname_selftest_detail() -> Vec<(&'static str, bool)> {
+    let crowded_san_names = [
+        "*.google.com",
+        "*.appengine.google.com",
+        "*.bdn.dev",
+        "*.origin-test.bdn.dev",
+        "*.cloud.google.com",
+        "*.crowdsource.google.com",
+        "*.datacompute.google.com",
+        "*.google.ca",
+        "*.google.cl",
+        "*.google.co.in",
+        "*.google.co.jp",
+        "*.google.co.uk",
+        "*.google.com.ar",
+        "*.google.com.au",
+        "*.google.com.br",
+        "*.google.com.co",
+        "google.com",
+    ];
     vec![
         (
             "exact",
@@ -164,6 +216,15 @@ fn hostname_selftest_detail() -> Vec<(&'static str, bool)> {
                 "legacy.example",
                 Some("legacy.example"),
                 &["modern.example"],
+                &[],
+            ),
+        ),
+        (
+            "san-over-capacity",
+            embedded_tls::pki::hostname_matches_for_test(
+                "google.com",
+                Some("*.google.com"),
+                &crowded_san_names,
                 &[],
             ),
         ),
@@ -235,8 +296,8 @@ fn https_exchange_with_root(
     max_bytes: usize,
     addr: u32,
     root: &crate::tls_roots::TrustRoot,
-) -> Result<TlsHttpExchange, &'static str> {
-    let stream = KernelTcpStream::connect(addr, 443)?;
+) -> Result<TlsHttpExchange, TlsExchangeError> {
+    let stream = KernelTcpStream::connect(addr, 443).map_err(TlsExchangeError::Handshake)?;
     let mut read_record_buffer = alloc::vec![0u8; TLS_RECORD_BUF];
     let mut write_record_buffer = alloc::vec![0u8; TLS_RECORD_BUF];
     let mut tls = TlsConnection::new(
@@ -250,17 +311,20 @@ fn https_exchange_with_root(
         .with_server_name(host);
     let provider = CoolTlsProvider::new();
     tls.open(TlsContext::new(&config, provider))
-        .map_err(tls_error_label)?;
+        .map_err(|err| TlsExchangeError::Handshake(tls_error_label(err)))?;
     let mut sent = 0usize;
     let bytes = request.as_bytes();
     while sent < bytes.len() {
-        let n = tls.write(&bytes[sent..]).map_err(tls_error_label)?;
+        let n = tls
+            .write(&bytes[sent..])
+            .map_err(|_| TlsExchangeError::Established("TLS write failed"))?;
         if n == 0 {
-            return Err("TLS write stalled");
+            return Err(TlsExchangeError::Established("TLS write stalled"));
         }
         sent += n;
     }
-    tls.flush().map_err(tls_error_label)?;
+    tls.flush()
+        .map_err(|_| TlsExchangeError::Established("TLS flush failed"))?;
 
     let mut raw_response = Vec::new();
     let mut buf = [0u8; 1024];
@@ -269,23 +333,159 @@ fn https_exchange_with_root(
             Ok(0) => break,
             Ok(n) => {
                 raw_response.extend_from_slice(&buf[..n]);
-                if raw_response.len() >= max_bytes {
+                if raw_response.len() >= max_bytes || http_response_complete(&raw_response) {
                     break;
                 }
             }
             Err(TlsError::ConnectionClosed) => break,
-            Err(err) => return Err(tls_error_label(err)),
+            Err(TlsError::IoError) => {
+                return Err(TlsExchangeError::Established("TLS response timeout"))
+            }
+            Err(err) => return Err(TlsExchangeError::Established(tls_error_label(err))),
         }
     }
     let _ = tls.close();
     if raw_response.is_empty() {
-        return Err("TLS response empty");
+        return Err(TlsExchangeError::Established("TLS response empty"));
     }
     Ok(TlsHttpExchange {
         resolved_addr: addr,
         raw_response,
         trust_root: root.name,
     })
+}
+
+fn http_response_complete(response: &[u8]) -> bool {
+    let Some((headers_len, sep_len)) = http_header_end(response) else {
+        return false;
+    };
+    let headers = &response[..headers_len];
+    let body = &response[headers_len + sep_len..];
+    if http_status_has_no_body(headers) {
+        return true;
+    }
+    if let Some(length) = http_content_length(headers) {
+        return body.len() >= length;
+    }
+    if http_transfer_chunked(headers) {
+        return chunked_body_complete(body);
+    }
+    false
+}
+
+fn http_header_end(response: &[u8]) -> Option<(usize, usize)> {
+    find_bytes(response, b"\r\n\r\n")
+        .map(|pos| (pos, 4))
+        .or_else(|| find_bytes(response, b"\n\n").map(|pos| (pos, 2)))
+}
+
+fn http_status_has_no_body(headers: &[u8]) -> bool {
+    let Ok(headers) = core::str::from_utf8(headers) else {
+        return false;
+    };
+    let Some(status) = headers
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok())
+    else {
+        return false;
+    };
+    (100..200).contains(&status) || status == 204 || status == 304
+}
+
+fn http_content_length(headers: &[u8]) -> Option<usize> {
+    http_header_value(headers, "content-length")?
+        .trim()
+        .parse::<usize>()
+        .ok()
+}
+
+fn http_transfer_chunked(headers: &[u8]) -> bool {
+    http_header_value(headers, "transfer-encoding")
+        .map(|value| {
+            value
+                .split(',')
+                .any(|part| part.trim().eq_ignore_ascii_case("chunked"))
+        })
+        .unwrap_or(false)
+}
+
+fn http_header_value<'a>(headers: &'a [u8], name: &str) -> Option<&'a str> {
+    let Ok(headers) = core::str::from_utf8(headers) else {
+        return None;
+    };
+    for line in headers.lines().skip(1) {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        if key.trim().eq_ignore_ascii_case(name) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn chunked_body_complete(body: &[u8]) -> bool {
+    let mut pos = 0usize;
+    loop {
+        let Some(line_end) = find_crlf(body, pos) else {
+            return false;
+        };
+        let Ok(line) = core::str::from_utf8(&body[pos..line_end]) else {
+            return false;
+        };
+        let Some(size) = parse_hex_usize(line.split(';').next().unwrap_or("").trim()) else {
+            return false;
+        };
+        pos = line_end + 2;
+        let Some(after_chunk) = pos.checked_add(size) else {
+            return false;
+        };
+        if body.len() < after_chunk + 2 || &body[after_chunk..after_chunk + 2] != b"\r\n" {
+            return false;
+        }
+        pos = after_chunk + 2;
+        if size == 0 {
+            return true;
+        }
+    }
+}
+
+fn find_crlf(body: &[u8], start: usize) -> Option<usize> {
+    let mut pos = start;
+    while pos + 1 < body.len() {
+        if body[pos] == b'\r' && body[pos + 1] == b'\n' {
+            return Some(pos);
+        }
+        pos += 1;
+    }
+    None
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return None;
+    }
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+fn parse_hex_usize(input: &str) -> Option<usize> {
+    let mut value = 0usize;
+    let mut saw_digit = false;
+    for ch in input.bytes() {
+        let digit = match ch {
+            b'0'..=b'9' => (ch - b'0') as usize,
+            b'a'..=b'f' => (ch - b'a' + 10) as usize,
+            b'A'..=b'F' => (ch - b'A' + 10) as usize,
+            _ => return None,
+        };
+        value = value.checked_mul(16)?.checked_add(digit)?;
+        saw_digit = true;
+    }
+    saw_digit.then_some(value)
 }
 
 struct CoolTlsProvider {

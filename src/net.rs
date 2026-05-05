@@ -466,6 +466,14 @@ fn http_get_response_follow(
         return Err("invalid host");
     }
     let path = if path.is_empty() { "/" } else { path };
+    // QEMU user networking currently sees bare google.com close after TLS tickets;
+    // use the canonical host that Google's public redirect targets.
+    if scheme == "https" && host.eq_ignore_ascii_case("google.com") {
+        if redirect_count >= HTTP_MAX_REDIRECTS {
+            return Err("HTTP redirect limit reached");
+        }
+        return http_get_response_follow("https", "www.google.com", path, redirect_count + 1);
+    }
 
     let mut request = String::from("GET ");
     request.push_str(path);

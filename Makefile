@@ -253,7 +253,7 @@ smoke-browser-png: build
 		--post-hmp-delay 2.0 \
 		--screendump "$(SMOKE_ARTIFACT_DIR)/browser-png-smoke.ppm" \
 		--expect-framebuffer-window \
-		--expect "[selftest] kernel unit checks ok=16 fail=0" \
+		--expect "[selftest] kernel unit checks ok=17 fail=0" \
 		--expect "[boot] desktop ready"
 
 smoke-browser-html: build
@@ -269,7 +269,7 @@ smoke-browser-html: build
 		--post-hmp-delay 2.0 \
 		--screendump "$(SMOKE_ARTIFACT_DIR)/browser-html-smoke.ppm" \
 		--expect-framebuffer-window \
-		--expect "[selftest] kernel unit checks ok=16 fail=0" \
+		--expect "[selftest] kernel unit checks ok=17 fail=0" \
 		--expect "[boot] desktop ready"
 
 smoke-ui-goldens: build
@@ -459,7 +459,7 @@ smoke-kernel-units: build
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--seconds $(SMOKE_SECONDS) \
-		--expect "[selftest] kernel unit checks ok=16 fail=0" \
+		--expect "[selftest] kernel unit checks ok=17 fail=0" \
 		--expect "[boot] desktop ready"
 
 smoke-boot-budget: build

@@ -32,10 +32,14 @@ pub struct CertificateChain<'a> {
 
 impl<'a> CertificateChain<'a> {
     pub fn new(ca: &'a CertificateEntryRef, chain: &'a ServerCertificate<'a>) -> Self {
+        let mut idx = chain.entries.len() as isize - 1;
+        while idx >= 0 && certificate_has_same_spki(ca, &chain.entries[idx as usize]) {
+            idx -= 1;
+        }
         Self {
             prev: Some(ca),
             chain,
-            idx: chain.entries.len() as isize - 1,
+            idx,
         }
     }
 }
@@ -58,10 +62,29 @@ impl<'a> Iterator for CertificateChain<'a> {
     }
 }
 
+fn certificate_has_same_spki(left: &CertificateEntryRef, right: &CertificateEntryRef) -> bool {
+    let (CertificateEntryRef::X509(left), CertificateEntryRef::X509(right)) = (left, right) else {
+        return false;
+    };
+    let Ok(left) = DecodedCertificate::from_der(left) else {
+        return false;
+    };
+    let Ok(right) = DecodedCertificate::from_der(right) else {
+        return false;
+    };
+    let left_spki = &left.tbs_certificate.subject_public_key_info;
+    let right_spki = &right.tbs_certificate.subject_public_key_info;
+    left_spki.algorithm.oid == right_spki.algorithm.oid
+        && left_spki.public_key.as_bytes() == right_spki.public_key.as_bytes()
+}
+
 struct CertificateIdentity {
     common_name: Option<heapless::String<HOSTNAME_MAXLEN>>,
     dns_names: Vec<heapless::String<HOSTNAME_MAXLEN>, SAN_DNS_MAX>,
     ip4_addrs: Vec<[u8; 4], SAN_IP_MAX>,
+    saw_dns_name: bool,
+    dns_name_matched: bool,
+    ip4_addr_matched: bool,
 }
 
 impl CertificateIdentity {
@@ -70,6 +93,9 @@ impl CertificateIdentity {
             common_name: None,
             dns_names: Vec::new(),
             ip4_addrs: Vec::new(),
+            saw_dns_name: false,
+            dns_name_matched: false,
+            ip4_addr_matched: false,
         }
     }
 }
@@ -138,8 +164,9 @@ where
         };
 
         let mut identity = CertificateIdentity::new();
+        let verify_host = self.host.as_ref().map(|host| host.as_str());
         for (p, q) in CertificateChain::new(&ca.into(), &cert) {
-            identity = verify_certificate(p, q, Clock::now())?;
+            identity = verify_certificate(p, q, Clock::now(), verify_host)?;
         }
         if let Some(host) = self.host.as_ref() {
             if !hostname_matches_identity(host, &identity) {
@@ -185,11 +212,19 @@ pub fn hostname_matches_for_test(
         }
     }
     for dns_name in dns_names {
+        identity.saw_dns_name = true;
         if let Ok(name) = dns_name_from_ascii(dns_name.as_bytes()) {
+            if dns_name_matches(&name, host) {
+                identity.dns_name_matched = true;
+            }
             let _ = identity.dns_names.push(name);
         }
     }
+    let host_ip = parse_ipv4_host(host);
     for ip in ip4_addrs {
+        if host_ip == Some(*ip) {
+            identity.ip4_addr_matched = true;
+        }
         let _ = identity.ip4_addrs.push(*ip);
     }
     hostname_matches_identity(host, &identity)
@@ -335,6 +370,7 @@ fn verify_certificate(
     verifier: &CertificateEntryRef,
     certificate: &CertificateEntryRef,
     now: Option<u64>,
+    verify_host: Option<&str>,
 ) -> Result<CertificateIdentity, TlsError> {
     let mut verified = false;
     let mut identity = CertificateIdentity::new();
@@ -372,6 +408,7 @@ fn verify_certificate(
         collect_subject_alt_names(
             parsed_certificate.tbs_certificate.extensions.as_ref(),
             &mut identity,
+            verify_host,
         )?;
 
         if let Some(now) = now {
@@ -525,6 +562,7 @@ fn verify_certificate(
 fn collect_subject_alt_names(
     extensions: Option<&der::AnyRef<'_>>,
     identity: &mut CertificateIdentity,
+    verify_host: Option<&str>,
 ) -> Result<(), TlsError> {
     let Some(extensions) = extensions else {
         return Ok(());
@@ -547,7 +585,7 @@ fn collect_subject_alt_names(
         }
         let (value, _) = der_value_at(ext, ext_pos, 0x04)?;
         if oid == SUBJECT_ALT_NAME_OID {
-            collect_general_names(value, identity)?;
+            collect_general_names(value, identity, verify_host)?;
         }
     }
     Ok(())
@@ -556,8 +594,10 @@ fn collect_subject_alt_names(
 fn collect_general_names(
     extn_value: &[u8],
     identity: &mut CertificateIdentity,
+    verify_host: Option<&str>,
 ) -> Result<(), TlsError> {
     let (names, _) = der_value_at(extn_value, 0, 0x30)?;
+    let verify_ip = verify_host.and_then(parse_ipv4_host);
     let mut pos = 0usize;
     while pos < names.len() {
         let tag = *names
@@ -574,14 +614,22 @@ fn collect_general_names(
         let value = &names[start..end];
         match tag {
             0x82 => {
+                identity.saw_dns_name = true;
                 if let Ok(name) = dns_name_from_ascii(value) {
+                    if let Some(host) = verify_host {
+                        if dns_name_matches(&name, host) {
+                            identity.dns_name_matched = true;
+                        }
+                    }
                     let _ = identity.dns_names.push(name);
                 }
             }
             0x87 if value.len() == 4 => {
-                let _ = identity
-                    .ip4_addrs
-                    .push([value[0], value[1], value[2], value[3]]);
+                let addr = [value[0], value[1], value[2], value[3]];
+                if verify_ip == Some(addr) {
+                    identity.ip4_addr_matched = true;
+                }
+                let _ = identity.ip4_addrs.push(addr);
             }
             _ => {}
         }
@@ -644,7 +692,14 @@ fn dns_name_from_ascii(value: &[u8]) -> Result<heapless::String<HOSTNAME_MAXLEN>
 
 fn hostname_matches_identity(host: &str, identity: &CertificateIdentity) -> bool {
     if let Some(ip) = parse_ipv4_host(host) {
+        if identity.ip4_addr_matched {
+            return true;
+        }
         return identity.ip4_addrs.iter().any(|candidate| *candidate == ip);
+    }
+
+    if identity.dns_name_matched {
+        return true;
     }
 
     if !identity.dns_names.is_empty() {
@@ -652,6 +707,10 @@ fn hostname_matches_identity(host: &str, identity: &CertificateIdentity) -> bool
             .dns_names
             .iter()
             .any(|name| dns_name_matches(name, host));
+    }
+
+    if identity.saw_dns_name {
+        return false;
     }
 
     identity
