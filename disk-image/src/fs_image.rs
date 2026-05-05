@@ -1,7 +1,7 @@
 /// Host-side tool: creates a FAT32 disk image and populates it with
 /// /bin/hello.txt, userspace binaries, and the CoolFS backing image.
 ///
-/// Usage: fs-image <output-path> [hello-elf] [exec-elf] [pipe-elf] [read-elf] [piperd-elf] [pipewr-elf] [keyecho-elf] [terminal-elf] [netdemo-elf] [wget-elf] [sdkdemo-elf] [guidemo-elf]
+/// Usage: fs-image <output-path> [hello-elf] [exec-elf] [pipe-elf] [read-elf] [piperd-elf] [pipewr-elf] [keyecho-elf] [terminal-elf] [netdemo-elf] [wget-elf] [sdkdemo-elf] [guidemo-elf] [notes-elf] [editor-elf] [trash-elf] [screenshot-elf]
 /// Output: a 64 MiB raw FAT32 disk image ready to attach as a QEMU IDE drive.
 use std::io::Write;
 
@@ -22,6 +22,10 @@ fn main() {
     let wget_elf = args.next();
     let sdkdemo_elf = args.next();
     let guidemo_elf = args.next();
+    let notes_elf = args.next();
+    let editor_elf = args.next();
+    let trash_elf = args.next();
+    let screenshot_elf = args.next();
 
     // Create or truncate the file, set it to the desired size.
     let file = std::fs::OpenOptions::new()
@@ -222,6 +226,48 @@ fn main() {
         guidemo_bin
             .write_all(&guidemo_bytes)
             .expect("failed to write guidemo");
+    }
+
+    if let Some(notes_path) = notes_elf {
+        let notes_bytes = std::fs::read(&notes_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {}", notes_path, e));
+        let mut notes_bin = bin.create_file("notes").expect("failed to create notes");
+        notes_bin.truncate().unwrap();
+        notes_bin
+            .write_all(&notes_bytes)
+            .expect("failed to write notes");
+    }
+
+    if let Some(editor_path) = editor_elf {
+        let editor_bytes = std::fs::read(&editor_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {}", editor_path, e));
+        let mut editor_bin = bin.create_file("editor").expect("failed to create editor");
+        editor_bin.truncate().unwrap();
+        editor_bin
+            .write_all(&editor_bytes)
+            .expect("failed to write editor");
+    }
+
+    if let Some(trash_path) = trash_elf {
+        let trash_bytes = std::fs::read(&trash_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {}", trash_path, e));
+        let mut trash_bin = bin.create_file("trash").expect("failed to create trash");
+        trash_bin.truncate().unwrap();
+        trash_bin
+            .write_all(&trash_bytes)
+            .expect("failed to write trash");
+    }
+
+    if let Some(screenshot_path) = screenshot_elf {
+        let screenshot_bytes = std::fs::read(&screenshot_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {}", screenshot_path, e));
+        let mut screenshot_bin = bin
+            .create_file("screenshot")
+            .expect("failed to create screenshot");
+        screenshot_bin.truncate().unwrap();
+        screenshot_bin
+            .write_all(&screenshot_bytes)
+            .expect("failed to write screenshot");
     }
 
     println!("{}", out_path);

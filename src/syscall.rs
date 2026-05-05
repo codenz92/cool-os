@@ -34,6 +34,11 @@
 ///   24 gui_present(handle, pixels_ptr, len) → 0 on success
 ///   25 gui_poll_event(handle, packet_ptr, len) → packet bytes, 0 if no event
 ///   26 gui_close(handle) → 0 on success
+///   27 fs_write_file(desc_ptr) → 0 on success
+///   28 fs_create_dir(path_ptr, path_len) → 0 on success
+///   29 fs_delete_tree(path_ptr, path_len) → 0 on success
+///   30 fs_list_dir(desc_ptr) → bytes written to output buffer
+///   31 screenshot(path_ptr, path_len, flags) → 0 on queued
 ///
 /// Output path: sys_write pushes bytes into SYSCALL_OUTPUT (a lock-free ring
 /// buffer modelled on keyboard.rs). compositor::compose() drains it into the
@@ -47,6 +52,7 @@ const USER_TOP: u64 = 0x0000_8000_0000_0000;
 const MAX_USER_STRING: u64 = 4096;
 const MAX_USER_BUFFER: u64 = 1024 * 1024;
 const MAX_GUI_SURFACE_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_USER_DIR_LISTING: u64 = 16 * 1024;
 const ZERO8: AtomicU8 = AtomicU8::new(0);
 static OUTPUT_BUF: [AtomicU8; OUTPUT_SIZE] = [ZERO8; OUTPUT_SIZE];
 static OUTPUT_HEAD: AtomicUsize = AtomicUsize::new(0);
@@ -237,6 +243,11 @@ extern "C" fn syscall_dispatch(
         24 => sys_gui_present(a1, a2 as *const u8, a3),
         25 => sys_gui_poll_event(a1, a2 as *mut u8, a3),
         26 => sys_gui_close(a1),
+        27 => sys_fs_write_file(a1 as *const u8),
+        28 => sys_fs_create_dir(a1 as *const u8, a2),
+        29 => sys_fs_delete_tree(a1 as *const u8, a2),
+        30 => sys_fs_list_dir(a1 as *const u8),
+        31 => sys_screenshot(a1 as *const u8, a2, a3),
         _ => u64::MAX,
     }
 }
@@ -471,6 +482,99 @@ fn sys_gui_close(handle: u64) -> u64 {
     }
 }
 
+fn sys_fs_write_file(desc_ptr: *const u8) -> u64 {
+    let Some(desc) = user_descriptor4(desc_ptr) else {
+        return u64::MAX;
+    };
+    let Some(path) = user_path(desc[0] as *const u8, desc[1]) else {
+        return u64::MAX;
+    };
+    let data = if desc[3] == 0 {
+        &[]
+    } else {
+        let Some(data) = user_slice(desc[2] as *const u8, desc[3], MAX_USER_BUFFER) else {
+            return u64::MAX;
+        };
+        data
+    };
+
+    match crate::vfs::vfs_create_file(path) {
+        Ok(()) | Err(crate::fat32::FsError::AlreadyExists) => {}
+        Err(_) => return u64::MAX,
+    }
+
+    match crate::vfs::vfs_write_file(path, data) {
+        Ok(()) => 0,
+        Err(_) => u64::MAX,
+    }
+}
+
+fn sys_fs_create_dir(path_ptr: *const u8, path_len: u64) -> u64 {
+    let Some(path) = user_path(path_ptr, path_len) else {
+        return u64::MAX;
+    };
+    match crate::vfs::vfs_create_dir(path) {
+        Ok(()) | Err(crate::fat32::FsError::AlreadyExists) => 0,
+        Err(_) => u64::MAX,
+    }
+}
+
+fn sys_fs_delete_tree(path_ptr: *const u8, path_len: u64) -> u64 {
+    let Some(path) = user_path(path_ptr, path_len) else {
+        return u64::MAX;
+    };
+    match crate::vfs::vfs_delete_recursive(path) {
+        Ok(()) => 0,
+        Err(_) => u64::MAX,
+    }
+}
+
+fn sys_fs_list_dir(desc_ptr: *const u8) -> u64 {
+    let Some(desc) = user_descriptor4(desc_ptr) else {
+        return u64::MAX;
+    };
+    let Some(path) = user_path(desc[0] as *const u8, desc[1]) else {
+        return u64::MAX;
+    };
+    let Some(out) = user_slice_mut(desc[2] as *mut u8, desc[3], MAX_USER_DIR_LISTING) else {
+        return u64::MAX;
+    };
+    let Some(entries) = crate::vfs::vfs_list_dir(path) else {
+        return u64::MAX;
+    };
+
+    let mut written = 0usize;
+    for entry in entries {
+        if !append_dir_listing_byte(out, &mut written, if entry.is_dir { b'D' } else { b'F' }) {
+            break;
+        }
+        if !append_dir_listing_byte(out, &mut written, b'\t') {
+            break;
+        }
+        if !append_dir_listing_bytes(out, &mut written, entry.name.as_bytes()) {
+            break;
+        }
+        if !append_dir_listing_byte(out, &mut written, b'\t') {
+            break;
+        }
+        if !append_dir_listing_u64(out, &mut written, entry.size as u64) {
+            break;
+        }
+        if !append_dir_listing_byte(out, &mut written, b'\n') {
+            break;
+        }
+    }
+    written as u64
+}
+
+fn sys_screenshot(path_ptr: *const u8, path_len: u64, _flags: u64) -> u64 {
+    let Some(path) = user_path(path_ptr, path_len) else {
+        return u64::MAX;
+    };
+    crate::wm::request_focused_screenshot(path);
+    0
+}
+
 fn sys_waitpid(pid: u64, status_ptr: *mut u64) -> u64 {
     if !status_ptr.is_null() && !validate_user_range(status_ptr as u64, 8, 8, true) {
         return u64::MAX;
@@ -611,6 +715,59 @@ fn sys_shmem_create(len: u64) -> u64 {
 fn sys_shmem_map(id: u64) -> u64 {
     let pml4 = crate::vmm::current_pml4();
     crate::vfs::vfs_shmem_map(id as usize, pml4)
+}
+
+fn user_path(path_ptr: *const u8, path_len: u64) -> Option<&'static str> {
+    let bytes = user_slice(path_ptr, path_len, MAX_USER_STRING)?;
+    core::str::from_utf8(bytes).ok()
+}
+
+fn user_descriptor4(desc_ptr: *const u8) -> Option<[u64; 4]> {
+    let bytes = user_slice(desc_ptr, 32, 32)?;
+    Some([
+        u64::from_le_bytes(bytes[0..8].try_into().ok()?),
+        u64::from_le_bytes(bytes[8..16].try_into().ok()?),
+        u64::from_le_bytes(bytes[16..24].try_into().ok()?),
+        u64::from_le_bytes(bytes[24..32].try_into().ok()?),
+    ])
+}
+
+fn append_dir_listing_byte(out: &mut [u8], written: &mut usize, byte: u8) -> bool {
+    if *written >= out.len() {
+        return false;
+    }
+    out[*written] = byte;
+    *written += 1;
+    true
+}
+
+fn append_dir_listing_bytes(out: &mut [u8], written: &mut usize, bytes: &[u8]) -> bool {
+    for &byte in bytes {
+        if !append_dir_listing_byte(out, written, byte) {
+            return false;
+        }
+    }
+    true
+}
+
+fn append_dir_listing_u64(out: &mut [u8], written: &mut usize, mut value: u64) -> bool {
+    let mut digits = [0u8; 20];
+    let mut len = 0usize;
+    if value == 0 {
+        return append_dir_listing_byte(out, written, b'0');
+    }
+    while value > 0 {
+        digits[len] = b'0' + (value % 10) as u8;
+        value /= 10;
+        len += 1;
+    }
+    while len > 0 {
+        len -= 1;
+        if !append_dir_listing_byte(out, written, digits[len]) {
+            return false;
+        }
+    }
+    true
 }
 
 fn sys_yield() {

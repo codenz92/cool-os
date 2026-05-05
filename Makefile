@@ -1,4 +1,4 @@
-.PHONY: run run-net run-usb run-usb-init run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
+.PHONY: run run-net run-usb run-usb-init run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -21,9 +21,14 @@ USER_NETDEMO_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/rele
 USER_WGET_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/wget
 USER_SDKDEMO_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/sdkdemo
 USER_GUIDEMO_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/guidemo
+USER_NOTES_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/notes
+USER_EDITOR_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/editor
+USER_TRASH_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/trash
+USER_SCREENSHOT_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/screenshot
 SMOKE_SECONDS ?= 18
 SMOKE_FRAMEBUFFER_SECONDS ?= 30
 SMOKE_INTERACTIVE_SECONDS ?= $(SMOKE_FRAMEBUFFER_SECONDS)
+SMOKE_PRE_TYPE_DELAY ?= 0.8
 SMOKE_USB_SECONDS ?= 18
 SMOKE_BOOT_BUDGET_SECONDS ?= 8
 SMOKE_VGA_SECONDS ?= 24
@@ -211,7 +216,7 @@ smoke: build
 		--artifact-name "$@" \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
-		--seconds $(SMOKE_SECONDS) \
+		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
 		--expect "[fs] /bin/hello.txt: Hello from /bin/hello.txt!" \
 		--expect "[ring3 pid=1] sentinel ok" \
 		--expect "[ring3 pid=2] sentinel ok" \
@@ -223,7 +228,7 @@ smoke-ui: build
 		--artifact-name "$@" \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
-		--seconds $(SMOKE_SECONDS) \
+		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
 		--expect "FB 1280x720" \
 		--expect "[fs] /bin/hello.txt: Hello from /bin/hello.txt!" \
 		--expect "[ring3 pid=1] sentinel ok" \
@@ -263,8 +268,9 @@ smoke-browser-png: build
 		--fsimg "$(FSIMG)" \
 		--usb \
 		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
-		--hmp "sendkey ctrl-spc" \
-		--type-text "> browser file:///TMP/PNGTEST.PNG\n" \
+		--hmp "sendkey ctrl-n" \
+		--pre-type-delay $(SMOKE_PRE_TYPE_DELAY) \
+		--type-text "browser file:///TMP/PNGTEST.PNG\n" \
 		--post-hmp-delay 2.0 \
 		--screendump "$(SMOKE_ARTIFACT_DIR)/browser-png-smoke.ppm" \
 		--expect-framebuffer-window \
@@ -279,8 +285,9 @@ smoke-browser-html: build
 		--fsimg "$(FSIMG)" \
 		--usb \
 		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
-		--hmp "sendkey ctrl-spc" \
-		--type-text "> browser file:///TMP/PHASE19.HTML\n" \
+		--hmp "sendkey ctrl-n" \
+		--pre-type-delay $(SMOKE_PRE_TYPE_DELAY) \
+		--type-text "browser file:///TMP/PHASE19.HTML\n" \
 		--post-hmp-delay 2.0 \
 		--screendump "$(SMOKE_ARTIFACT_DIR)/browser-html-smoke.ppm" \
 		--expect-framebuffer-window \
@@ -326,6 +333,7 @@ smoke-ui-goldens: build
 		--fsimg "$(FSIMG)" \
 		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
 		--hmp "sendkey ctrl-spc" \
+		--pre-type-delay $(SMOKE_PRE_TYPE_DELAY) \
 		--type-text "crash dialog\n" \
 		--post-hmp-delay 0.8 \
 		--screendump "$(SMOKE_ARTIFACT_DIR)/ui-golden-crash-dialog.ppm" \
@@ -372,11 +380,12 @@ smoke-userspace-sdk: build
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--usb \
-		--seconds $(SMOKE_SECONDS) \
-		--hmp "sendkey ctrl-spc" \
-		--type-text "> exec /bin/sdkdemo alpha\n" \
+		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
+		--hmp "sendkey ctrl-n" \
+		--pre-type-delay $(SMOKE_PRE_TYPE_DELAY) \
+		--type-text "exec /bin/sdkdemo alpha\n" \
 		--post-hmp-delay 2.0 \
-		--expect "sdkdemo: libcool sdk=1 abi=4" \
+		--expect "sdkdemo: libcool sdk=1 abi=5" \
 		--expect "sdkdemo: argv [0]=/bin/sdkdemo [1]=alpha" \
 		--expect "sdkdemo: sdk pipe ok" \
 		--expect "sdkdemo: mmap ok" \
@@ -390,14 +399,74 @@ smoke-userspace-gui: build
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--usb \
-		--seconds $(SMOKE_SECONDS) \
-		--hmp "sendkey ctrl-spc" \
-		--type-text "> exec /bin/guidemo\n" \
+		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
+		--hmp "sendkey ctrl-n" \
+		--pre-type-delay $(SMOKE_PRE_TYPE_DELAY) \
+		--type-text "exec /bin/guidemo\n" \
 		--post-hmp-delay 2.0 \
 		--expect "guidemo: window opened" \
 		--expect "guidemo: presented frame" \
 		--expect "[boot] desktop ready" \
 		--expect-framebuffer-window
+
+smoke-userspace-utils: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-notes" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
+		--hmp "sendkey ctrl-n" \
+		--pre-type-delay $(SMOKE_PRE_TYPE_DELAY) \
+		--type-text "exec /bin/notes s\n" \
+		--post-hmp-delay 2.0 \
+		--expect "notes: window opened" \
+		--expect "notes: saved" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-editor" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
+		--hmp "sendkey ctrl-n" \
+		--pre-type-delay $(SMOKE_PRE_TYPE_DELAY) \
+		--type-text "exec /bin/editor s\n" \
+		--post-hmp-delay 2.0 \
+		--expect "editor: window opened" \
+		--expect "editor: saved" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-trash" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
+		--hmp "sendkey ctrl-n" \
+		--pre-type-delay $(SMOKE_PRE_TYPE_DELAY) \
+		--type-text "exec /bin/trash s\n" \
+		--post-hmp-delay 2.0 \
+		--expect "trash: window opened" \
+		--expect "trash: listed" \
+		--expect "trash: empty ok" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-screenshot" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
+		--hmp "sendkey ctrl-n" \
+		--pre-type-delay $(SMOKE_PRE_TYPE_DELAY) \
+		--type-text "exec /bin/screenshot s\n" \
+		--post-hmp-delay 2.0 \
+		--expect "screenshot: window opened" \
+		--expect "screenshot: queued /Pictures/SMOKE.PPM" \
+		--expect "[boot] desktop ready"
 
 smoke-net-api: build
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
@@ -406,9 +475,10 @@ smoke-net-api: build
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--usb \
-		--seconds $(SMOKE_SECONDS) \
-		--hmp "sendkey ctrl-spc" \
-		--type-text "> exec /bin/netdemo\n" \
+		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
+		--hmp "sendkey ctrl-n" \
+		--pre-type-delay $(SMOKE_PRE_TYPE_DELAY) \
+		--type-text "exec /bin/netdemo\n" \
 		--post-hmp-delay 2.0 \
 		--expect "netdemo: dns example.com =" \
 		--expect "GET / HTTP/1.1" \
@@ -424,8 +494,9 @@ smoke-net-wget: build
 		--net \
 		--usb \
 		--seconds 45 \
-		--hmp "sendkey ctrl-spc" \
-		--type-text "> exec /bin/wget http://example.com/\n" \
+		--hmp "sendkey ctrl-n" \
+		--pre-type-delay $(SMOKE_PRE_TYPE_DELAY) \
+		--type-text "exec /bin/wget http://example.com/\n" \
 		--post-hmp-delay 8.0 \
 		--expect "[net] virtio-net ready driver=virtio-net" \
 		--expect "HTTP/" \
@@ -440,8 +511,9 @@ smoke-net-https: build
 		--net \
 		--usb \
 		--seconds 90 \
-		--hmp "sendkey ctrl-spc" \
-		--type-text "> https example.com\n" \
+		--hmp "sendkey ctrl-n" \
+		--pre-type-delay $(SMOKE_PRE_TYPE_DELAY) \
+		--type-text "https example.com\n" \
 		--post-hmp-delay 20.0 \
 		--expect "[net] virtio-net ready driver=virtio-net" \
 		--expect "[tls-ok] https example.com/ via" \
@@ -456,8 +528,9 @@ smoke-net-https-negative: build
 		--fsimg "$(FSIMG)" \
 		--usb \
 		--seconds 30 \
-		--hmp "sendkey ctrl-spc" \
-		--type-text "> tlscheck\n" \
+		--hmp "sendkey ctrl-n" \
+		--pre-type-delay $(SMOKE_PRE_TYPE_DELAY) \
+		--type-text "tlscheck\n" \
 		--post-hmp-delay 2.0 \
 		--expect "TLS hostname negative ok" \
 		--expect "[boot] desktop ready"
@@ -471,8 +544,9 @@ smoke-net-browser-https: build
 		--net \
 		--usb \
 		--seconds 100 \
-		--hmp "sendkey ctrl-spc" \
-		--type-text "> browser https://example.com/\n" \
+		--hmp "sendkey ctrl-n" \
+		--pre-type-delay $(SMOKE_PRE_TYPE_DELAY) \
+		--type-text "browser https://example.com/\n" \
 		--post-hmp-delay 24.0 \
 		--screendump "$(SMOKE_ARTIFACT_DIR)/browser-https-smoke.ppm" \
 		--expect-framebuffer-window \
@@ -490,8 +564,9 @@ smoke-net-browser-google: build
 		--net \
 		--usb \
 		--seconds 140 \
-		--hmp "sendkey ctrl-spc" \
-		--type-text "> browser https://google.com/\n" \
+		--hmp "sendkey ctrl-n" \
+		--pre-type-delay $(SMOKE_PRE_TYPE_DELAY) \
+		--type-text "browser https://google.com/\n" \
 		--post-hmp-delay 36.0 \
 		--screendump "$(SMOKE_ARTIFACT_DIR)/browser-google-smoke.ppm" \
 		--expect-framebuffer-window \
@@ -580,7 +655,7 @@ build:
 		--target-dir $(CURDIR)/target/userspace/hello \
 		-Z build-std=core,compiler_builtins
 	(cd disk-image && cargo run --bin disk-image -- "$(KERNEL)")
-	(cd disk-image && cargo run --bin fs-image -- "$(FSIMG)" "$(USER_TARGET)" "$(USER_EXEC_TARGET)" "$(USER_PIPE_TARGET)" "$(USER_READ_TARGET)" "$(USER_PIPERD_TARGET)" "$(USER_PIPEWR_TARGET)" "$(USER_KEYECHO_TARGET)" "$(USER_TERMINAL_TARGET)" "$(USER_NETDEMO_TARGET)" "$(USER_WGET_TARGET)" "$(USER_SDKDEMO_TARGET)" "$(USER_GUIDEMO_TARGET)")
+	(cd disk-image && cargo run --bin fs-image -- "$(FSIMG)" "$(USER_TARGET)" "$(USER_EXEC_TARGET)" "$(USER_PIPE_TARGET)" "$(USER_READ_TARGET)" "$(USER_PIPERD_TARGET)" "$(USER_PIPEWR_TARGET)" "$(USER_KEYECHO_TARGET)" "$(USER_TERMINAL_TARGET)" "$(USER_NETDEMO_TARGET)" "$(USER_WGET_TARGET)" "$(USER_SDKDEMO_TARGET)" "$(USER_GUIDEMO_TARGET)" "$(USER_NOTES_TARGET)" "$(USER_EDITOR_TARGET)" "$(USER_TRASH_TARGET)" "$(USER_SCREENSHOT_TARGET)")
 
 build-usb-init: build
 

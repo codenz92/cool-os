@@ -506,6 +506,24 @@ pub fn vfs_delete(path: &str) -> Result<(), crate::fat32::FsError> {
     crate::fat32::delete_file(&path)
 }
 
+pub fn vfs_delete_recursive(path: &str) -> Result<(), crate::fat32::FsError> {
+    let path = normalize_path(path);
+    if path == "/" || path.eq_ignore_ascii_case("/Trash") {
+        return Err(crate::fat32::FsError::InvalidPath);
+    }
+    if crate::security::is_protected_path(&path) || !crate::security::can_write_path(&path) {
+        return Err(crate::fat32::FsError::PermissionDenied);
+    }
+
+    if let Some(children) = vfs_list_dir(&path) {
+        for child in children {
+            let child_path = join_path(&path, &child.name);
+            vfs_delete_recursive(&child_path)?;
+        }
+    }
+    vfs_delete(&path)
+}
+
 #[allow(dead_code)]
 pub fn vfs_rename(path: &str, new_name: &str) -> Result<(), crate::fat32::FsError> {
     let path = normalize_path(path);
@@ -548,6 +566,15 @@ fn coolfs_path(path: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+fn join_path(parent: &str, name: &str) -> String {
+    let mut path = String::from(parent);
+    if !path.ends_with('/') {
+        path.push('/');
+    }
+    path.push_str(name);
+    path
 }
 
 pub fn init_task(task_id: usize) {

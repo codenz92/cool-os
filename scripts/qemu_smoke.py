@@ -56,6 +56,12 @@ def parse_args() -> argparse.Namespace:
         help="Seconds to wait after HMP commands before screendump",
     )
     parser.add_argument(
+        "--pre-type-delay",
+        type=float,
+        default=0.0,
+        help="Seconds to wait after HMP commands before injecting typed text",
+    )
+    parser.add_argument(
         "--type-text",
         action="append",
         default=[],
@@ -453,6 +459,8 @@ def main() -> int:
         if needs_interaction and monitor_socket:
             for command in args.hmp:
                 run_monitor_command(monitor_socket, command)
+            if args.type_text:
+                time.sleep(max(0.0, args.pre_type_delay))
             for text in args.type_text:
                 type_text(monitor_socket, text.replace("\\n", "\n"))
             time.sleep(max(0.0, args.post_hmp_delay))

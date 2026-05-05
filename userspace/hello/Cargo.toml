@@ -26,6 +26,22 @@ path = "src/bin/sdkdemo.rs"
 name = "guidemo"
 path = "src/bin/guidemo.rs"
 
+[[bin]]
+name = "notes"
+path = "src/bin/notes.rs"
+
+[[bin]]
+name = "editor"
+path = "src/bin/editor.rs"
+
+[[bin]]
+name = "trash"
+path = "src/bin/trash.rs"
+
+[[bin]]
+name = "screenshot"
+path = "src/bin/screenshot.rs"
+
 [profile.dev]
 panic = "abort"
 

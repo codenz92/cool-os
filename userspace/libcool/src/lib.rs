@@ -3,7 +3,7 @@
 use core::arch::asm;
 
 pub const SDK_VERSION: u64 = 1;
-pub const ABI_VERSION: u64 = 4;
+pub const ABI_VERSION: u64 = 5;
 pub const U64_MAX: u64 = u64::MAX;
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -55,6 +55,11 @@ pub mod sys {
     pub const GUI_PRESENT: u64 = 24;
     pub const GUI_POLL_EVENT: u64 = 25;
     pub const GUI_CLOSE: u64 = 26;
+    pub const FS_WRITE_FILE: u64 = 27;
+    pub const FS_CREATE_DIR: u64 = 28;
+    pub const FS_DELETE_TREE: u64 = 29;
+    pub const FS_LIST_DIR: u64 = 30;
+    pub const SCREENSHOT: u64 = 31;
 
     #[inline]
     pub unsafe fn syscall0(nr: u64) -> u64 {
@@ -421,6 +426,60 @@ pub mod ipc {
     pub fn shmem_map(id: u64) -> Result<u64> {
         let ret = unsafe { sys::syscall1(sys::SHMEM_MAP, id) };
         Error::from_ret(ret)
+    }
+}
+
+pub mod fs {
+    use super::{io, sys, Error, Result};
+
+    pub fn read_file(path: &[u8], out: &mut [u8]) -> Result<usize> {
+        let file = io::File::open(path)?;
+        let n = file.read(out)?;
+        file.close();
+        Ok(n)
+    }
+
+    pub fn write_file(path: &[u8], data: &[u8]) -> Result<()> {
+        let desc = [
+            path.as_ptr() as u64,
+            path.len() as u64,
+            data.as_ptr() as u64,
+            data.len() as u64,
+        ];
+        let ret = unsafe { sys::syscall1(sys::FS_WRITE_FILE, desc.as_ptr() as u64) };
+        Error::from_ret(ret).map(|_| ())
+    }
+
+    pub fn create_dir(path: &[u8]) -> Result<()> {
+        let ret =
+            unsafe { sys::syscall2(sys::FS_CREATE_DIR, path.as_ptr() as u64, path.len() as u64) };
+        Error::from_ret(ret).map(|_| ())
+    }
+
+    pub fn delete_tree(path: &[u8]) -> Result<()> {
+        let ret =
+            unsafe { sys::syscall2(sys::FS_DELETE_TREE, path.as_ptr() as u64, path.len() as u64) };
+        Error::from_ret(ret).map(|_| ())
+    }
+
+    pub fn list_dir(path: &[u8], out: &mut [u8]) -> Result<usize> {
+        if out.is_empty() {
+            return Err(Error::Invalid);
+        }
+        let desc = [
+            path.as_ptr() as u64,
+            path.len() as u64,
+            out.as_mut_ptr() as u64,
+            out.len() as u64,
+        ];
+        let ret = unsafe { sys::syscall1(sys::FS_LIST_DIR, desc.as_ptr() as u64) };
+        Error::from_ret(ret).map(|n| n as usize)
+    }
+
+    pub fn screenshot(path: &[u8]) -> Result<()> {
+        let ret =
+            unsafe { sys::syscall3(sys::SCREENSHOT, path.as_ptr() as u64, path.len() as u64, 0) };
+        Error::from_ret(ret).map(|_| ())
     }
 }
 

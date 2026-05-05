@@ -487,6 +487,17 @@ fn window_glyph(title: &str) -> &'static str {
     }
 }
 
+fn user_gui_window_title(title: &str) -> &'static str {
+    match title {
+        "editor" | "Editor" | "Text Edit" | "Text Editor" => "Text Editor",
+        "note" | "notes" | "Note" | "Notes" => "Notes",
+        "trash" | "Trash" | "Trash Bin" => "Trash Bin",
+        "shot" | "screenshot" | "Screenshot" => "Screenshot",
+        "guidemo" | "GUI Demo" | "Gui Demo" | "Userspace GUI" => "GUI Demo",
+        _ => "Userspace GUI",
+    }
+}
+
 fn month_abbrev(month: u8) -> &'static str {
     match month {
         1 => "JAN",
@@ -1003,9 +1014,10 @@ impl WindowManager {
         self.notify_session_changed();
     }
 
-    pub fn open_user_gui(&mut self, owner: usize, _title: &str, width: u16, height: u16) -> u64 {
+    pub fn open_user_gui(&mut self, owner: usize, title: &str, width: u16, height: u16) -> u64 {
         let handle = self.next_user_gui_handle;
         self.next_user_gui_handle = self.next_user_gui_handle.wrapping_add(1).max(1);
+        let title = user_gui_window_title(title);
 
         let taskbar_y = self.shadow_height as i32 - TASKBAR_H;
         let off = self.windows.len() as i32 * 18;
@@ -1014,10 +1026,10 @@ impl WindowManager {
         let x = wx.max(8);
         let y = wy.max(8);
         self.add_window(AppWindow::UserGui(UserGuiApp::new(
-            owner, handle, x, y, width, height,
+            owner, handle, x, y, width, height, title,
         )));
-        crate::app_lifecycle::record_app("GUI Demo");
-        crate::notifications::push_transient("Userspace GUI", "window opened from ring 3");
+        crate::app_lifecycle::record_app(title);
+        crate::notifications::push_transient(title, "window opened from ring 3");
         crate::wm::request_repaint();
         handle
     }
@@ -1254,10 +1266,26 @@ impl WindowManager {
                 TextViewerApp::diagnostics_viewer(wx, wy),
             )),
             "Text Viewer" => self.add_window(AppWindow::TextViewer(TextViewerApp::new(wx, wy))),
-            "Text Editor" => self.add_window(AppWindow::Utility(UtilityApp::text_editor(wx, wy))),
-            "Notes" => self.add_window(AppWindow::Utility(UtilityApp::notes(wx, wy))),
-            "Trash Bin" => self.add_window(AppWindow::Utility(UtilityApp::trash_bin(wx, wy))),
-            "Screenshot" => self.add_window(AppWindow::Utility(UtilityApp::screenshot(wx, wy))),
+            "Text Editor" => {
+                if !self.spawn_user_gui_app("Text Editor", "/bin/editor") {
+                    self.add_window(AppWindow::Utility(UtilityApp::text_editor(wx, wy)));
+                }
+            }
+            "Notes" => {
+                if !self.spawn_user_gui_app("Notes", "/bin/notes") {
+                    self.add_window(AppWindow::Utility(UtilityApp::notes(wx, wy)));
+                }
+            }
+            "Trash Bin" => {
+                if !self.spawn_user_gui_app("Trash Bin", "/bin/trash") {
+                    self.add_window(AppWindow::Utility(UtilityApp::trash_bin(wx, wy)));
+                }
+            }
+            "Screenshot" => {
+                if !self.spawn_user_gui_app("Screenshot", "/bin/screenshot") {
+                    self.add_window(AppWindow::Utility(UtilityApp::screenshot(wx, wy)));
+                }
+            }
             "Web Browser" => self.add_window(AppWindow::Browser(BrowserApp::new(wx, wy))),
             "Color Picker" => self.add_window(AppWindow::ColorPicker(ColorPickerApp::new(wx, wy))),
             "Display Settings" => {
@@ -1287,6 +1315,20 @@ impl WindowManager {
         if self.windows.len() > before {
             crate::app_lifecycle::record_app(canonical_app_title(name));
             self.apply_remembered_geometry(self.windows.len() - 1);
+        }
+    }
+
+    fn spawn_user_gui_app(&mut self, name: &'static str, path: &'static str) -> bool {
+        match crate::elf::spawn_elf_process(path) {
+            Ok(()) => {
+                crate::app_lifecycle::record_app(name);
+                crate::notifications::push_transient(name, path);
+                true
+            }
+            Err(err) => {
+                crate::notifications::push_transient(name, err.as_str());
+                false
+            }
         }
     }
 

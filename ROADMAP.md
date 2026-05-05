@@ -4,9 +4,9 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–21 are complete. Phase 21 adds the first userspace GUI runtime so
-ring-3 programs can open compositor windows, present pixel buffers, and receive
-window input events without living inside the kernel.
+Phases 1–22 are complete. Phase 22 moves the core utility-app workflow into
+ring-3 programs: Notes, Text Editor, Trash, and Screenshot now run as real
+userspace GUI apps backed by ABI 5 filesystem and capture syscalls.
 
 ---
 
@@ -702,6 +702,38 @@ from ring 3, draws via a userspace pixel buffer, and drives updates through
 
 ---
 
+## ✅ Phase 22 — Userspace Utility Suite
+
+**Goal:** Stop treating everyday desktop utilities as kernel-mode app modules.
+Use the Phase 21 GUI runtime and the SDK to ship real ring-3 GUI applications
+for notes, text editing, Trash management, and screenshots.
+
+- [x] Bump the userspace ABI to version 5.
+- [x] Add utility syscalls for file writes, directory creation, recursive
+      deletion, directory listing, and queued focused-window screenshots.
+- [x] Add `libcool::fs` wrappers for file reads/writes, directory listing,
+      recursive delete, directory creation, and screenshot requests.
+- [x] Add `/bin/notes`, a ring-3 GUI scratchpad backed by
+      `/Documents/NOTES.TXT`.
+- [x] Add `/bin/editor`, a ring-3 GUI text editor backed by
+      `/Documents/EDITOR.TXT`.
+- [x] Add `/bin/trash`, a ring-3 GUI Trash utility that lists `/Trash` and can
+      permanently empty entries through recursive delete.
+- [x] Add `/bin/screenshot`, a ring-3 GUI capture utility that queues a PPM
+      screenshot into `/Pictures`.
+- [x] Update the launcher to prefer the userspace utility ELFs while retaining
+      kernel utility fallbacks if a disk image is missing a binary.
+- [x] Embed the new utility binaries into `fs.img` and add
+      `make smoke-userspace-utils`.
+
+**Current status:** complete. The launcher and terminal can start the utility
+suite as userspace GUI apps (`exec /bin/notes`, `exec /bin/editor`,
+`exec /bin/trash`, and `exec /bin/screenshot`). The new smoke target runs each
+utility in deterministic smoke mode and verifies file write, directory listing,
+recursive delete, and screenshot queue behavior.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -716,7 +748,8 @@ Userspace binaries are written in `#![no_std]` Rust and link against
 `userspace/libcool`. The SDK owns `_start`, panic aborts, initial argv parsing,
 raw syscall assembly, and convenience APIs such as `println!`, `File::open`,
 `pipe`, `mmap`, `shmem_create`, `read_event`, `dns_resolve`, TCP sockets, and
-GUI windows through `libcool::gui`.
+filesystem utility calls plus GUI windows through `libcool::fs` and
+`libcool::gui`.
 
 ### Real hardware vs QEMU
 
@@ -737,4 +770,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v5.2 | Phase 18 complete: verified HTTPS/TLS foundation |
 | v5.3 | Phase 19 complete: browser rendering and trust hardening |
 | v5.4 | Phase 20 complete: userspace SDK foundation |
-| v5.5 | Current — Phase 21 complete: userspace GUI runtime |
+| v5.5 | Phase 21 complete: userspace GUI runtime |
+| v5.6 | Current — Phase 22 complete: userspace utility suite |

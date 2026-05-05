@@ -317,22 +317,22 @@ pub const LAUNCHER_ENTRIES: &[LauncherEntry] = &[
     },
     LauncherEntry {
         label: "Text Editor",
-        detail: "edit /Documents/UNTITLED.TXT",
+        detail: "ring-3 editor",
         kind: LauncherKind::App("Text Editor"),
     },
     LauncherEntry {
         label: "Notes",
-        detail: "quick notes in /Documents",
+        detail: "ring-3 notes",
         kind: LauncherKind::App("Notes"),
     },
     LauncherEntry {
         label: "Trash Bin",
-        detail: "empty deleted items",
+        detail: "ring-3 trash utility",
         kind: LauncherKind::App("Trash Bin"),
     },
     LauncherEntry {
         label: "Screenshot",
-        detail: "capture focused window",
+        detail: "ring-3 capture utility",
         kind: LauncherKind::App("Screenshot"),
     },
     LauncherEntry {

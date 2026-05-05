@@ -21,10 +21,18 @@ pub struct UserGuiApp {
 }
 
 impl UserGuiApp {
-    pub fn new(owner: usize, handle: u64, x: i32, y: i32, width: u16, height: u16) -> Self {
+    pub fn new(
+        owner: usize,
+        handle: u64,
+        x: i32,
+        y: i32,
+        width: u16,
+        height: u16,
+        title: &'static str,
+    ) -> Self {
         let width = width.clamp(160, 640);
         let height = height.clamp(96, 420);
-        let window = Window::new(x, y, width as i32, height as i32 + TITLE_H, "GUI Demo");
+        let window = Window::new(x, y, width as i32, height as i32 + TITLE_H, title);
         let mut app = UserGuiApp {
             window,
             owner,
