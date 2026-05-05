@@ -1,7 +1,7 @@
 /// Host-side tool: creates a FAT32 disk image and populates it with
 /// /bin/hello.txt, userspace binaries, and the CoolFS backing image.
 ///
-/// Usage: fs-image <output-path> [hello-elf] [exec-elf] [pipe-elf] [read-elf] [piperd-elf] [pipewr-elf] [keyecho-elf] [terminal-elf] [netdemo-elf] [wget-elf]
+/// Usage: fs-image <output-path> [hello-elf] [exec-elf] [pipe-elf] [read-elf] [piperd-elf] [pipewr-elf] [keyecho-elf] [terminal-elf] [netdemo-elf] [wget-elf] [sdkdemo-elf]
 /// Output: a 64 MiB raw FAT32 disk image ready to attach as a QEMU IDE drive.
 use std::io::Write;
 
@@ -20,6 +20,7 @@ fn main() {
     let terminal_elf = args.next();
     let netdemo_elf = args.next();
     let wget_elf = args.next();
+    let sdkdemo_elf = args.next();
 
     // Create or truncate the file, set it to the desired size.
     let file = std::fs::OpenOptions::new()
@@ -52,6 +53,9 @@ fn main() {
         "APPS",
         "DEV",
         "TMP",
+        "Documents",
+        "Pictures",
+        "Desktop",
         "Trash",
         "Downloads",
         "COOL",
@@ -193,6 +197,18 @@ fn main() {
         wget_bin
             .write_all(&wget_bytes)
             .expect("failed to write wget");
+    }
+
+    if let Some(sdkdemo_path) = sdkdemo_elf {
+        let sdkdemo_bytes = std::fs::read(&sdkdemo_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {}", sdkdemo_path, e));
+        let mut sdkdemo_bin = bin
+            .create_file("sdkdemo")
+            .expect("failed to create sdkdemo");
+        sdkdemo_bin.truncate().unwrap();
+        sdkdemo_bin
+            .write_all(&sdkdemo_bytes)
+            .expect("failed to write sdkdemo");
     }
 
     println!("{}", out_path);

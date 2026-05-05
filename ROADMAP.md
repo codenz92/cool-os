@@ -4,8 +4,9 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–19 are complete. Phase 20 will move more app-facing APIs into a
-reusable userspace SDK so coolOS programs can grow outside the kernel.
+Phases 1–20 are complete. Phase 20 moved app-facing syscall APIs into a
+reusable userspace SDK so coolOS programs can grow outside the kernel without
+copying raw assembly stubs into every binary.
 
 ---
 
@@ -636,6 +637,40 @@ SANs, and IP/CN fallback rejection.
 
 ---
 
+## ✅ Phase 20 — Userspace SDK
+
+**Goal:** Stop treating each userspace binary as a one-off syscall experiment.
+Create a small no_std SDK that owns program startup, argv parsing, syscall
+numbers, and reusable wrappers for the APIs that user programs already depend
+on.
+
+- [x] Add `userspace/libcool`, a standalone no_std crate excluded from the
+      kernel workspace target inheritance.
+- [x] Provide one `entry!` macro for `_start`, initial stack parsing, panic
+      aborts, and `Args` access.
+- [x] Centralize syscall numbers and raw syscall assembly in the SDK instead of
+      duplicating it across every `/bin` program.
+- [x] Add SDK modules for process control, file IO, pipes, mmap, shared memory,
+      WM event packets, DNS/HTTP helpers, and TCP sockets.
+- [x] Add formatting support through `print!` and `println!` over `sys_write`.
+- [x] Migrate the existing userspace binaries (`hello`, `exec`, `read`, `pipe`,
+      `piperd`, `pipewr`, `keyecho`, `terminal`, `netdemo`, and `wget`) onto
+      `libcool`.
+- [x] Add `/bin/sdkdemo` as an SDK coverage binary for argv, VFS reads, pipes,
+      shared memory, and mmap.
+- [x] Embed `/bin/sdkdemo` into `fs.img` and extend the boot filesystem layout
+      with standard user folders (`/Documents`, `/Pictures`, `/Desktop`).
+- [x] Surface SDK information through the ABI command and add
+      `make smoke-userspace-sdk` to exercise the new binary under QEMU.
+
+**Current status:** complete. The userspace tree now has a real SDK boundary:
+new programs can opt into `libcool::entry!`, use `Args`, call typed wrappers,
+and avoid hand-written syscall boilerplate. The smoke target launches
+`exec /bin/sdkdemo alpha` in QEMU and verifies the SDK banner, argv contents,
+pipe round-trip, mmap write/read, and clean completion.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -646,9 +681,10 @@ yielding — preemption is what makes the OS real.
 
 ### Rust in userspace
 
-Userspace binaries can be written in `#![no_std]` Rust with a thin syscall shim.
-Eventually a `libcool` crate can wrap the raw syscalls into safe Rust APIs
-(`println!`, `File::open`, etc.) and be linked into every userspace binary.
+Userspace binaries are written in `#![no_std]` Rust and link against
+`userspace/libcool`. The SDK owns `_start`, panic aborts, initial argv parsing,
+raw syscall assembly, and convenience APIs such as `println!`, `File::open`,
+`pipe`, `mmap`, `shmem_create`, `read_event`, `dns_resolve`, and TCP sockets.
 
 ### Real hardware vs QEMU
 
@@ -667,4 +703,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v5.0 | Phase 15 complete: network-capable |
 | v5.1 | Phase 17 complete: native plain-HTTP browser foundation |
 | v5.2 | Phase 18 complete: verified HTTPS/TLS foundation |
-| v5.3 | Current — Phase 19 complete: browser rendering and trust hardening |
+| v5.3 | Phase 19 complete: browser rendering and trust hardening |
+| v5.4 | Current — Phase 20 complete: userspace SDK foundation |

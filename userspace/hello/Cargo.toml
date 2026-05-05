@@ -3,6 +3,9 @@ name = "hello_user"
 version = "0.1.0"
 edition = "2021"
 
+[dependencies]
+libcool = { path = "../libcool" }
+
 [[bin]]
 name = "terminal"
 path = "src/bin/terminal.rs"
@@ -14,6 +17,10 @@ path = "src/bin/netdemo.rs"
 [[bin]]
 name = "wget"
 path = "src/bin/wget.rs"
+
+[[bin]]
+name = "sdkdemo"
+path = "src/bin/sdkdemo.rs"
 
 [profile.dev]
 panic = "abort"

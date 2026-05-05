@@ -5,3 +5,10 @@ version = 4
 [[package]]
 name = "hello_user"
 version = "0.1.0"
+dependencies = [
+ "libcool",
+]
+
+[[package]]
+name = "libcool"
+version = "0.1.0"
