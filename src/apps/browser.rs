@@ -1833,6 +1833,7 @@ struct HtmlRenderState {
     form_action: Option<String>,
     cell_has_form_control: bool,
     cell_form_link: Option<String>,
+    cell_link: Option<String>,
 }
 
 impl HtmlRenderState {
@@ -1854,6 +1855,7 @@ impl HtmlRenderState {
             form_action: None,
             cell_has_form_control: false,
             cell_form_link: None,
+            cell_link: None,
         }
     }
 }
@@ -2053,11 +2055,11 @@ fn push_input_line(out: &mut Vec<BrowserLine>, tag: &str, state: &HtmlRenderStat
     if input_type == "hidden" {
         return;
     }
-    let label = form_control_label(tag, &input_type);
     let mut text = String::new();
     let mut link = None;
     match input_type.as_str() {
         "submit" | "button" | "reset" => {
+            let label = form_control_label(tag, &input_type);
             text.push_str("[button] ");
             text.push_str(&label);
             if input_type == "submit" {
@@ -2065,23 +2067,28 @@ fn push_input_line(out: &mut Vec<BrowserLine>, tag: &str, state: &HtmlRenderStat
             }
         }
         "checkbox" => {
+            let label = input_field_label(tag, &input_type);
             text.push_str("[checkbox] ");
             text.push_str(&label);
         }
         "radio" => {
+            let label = input_field_label(tag, &input_type);
             text.push_str("[radio] ");
             text.push_str(&label);
         }
         "search" => {
+            let label = input_field_label(tag, &input_type);
             text.push_str("[search] ");
             text.push_str(&label);
         }
         "image" => {
+            let label = form_control_label(tag, &input_type);
             text.push_str("[image button] ");
             text.push_str(&label);
             link = state.form_action.clone();
         }
         _ => {
+            let label = input_field_label(tag, &input_type);
             text.push_str("[input] ");
             text.push_str(&label);
         }
@@ -2137,6 +2144,20 @@ fn form_control_label(tag: &str, fallback: &str) -> String {
     String::from(fallback)
 }
 
+// For text/search/email fields, prefer name/placeholder over aria-label
+// so the field shows its identity, not the descriptive label shared with a button.
+fn input_field_label(tag: &str, fallback: &str) -> String {
+    for attr in ["placeholder", "name", "id", "aria-label", "title"] {
+        if let Some(value) = attr_value(tag, attr) {
+            let decoded = clean_inline_text(&decode_entities(&value));
+            if !decoded.is_empty() {
+                return decoded;
+            }
+        }
+    }
+    String::from(fallback)
+}
+
 fn handle_table_cell_tag(
     tag: &str,
     out: &mut Vec<BrowserLine>,
@@ -2181,13 +2202,19 @@ fn handle_table_cell_tag(
             state.table_cell_text.push_str(&label);
             state.table_cell_text.push(']');
         }
+        "a" => {
+            if !closing {
+                if let Some(href) = attr_value(tag, "href") {
+                    state.cell_link = Some(resolve_url(base_url, &decode_entities(&href)));
+                }
+            }
+        }
         "input" if !closing => {
             let input_type = attr_value(tag, "type").unwrap_or_else(|| String::from("text"));
             let input_type = lowercase_ascii(input_type.trim());
             if input_type == "hidden" {
                 return;
             }
-            let label = form_control_label(tag, &input_type);
             state.cell_has_form_control = true;
             if !state.table_cell_text.is_empty() && !state.table_cell_text.ends_with(' ') {
                 state.table_cell_text.push(' ');
@@ -2197,11 +2224,14 @@ fn handle_table_cell_tag(
                     if state.cell_form_link.is_none() {
                         state.cell_form_link = state.form_action.clone();
                     }
+                    let label = form_control_label(tag, &input_type);
                     state.table_cell_text.push_str("[btn:");
                     state.table_cell_text.push_str(&label);
                     state.table_cell_text.push(']');
                 }
                 _ => {
+                    // prefer placeholder/name over aria-label for field identity
+                    let label = input_field_label(tag, &input_type);
                     state.table_cell_text.push('[');
                     state.table_cell_text.push_str(&input_type);
                     if !label.is_empty() && label != input_type {
@@ -2287,21 +2317,66 @@ fn rule_line(cols: usize) -> String {
     out
 }
 
+fn push_form_cell_lines(out: &mut Vec<BrowserLine>, cell: TableCell) {
+    let text = cell.text;
+    let mut i = 0usize;
+    let bytes = text.as_bytes();
+    while i < bytes.len() {
+        while i < bytes.len() && bytes[i] == b' ' {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            break;
+        }
+        if bytes[i] == b'[' {
+            if let Some(end) = text[i..].find(']') {
+                let part = &text[i..i + end + 1];
+                let is_btn = part.starts_with("[btn:");
+                let link = if is_btn { cell.link.clone() } else { None };
+                let kind = if link.is_some() { BrowserLineKind::Link } else { BrowserLineKind::Code };
+                out.push(BrowserLine { text: String::from(part), link, kind, image_slot: None });
+                i += end + 1;
+            } else {
+                break;
+            }
+        } else {
+            let end = text[i..].find('[').map(|p| i + p).unwrap_or(text.len());
+            let plain = text[i..end].trim();
+            if !plain.is_empty() {
+                out.push(BrowserLine {
+                    text: String::from(plain),
+                    link: None,
+                    kind: BrowserLineKind::Text,
+                    image_slot: None,
+                });
+            }
+            i = end;
+        }
+    }
+}
+
 fn finish_table_cell(state: &mut HtmlRenderState) {
     if !state.in_table_cell {
         return;
     }
     let text = clean_inline_text(&decode_entities(&state.table_cell_text));
+    let link = if state.cell_has_form_control {
+        state.cell_form_link.take()
+    } else {
+        state.cell_link.take()
+    };
     state.table_row.push(TableCell {
         text,
         header: state.table_cell_is_header,
-        link: state.cell_form_link.take(),
+        link,
         is_form_row: state.cell_has_form_control,
     });
     state.table_cell_text.clear();
     state.table_cell_is_header = false;
     state.in_table_cell = false;
     state.cell_has_form_control = false;
+    state.cell_form_link = None;
+    state.cell_link = None;
 }
 
 fn finish_table_row(out: &mut Vec<BrowserLine>, state: &mut HtmlRenderState, cols: usize) {
@@ -2314,17 +2389,12 @@ fn finish_table_row(out: &mut Vec<BrowserLine>, state: &mut HtmlRenderState, col
             if cell.text.is_empty() {
                 continue;
             }
-            let kind = if cell.link.is_some() {
-                BrowserLineKind::Link
+            if cell.is_form_row {
+                push_form_cell_lines(out, cell);
             } else {
-                BrowserLineKind::Code
-            };
-            out.push(BrowserLine {
-                text: cell.text,
-                link: cell.link,
-                kind,
-                image_slot: None,
-            });
+                let kind = if cell.link.is_some() { BrowserLineKind::Link } else { BrowserLineKind::Text };
+                out.push(BrowserLine { text: cell.text, link: cell.link, kind, image_slot: None });
+            }
         }
         return;
     }
