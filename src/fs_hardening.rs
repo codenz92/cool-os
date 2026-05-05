@@ -17,7 +17,11 @@ pub fn init() {
         "/APPS",
         "/DEV",
         "/TMP",
+        "/Documents",
+        "/Pictures",
+        "/Desktop",
         "/Downloads",
+        "/Trash",
         crate::coolfs::MOUNT_PATH,
     ] {
         let _ = crate::fat32::create_dir(dir);
@@ -97,6 +101,9 @@ pub fn repair() -> Vec<String> {
         "/APPS",
         "/DEV",
         "/TMP",
+        "/Documents",
+        "/Pictures",
+        "/Desktop",
         "/Trash",
         "/Downloads",
         crate::coolfs::MOUNT_PATH,

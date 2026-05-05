@@ -10,7 +10,7 @@ use spin::Mutex;
 
 use crate::apps::{
     BrowserApp, ColorPickerApp, DisplaySettingsApp, FileManagerApp, FileManagerOpenRequest,
-    PersonalizeApp, SysMonApp, TerminalApp, TextViewerApp,
+    PersonalizeApp, SysMonApp, TerminalApp, TextViewerApp, UtilityApp,
 };
 use crate::desktop_settings::{self, DesktopSortMode, WallpaperPreset};
 use crate::framebuffer::{BLACK, WHITE};
@@ -351,7 +351,7 @@ struct DesktopIconSpec {
     type_rank: u8,
 }
 
-const DESKTOP_ICON_SPECS: [DesktopIconSpec; 6] = [
+const DESKTOP_ICON_SPECS: [DesktopIconSpec; 9] = [
     DesktopIconSpec {
         label: "Terminal",
         app: "Terminal",
@@ -382,6 +382,21 @@ const DESKTOP_ICON_SPECS: [DesktopIconSpec; 6] = [
         app: "Color Pick",
         type_rank: 4,
     },
+    DesktopIconSpec {
+        label: "Notes",
+        app: "Notes",
+        type_rank: 3,
+    },
+    DesktopIconSpec {
+        label: "Shot",
+        app: "Screenshot",
+        type_rank: 4,
+    },
+    DesktopIconSpec {
+        label: "Trash",
+        app: "Trash Bin",
+        type_rank: 0,
+    },
 ];
 
 struct DesktopIcon {
@@ -406,6 +421,10 @@ fn canonical_app_title(name: &str) -> &str {
         "System Mon" | "System Monitor" => "System Monitor",
         "Diag" | "Diagnostics" => "Diagnostics",
         "Text View" | "Text Viewer" => "Text Viewer",
+        "Editor" | "Text Edit" | "Text Editor" => "Text Editor",
+        "Note" | "Notes" => "Notes",
+        "Trash" | "Trash Bin" => "Trash Bin",
+        "Shot" | "Screenshot" => "Screenshot",
         "Browser" | "Web" | "Web Browser" => "Web Browser",
         "Color Pick" | "Color Picker" => "Color Picker",
         "Display Settings" => "Display Settings",
@@ -425,6 +444,10 @@ fn window_accent(title: &str) -> u32 {
         "System Monitor" => ICON_MON_ACC,
         "Diagnostics" => 0x00_55_FF_CC,
         "Text Viewer" => ICON_TXT_ACC,
+        "Text Editor" => 0x00_88_FF_CC,
+        "Notes" => 0x00_FF_DD_66,
+        "Trash Bin" => 0x00_99_BB_CC,
+        "Screenshot" => 0x00_77_DD_FF,
         "Web Browser" => 0x00_33_CC_99,
         "Color Picker" => ICON_COL_ACC,
         "Display Settings" => 0x00_66_CC_FF,
@@ -444,6 +467,10 @@ fn window_glyph(title: &str) -> &'static str {
         "System Monitor" => "M#",
         "Diagnostics" => "D!",
         "Text Viewer" => "Tx",
+        "Text Editor" => "ED",
+        "Notes" => "NT",
+        "Trash Bin" => "TR",
+        "Screenshot" => "SS",
         "Web Browser" => "WB",
         "Color Picker" => "CP",
         "Display Settings" => "DS",
@@ -687,6 +714,7 @@ pub enum AppWindow {
     DisplaySettings(DisplaySettingsApp),
     Personalize(PersonalizeApp),
     FileManager(FileManagerApp),
+    Utility(UtilityApp),
 }
 
 impl AppWindow {
@@ -700,6 +728,7 @@ impl AppWindow {
             AppWindow::DisplaySettings(d) => &d.window,
             AppWindow::Personalize(p) => &p.window,
             AppWindow::FileManager(f) => &f.window,
+            AppWindow::Utility(u) => &u.window,
         }
     }
     pub fn window_mut(&mut self) -> &mut Window {
@@ -712,6 +741,7 @@ impl AppWindow {
             AppWindow::DisplaySettings(d) => &mut d.window,
             AppWindow::Personalize(p) => &mut p.window,
             AppWindow::FileManager(f) => &mut f.window,
+            AppWindow::Utility(u) => &mut u.window,
         }
     }
     pub fn handle_key(&mut self, c: char) {
@@ -720,6 +750,7 @@ impl AppWindow {
             AppWindow::TextViewer(v) => v.handle_key(c),
             AppWindow::Browser(b) => b.handle_key(c),
             AppWindow::FileManager(f) => f.handle_key(c),
+            AppWindow::Utility(u) => u.handle_key(c),
             _ => {}
         }
         self.window_mut().mark_dirty_all();
@@ -731,6 +762,7 @@ impl AppWindow {
             AppWindow::FileManager(fm) => fm.handle_click(lx, ly),
             AppWindow::Personalize(p) => p.handle_click(lx, ly),
             AppWindow::Browser(b) => b.handle_click(lx, ly),
+            AppWindow::Utility(u) => u.handle_click(lx, ly),
             _ => {}
         }
         self.window_mut().mark_dirty_all();
@@ -763,6 +795,7 @@ impl AppWindow {
         match self {
             AppWindow::Browser(browser) => browser.take_open_request(),
             AppWindow::FileManager(fm) => fm.take_open_request(),
+            AppWindow::Utility(u) => u.take_open_request(),
             _ => None,
         }
     }
@@ -771,6 +804,7 @@ impl AppWindow {
             AppWindow::TextViewer(v) => v.handle_scroll(delta),
             AppWindow::FileManager(f) => f.handle_scroll(delta),
             AppWindow::Browser(b) => b.handle_scroll(delta),
+            AppWindow::Utility(u) => u.handle_scroll(delta),
             _ => {}
         }
         self.window_mut().mark_dirty_all();
@@ -785,6 +819,7 @@ impl AppWindow {
             AppWindow::DisplaySettings(d) => d.update(),
             AppWindow::FileManager(f) => f.update(),
             AppWindow::Personalize(p) => p.update(),
+            AppWindow::Utility(u) => u.update(),
         }
     }
     pub fn is_minimized(&self) -> bool {
@@ -1039,10 +1074,9 @@ impl WindowManager {
                     let dir = if extra.is_empty() { "/" } else { extra };
                     self.launch_file_manager_at(dir, x, y);
                 }
-                "Terminal" | "System Monitor" | "Diagnostics" | "Text Viewer" | "Web Browser"
-                | "Color Picker" | "Display Settings" | "Personalize" => {
-                    self.launch_app(title, x, y)
-                }
+                "Terminal" | "System Monitor" | "Diagnostics" | "Text Viewer" | "Text Editor"
+                | "Notes" | "Trash Bin" | "Screenshot" | "Web Browser" | "Color Picker"
+                | "Display Settings" | "Personalize" => self.launch_app(title, x, y),
                 _ => {}
             }
 
@@ -1118,6 +1152,10 @@ impl WindowManager {
                 TextViewerApp::diagnostics_viewer(wx, wy),
             )),
             "Text Viewer" => self.add_window(AppWindow::TextViewer(TextViewerApp::new(wx, wy))),
+            "Text Editor" => self.add_window(AppWindow::Utility(UtilityApp::text_editor(wx, wy))),
+            "Notes" => self.add_window(AppWindow::Utility(UtilityApp::notes(wx, wy))),
+            "Trash Bin" => self.add_window(AppWindow::Utility(UtilityApp::trash_bin(wx, wy))),
+            "Screenshot" => self.add_window(AppWindow::Utility(UtilityApp::screenshot(wx, wy))),
             "Web Browser" => self.add_window(AppWindow::Browser(BrowserApp::new(wx, wy))),
             "Color Picker" => self.add_window(AppWindow::ColorPicker(ColorPickerApp::new(wx, wy))),
             "Display Settings" => {
@@ -2091,6 +2129,9 @@ impl WindowManager {
                 if let Some(idx) = self.focused {
                     if idx < self.windows.len() {
                         self.windows[idx].handle_key(c);
+                        let taskbar_y = self.shadow_height as i32 - TASKBAR_H;
+                        self.consume_window_open_request(idx, self.shadow_width, taskbar_y);
+                        self.repair_focus_if_hidden();
                         crate::wm::request_repaint();
                     }
                 }
@@ -2125,6 +2166,9 @@ impl WindowManager {
         if let Some(idx) = self.focused {
             if idx < self.windows.len() {
                 self.windows[idx].handle_key(c);
+                let taskbar_y = self.shadow_height as i32 - TASKBAR_H;
+                self.consume_window_open_request(idx, self.shadow_width, taskbar_y);
+                self.repair_focus_if_hidden();
                 crate::wm::request_repaint();
             }
         }
@@ -2354,6 +2398,20 @@ impl WindowManager {
         self.focused = None;
     }
 
+    fn repair_focus_if_hidden(&mut self) {
+        let needs_repair = match self.focused {
+            Some(idx) => {
+                idx >= self.windows.len()
+                    || !self.is_window_on_current_workspace(idx)
+                    || self.windows[idx].is_minimized()
+            }
+            None => false,
+        };
+        if needs_repair {
+            self.focused = self.top_visible_window();
+        }
+    }
+
     fn close_window(&mut self, win_idx: usize) {
         if win_idx >= self.windows.len() {
             return;
@@ -2577,6 +2635,7 @@ impl WindowManager {
                             });
                         }
                         self.consume_window_open_request(win_idx, sw, taskbar_y);
+                        self.repair_focus_if_hidden();
                         let is_double_click = self.last_click_window == Some(win_idx)
                             && uptime_ticks.wrapping_sub(self.last_click_tick)
                                 <= crate::interrupts::ticks_for_millis(500)
@@ -2994,6 +3053,10 @@ impl WindowManager {
                     "System Monitor" => (ICON_MON_BG, ICON_MON_ACC),
                     "File Manager" => (0x00_00_0E_20, 0x00_55_DD_FF),
                     "Text Viewer" => (ICON_TXT_BG, ICON_TXT_ACC),
+                    "Text Editor" => (0x00_04_18_16, 0x00_88_FF_CC),
+                    "Notes" => (0x00_1E_17_02, 0x00_FF_DD_66),
+                    "Trash Bin" => (0x00_10_16_1C, 0x00_99_BB_CC),
+                    "Screenshot" => (0x00_03_16_24, 0x00_77_DD_FF),
                     "Web Browser" => (0x00_04_1A_17, 0x00_33_CC_99),
                     "Color Picker" => (ICON_COL_BG, ICON_COL_ACC),
                     _ => (ICON_TXT_BG, ACCENT),
@@ -3110,6 +3173,41 @@ impl WindowManager {
                         s_fill(s, sw, icon.x + 11, icon.y + 22, 28, 2, icon_acc);
                         s_fill(s, sw, icon.x + 11, icon.y + 28, 16, 2, icon_acc);
                         s_fill(s, sw, icon.x + 11, icon.y + 34, 22, 2, icon_acc);
+                    }
+                    "Text Editor" => {
+                        // Editor — document page with active caret
+                        draw_rect_border(s, sw, icon.x + 8, icon.y + 6, 34, 40, icon_acc);
+                        s_fill(s, sw, icon.x + 12, icon.y + 12, 22, 2, icon_acc);
+                        s_fill(s, sw, icon.x + 12, icon.y + 18, 18, 2, icon_acc);
+                        s_fill(s, sw, icon.x + 12, icon.y + 24, 24, 2, icon_acc);
+                        s_fill(s, sw, icon.x + 12, icon.y + 32, 2, 8, icon_acc);
+                    }
+                    "Notes" => {
+                        // Notes — sticky note with ruled lines
+                        s_fill(s, sw, icon.x + 8, icon.y + 8, 36, 36, icon_acc);
+                        s_fill(s, sw, icon.x + 11, icon.y + 14, 28, 2, 0x00_22_18_04);
+                        s_fill(s, sw, icon.x + 11, icon.y + 22, 28, 2, 0x00_22_18_04);
+                        s_fill(s, sw, icon.x + 11, icon.y + 30, 20, 2, 0x00_22_18_04);
+                        s_fill(s, sw, icon.x + 34, icon.y + 34, 10, 10, 0x00_BB_99_44);
+                    }
+                    "Trash Bin" => {
+                        // Trash — bin can with lid
+                        s_fill(s, sw, icon.x + 12, icon.y + 13, 28, 4, icon_acc);
+                        s_fill(s, sw, icon.x + 18, icon.y + 8, 16, 4, icon_acc);
+                        draw_rect_border(s, sw, icon.x + 14, icon.y + 18, 24, 26, icon_acc);
+                        s_fill(s, sw, icon.x + 20, icon.y + 23, 2, 16, icon_acc);
+                        s_fill(s, sw, icon.x + 26, icon.y + 23, 2, 16, icon_acc);
+                        s_fill(s, sw, icon.x + 32, icon.y + 23, 2, 16, icon_acc);
+                    }
+                    "Screenshot" => {
+                        // Screenshot — focus brackets and aperture
+                        draw_rect_border(s, sw, icon.x + 9, icon.y + 10, 34, 28, icon_acc);
+                        s_fill(s, sw, icon.x + 6, icon.y + 7, 12, 3, icon_acc);
+                        s_fill(s, sw, icon.x + 6, icon.y + 7, 3, 12, icon_acc);
+                        s_fill(s, sw, icon.x + 35, icon.y + 7, 12, 3, icon_acc);
+                        s_fill(s, sw, icon.x + 44, icon.y + 7, 3, 12, icon_acc);
+                        draw_circle_outline(s, sw, icon.x + 26, icon.y + 24, 8, icon_acc);
+                        s_fill(s, sw, icon.x + 25, icon.y + 23, 3, 3, icon_acc);
                     }
                     "Web Browser" => {
                         // Browser — page frame with network globe
@@ -4361,7 +4459,13 @@ impl WindowManager {
     }
 
     fn save_focused_screenshot(&self, path: &str) -> Result<(), &'static str> {
-        let Some(win_idx) = self.focused else {
+        let visible_focused = self.focused.and_then(|idx| {
+            self.windows
+                .get(idx)
+                .filter(|app| self.is_window_on_current_workspace(idx) && !app.is_minimized())
+                .map(|_| idx)
+        });
+        let Some(win_idx) = visible_focused.or_else(|| self.top_visible_window()) else {
             return Err("no focused window");
         };
         let Some(app) = self.windows.get(win_idx) else {

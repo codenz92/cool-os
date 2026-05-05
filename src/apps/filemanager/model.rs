@@ -55,12 +55,15 @@ const START_MENU_FOLDERS: [&str; 9] = [
     "Shared",
     "Trash",
 ];
-const DESKTOP_APP_LINKS: [(&str, &str); 5] = [
+const DESKTOP_APP_LINKS: [(&str, &str); 8] = [
     ("Terminal", "Terminal"),
     ("Monitor", "System Monitor"),
     ("Files", "File Manager"),
     ("Viewer", "Text Viewer"),
     ("Colors", "Color Picker"),
+    ("Notes", "Notes"),
+    ("Shot", "Screenshot"),
+    ("Trash", "Trash Bin"),
 ];
 
 const FM_BG_TOP: u32 = 0x00_06_0C_18;
@@ -345,7 +348,6 @@ pub struct FileManagerApp {
 }
 
 impl FileManagerApp {
-
     pub fn new(x: i32, y: i32) -> Self {
         Self::new_at_path(x, y, "/")
     }
@@ -398,5 +400,4 @@ impl FileManagerApp {
     pub fn current_path(&self) -> &str {
         &self.path
     }
-
 }
