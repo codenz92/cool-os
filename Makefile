@@ -7,6 +7,7 @@ FSIMG   := $(CURDIR)/target/x86_64-unknown-none/release/fs.img
 USB_INIT_BIOS := $(BIOS)
 USB_INIT_FSIMG := $(FSIMG)
 QEMU_CPU ?= max
+QEMU_RTC ?= -rtc base=utc,clock=host
 QEMU_VNC ?= 127.0.0.1:1
 USER_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/hello_user
 USER_EXEC_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/exec
@@ -33,6 +34,7 @@ run: build
 		-drive file="$(FSIMG)",if=ide,format=raw,index=1,snapshot=on \
 		-m 512M \
 		-cpu "$(QEMU_CPU)" \
+		$(QEMU_RTC) \
 		-vga std \
 		-display cocoa \
 		-debugcon stdio
@@ -44,6 +46,7 @@ run-net: build
 		-drive file="$(FSIMG)",if=ide,format=raw,index=1,snapshot=on \
 		-m 512M \
 		-cpu "$(QEMU_CPU)" \
+		$(QEMU_RTC) \
 		-vga std \
 		-netdev user,id=net0 \
 		-device virtio-net-pci,netdev=net0,disable-modern=on,disable-legacy=off \
@@ -57,6 +60,7 @@ run-usb: build
 		-drive file="$(FSIMG)",if=ide,format=raw,index=1,snapshot=on \
 		-m 512M \
 		-cpu "$(QEMU_CPU)" \
+		$(QEMU_RTC) \
 		-vga std \
 		-device qemu-xhci,id=xhci \
 		-device usb-kbd,bus=xhci.0 \
@@ -71,6 +75,7 @@ run-usb-init: build-usb-init
 		-drive file="$(USB_INIT_FSIMG)",if=ide,format=raw,index=1,snapshot=on \
 		-m 512M \
 		-cpu "$(QEMU_CPU)" \
+		$(QEMU_RTC) \
 		-vga std \
 		-device qemu-xhci,id=xhci \
 		-device usb-kbd,bus=xhci.0 \
@@ -85,6 +90,7 @@ run-vnc: build-usb-init
 		-drive file="$(USB_INIT_FSIMG)",if=ide,format=raw,index=1,snapshot=on \
 		-m 512M \
 		-cpu "$(QEMU_CPU)" \
+		$(QEMU_RTC) \
 		-vga std \
 		-device qemu-xhci,id=xhci \
 		-device usb-kbd,bus=xhci.0 \
@@ -99,6 +105,7 @@ run-vnc-net: build-usb-init
 		-drive file="$(USB_INIT_FSIMG)",if=ide,format=raw,index=1,snapshot=on \
 		-m 512M \
 		-cpu "$(QEMU_CPU)" \
+		$(QEMU_RTC) \
 		-vga std \
 		-device qemu-xhci,id=xhci \
 		-device usb-kbd,bus=xhci.0 \
@@ -115,6 +122,7 @@ run-remote: build-usb-init
 		-drive file="$(USB_INIT_FSIMG)",if=ide,format=raw,index=1,snapshot=on \
 		-m 512M \
 		-cpu "$(QEMU_CPU)" \
+		$(QEMU_RTC) \
 		-vga std \
 		-device qemu-xhci,id=xhci \
 		-device usb-kbd,bus=xhci.0 \
@@ -129,6 +137,7 @@ run-remote-net: build-usb-init
 		-drive file="$(USB_INIT_FSIMG)",if=ide,format=raw,index=1,snapshot=on \
 		-m 512M \
 		-cpu "$(QEMU_CPU)" \
+		$(QEMU_RTC) \
 		-vga std \
 		-device qemu-xhci,id=xhci \
 		-device usb-kbd,bus=xhci.0 \
@@ -145,6 +154,7 @@ run-headless: build
 		-drive file="$(FSIMG)",if=ide,format=raw,index=1,snapshot=on \
 		-m 512M \
 		-cpu "$(QEMU_CPU)" \
+		$(QEMU_RTC) \
 		-vga std \
 		-display none \
 		-debugcon stdio
@@ -156,6 +166,7 @@ run-headless-net: build
 		-drive file="$(FSIMG)",if=ide,format=raw,index=1,snapshot=on \
 		-m 512M \
 		-cpu "$(QEMU_CPU)" \
+		$(QEMU_RTC) \
 		-vga std \
 		-netdev user,id=net0 \
 		-device virtio-net-pci,netdev=net0,disable-modern=on,disable-legacy=off \
@@ -169,6 +180,7 @@ run-headless-usb: build
 		-drive file="$(FSIMG)",if=ide,format=raw,index=1,snapshot=on \
 		-m 512M \
 		-cpu "$(QEMU_CPU)" \
+		$(QEMU_RTC) \
 		-vga std \
 		-device qemu-xhci,id=xhci \
 		-device usb-kbd,bus=xhci.0 \
@@ -183,6 +195,7 @@ run-headless-usb-init: build-usb-init
 		-drive file="$(USB_INIT_FSIMG)",if=ide,format=raw,index=1,snapshot=on \
 		-m 512M \
 		-cpu "$(QEMU_CPU)" \
+		$(QEMU_RTC) \
 		-vga std \
 		-device qemu-xhci,id=xhci \
 		-device usb-kbd,bus=xhci.0 \
@@ -395,8 +408,8 @@ smoke-net-https: build
 		--type-text "> https example.com\n" \
 		--post-hmp-delay 20.0 \
 		--expect "[net] virtio-net ready driver=virtio-net" \
-		--expect "[tls] https example.com/ via" \
-		--expect "root=AAA Certificate Services" \
+		--expect "[tls-ok] https example.com/ via" \
+		--expect "verified_root=AAA Certificate Services" \
 		--expect "[boot] desktop ready"
 
 smoke-net-https-negative: build
@@ -428,8 +441,8 @@ smoke-net-browser-https: build
 		--screendump "$(SMOKE_ARTIFACT_DIR)/browser-https-smoke.ppm" \
 		--expect-framebuffer-window \
 		--expect "[net] virtio-net ready driver=virtio-net" \
-		--expect "[tls] https example.com/ via" \
-		--expect "root=AAA Certificate Services" \
+		--expect "[tls-ok] https example.com/ via" \
+		--expect "verified_root=AAA Certificate Services" \
 		--expect "[boot] desktop ready"
 
 smoke-net-browser-google: build
@@ -447,8 +460,8 @@ smoke-net-browser-google: build
 		--screendump "$(SMOKE_ARTIFACT_DIR)/browser-google-smoke.ppm" \
 		--expect-framebuffer-window \
 		--expect "[net] virtio-net ready driver=virtio-net" \
-		--expect "[tls] https google.com/ via" \
-		--expect "root=GTS Root R1" \
+		--expect "[tls-ok] https google.com/ via" \
+		--expect "verified_root=GTS Root R1" \
 		--expect "[boot] desktop ready"
 
 smoke-usb-init: build-usb-init

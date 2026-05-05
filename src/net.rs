@@ -491,7 +491,7 @@ fn http_get_response_follow(
         }
         let exchange = crate::tls::https_exchange(host, path, &request, HTTP_MAX_BYTES)?;
         crate::println!(
-            "[tls] https {}{} via {} root={}",
+            "[tls-ok] https {}{} via {} verified_root={}",
             host,
             path,
             ipv4_string(exchange.resolved_addr),

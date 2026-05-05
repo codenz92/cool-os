@@ -24,6 +24,9 @@ const MAX_INLINE_PNG_PIXELS: usize = 1_048_576;
 const MAX_HTML_INLINE_IMAGES: usize = 4;
 const INLINE_IMAGE_MAX_H: usize = 168;
 const INLINE_IMAGE_RESERVED_ROWS: usize = 14;
+const CONTROL_H: usize = 24;
+const CONTROL_GAP: usize = 10;
+const BLOCK_GAP: usize = 6;
 
 const BG: u32 = 0x00_03_06_10;
 const PAGE: u32 = 0x00_F2_F6_F8;
@@ -49,12 +52,94 @@ enum BrowserLineKind {
     Error,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BrowserAlign {
+    Left,
+    Center,
+    Right,
+}
+
+#[derive(Clone)]
+enum BrowserControl {
+    None,
+    TextInput {
+        label: String,
+        value: String,
+        chars: usize,
+    },
+    Button {
+        label: String,
+    },
+    Checkbox {
+        label: String,
+    },
+    Radio {
+        label: String,
+    },
+    Select {
+        label: String,
+    },
+    TextArea {
+        label: String,
+    },
+}
+
 #[derive(Clone)]
 struct BrowserLine {
     text: String,
     link: Option<String>,
     kind: BrowserLineKind,
     image_slot: Option<usize>,
+    align: BrowserAlign,
+    control: BrowserControl,
+}
+
+impl BrowserLine {
+    fn new(text: String, link: Option<String>, kind: BrowserLineKind) -> Self {
+        Self {
+            text,
+            link,
+            kind,
+            image_slot: None,
+            align: BrowserAlign::Left,
+            control: BrowserControl::None,
+        }
+    }
+
+    fn aligned(mut self, align: BrowserAlign) -> Self {
+        self.align = align;
+        self
+    }
+
+    fn with_control(mut self, control: BrowserControl) -> Self {
+        self.control = control;
+        self
+    }
+}
+
+struct BrowserHitBox {
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
+    link: String,
+}
+
+struct BrowserLayoutItem {
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
+    text: String,
+    link: Option<String>,
+    kind: BrowserLineKind,
+    control: BrowserControl,
+    image_slot: Option<usize>,
+}
+
+struct BrowserLayout {
+    items: Vec<BrowserLayoutItem>,
+    content_h: usize,
 }
 
 #[derive(Clone)]
@@ -89,6 +174,7 @@ pub struct BrowserApp {
     last_page: Option<CachedPage>,
     image_preview: Option<crate::png::PngImage>,
     inline_images: Vec<InlineImage>,
+    hit_boxes: Vec<BrowserHitBox>,
     pending_open: Option<FileManagerOpenRequest>,
 }
 
@@ -114,6 +200,7 @@ impl BrowserApp {
             last_page: None,
             image_preview: None,
             inline_images: Vec::new(),
+            hit_boxes: Vec::new(),
             pending_open: None,
         };
         app.render();
@@ -199,13 +286,16 @@ impl BrowserApp {
         }
 
         self.address_focused = false;
-        let doc_y0 = TOOLBAR_H as i32 + 10;
-        if ly >= doc_y0 {
-            let row = ((ly - doc_y0) as usize) / LINE_H;
-            let idx = self.scroll + row;
-            if let Some(line) = self.lines.get(idx) {
-                if let Some(link) = line.link.clone() {
-                    let resolved = resolve_url(&self.address, &link);
+        if lx >= 0 && ly >= 0 {
+            let lx = lx as usize;
+            let ly = ly as usize;
+            for hit in self.hit_boxes.iter().rev() {
+                if lx >= hit.x
+                    && lx < hit.x.saturating_add(hit.w)
+                    && ly >= hit.y
+                    && ly < hit.y.saturating_add(hit.h)
+                {
+                    let resolved = resolve_url(&self.address, &hit.link);
                     if self.open_file_url(&resolved) {
                         return;
                     }
@@ -228,10 +318,9 @@ impl BrowserApp {
             self.render();
             return;
         }
-        let expected = self.scroll as i32 * LINE_H as i32;
+        let expected = self.scroll as i32;
         if self.window.scroll.offset != expected {
-            let max = self.lines.len().saturating_sub(self.rows);
-            self.scroll = ((self.window.scroll.offset / LINE_H as i32) as usize).min(max);
+            self.scroll = self.window.scroll.offset.max(0) as usize;
             self.render();
         }
     }
@@ -256,12 +345,11 @@ impl BrowserApp {
         self.title = String::from("Loading");
         self.image_preview = None;
         self.inline_images.clear();
-        self.lines = vec![BrowserLine {
-            text: format!("Loading {}", url),
-            link: None,
-            kind: BrowserLineKind::Muted,
-            image_slot: None,
-        }];
+        self.lines = vec![BrowserLine::new(
+            format!("Loading {}", url),
+            None,
+            BrowserLineKind::Muted,
+        )];
         self.scroll = 0;
         self.render();
 
@@ -271,10 +359,12 @@ impl BrowserApp {
                     self.title = extract_title(&response.body).unwrap_or_else(|| host.clone());
                     self.address = response.final_url.clone();
                     let security = match response.tls_trust_root {
-                        Some(root) => format!("  TLS root: {}", root),
+                        Some(root) => format!("  Secure: {}", root),
                         None => String::new(),
                     };
-                    self.status = if response.redirect_count > 0 {
+                    self.status = if is_success_status(&response.status_line) {
+                        format!("Loaded {}{}", response.final_url, security)
+                    } else if response.redirect_count > 0 {
                         format!(
                             "{}  {} redirect(s) -> {}{}",
                             response.status_line,
@@ -318,12 +408,11 @@ impl BrowserApp {
                         lines
                     };
                     if self.lines.is_empty() {
-                        self.lines.push(BrowserLine {
-                            text: String::from("(empty response)"),
-                            link: None,
-                            kind: BrowserLineKind::Muted,
-                            image_slot: None,
-                        });
+                        self.lines.push(BrowserLine::new(
+                            String::from("(empty response)"),
+                            None,
+                            BrowserLineKind::Muted,
+                        ));
                     }
                     if add_history {
                         self.push_history(response.final_url);
@@ -345,18 +434,8 @@ impl BrowserApp {
                 self.image_preview = None;
                 self.inline_images.clear();
                 self.lines = vec![
-                    BrowserLine {
-                        text: String::from("Enter an http:// or https:// URL."),
-                        link: None,
-                        kind: BrowserLineKind::Text,
-                        image_slot: None,
-                    },
-                    BrowserLine {
-                        text: String::from("Try https://example.com/"),
-                        link: Some(String::from("https://example.com/")),
-                        kind: BrowserLineKind::Link,
-                        image_slot: None,
-                    },
+                    line("Enter an http:// or https:// URL."),
+                    link_line("Try https://example.com/", "https://example.com/"),
                 ];
             }
         }
@@ -711,8 +790,15 @@ impl BrowserApp {
     }
 
     fn scroll_by(&mut self, delta: i32) {
-        let max = self.lines.len().saturating_sub(self.rows);
-        let next = (self.scroll as i32 + delta).clamp(0, max as i32) as usize;
+        let viewport_h = self.rows.saturating_mul(LINE_H) as i32;
+        let max = self
+            .window
+            .scroll
+            .content_h
+            .saturating_sub(viewport_h)
+            .max(0);
+        let next =
+            (self.scroll as i32 + delta.saturating_mul(LINE_H as i32)).clamp(0, max) as usize;
         if next != self.scroll {
             self.scroll = next;
             self.render();
@@ -842,76 +928,72 @@ impl BrowserApp {
             }
         }
 
+        let doc_w = width.saturating_sub(PAD_X * 2 + 28).max(1);
         self.rows = lines_h / LINE_H;
-        self.cols = width.saturating_sub(PAD_X * 2 + 28) / CHAR_W;
-        self.window.scroll.content_h = (self.lines.len() * LINE_H) as i32;
-        self.window.scroll.offset = self.scroll as i32 * LINE_H as i32;
-        self.window.scroll.clamp((self.rows * LINE_H) as i32);
+        self.cols = doc_w / CHAR_W;
+        let layout = layout_browser_lines(&self.lines, &self.inline_images, doc_w);
+        let max_scroll = layout.content_h.saturating_sub(lines_h);
+        if self.scroll > max_scroll {
+            self.scroll = max_scroll;
+        }
+        self.window.scroll.content_h = layout.content_h as i32;
+        self.window.scroll.offset = self.scroll as i32;
+        self.window.scroll.clamp(lines_h as i32);
+        self.scroll = self.window.scroll.offset.max(0) as usize;
+        self.hit_boxes.clear();
 
-        for row in 0..self.rows {
-            let idx = self.scroll + row;
-            let Some(line) = self.lines.get(idx).cloned() else {
-                break;
-            };
-            let y = lines_y + row * LINE_H;
-            let color = match line.kind {
-                BrowserLineKind::Heading => 0x00_04_24_3A,
-                BrowserLineKind::Muted => MUTED,
-                BrowserLineKind::Link => LINK,
-                BrowserLineKind::Image => 0x00_7A_3B_00,
-                BrowserLineKind::Quote => 0x00_40_55_5D,
-                BrowserLineKind::Code => 0x00_22_33_33,
-                BrowserLineKind::Error => 0x00_AA_20_20,
-                BrowserLineKind::Text => {
-                    if line.link.is_some() {
-                        LINK
-                    } else {
-                        TEXT
-                    }
-                }
-            };
-            let image_rendered = if let Some(slot) = line.image_slot {
+        let viewport_bottom = self.scroll.saturating_add(lines_h);
+        for item in layout.items.into_iter() {
+            if item.y.saturating_add(item.h) <= self.scroll || item.y >= viewport_bottom {
+                continue;
+            }
+            if item.y < self.scroll || item.y.saturating_add(item.h) > viewport_bottom {
+                continue;
+            }
+            let y = lines_y + item.y.saturating_sub(self.scroll);
+            let x = PAD_X + item.x;
+            if y >= doc_y.saturating_add(doc_h) {
+                continue;
+            }
+
+            if let Some(slot) = item.image_slot {
                 if let Some(image) = self.inline_images.get(slot).map(|inline| &inline.image) {
-                    let available_h = (doc_y + doc_h)
-                        .saturating_sub(y + LINE_H + 3)
-                        .min(INLINE_IMAGE_MAX_H);
-                    if available_h > 0 {
-                        draw_image_preview_pixels(
-                            &mut self.window.buf,
-                            width,
-                            content_h,
-                            stride,
-                            PAD_X,
-                            y + LINE_H + 3,
-                            width.saturating_sub(PAD_X * 2 + 28),
-                            available_h,
-                            image,
-                        );
-                    }
-                    true
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-            if !image_rendered {
-                let mut text = line.text;
-                truncate_chars(&mut text, self.cols);
-                self.put_str(stride, PAD_X, y, &text, color);
-                if line.kind == BrowserLineKind::Heading {
-                    self.put_str(stride, PAD_X + 1, y, &text, color);
-                }
-                if line.link.is_some() {
-                    self.fill_rect(
+                    draw_image_preview_pixels(
+                        &mut self.window.buf,
+                        width,
+                        content_h,
                         stride,
-                        PAD_X,
-                        y + 10,
-                        text.len().min(self.cols) * CHAR_W,
-                        1,
-                        LINK,
+                        x,
+                        y,
+                        item.w,
+                        item.h,
+                        image,
+                        false,
                     );
                 }
+            } else if matches!(item.control, BrowserControl::None) {
+                let color = color_for_line(item.kind, item.link.is_some());
+                let mut text = item.text.clone();
+                truncate_chars(&mut text, item.w / CHAR_W);
+                self.put_str(stride, x, y, &text, color);
+                if item.kind == BrowserLineKind::Heading {
+                    self.put_str(stride, x + 1, y, &text, color);
+                }
+                if item.link.is_some() {
+                    self.fill_rect(stride, x, y + 10, text.len() * CHAR_W, 1, LINK);
+                }
+            } else {
+                self.draw_control(stride, x, y, item.w, &item.control, item.link.is_some());
+            }
+
+            if let Some(link) = item.link {
+                self.hit_boxes.push(BrowserHitBox {
+                    x,
+                    y,
+                    w: item.w,
+                    h: item.h.max(LINE_H),
+                    link,
+                });
             }
         }
 
@@ -958,6 +1040,81 @@ impl BrowserApp {
         );
     }
 
+    fn draw_control(
+        &mut self,
+        stride: usize,
+        x: usize,
+        y: usize,
+        w: usize,
+        control: &BrowserControl,
+        active: bool,
+    ) {
+        match control {
+            BrowserControl::TextInput { label, value, .. } => {
+                self.fill_rect(stride, x, y, w, CONTROL_H, WHITE);
+                self.draw_rect(
+                    stride,
+                    x,
+                    y,
+                    w,
+                    CONTROL_H,
+                    if active { BUTTON_HOT } else { 0x00_96_A8_B4 },
+                );
+                let shown = if value.is_empty() { label } else { value };
+                if !shown.is_empty() {
+                    let mut text = shown.clone();
+                    truncate_chars(&mut text, w.saturating_sub(14) / CHAR_W);
+                    self.put_str(
+                        stride,
+                        x + 7,
+                        y + 8,
+                        &text,
+                        if value.is_empty() { MUTED } else { TEXT },
+                    );
+                }
+            }
+            BrowserControl::Button { label } => {
+                self.fill_rect(stride, x, y, w, CONTROL_H, 0x00_E8_E8_E8);
+                self.draw_rect(
+                    stride,
+                    x,
+                    y,
+                    w,
+                    CONTROL_H,
+                    if active { BUTTON_HOT } else { 0x00_88_88_88 },
+                );
+                let mut text = label.clone();
+                truncate_chars(&mut text, w.saturating_sub(12) / CHAR_W);
+                let text_w = text.len().saturating_mul(CHAR_W);
+                let tx = x + w.saturating_sub(text_w) / 2;
+                self.put_str(stride, tx, y + 8, &text, TEXT);
+            }
+            BrowserControl::Checkbox { label } | BrowserControl::Radio { label } => {
+                self.fill_rect(stride, x, y + 5, 12, 12, WHITE);
+                self.draw_rect(stride, x, y + 5, 12, 12, 0x00_88_88_88);
+                let mut text = label.clone();
+                truncate_chars(&mut text, w.saturating_sub(18) / CHAR_W);
+                self.put_str(stride, x + 18, y + 6, &text, TEXT);
+            }
+            BrowserControl::Select { label } => {
+                self.fill_rect(stride, x, y, w, CONTROL_H, WHITE);
+                self.draw_rect(stride, x, y, w, CONTROL_H, 0x00_88_88_88);
+                let mut text = label.clone();
+                truncate_chars(&mut text, w.saturating_sub(28) / CHAR_W);
+                self.put_str(stride, x + 7, y + 8, &text, TEXT);
+                self.put_str(stride, x + w.saturating_sub(18), y + 8, "v", MUTED);
+            }
+            BrowserControl::TextArea { label } => {
+                self.fill_rect(stride, x, y, w, CONTROL_H, WHITE);
+                self.draw_rect(stride, x, y, w, CONTROL_H, 0x00_88_88_88);
+                let mut text = label.clone();
+                truncate_chars(&mut text, w.saturating_sub(14) / CHAR_W);
+                self.put_str(stride, x + 7, y + 8, &text, MUTED);
+            }
+            BrowserControl::None => {}
+        }
+    }
+
     fn fill_rect(&mut self, stride: usize, x: usize, y: usize, w: usize, h: usize, color: u32) {
         let width = self.window.width.max(0) as usize;
         let content_h = (self.window.height - TITLE_H).max(0) as usize;
@@ -1001,6 +1158,7 @@ impl BrowserApp {
             max_w,
             max_h,
             image,
+            true,
         )
     }
 
@@ -1018,6 +1176,248 @@ impl BrowserApp {
     }
 }
 
+fn color_for_line(kind: BrowserLineKind, linked: bool) -> u32 {
+    match kind {
+        BrowserLineKind::Heading => 0x00_04_24_3A,
+        BrowserLineKind::Muted => MUTED,
+        BrowserLineKind::Link => LINK,
+        BrowserLineKind::Image => 0x00_7A_3B_00,
+        BrowserLineKind::Quote => 0x00_40_55_5D,
+        BrowserLineKind::Code => 0x00_22_33_33,
+        BrowserLineKind::Error => 0x00_AA_20_20,
+        BrowserLineKind::Text => {
+            if linked {
+                LINK
+            } else {
+                TEXT
+            }
+        }
+    }
+}
+
+fn layout_browser_lines(
+    lines: &[BrowserLine],
+    inline_images: &[InlineImage],
+    doc_w: usize,
+) -> BrowserLayout {
+    let mut items = Vec::new();
+    let mut y = 0usize;
+    let mut i = 0usize;
+    while i < lines.len() {
+        let line = &lines[i];
+        if line.kind == BrowserLineKind::Image
+            && line.text.trim().is_empty()
+            && line.image_slot.is_none()
+        {
+            i += 1;
+            continue;
+        }
+        if line.text.trim().is_empty()
+            && line.image_slot.is_none()
+            && matches!(line.control, BrowserControl::None)
+        {
+            y = y.saturating_add(LINE_H);
+            i += 1;
+            continue;
+        }
+        if line.kind == BrowserLineKind::Link
+            && !line.text.trim().is_empty()
+            && line.image_slot.is_none()
+            && matches!(line.control, BrowserControl::None)
+        {
+            let align = line.align;
+            let mut group = Vec::new();
+            let mut total_w = 0usize;
+            let mut j = i;
+            while let Some(next) = lines.get(j) {
+                if next.text.trim().is_empty()
+                    && next.image_slot.is_none()
+                    && matches!(next.control, BrowserControl::None)
+                    && !group.is_empty()
+                {
+                    j += 1;
+                    continue;
+                }
+                if next.kind != BrowserLineKind::Link
+                    || next.align != align
+                    || next.image_slot.is_some()
+                    || !matches!(next.control, BrowserControl::None)
+                    || next.text.trim().is_empty()
+                {
+                    break;
+                }
+                let w = text_pixel_width(&next.text).min(doc_w);
+                let candidate = if group.is_empty() {
+                    w
+                } else {
+                    total_w.saturating_add(CONTROL_GAP + 8).saturating_add(w)
+                };
+                if candidate > doc_w && !group.is_empty() {
+                    break;
+                }
+                total_w = candidate;
+                group.push((j, w));
+                j += 1;
+            }
+            if group.len() > 1 {
+                let mut x = aligned_x(doc_w, total_w, align);
+                for (idx, w) in group {
+                    let next = &lines[idx];
+                    items.push(BrowserLayoutItem {
+                        x,
+                        y,
+                        w,
+                        h: LINE_H,
+                        text: next.text.clone(),
+                        link: next.link.clone(),
+                        kind: next.kind,
+                        control: BrowserControl::None,
+                        image_slot: None,
+                    });
+                    x = x.saturating_add(w).saturating_add(CONTROL_GAP + 8);
+                }
+                y = y.saturating_add(LINE_H + BLOCK_GAP);
+                i = j;
+                continue;
+            }
+        }
+        if matches!(line.control, BrowserControl::Button { .. }) {
+            let align = line.align;
+            let mut group = Vec::new();
+            let mut total_w = 0usize;
+            let mut j = i;
+            while let Some(next) = lines.get(j) {
+                if next.align != align || !matches!(next.control, BrowserControl::Button { .. }) {
+                    break;
+                }
+                let w = control_width(&next.control, doc_w);
+                let candidate = if group.is_empty() {
+                    w
+                } else {
+                    total_w.saturating_add(CONTROL_GAP).saturating_add(w)
+                };
+                if candidate > doc_w && !group.is_empty() {
+                    break;
+                }
+                total_w = candidate;
+                group.push((j, w));
+                j += 1;
+            }
+            let mut x = aligned_x(doc_w, total_w, align);
+            for (idx, w) in group {
+                let next = &lines[idx];
+                items.push(BrowserLayoutItem {
+                    x,
+                    y,
+                    w,
+                    h: CONTROL_H,
+                    text: next.text.clone(),
+                    link: next.link.clone(),
+                    kind: next.kind,
+                    control: next.control.clone(),
+                    image_slot: None,
+                });
+                x = x.saturating_add(w).saturating_add(CONTROL_GAP);
+            }
+            y = y.saturating_add(CONTROL_H + BLOCK_GAP);
+            i = j;
+            continue;
+        }
+        if !matches!(line.control, BrowserControl::None) {
+            let w = control_width(&line.control, doc_w);
+            items.push(BrowserLayoutItem {
+                x: aligned_x(doc_w, w, line.align),
+                y,
+                w,
+                h: CONTROL_H,
+                text: line.text.clone(),
+                link: line.link.clone(),
+                kind: line.kind,
+                control: line.control.clone(),
+                image_slot: None,
+            });
+            y = y.saturating_add(CONTROL_H + BLOCK_GAP);
+            i += 1;
+            continue;
+        }
+        if let Some(slot) = line.image_slot {
+            if let Some(image) = inline_images.get(slot).map(|inline| &inline.image) {
+                let max_w = doc_w.max(1);
+                let (draw_w, draw_h) =
+                    scaled_image_size(image.width, image.height, max_w, INLINE_IMAGE_MAX_H);
+                items.push(BrowserLayoutItem {
+                    x: aligned_x(doc_w, draw_w, line.align),
+                    y,
+                    w: draw_w,
+                    h: draw_h,
+                    text: String::new(),
+                    link: line.link.clone(),
+                    kind: BrowserLineKind::Image,
+                    control: BrowserControl::None,
+                    image_slot: Some(slot),
+                });
+                y = y.saturating_add(draw_h + BLOCK_GAP);
+                i += 1;
+                continue;
+            }
+        }
+        let w = text_pixel_width(&line.text).min(doc_w);
+        let h = if line.kind == BrowserLineKind::Heading {
+            LINE_H + 2
+        } else {
+            LINE_H
+        };
+        items.push(BrowserLayoutItem {
+            x: aligned_x(doc_w, w, line.align),
+            y,
+            w,
+            h,
+            text: line.text.clone(),
+            link: line.link.clone(),
+            kind: line.kind,
+            control: BrowserControl::None,
+            image_slot: None,
+        });
+        y = y.saturating_add(h);
+        i += 1;
+    }
+    BrowserLayout {
+        items,
+        content_h: y.saturating_add(BLOCK_GAP),
+    }
+}
+
+fn aligned_x(doc_w: usize, item_w: usize, align: BrowserAlign) -> usize {
+    match align {
+        BrowserAlign::Left => 0,
+        BrowserAlign::Center => doc_w.saturating_sub(item_w) / 2,
+        BrowserAlign::Right => doc_w.saturating_sub(item_w),
+    }
+}
+
+fn text_pixel_width(text: &str) -> usize {
+    text.chars().count().saturating_mul(CHAR_W)
+}
+
+fn control_width(control: &BrowserControl, doc_w: usize) -> usize {
+    let w = match control {
+        BrowserControl::TextInput { chars, .. } => {
+            (*chars).clamp(8, 72).saturating_mul(CHAR_W) + 18
+        }
+        BrowserControl::Button { label } => {
+            text_pixel_width(label).saturating_add(24).clamp(74, 220)
+        }
+        BrowserControl::Checkbox { label } | BrowserControl::Radio { label } => {
+            text_pixel_width(label).saturating_add(24).clamp(48, 260)
+        }
+        BrowserControl::Select { label } | BrowserControl::TextArea { label } => {
+            text_pixel_width(label).saturating_add(34).clamp(120, 360)
+        }
+        BrowserControl::None => 0,
+    };
+    w.min(doc_w)
+}
+
 fn draw_image_preview_pixels(
     buf: &mut [u32],
     surface_w: usize,
@@ -1028,6 +1428,7 @@ fn draw_image_preview_pixels(
     max_w: usize,
     max_h: usize,
     image: &crate::png::PngImage,
+    framed: bool,
 ) -> usize {
     if image.width == 0 || image.height == 0 || max_w < 8 || max_h < 8 {
         return 0;
@@ -1036,30 +1437,35 @@ fn draw_image_preview_pixels(
     draw_w = draw_w.max(1);
     draw_h = draw_h.max(1);
 
-    let frame_w = draw_w + 8;
-    let frame_h = draw_h + 8;
-    fill_pixels(
-        buf,
-        surface_w,
-        surface_h,
-        stride,
-        x,
-        y,
-        frame_w,
-        frame_h,
-        0x00_E8_EF_F3,
-    );
-    draw_pixel_rect(
-        buf,
-        surface_w,
-        surface_h,
-        stride,
-        x,
-        y,
-        frame_w,
-        frame_h,
-        0x00_91_A6_B5,
-    );
+    let (image_x, image_y, used_h) = if framed {
+        let frame_w = draw_w + 8;
+        let frame_h = draw_h + 8;
+        fill_pixels(
+            buf,
+            surface_w,
+            surface_h,
+            stride,
+            x,
+            y,
+            frame_w,
+            frame_h,
+            0x00_E8_EF_F3,
+        );
+        draw_pixel_rect(
+            buf,
+            surface_w,
+            surface_h,
+            stride,
+            x,
+            y,
+            frame_w,
+            frame_h,
+            0x00_91_A6_B5,
+        );
+        (x + 4, y + 4, frame_h)
+    } else {
+        (x, y, draw_h)
+    };
 
     for dy in 0..draw_h {
         let src_y = dy.saturating_mul(image.height) / draw_h;
@@ -1068,15 +1474,15 @@ fn draw_image_preview_pixels(
             let Some(&color) = image.pixels.get(src_y * image.width + src_x) else {
                 continue;
             };
-            let px = x + 4 + dx;
-            let py = y + 4 + dy;
+            let px = image_x + dx;
+            let py = image_y + dy;
             let idx = py.saturating_mul(stride).saturating_add(px);
             if px < surface_w && py < surface_h && idx < buf.len() {
                 buf[idx] = color;
             }
         }
     }
-    frame_h
+    used_h
 }
 
 fn fill_pixels(
@@ -1266,14 +1672,21 @@ fn image_response_lines(
     if let Some(status) = preview_status {
         out.push(kind_line(status, BrowserLineKind::Muted));
     }
-    out.push(BrowserLine {
-        text: format!("{} bytes received", byte_len),
-        link: None,
-        kind: BrowserLineKind::Image,
-        image_slot: None,
-    });
+    out.push(BrowserLine::new(
+        format!("{} bytes received", byte_len),
+        None,
+        BrowserLineKind::Image,
+    ));
     out.push(link_line("Image source URL", url));
     out
+}
+
+fn is_success_status(status_line: &str) -> bool {
+    status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.as_bytes().first().copied())
+        == Some(b'2')
 }
 
 fn is_image_content(content_type: Option<&str>) -> bool {
@@ -1307,12 +1720,11 @@ fn looks_like_html_bytes(bytes: &[u8]) -> bool {
 }
 
 fn inline_image_spacer(_slot: usize, url: &str) -> BrowserLine {
-    BrowserLine {
-        text: String::new(),
-        link: Some(String::from(url)),
-        kind: BrowserLineKind::Image,
-        image_slot: None,
-    }
+    BrowserLine::new(
+        String::new(),
+        Some(String::from(url)),
+        BrowserLineKind::Image,
+    )
 }
 
 fn inline_image_reserved_rows_for(width: usize, height: usize, cols: usize) -> usize {
@@ -1500,30 +1912,19 @@ fn sanitize_filename_part(input: &str) -> String {
 }
 
 fn line(text: &str) -> BrowserLine {
-    BrowserLine {
-        text: String::from(text),
-        link: None,
-        kind: BrowserLineKind::Text,
-        image_slot: None,
-    }
+    BrowserLine::new(String::from(text), None, BrowserLineKind::Text)
 }
 
 fn kind_line(text: &str, kind: BrowserLineKind) -> BrowserLine {
-    BrowserLine {
-        text: String::from(text),
-        link: None,
-        kind,
-        image_slot: None,
-    }
+    BrowserLine::new(String::from(text), None, kind)
 }
 
 fn link_line(text: &str, url: &str) -> BrowserLine {
-    BrowserLine {
-        text: String::from(text),
-        link: Some(String::from(url)),
-        kind: BrowserLineKind::Link,
-        image_slot: None,
-    }
+    BrowserLine::new(
+        String::from(text),
+        Some(String::from(url)),
+        BrowserLineKind::Link,
+    )
 }
 
 fn network_error_lines(url: &str, host: &str, path: &str, err: &str) -> Vec<BrowserLine> {
@@ -1722,6 +2123,100 @@ fn extract_base_href(body: &str, fallback: &str) -> String {
     String::from(fallback)
 }
 
+struct StyleHints {
+    hidden_classes: Vec<String>,
+}
+
+impl StyleHints {
+    fn from_document(body: &str) -> Self {
+        let lower = lowercase_ascii(body);
+        let mut hints = Self {
+            hidden_classes: Vec::new(),
+        };
+        let mut i = 0usize;
+        while let Some(rel) = lower[i..].find("<style") {
+            let start = i + rel;
+            let Some(tag_end) = find_tag_end(&lower[start..]) else {
+                break;
+            };
+            let content_start = start + tag_end + 1;
+            let Some(close_rel) = lower[content_start..].find("</style") else {
+                break;
+            };
+            let content_end = content_start + close_rel;
+            collect_css_hints(&lower[content_start..content_end], &mut hints);
+            i = content_end + "</style".len();
+        }
+        hints
+    }
+
+    fn has_hidden_class(&self, tag: &str) -> bool {
+        let Some(classes) = attr_value(tag, "class") else {
+            return false;
+        };
+        classes.split_whitespace().any(|class| {
+            let class = lowercase_ascii(class);
+            contains_string(&self.hidden_classes, &class)
+        })
+    }
+}
+
+fn collect_css_hints(css: &str, hints: &mut StyleHints) {
+    let mut pos = 0usize;
+    while let Some(open_rel) = css[pos..].find('{') {
+        let open = pos + open_rel;
+        let selectors = &css[pos..open];
+        let Some(close_rel) = css[open + 1..].find('}') else {
+            break;
+        };
+        let close = open + 1 + close_rel;
+        let rules = &css[open + 1..close];
+        if selectors.contains('@') {
+            pos = close + 1;
+            continue;
+        }
+        if rules.contains("display:none")
+            || rules.contains("display: none")
+            || rules.contains("visibility:hidden")
+            || rules.contains("visibility: hidden")
+        {
+            collect_selector_classes(selectors, &mut hints.hidden_classes);
+        }
+        pos = close + 1;
+    }
+}
+
+fn collect_selector_classes(selectors: &str, out: &mut Vec<String>) {
+    for selector in selectors.split(',') {
+        let selector = selector.trim();
+        let Some(rest) = selector.strip_prefix('.') else {
+            continue;
+        };
+        let bytes = rest.as_bytes();
+        let mut end = 0usize;
+        while end < bytes.len()
+            && (bytes[end].is_ascii_alphanumeric() || matches!(bytes[end], b'-' | b'_'))
+        {
+            end += 1;
+        }
+        if end == 0 || !rest[end..].trim().is_empty() {
+            continue;
+        }
+        push_unique_class(out, &rest[..end]);
+    }
+}
+
+fn push_unique_class(out: &mut Vec<String>, class: &str) {
+    if class.is_empty() || out.len() >= 96 || contains_string(out, class) {
+        return;
+    }
+    out.push(String::from(class));
+}
+
+fn contains_string(values: &[String], needle: &str) -> bool {
+    values.iter().any(|value| value == needle)
+}
+
 fn render_document(base_url: &str, response: &str, cols: usize) -> Vec<BrowserLine> {
     let body = response
         .split_once("\r\n\r\n")
@@ -1733,6 +2228,7 @@ fn render_document(base_url: &str, response: &str, cols: usize) -> Vec<BrowserLi
     }
     let effective_base = extract_base_href(body, base_url);
     let base_url: &str = &effective_base;
+    let style_hints = StyleHints::from_document(body);
     let mut out = Vec::new();
     let mut text = String::new();
     let mut state = HtmlRenderState::new();
@@ -1771,14 +2267,23 @@ fn render_document(base_url: &str, response: &str, cols: usize) -> Vec<BrowserLi
                     || lower_name == "object"
                     || lower_name == "embed"
                     || lower_name == "head"
-                    || (tag_is_hidden(&lower_tag) && !lower_tag.starts_with("input"))
+                    || ((tag_is_hidden(&lower_tag)
+                        || style_hints.has_hidden_class(&lower_tag))
+                        && !lower_tag.starts_with("input"))
                 {
                     flush_flow_text(&mut out, &mut text, cols, &mut state);
                     state.skip_until = Some(closing_tag_for(&lower_tag));
                     i += end_rel + 1;
                     continue;
                 }
-                handle_tag(tag, &mut out, &mut text, &mut state, base_url, cols);
+                handle_tag(
+                    tag,
+                    &mut out,
+                    &mut text,
+                    &mut state,
+                    base_url,
+                    cols,
+                );
                 i += end_rel + 1;
                 continue;
             }
@@ -1834,6 +2339,8 @@ struct HtmlRenderState {
     cell_has_form_control: bool,
     cell_form_link: Option<String>,
     cell_link: Option<String>,
+    align_stack: Vec<(String, BrowserAlign)>,
+    table_cell_align: BrowserAlign,
 }
 
 impl HtmlRenderState {
@@ -1856,6 +2363,29 @@ impl HtmlRenderState {
             cell_has_form_control: false,
             cell_form_link: None,
             cell_link: None,
+            align_stack: Vec::new(),
+            table_cell_align: BrowserAlign::Left,
+        }
+    }
+
+    fn current_align(&self) -> BrowserAlign {
+        self.align_stack
+            .last()
+            .map(|(_, align)| *align)
+            .unwrap_or(BrowserAlign::Left)
+    }
+
+    fn push_align(&mut self, name: &str, align: BrowserAlign) {
+        self.align_stack.push((String::from(name), align));
+    }
+
+    fn pop_align(&mut self, name: &str) {
+        if let Some(pos) = self
+            .align_stack
+            .iter()
+            .rposition(|(tag_name, _)| tag_name == name)
+        {
+            self.align_stack.truncate(pos);
         }
     }
 }
@@ -1865,17 +2395,85 @@ struct TableCell {
     header: bool,
     link: Option<String>,
     is_form_row: bool,
+    align: BrowserAlign,
 }
 
 fn is_inline_tag(name: &str) -> bool {
     matches!(
         name,
-        "span" | "strong" | "em" | "b" | "i" | "small" | "big" | "sub" | "sup" | "s" | "u"
-            | "del" | "ins" | "mark" | "cite" | "abbr" | "time" | "var" | "samp" | "kbd"
-            | "wbr" | "bdi" | "bdo" | "data" | "q" | "dfn" | "label" | "output" | "meter"
-            | "progress" | "nobr" | "font" | "tt" | "acronym" | "strike" | "blink"
+        "span"
+            | "strong"
+            | "em"
+            | "b"
+            | "i"
+            | "small"
+            | "big"
+            | "sub"
+            | "sup"
+            | "s"
+            | "u"
+            | "del"
+            | "ins"
+            | "mark"
+            | "cite"
+            | "abbr"
+            | "time"
+            | "var"
+            | "samp"
+            | "kbd"
+            | "wbr"
+            | "bdi"
+            | "bdo"
+            | "data"
+            | "q"
+            | "dfn"
+            | "label"
+            | "output"
+            | "meter"
+            | "progress"
+            | "nobr"
+            | "font"
+            | "tt"
+            | "acronym"
+            | "strike"
+            | "blink"
             | "marquee"
     )
+}
+
+fn tag_alignment(tag: &str, name: &str) -> Option<BrowserAlign> {
+    if name == "center" {
+        return Some(BrowserAlign::Center);
+    }
+    if let Some(value) = attr_value(tag, "align") {
+        return parse_alignment(&value);
+    }
+    if let Some(style) = attr_value(tag, "style") {
+        let style = lowercase_ascii(&style);
+        if style.contains("text-align:center") || style.contains("text-align: center") {
+            return Some(BrowserAlign::Center);
+        }
+        if style.contains("text-align:right") || style.contains("text-align: right") {
+            return Some(BrowserAlign::Right);
+        }
+        if style.contains("text-align:left") || style.contains("text-align: left") {
+            return Some(BrowserAlign::Left);
+        }
+        if style.contains("margin:") && style.contains("auto") {
+            return Some(BrowserAlign::Center);
+        }
+    }
+    None
+}
+
+fn parse_alignment(value: &str) -> Option<BrowserAlign> {
+    let value = lowercase_ascii(value.trim());
+    match value.as_str() {
+        "center" | "middle" => Some(BrowserAlign::Center),
+        "right" => Some(BrowserAlign::Right),
+        "left" => Some(BrowserAlign::Left),
+        _ => None,
+    }
 }
 
 fn handle_tag(
@@ -1901,6 +2499,11 @@ fn handle_tag(
     }
 
     flush_flow_text(out, text, cols, state);
+    if closing {
+        state.pop_align(name);
+    } else if let Some(align) = tag_alignment(tag, name) {
+        state.push_align(name, align);
+    }
 
     match name {
         "a" => {
@@ -1991,15 +2594,15 @@ fn handle_tag(
         }
         "select" => {
             if !closing {
-                push_named_control_line(out, "select", tag);
+                push_named_control_line(out, "select", tag, state);
             }
         }
         "textarea" => {
             if !closing {
-                push_named_control_line(out, "textarea", tag);
+                push_named_control_line(out, "textarea", tag, state);
             }
         }
-        "img" => push_image_line(out, tag, base_url),
+        "img" => push_image_line(out, tag, base_url, state),
         "table" => {
             if closing {
                 finish_table_row(out, state, cols);
@@ -2023,6 +2626,8 @@ fn handle_tag(
             state.in_table = true;
             state.in_table_cell = true;
             state.table_cell_is_header = name == "th";
+            state.table_cell_align =
+                tag_alignment(tag, name).unwrap_or_else(|| state.current_align());
             state.table_cell_text.clear();
         }
         "thead" | "tbody" | "tfoot" | "colgroup" | "col" | "caption" => {}
@@ -2057,6 +2662,7 @@ fn push_input_line(out: &mut Vec<BrowserLine>, tag: &str, state: &HtmlRenderStat
     }
     let mut text = String::new();
     let mut link = None;
+    let control;
     match input_type.as_str() {
         "submit" | "button" | "reset" => {
             let label = form_control_label(tag, &input_type);
@@ -2065,71 +2671,109 @@ fn push_input_line(out: &mut Vec<BrowserLine>, tag: &str, state: &HtmlRenderStat
             if input_type == "submit" {
                 link = state.form_action.clone();
             }
+            control = BrowserControl::Button { label };
         }
         "checkbox" => {
             let label = input_field_label(tag, &input_type);
             text.push_str("[checkbox] ");
             text.push_str(&label);
+            control = BrowserControl::Checkbox { label };
         }
         "radio" => {
             let label = input_field_label(tag, &input_type);
             text.push_str("[radio] ");
             text.push_str(&label);
+            control = BrowserControl::Radio { label };
         }
         "search" => {
             let label = input_field_label(tag, &input_type);
             text.push_str("[search] ");
             text.push_str(&label);
+            control = BrowserControl::TextInput {
+                label: input_control_label(tag, &label),
+                value: input_value(tag),
+                chars: input_size_chars(tag),
+            };
         }
         "image" => {
             let label = form_control_label(tag, &input_type);
             text.push_str("[image button] ");
             text.push_str(&label);
             link = state.form_action.clone();
+            control = BrowserControl::Button { label };
         }
         _ => {
             let label = input_field_label(tag, &input_type);
             text.push_str("[input] ");
             text.push_str(&label);
+            control = BrowserControl::TextInput {
+                label: input_control_label(tag, &label),
+                value: input_value(tag),
+                chars: input_size_chars(tag),
+            };
         }
     }
-    out.push(BrowserLine {
-        text,
-        kind: line_kind_for_link(&link, BrowserLineKind::Code),
-        link,
-        image_slot: None,
-    });
+    out.push(
+        BrowserLine::new(
+            text,
+            link.clone(),
+            line_kind_for_link(&link, BrowserLineKind::Code),
+        )
+        .aligned(state.current_align())
+        .with_control(control),
+    );
 }
 
 fn push_button_line(out: &mut Vec<BrowserLine>, tag: &str, state: &HtmlRenderState) {
-    if attr_value(tag, "aria-label").is_none()
-        && attr_value(tag, "value").is_none()
-        && attr_value(tag, "name").is_none()
-        && attr_value(tag, "id").is_none()
-    {
-        return;
-    }
     let button_type = attr_value(tag, "type").unwrap_or_else(|| String::from("submit"));
-    let label = form_control_label(tag, "button");
     let link = if button_type.eq_ignore_ascii_case("submit") {
         state.form_action.clone()
     } else {
         None
     };
-    out.push(BrowserLine {
-        text: format!("[button] {}", label),
-        kind: line_kind_for_link(&link, BrowserLineKind::Code),
-        link,
-        image_slot: None,
-    });
+    let has_form_value = attr_value(tag, "value").is_some()
+        || attr_value(tag, "name").is_some()
+        || attr_value(tag, "id").is_some();
+    if link.is_none() && !has_form_value {
+        return;
+    }
+    let label = form_control_label(tag, "button");
+    out.push(
+        BrowserLine::new(
+            format!("[button] {}", label),
+            link.clone(),
+            line_kind_for_link(&link, BrowserLineKind::Code),
+        )
+        .aligned(state.current_align())
+        .with_control(BrowserControl::Button { label }),
+    );
 }
 
-fn push_named_control_line(out: &mut Vec<BrowserLine>, control: &str, tag: &str) {
+fn push_named_control_line(
+    out: &mut Vec<BrowserLine>,
+    control: &str,
+    tag: &str,
+    state: &HtmlRenderState,
+) {
     let label = form_control_label(tag, control);
-    out.push(kind_line(
-        &format!("[{}] {}", control, label),
-        BrowserLineKind::Code,
-    ));
+    let visual = if control == "textarea" {
+        BrowserControl::TextArea {
+            label: label.clone(),
+        }
+    } else {
+        BrowserControl::Select {
+            label: label.clone(),
+        }
+    };
+    out.push(
+        BrowserLine::new(
+            format!("[{}] {}", control, label),
+            None,
+            BrowserLineKind::Code,
+        )
+        .aligned(state.current_align())
+        .with_control(visual),
+    );
 }
 
 fn form_control_label(tag: &str, fallback: &str) -> String {
@@ -2156,6 +2800,26 @@ fn input_field_label(tag: &str, fallback: &str) -> String {
         }
     }
     String::from(fallback)
+}
+
+fn input_control_label(tag: &str, _fallback: &str) -> String {
+    attr_value(tag, "placeholder")
+        .map(|value| clean_inline_text(&decode_entities(&value)))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(String::new)
+}
+
+fn input_value(tag: &str) -> String {
+    attr_value(tag, "value")
+        .map(|value| clean_inline_text(&decode_entities(&value)))
+        .unwrap_or_else(String::new)
+}
+
+fn input_size_chars(tag: &str) -> usize {
+    attr_value(tag, "size")
+        .and_then(|value| parse_dimension(&value))
+        .unwrap_or(28)
+        .clamp(8, 72)
 }
 
 fn handle_table_cell_tag(
@@ -2232,12 +2896,14 @@ fn handle_table_cell_tag(
                 _ => {
                     // prefer placeholder/name over aria-label for field identity
                     let label = input_field_label(tag, &input_type);
-                    state.table_cell_text.push('[');
-                    state.table_cell_text.push_str(&input_type);
-                    if !label.is_empty() && label != input_type {
-                        state.table_cell_text.push(':');
-                        state.table_cell_text.push_str(&label);
-                    }
+                    state.table_cell_text.push_str("[field:");
+                    state
+                        .table_cell_text
+                        .push_str(&format!("{}", input_size_chars(tag)));
+                    state.table_cell_text.push(':');
+                    state
+                        .table_cell_text
+                        .push_str(&input_control_label(tag, &label));
                     state.table_cell_text.push(']');
                 }
             }
@@ -2246,7 +2912,7 @@ fn handle_table_cell_tag(
     }
 }
 
-fn push_image_line(out: &mut Vec<BrowserLine>, tag: &str, base_url: &str) {
+fn push_image_line(out: &mut Vec<BrowserLine>, tag: &str, base_url: &str, state: &HtmlRenderState) {
     let src = attr_value(tag, "src").map(|src| resolve_url(base_url, &src));
     let label = attr_value(tag, "alt")
         .map(|alt| decode_entities(&alt))
@@ -2259,12 +2925,7 @@ fn push_image_line(out: &mut Vec<BrowserLine>, tag: &str, base_url: &str) {
     }
     text.push_str("] ");
     text.push_str(&label);
-    out.push(BrowserLine {
-        text,
-        link: src,
-        kind: BrowserLineKind::Image,
-        image_slot: None,
-    });
+    out.push(BrowserLine::new(text, src, BrowserLineKind::Image).aligned(state.current_align()));
 }
 
 fn image_size_label(tag: &str) -> Option<String> {
@@ -2318,6 +2979,7 @@ fn rule_line(cols: usize) -> String {
 }
 
 fn push_form_cell_lines(out: &mut Vec<BrowserLine>, cell: TableCell) {
+    let align = cell.align;
     let text = cell.text;
     let mut i = 0usize;
     let bytes = text.as_bytes();
@@ -2331,10 +2993,44 @@ fn push_form_cell_lines(out: &mut Vec<BrowserLine>, cell: TableCell) {
         if bytes[i] == b'[' {
             if let Some(end) = text[i..].find(']') {
                 let part = &text[i..i + end + 1];
-                let is_btn = part.starts_with("[btn:");
-                let link = if is_btn { cell.link.clone() } else { None };
-                let kind = if link.is_some() { BrowserLineKind::Link } else { BrowserLineKind::Code };
-                out.push(BrowserLine { text: String::from(part), link, kind, image_slot: None });
+                if let Some(label) = part.strip_prefix("[btn:").and_then(|s| s.strip_suffix(']')) {
+                    let link = cell.link.clone();
+                    out.push(
+                        BrowserLine::new(
+                            format!("[button] {}", label),
+                            link.clone(),
+                            line_kind_for_link(&link, BrowserLineKind::Code),
+                        )
+                        .aligned(align)
+                        .with_control(BrowserControl::Button {
+                            label: String::from(label),
+                        }),
+                    );
+                } else if let Some(rest) = part
+                    .strip_prefix("[field:")
+                    .and_then(|s| s.strip_suffix(']'))
+                {
+                    let (chars, label) = rest
+                        .split_once(':')
+                        .map(|(chars, label)| {
+                            (parse_dimension(chars).unwrap_or(28).clamp(8, 72), label)
+                        })
+                        .unwrap_or((28, rest));
+                    out.push(
+                        BrowserLine::new(format!("[input] {}", label), None, BrowserLineKind::Code)
+                            .aligned(align)
+                            .with_control(BrowserControl::TextInput {
+                                label: String::from(label),
+                                value: String::new(),
+                                chars,
+                            }),
+                    );
+                } else {
+                    out.push(
+                        BrowserLine::new(String::from(part), None, BrowserLineKind::Code)
+                            .aligned(align),
+                    );
+                }
                 i += end + 1;
             } else {
                 break;
@@ -2343,12 +3039,10 @@ fn push_form_cell_lines(out: &mut Vec<BrowserLine>, cell: TableCell) {
             let end = text[i..].find('[').map(|p| i + p).unwrap_or(text.len());
             let plain = text[i..end].trim();
             if !plain.is_empty() {
-                out.push(BrowserLine {
-                    text: String::from(plain),
-                    link: None,
-                    kind: BrowserLineKind::Text,
-                    image_slot: None,
-                });
+                out.push(
+                    BrowserLine::new(String::from(plain), None, BrowserLineKind::Text)
+                        .aligned(align),
+                );
             }
             i = end;
         }
@@ -2370,6 +3064,7 @@ fn finish_table_cell(state: &mut HtmlRenderState) {
         header: state.table_cell_is_header,
         link,
         is_form_row: state.cell_has_form_control,
+        align: state.table_cell_align,
     });
     state.table_cell_text.clear();
     state.table_cell_is_header = false;
@@ -2377,6 +3072,9 @@ fn finish_table_cell(state: &mut HtmlRenderState) {
     state.cell_has_form_control = false;
     state.cell_form_link = None;
     state.cell_link = None;
+    state.pop_align("td");
+    state.pop_align("th");
+    state.table_cell_align = state.current_align();
 }
 
 fn finish_table_row(out: &mut Vec<BrowserLine>, state: &mut HtmlRenderState, cols: usize) {
@@ -2392,8 +3090,12 @@ fn finish_table_row(out: &mut Vec<BrowserLine>, state: &mut HtmlRenderState, col
             if cell.is_form_row {
                 push_form_cell_lines(out, cell);
             } else {
-                let kind = if cell.link.is_some() { BrowserLineKind::Link } else { BrowserLineKind::Text };
-                out.push(BrowserLine { text: cell.text, link: cell.link, kind, image_slot: None });
+                let kind = if cell.link.is_some() {
+                    BrowserLineKind::Link
+                } else {
+                    BrowserLineKind::Text
+                };
+                out.push(BrowserLine::new(cell.text, cell.link, kind).aligned(cell.align));
             }
         }
         return;
@@ -2469,12 +3171,7 @@ fn push_truncated_padded(out: &mut String, input: &str, width: usize) {
 
 fn push_blank_line(out: &mut Vec<BrowserLine>) {
     if out.last().map(|line| !line.text.is_empty()).unwrap_or(true) {
-        out.push(BrowserLine {
-            text: String::new(),
-            link: None,
-            kind: BrowserLineKind::Text,
-            image_slot: None,
-        });
+        out.push(line(""));
     }
 }
 
@@ -2482,10 +3179,21 @@ fn tag_is_hidden(lower_tag: &str) -> bool {
     let name = tag_name_of(lower_tag);
     let attrs = lower_tag[name.len()..].trim();
     // "hidden" as a standalone boolean attribute, not aria-hidden or data-hidden
-    let has_hidden_attr = attrs.split(|c: char| c.is_ascii_whitespace()).any(|token| {
-        token == "hidden" || token.starts_with("hidden=")
-    });
+    let has_hidden_attr = attrs
+        .split(|c: char| c.is_ascii_whitespace())
+        .any(|token| token == "hidden" || token.starts_with("hidden="));
+    let has_hidden_class = attr_value(lower_tag, "class")
+        .map(|classes| {
+            classes.split_whitespace().any(|class| {
+                matches!(
+                    class,
+                    "hidden" | "visually-hidden" | "sr-only" | "screen-reader-text"
+                )
+            })
+        })
+        .unwrap_or(false);
     has_hidden_attr
+        || has_hidden_class
         || lower_tag.contains("display:none")
         || lower_tag.contains("display: none")
         || lower_tag.contains("visibility:hidden")
@@ -2529,7 +3237,15 @@ fn flush_flow_text(
         } else {
             state.kind
         };
-    flush_text(out, text, cols, state.link.clone(), kind, prefix);
+    flush_text(
+        out,
+        text,
+        cols,
+        state.link.clone(),
+        kind,
+        prefix,
+        state.current_align(),
+    );
 }
 
 fn flush_text(
@@ -2539,6 +3255,7 @@ fn flush_text(
     link: Option<String>,
     kind: BrowserLineKind,
     prefix: Option<String>,
+    align: BrowserAlign,
 ) {
     let trimmed = if kind == BrowserLineKind::Code {
         text.trim_matches('\n')
@@ -2553,7 +3270,7 @@ fn flush_text(
     if let Some(prefix) = prefix {
         decoded.insert_str(0, &prefix);
     }
-    out.extend(wrap_plain_text_kind(&decoded, cols, link, kind));
+    out.extend(wrap_plain_text_kind(&decoded, cols, link, kind, align));
 }
 
 fn clean_inline_text(input: &str) -> String {
@@ -2568,7 +3285,7 @@ fn clean_inline_text(input: &str) -> String {
 }
 
 fn wrap_plain_text(text: &str, cols: usize, link: Option<String>) -> Vec<BrowserLine> {
-    wrap_plain_text_kind(text, cols, link, BrowserLineKind::Text)
+    wrap_plain_text_kind(text, cols, link, BrowserLineKind::Text, BrowserAlign::Left)
 }
 
 fn wrap_plain_text_kind(
@@ -2576,6 +3293,7 @@ fn wrap_plain_text_kind(
     cols: usize,
     link: Option<String>,
     kind: BrowserLineKind,
+    align: BrowserAlign,
 ) -> Vec<BrowserLine> {
     let cols = cols.clamp(20, 120);
     let mut out = Vec::new();
@@ -2583,23 +3301,19 @@ fn wrap_plain_text_kind(
     for word in text.split_whitespace() {
         if word.len() > cols {
             if !line.is_empty() {
-                out.push(BrowserLine {
-                    text: line,
-                    link: link.clone(),
-                    kind: line_kind_for_link(&link, kind),
-                    image_slot: None,
-                });
+                out.push(
+                    BrowserLine::new(line, link.clone(), line_kind_for_link(&link, kind))
+                        .aligned(align),
+                );
                 line = String::new();
             }
             let mut chunk = String::new();
             for c in word.chars() {
                 if chunk.len() >= cols {
-                    out.push(BrowserLine {
-                        text: chunk,
-                        link: link.clone(),
-                        kind: line_kind_for_link(&link, kind),
-                        image_slot: None,
-                    });
+                    out.push(
+                        BrowserLine::new(chunk, link.clone(), line_kind_for_link(&link, kind))
+                            .aligned(align),
+                    );
                     chunk = String::new();
                 }
                 chunk.push(c);
@@ -2611,12 +3325,10 @@ fn wrap_plain_text_kind(
         }
         let extra = if line.is_empty() { 0 } else { 1 };
         if line.len() + word.len() + extra > cols && !line.is_empty() {
-            out.push(BrowserLine {
-                text: line,
-                link: link.clone(),
-                kind: line_kind_for_link(&link, kind),
-                image_slot: None,
-            });
+            out.push(
+                BrowserLine::new(line, link.clone(), line_kind_for_link(&link, kind))
+                    .aligned(align),
+            );
             line = String::new();
         }
         if !line.is_empty() {
@@ -2626,12 +3338,7 @@ fn wrap_plain_text_kind(
     }
     if !line.is_empty() {
         let kind = line_kind_for_link(&link, kind);
-        out.push(BrowserLine {
-            text: line,
-            link,
-            kind,
-            image_slot: None,
-        });
+        out.push(BrowserLine::new(line, link, kind).aligned(align));
     }
     out
 }
@@ -2649,7 +3356,8 @@ fn is_separator_only(text: &str) -> bool {
     if t.is_empty() {
         return false;
     }
-    t.chars().all(|c| matches!(c, '-' | '|' | '·' | '•' | '/' | '\\' | '_'))
+    t.chars()
+        .all(|c| matches!(c, '-' | '|' | '·' | '•' | '/' | '\\' | '_'))
 }
 
 fn compact_lines(lines: Vec<BrowserLine>) -> Vec<BrowserLine> {
@@ -2667,59 +3375,6 @@ fn compact_lines(lines: Vec<BrowserLine>) -> Vec<BrowserLine> {
         last_blank = blank;
         out.push(line);
     }
-    // Defer clusters of link lines that appear before the first image/heading/form
-    defer_leading_links(out)
-}
-
-fn defer_leading_links(lines: Vec<BrowserLine>) -> Vec<BrowserLine> {
-    // Find where real content starts: first Image, Heading, or a non-Link non-blank line
-    let first_content = lines.iter().position(|l| {
-        matches!(l.kind, BrowserLineKind::Image | BrowserLineKind::Heading)
-            || (l.kind != BrowserLineKind::Link && !l.text.trim().is_empty())
-    });
-    let first_content = match first_content {
-        Some(idx) if idx > 0 => idx,
-        _ => return lines, // nothing to defer
-    };
-    // Check that the leading section is all links (or blanks)
-    let leading_all_links = lines[..first_content].iter().all(|l| {
-        l.kind == BrowserLineKind::Link || l.text.trim().is_empty()
-    });
-    if !leading_all_links {
-        return lines;
-    }
-    // Count link lines at the top (must be at least 2 to trigger deferral)
-    let link_count = lines[..first_content]
-        .iter()
-        .filter(|l| l.kind == BrowserLineKind::Link)
-        .count();
-    if link_count < 2 {
-        return lines;
-    }
-    // Find the end of the first content block (next blank line after content start)
-    let insert_after = lines[first_content..]
-        .iter()
-        .position(|l| l.text.trim().is_empty())
-        .map(|p| first_content + p)
-        .unwrap_or(lines.len());
-    // Split into: leading links, content block, rest
-    let mut leading: Vec<BrowserLine> = lines[..first_content]
-        .iter()
-        .filter(|l| l.kind == BrowserLineKind::Link)
-        .cloned()
-        .collect();
-    let mut out: Vec<BrowserLine> = lines[first_content..insert_after].to_vec();
-    // Add a blank separator before deferred links
-    if !out.is_empty() {
-        out.push(BrowserLine {
-            text: String::new(),
-            link: None,
-            kind: BrowserLineKind::Text,
-            image_slot: None,
-        });
-    }
-    out.append(&mut leading);
-    out.extend_from_slice(&lines[insert_after..]);
     out
 }
 

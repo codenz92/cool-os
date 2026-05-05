@@ -99,6 +99,8 @@ def build_command(args: argparse.Namespace, monitor_socket: str | None = None) -
         args.memory,
         "-cpu",
         args.cpu,
+        "-rtc",
+        "base=utc,clock=host",
         "-smp",
         args.smp,
         "-vga",

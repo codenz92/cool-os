@@ -124,6 +124,8 @@ def build_command(args: argparse.Namespace, qmp_path: Path) -> list[str]:
         f"file={args.fsimg},if=ide,format=raw,index=1,snapshot=on",
         "-m",
         "512M",
+        "-rtc",
+        "base=utc,clock=host",
         "-vga",
         "std",
         "-display",
