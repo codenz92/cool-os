@@ -11,11 +11,21 @@ static JOURNAL: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static DIRTY: AtomicBool = AtomicBool::new(false);
 
 pub fn init() {
-    for dir in ["/CONFIG", "/LOGS", "/APPS", "/DEV", "/TMP", "/Downloads"] {
+    for dir in [
+        "/CONFIG",
+        "/LOGS",
+        "/APPS",
+        "/DEV",
+        "/TMP",
+        "/Downloads",
+        crate::coolfs::MOUNT_PATH,
+    ] {
         let _ = crate::fat32::create_dir(dir);
     }
+    let _ = crate::coolfs::mount_or_format();
     replay_journal();
     journal_operation("mount", "fat32 rw,safe-write,journal-lite");
+    journal_operation("mount", "coolfs rw,native-image,bitmap-inodes");
 }
 
 pub fn journal_operation(op: &str, path: &str) {
@@ -75,6 +85,7 @@ pub fn status_lines() -> Vec<String> {
             stats.used_clusters, stats.free_clusters, stats.bytes_per_cluster
         ));
     }
+    lines.extend(crate::coolfs::lines());
     lines
 }
 
@@ -88,12 +99,17 @@ pub fn repair() -> Vec<String> {
         "/TMP",
         "/Trash",
         "/Downloads",
+        crate::coolfs::MOUNT_PATH,
     ] {
         match crate::fat32::create_dir(dir) {
             Ok(()) => lines.push(format!("created {}", dir)),
             Err(crate::fat32::FsError::AlreadyExists) => lines.push(format!("ok {}", dir)),
             Err(err) => lines.push(format!("{}: {}", dir, err.as_str())),
         }
+    }
+    match crate::coolfs::mount_or_format() {
+        Ok(()) => lines.push(String::from("ok /COOL coolfs image")),
+        Err(err) => lines.push(format!("/COOL: {}", err.as_str())),
     }
     if let Some(report) = crate::fat32::check() {
         lines.push(format!(

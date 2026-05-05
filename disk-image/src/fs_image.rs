@@ -1,5 +1,5 @@
 /// Host-side tool: creates a FAT32 disk image and populates it with
-/// /bin/hello.txt (and any other files needed by Phase 11+).
+/// /bin/hello.txt, userspace binaries, and the CoolFS backing image.
 ///
 /// Usage: fs-image <output-path> [hello-elf] [exec-elf] [pipe-elf] [read-elf] [piperd-elf] [pipewr-elf] [keyecho-elf] [terminal-elf] [netdemo-elf] [wget-elf]
 /// Output: a 64 MiB raw FAT32 disk image ready to attach as a QEMU IDE drive.
@@ -46,7 +46,16 @@ fn main() {
         .expect("failed to open FAT32 filesystem");
 
     let root = fs.root_dir();
-    for dir in ["CONFIG", "LOGS", "APPS", "DEV", "TMP", "Trash", "Downloads"] {
+    for dir in [
+        "CONFIG",
+        "LOGS",
+        "APPS",
+        "DEV",
+        "TMP",
+        "Trash",
+        "Downloads",
+        "COOL",
+    ] {
         root.create_dir(dir)
             .unwrap_or_else(|e| panic!("failed to create /{}: {}", dir, e));
     }
@@ -71,6 +80,14 @@ fn main() {
     motd.truncate().unwrap();
     motd.write_all(b"coolOS Phase 11 - filesystem alive!\n")
         .expect("failed to write motd.txt");
+
+    let mut coolfs = root
+        .create_file("COOLFS.IMG")
+        .expect("failed to create COOLFS.IMG");
+    coolfs.truncate().unwrap();
+    coolfs
+        .write_all(&create_coolfs_image())
+        .expect("failed to write COOLFS.IMG");
 
     if let Some(hello_path) = hello_elf {
         let hello_bytes = std::fs::read(&hello_path)
@@ -179,4 +196,93 @@ fn main() {
     }
 
     println!("{}", out_path);
+}
+
+const CF_MAGIC: [u8; 8] = *b"COOLFS1\0";
+const CF_VERSION: u32 = 1;
+const CF_BLOCK_SIZE: usize = 512;
+const CF_TOTAL_BLOCKS: u32 = 512;
+const CF_INODE_COUNT: u32 = 128;
+const CF_INODE_SIZE: usize = 256;
+const CF_DIRECT_BLOCKS: usize = 48;
+const CF_DIR_ENTRY_SIZE: usize = 32;
+const CF_INODE_TABLE_START: u32 = 1;
+const CF_INODE_TABLE_BLOCKS: u32 =
+    ((CF_INODE_COUNT as usize * CF_INODE_SIZE + CF_BLOCK_SIZE - 1) / CF_BLOCK_SIZE) as u32;
+const CF_BITMAP_START: u32 = CF_INODE_TABLE_START + CF_INODE_TABLE_BLOCKS;
+const CF_BITMAP_BLOCKS: u32 = 1;
+const CF_DATA_START: u32 = CF_BITMAP_START + CF_BITMAP_BLOCKS;
+const CF_KIND_DIR: u8 = 2;
+const CF_KIND_FILE: u8 = 1;
+
+fn create_coolfs_image() -> Vec<u8> {
+    let mut image = vec![0u8; CF_TOTAL_BLOCKS as usize * CF_BLOCK_SIZE];
+    image[0..8].copy_from_slice(&CF_MAGIC);
+    cf_write_u32(&mut image, 8, CF_VERSION);
+    cf_write_u32(&mut image, 12, CF_BLOCK_SIZE as u32);
+    cf_write_u32(&mut image, 16, CF_TOTAL_BLOCKS);
+    cf_write_u32(&mut image, 20, CF_INODE_COUNT);
+    cf_write_u32(&mut image, 24, CF_INODE_SIZE as u32);
+    cf_write_u32(&mut image, 28, CF_INODE_TABLE_START);
+    cf_write_u32(&mut image, 32, CF_INODE_TABLE_BLOCKS);
+    cf_write_u32(&mut image, 36, CF_BITMAP_START);
+    cf_write_u32(&mut image, 40, CF_BITMAP_BLOCKS);
+    cf_write_u32(&mut image, 44, CF_DATA_START);
+    cf_write_u32(&mut image, 48, 0);
+
+    for block in 0..CF_DATA_START {
+        cf_set_block_used(&mut image, block);
+    }
+
+    let root_dir_block = CF_DATA_START;
+    let readme_block = CF_DATA_START + 1;
+    cf_set_block_used(&mut image, root_dir_block);
+    cf_set_block_used(&mut image, readme_block);
+
+    cf_write_inode(
+        &mut image,
+        0,
+        CF_KIND_DIR,
+        CF_DIR_ENTRY_SIZE as u32,
+        &[root_dir_block],
+    );
+    cf_write_inode(
+        &mut image,
+        1,
+        CF_KIND_FILE,
+        COOLFS_README.len() as u32,
+        &[readme_block],
+    );
+    cf_write_dir_entry(&mut image, root_dir_block, 0, 1, "README.TXT");
+
+    let start = readme_block as usize * CF_BLOCK_SIZE;
+    image[start..start + COOLFS_README.len()].copy_from_slice(COOLFS_README);
+    image
+}
+
+const COOLFS_README: &[u8] = b"Welcome to CoolFS.\nThis file lives inside a native coolOS filesystem image mounted at /COOL.\n";
+
+fn cf_write_inode(image: &mut [u8], inode: u32, kind: u8, size: u32, direct: &[u32]) {
+    let off = CF_INODE_TABLE_START as usize * CF_BLOCK_SIZE + inode as usize * CF_INODE_SIZE;
+    image[off] = kind;
+    cf_write_u32(image, off + 4, size);
+    for (idx, block) in direct.iter().take(CF_DIRECT_BLOCKS).enumerate() {
+        cf_write_u32(image, off + 8 + idx * 4, *block);
+    }
+}
+
+fn cf_write_dir_entry(image: &mut [u8], block: u32, slot: usize, inode: u32, name: &str) {
+    let off = block as usize * CF_BLOCK_SIZE + slot * CF_DIR_ENTRY_SIZE;
+    cf_write_u32(image, off, inode);
+    image[off + 4] = name.len() as u8;
+    image[off + 5..off + 5 + name.len()].copy_from_slice(name.as_bytes());
+}
+
+fn cf_set_block_used(image: &mut [u8], block: u32) {
+    let byte = CF_BITMAP_START as usize * CF_BLOCK_SIZE + block as usize / 8;
+    image[byte] |= 1u8 << (block % 8);
+}
+
+fn cf_write_u32(bytes: &mut [u8], offset: usize, value: u32) {
+    bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }

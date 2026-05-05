@@ -7,7 +7,7 @@ A 64-bit operating system kernel written in Rust. Boots bare-metal into a
 graphical desktop with draggable and resizable windows, a taskbar, a start
 menu, a PS/2 mouse cursor, and six built-in applications — now with a preemptive scheduler, ring-3
 userspace, per-process virtual memory, process isolation, a FAT32
-filesystem with VFS/syscalls, an ELF loader with `exec`, and a full IPC
+filesystem with VFS/syscalls, a native CoolFS mount, an ELF loader with `exec`, and a full IPC
 layer with pipes, shared memory, and per-task fd tables.
 
 ---
@@ -73,11 +73,12 @@ built-in trust roots.
 | **ELF loader** | Validates ELF64 headers, maps `PT_LOAD` segments into a fresh address space, allocates a private user stack, builds an initial `argc/argv/envp` stack frame, and can either spawn a new task or prepare an image for `sys_exec`. |
 | **ATA PIO driver** | Primary-bus slave device (QEMU `if=ide,index=1`). LBA28 PIO reads, BSY/DRQ polling with timeout, nIEN=1 (device interrupts disabled). Wrapped in `without_interrupts` to prevent preemption mid-transfer. |
 | **FAT32 layer** | BPB parsing, FAT chain walking, short-name and long-filename lookup, directory traversal, cluster→sector mapping, create/write/rename/delete/copy helpers, temp-write+rename safe writes, free-space stats, and a basic `fsck` consistency summary. `fat32::read_file(path)` returns `Option<Vec<u8>>`. |
+| **CoolFS layer** | Native coolOS filesystem mounted at `/COOL`, backed by `/COOLFS.IMG`. It has a CoolFS superblock, fixed inode table, block bitmap, direct data blocks, directory records, VFS read/write/create/rename/delete/copy routing, stats, and boot self-tests. |
 | **VFS** | Task-local fd tables (16 slots, fds 0–2 reserved) backed by shared file/pipe/shmem objects. `vfs_open` reads whole files into heap buffers; `vfs_pipe` allocates a 512-byte kernel ring buffer and returns per-task read/write fds; `vfs_read_blocking` blocks tasks on empty pipes and wakes them on write/EOF; `ipc` selectively inherits pipe ends into child processes; `vfs_shmem_create`/`vfs_shmem_map` manage a shared memory region pool indexed by ID. |
 | **Networking** | Legacy PCI virtio-net driver for QEMU user networking, polling RX/TX virtqueues, Ethernet framing, ARP cache, IPv4, ICMP echo, UDP DNS queries, minimal TCP client sockets, userspace socket syscalls, HTTP/1.1, and verified TLS 1.3 HTTPS for the native browser/terminal path. |
 | **Kernel services** | Persistent kernel log buffer flushed to `/LOGS/KERNEL.TXT`, crash-screen log tail, central device registry for PCI/USB/system devices, package/app metadata and file associations, networking status, and ACPI power-control status foundation. |
 | **Applications** | Terminal, System Monitor, Text Viewer, Color Picker, File Manager, and Web Browser. |
-| **Disk image** | `disk-image/src/fs-image.rs` builds `fs.img` (64 MiB FAT32) with `/bin/hello.txt`, `/bin/hello`, `/bin/exec`, `/bin/pipe`, `/bin/piperd`, `/bin/pipewr`, `/bin/keyecho`, `/bin/read`, `/bin/terminal`, `/bin/netdemo`, and `/bin/wget`. The Makefile attaches it to QEMU as the IDE slave. |
+| **Disk image** | `disk-image/src/fs-image.rs` builds `fs.img` (64 MiB FAT32) with `/COOLFS.IMG`, `/bin/hello.txt`, `/bin/hello`, `/bin/exec`, `/bin/pipe`, `/bin/piperd`, `/bin/pipewr`, `/bin/keyecho`, `/bin/read`, `/bin/terminal`, `/bin/netdemo`, and `/bin/wget`. The Makefile attaches it to QEMU as the IDE slave. |
 
 ### Applications
 
@@ -136,7 +137,8 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `power [reboot\|shutdown\|sleep]` | Print or request power-control actions |
 | `log` | Flush and print the kernel log tail |
 | `fsck` | Print FAT32 consistency and root-entry summary |
-| `df` | Print FAT32 used/free/total space |
+| `coolfs` | Print CoolFS mount and inode/block usage |
+| `df` | Print FAT32 and CoolFS used/free/total space |
 | `shortcuts` | Print configured global shortcuts |
 | `clip [text]` | Show clipboard summary or copy text |
 | `paste` | Paste shared clipboard text |

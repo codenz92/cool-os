@@ -411,6 +411,8 @@ impl TerminalApp {
 
             Some("fsck") => self.cmd_fsck(),
 
+            Some("coolfs") => self.cmd_lines("COOLFS", crate::coolfs::lines()),
+
             Some("fsrepair") => self.cmd_lines("FS REPAIR", crate::fs_hardening::repair()),
 
             Some("mounts") => self.cmd_lines("MOUNTS", crate::fs_hardening::status_lines()),
@@ -769,6 +771,7 @@ impl TerminalApp {
             ("deferred", "deferred work queue"),
             ("tasksnap", "persistent task snapshot"),
             ("fsck", "filesystem check summary"),
+            ("coolfs", "CoolFS mount status"),
             ("fsrepair", "repair standard FS dirs"),
             ("mounts", "mount/cache/journal status"),
             ("vfs", "mount table and fd tables"),
@@ -1434,6 +1437,28 @@ impl TerminalApp {
                 self.print_str("fsck: unable to read filesystem\n");
             }
         }
+        match crate::coolfs::check() {
+            Some(report) => {
+                self.set_fg(if report.ok { FG_ACCENT } else { FG_WARN });
+                self.print_str(if report.ok {
+                    "coolfs ok\n"
+                } else {
+                    "coolfs warning\n"
+                });
+                self.set_fg(FG_OUTPUT);
+                self.print_str("root entries ");
+                self.print_u64(report.root_entries as u64);
+                self.print_str("  blocks ");
+                self.print_u64(report.stats.used_blocks as u64);
+                self.print_char('/');
+                self.print_u64(report.stats.total_blocks as u64);
+                self.print_char('\n');
+            }
+            None => {
+                self.set_fg(FG_ERROR);
+                self.print_str("coolfs: unable to read filesystem\n");
+            }
+        }
     }
 
     fn cmd_df(&mut self) {
@@ -1452,6 +1477,18 @@ impl TerminalApp {
                 self.print_str("  ");
                 self.print_size(total);
                 self.print_char('\n');
+                if let Some(cool) = crate::coolfs::stats() {
+                    let cool_used = cool.used_blocks as usize * cool.block_size as usize;
+                    let cool_free = cool.free_blocks as usize * cool.block_size as usize;
+                    let cool_total = cool.total_blocks as usize * cool.block_size as usize;
+                    self.print_str("coolfs      ");
+                    self.print_size(cool_used);
+                    self.print_str("  ");
+                    self.print_size(cool_free);
+                    self.print_str("  ");
+                    self.print_size(cool_total);
+                    self.print_char('\n');
+                }
             }
             None => {
                 self.set_fg(FG_ERROR);

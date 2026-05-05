@@ -45,6 +45,12 @@ pub fn run_boot_tests() {
         &mut fail,
     );
     check(
+        "coolfs-mutation",
+        coolfs_mutation_roundtrip(),
+        &mut ok,
+        &mut fail,
+    );
+    check(
         "vfs-write-enforcement",
         vfs_write_enforcement(),
         &mut ok,
@@ -116,6 +122,30 @@ fn fat32_mutation_roundtrip() -> bool {
     }
     crate::fat32::read_file(path)
         .map(|bytes| bytes.as_slice() == b"selftest\n")
+        .unwrap_or(false)
+}
+
+fn coolfs_mutation_roundtrip() -> bool {
+    if crate::coolfs::mount_or_format().is_err() {
+        return false;
+    }
+    let _ = crate::vfs::vfs_create_dir("/COOL/TESTS");
+    let path = "/COOL/TESTS/ROUNDTRIP.TXT";
+    match crate::vfs::vfs_create_file(path) {
+        Ok(()) | Err(crate::fat32::FsError::AlreadyExists) => {}
+        Err(_) => return false,
+    }
+    if crate::vfs::vfs_safe_write_file(path, b"coolfs selftest\n").is_err() {
+        return false;
+    }
+    if !matches!(
+        crate::vfs::vfs_create_file("/COOLFS.IMG"),
+        Err(crate::fat32::FsError::PermissionDenied)
+    ) {
+        return false;
+    }
+    crate::vfs::vfs_read_file(path)
+        .map(|bytes| bytes.as_slice() == b"coolfs selftest\n")
         .unwrap_or(false)
 }
 

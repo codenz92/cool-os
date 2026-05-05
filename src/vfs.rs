@@ -34,11 +34,16 @@ pub struct PathInfo {
     pub size: u64,
 }
 
-const MOUNTS: [MountInfo; 4] = [
+const MOUNTS: [MountInfo; 5] = [
     MountInfo {
         prefix: "/",
         fs_type: "fat32",
         flags: "rw,relatime,normalized-paths",
+    },
+    MountInfo {
+        prefix: "/COOL",
+        fs_type: "coolfs",
+        flags: "rw,native-image,bitmap-inodes",
     },
     MountInfo {
         prefix: "/DEV",
@@ -333,6 +338,30 @@ pub fn inspect_path(path: &str) -> PathInfo {
             size: 0,
         };
     }
+    if let Some(cool_path) = coolfs_path(&path) {
+        if crate::coolfs::list_dir(&cool_path).is_some() {
+            return PathInfo {
+                path,
+                mount,
+                kind: PathKind::Directory,
+                size: 0,
+            };
+        }
+        if let Some(bytes) = crate::coolfs::read_file(&cool_path) {
+            return PathInfo {
+                path,
+                mount,
+                kind: PathKind::File,
+                size: bytes.len() as u64,
+            };
+        }
+        return PathInfo {
+            path,
+            mount,
+            kind: PathKind::Missing,
+            size: 0,
+        };
+    }
     if crate::fat32::list_dir(&path).is_some() {
         return PathInfo {
             path,
@@ -403,6 +432,9 @@ pub fn vfs_list_dir(path: &str) -> Option<Vec<crate::fat32::DirEntryInfo>> {
     if !crate::security::can_read_path(&path) {
         return None;
     }
+    if let Some(cool_path) = coolfs_path(&path) {
+        return crate::coolfs::list_dir(&cool_path);
+    }
     crate::fat32::list_dir(&path)
 }
 
@@ -410,6 +442,9 @@ pub fn vfs_read_file(path: &str) -> Option<Vec<u8>> {
     let path = normalize_path(path);
     if !crate::security::can_read_path(&path) {
         return None;
+    }
+    if let Some(cool_path) = coolfs_path(&path) {
+        return crate::coolfs::read_file(&cool_path);
     }
     crate::fat32::read_file(&path)
 }
@@ -419,6 +454,9 @@ pub fn vfs_create_file(path: &str) -> Result<(), crate::fat32::FsError> {
     if !crate::security::can_write_path(&path) {
         return Err(crate::fat32::FsError::PermissionDenied);
     }
+    if let Some(cool_path) = coolfs_path(&path) {
+        return crate::coolfs::create_file(&cool_path);
+    }
     crate::fat32::create_file(&path)
 }
 
@@ -426,6 +464,9 @@ pub fn vfs_create_dir(path: &str) -> Result<(), crate::fat32::FsError> {
     let path = normalize_path(path);
     if !crate::security::can_write_path(&path) {
         return Err(crate::fat32::FsError::PermissionDenied);
+    }
+    if let Some(cool_path) = coolfs_path(&path) {
+        return crate::coolfs::create_dir(&cool_path);
     }
     crate::fat32::create_dir(&path)
 }
@@ -436,6 +477,9 @@ pub fn vfs_write_file(path: &str, data: &[u8]) -> Result<(), crate::fat32::FsErr
     if !crate::security::can_write_path(&path) {
         return Err(crate::fat32::FsError::PermissionDenied);
     }
+    if let Some(cool_path) = coolfs_path(&path) {
+        return crate::coolfs::write_file(&cool_path, data);
+    }
     crate::fat32::write_file(&path, data)
 }
 
@@ -445,6 +489,9 @@ pub fn vfs_safe_write_file(path: &str, data: &[u8]) -> Result<(), crate::fat32::
     if !crate::security::can_write_path(&path) {
         return Err(crate::fat32::FsError::PermissionDenied);
     }
+    if let Some(cool_path) = coolfs_path(&path) {
+        return crate::coolfs::safe_write_file(&cool_path, data);
+    }
     crate::fat32::safe_write_file(&path, data)
 }
 
@@ -452,6 +499,9 @@ pub fn vfs_delete(path: &str) -> Result<(), crate::fat32::FsError> {
     let path = normalize_path(path);
     if !crate::security::can_write_path(&path) {
         return Err(crate::fat32::FsError::PermissionDenied);
+    }
+    if let Some(cool_path) = coolfs_path(&path) {
+        return crate::coolfs::delete_file(&cool_path);
     }
     crate::fat32::delete_file(&path)
 }
@@ -462,6 +512,9 @@ pub fn vfs_rename(path: &str, new_name: &str) -> Result<(), crate::fat32::FsErro
     if !crate::security::can_write_path(&path) {
         return Err(crate::fat32::FsError::PermissionDenied);
     }
+    if let Some(cool_path) = coolfs_path(&path) {
+        return crate::coolfs::rename(&cool_path, new_name);
+    }
     crate::fat32::rename(&path, new_name)
 }
 
@@ -471,7 +524,30 @@ pub fn vfs_copy_file(src: &str, dst: &str) -> Result<(), crate::fat32::FsError> 
     if !crate::security::can_read_path(&src) || !crate::security::can_write_path(&dst) {
         return Err(crate::fat32::FsError::PermissionDenied);
     }
-    crate::fat32::copy_file(&src, &dst)
+    match (coolfs_path(&src), coolfs_path(&dst)) {
+        (Some(src), Some(dst)) => crate::coolfs::copy_file(&src, &dst),
+        (None, None) => crate::fat32::copy_file(&src, &dst),
+        _ => {
+            let data = vfs_read_file(&src).ok_or(crate::fat32::FsError::NotFound)?;
+            vfs_create_file(&dst)?;
+            vfs_write_file(&dst, &data)
+        }
+    }
+}
+
+fn coolfs_path(path: &str) -> Option<String> {
+    if path == crate::coolfs::MOUNT_PATH {
+        return Some(String::from("/"));
+    }
+    let mut prefix = String::from(crate::coolfs::MOUNT_PATH);
+    prefix.push('/');
+    if path.starts_with(&prefix) {
+        let mut out = String::from("/");
+        out.push_str(&path[prefix.len()..]);
+        Some(out)
+    } else {
+        None
+    }
 }
 
 pub fn init_task(task_id: usize) {
