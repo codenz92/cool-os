@@ -1831,6 +1831,8 @@ struct HtmlRenderState {
     table_cell_text: String,
     table_row: Vec<TableCell>,
     form_action: Option<String>,
+    cell_has_form_control: bool,
+    cell_form_link: Option<String>,
 }
 
 impl HtmlRenderState {
@@ -1850,6 +1852,8 @@ impl HtmlRenderState {
             table_cell_text: String::new(),
             table_row: Vec::new(),
             form_action: None,
+            cell_has_form_control: false,
+            cell_form_link: None,
         }
     }
 }
@@ -1857,6 +1861,8 @@ impl HtmlRenderState {
 struct TableCell {
     text: String,
     header: bool,
+    link: Option<String>,
+    is_form_row: bool,
 }
 
 fn is_inline_tag(name: &str) -> bool {
@@ -2182,11 +2188,15 @@ fn handle_table_cell_tag(
                 return;
             }
             let label = form_control_label(tag, &input_type);
+            state.cell_has_form_control = true;
             if !state.table_cell_text.is_empty() && !state.table_cell_text.ends_with(' ') {
                 state.table_cell_text.push(' ');
             }
             match input_type.as_str() {
-                "submit" | "button" | "reset" => {
+                "submit" | "button" => {
+                    if state.cell_form_link.is_none() {
+                        state.cell_form_link = state.form_action.clone();
+                    }
                     state.table_cell_text.push_str("[btn:");
                     state.table_cell_text.push_str(&label);
                     state.table_cell_text.push(']');
@@ -2285,14 +2295,37 @@ fn finish_table_cell(state: &mut HtmlRenderState) {
     state.table_row.push(TableCell {
         text,
         header: state.table_cell_is_header,
+        link: state.cell_form_link.take(),
+        is_form_row: state.cell_has_form_control,
     });
     state.table_cell_text.clear();
     state.table_cell_is_header = false;
     state.in_table_cell = false;
+    state.cell_has_form_control = false;
 }
 
 fn finish_table_row(out: &mut Vec<BrowserLine>, state: &mut HtmlRenderState, cols: usize) {
     if state.table_row.is_empty() {
+        return;
+    }
+    let has_form = state.table_row.iter().any(|c| c.is_form_row);
+    if has_form {
+        for cell in state.table_row.drain(..) {
+            if cell.text.is_empty() {
+                continue;
+            }
+            let kind = if cell.link.is_some() {
+                BrowserLineKind::Link
+            } else {
+                BrowserLineKind::Code
+            };
+            out.push(BrowserLine {
+                text: cell.text,
+                link: cell.link,
+                kind,
+                image_slot: None,
+            });
+        }
         return;
     }
     let header = state.table_row.iter().any(|cell| cell.header);
