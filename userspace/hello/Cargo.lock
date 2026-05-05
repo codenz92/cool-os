@@ -3,6 +3,12 @@
 version = 4
 
 [[package]]
+name = "font8x8"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e63201c624b8c8883921b1a1accc8916c4fa9dbfb15d122b26e4dde945b86bbf"
+
+[[package]]
 name = "hello_user"
 version = "0.1.0"
 dependencies = [
@@ -12,3 +18,6 @@ dependencies = [
 [[package]]
 name = "libcool"
 version = "0.1.0"
+dependencies = [
+ "font8x8",
+]

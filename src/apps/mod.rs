@@ -6,6 +6,7 @@ pub mod personalize;
 pub mod sysmon;
 pub mod terminal;
 pub mod textviewer;
+pub mod usergui;
 pub mod utilities;
 
 pub use browser::BrowserApp;
@@ -16,4 +17,5 @@ pub use personalize::PersonalizeApp;
 pub use sysmon::SysMonApp;
 pub use terminal::TerminalApp;
 pub use textviewer::TextViewerApp;
+pub use usergui::UserGuiApp;
 pub use utilities::UtilityApp;

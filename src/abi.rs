@@ -2,7 +2,7 @@ extern crate alloc;
 
 use alloc::{format, string::String, vec::Vec};
 
-pub const KERNEL_ABI_VERSION: u64 = 3;
+pub const KERNEL_ABI_VERSION: u64 = 4;
 pub const KERNEL_ABI_NAME: &str = "coolOS-userspace-abi";
 
 pub fn version() -> u64 {
@@ -18,5 +18,6 @@ pub fn lines() -> Vec<String> {
         String::from("syscalls: exit/write/yield/getpid/mmap/open/read/close/exec"),
         String::from("syscalls: pipe/dup/shmem/waitpid/spawn/sleep_ms/abi/dns/http"),
         String::from("syscalls: socket/connect/send/recv"),
+        String::from("syscalls: gui_open/gui_present/gui_poll_event/gui_close"),
     ]
 }

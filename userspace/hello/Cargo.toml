@@ -22,6 +22,10 @@ path = "src/bin/wget.rs"
 name = "sdkdemo"
 path = "src/bin/sdkdemo.rs"
 
+[[bin]]
+name = "guidemo"
+path = "src/bin/guidemo.rs"
+
 [profile.dev]
 panic = "abort"
 

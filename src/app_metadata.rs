@@ -252,6 +252,16 @@ pub const APPS: &[AppMetadata] = &[
         aliases: &["help", "cheatsheet", "shortcuts"],
         associations: &[],
     },
+    AppMetadata {
+        id: "app.guidemo",
+        name: "GUI Demo",
+        glyph: "UG",
+        command: "guidemo",
+        category: AppCategory::Development,
+        permission: "desktop",
+        aliases: &["gui", "userspace", "sdk", "window"],
+        associations: &[],
+    },
 ];
 
 pub const APP_CATEGORIES: &[AppCategory] = &[
@@ -329,6 +339,11 @@ pub const LAUNCHER_ENTRIES: &[LauncherEntry] = &[
         label: "Color Picker",
         detail: "open palette",
         kind: LauncherKind::App("Color Picker"),
+    },
+    LauncherEntry {
+        label: "GUI Demo",
+        detail: "ring-3 window app",
+        kind: LauncherKind::App("GUI Demo"),
     },
     LauncherEntry {
         label: "Crash Viewer",

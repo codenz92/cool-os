@@ -1,4 +1,4 @@
-.PHONY: run run-net run-usb run-usb-init run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
+.PHONY: run run-net run-usb run-usb-init run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -20,6 +20,7 @@ USER_TERMINAL_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/rel
 USER_NETDEMO_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/netdemo
 USER_WGET_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/wget
 USER_SDKDEMO_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/sdkdemo
+USER_GUIDEMO_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/guidemo
 SMOKE_SECONDS ?= 18
 SMOKE_FRAMEBUFFER_SECONDS ?= 30
 SMOKE_INTERACTIVE_SECONDS ?= $(SMOKE_FRAMEBUFFER_SECONDS)
@@ -375,12 +376,28 @@ smoke-userspace-sdk: build
 		--hmp "sendkey ctrl-spc" \
 		--type-text "> exec /bin/sdkdemo alpha\n" \
 		--post-hmp-delay 2.0 \
-		--expect "sdkdemo: libcool sdk=1 abi=3" \
+		--expect "sdkdemo: libcool sdk=1 abi=4" \
 		--expect "sdkdemo: argv [0]=/bin/sdkdemo [1]=alpha" \
 		--expect "sdkdemo: sdk pipe ok" \
 		--expect "sdkdemo: mmap ok" \
 		--expect "sdkdemo: done" \
 		--expect "[boot] desktop ready"
+
+smoke-userspace-gui: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds $(SMOKE_SECONDS) \
+		--hmp "sendkey ctrl-spc" \
+		--type-text "> exec /bin/guidemo\n" \
+		--post-hmp-delay 2.0 \
+		--expect "guidemo: window opened" \
+		--expect "guidemo: presented frame" \
+		--expect "[boot] desktop ready" \
+		--expect-framebuffer-window
 
 smoke-net-api: build
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
@@ -563,7 +580,7 @@ build:
 		--target-dir $(CURDIR)/target/userspace/hello \
 		-Z build-std=core,compiler_builtins
 	(cd disk-image && cargo run --bin disk-image -- "$(KERNEL)")
-	(cd disk-image && cargo run --bin fs-image -- "$(FSIMG)" "$(USER_TARGET)" "$(USER_EXEC_TARGET)" "$(USER_PIPE_TARGET)" "$(USER_READ_TARGET)" "$(USER_PIPERD_TARGET)" "$(USER_PIPEWR_TARGET)" "$(USER_KEYECHO_TARGET)" "$(USER_TERMINAL_TARGET)" "$(USER_NETDEMO_TARGET)" "$(USER_WGET_TARGET)" "$(USER_SDKDEMO_TARGET)")
+	(cd disk-image && cargo run --bin fs-image -- "$(FSIMG)" "$(USER_TARGET)" "$(USER_EXEC_TARGET)" "$(USER_PIPE_TARGET)" "$(USER_READ_TARGET)" "$(USER_PIPERD_TARGET)" "$(USER_PIPEWR_TARGET)" "$(USER_KEYECHO_TARGET)" "$(USER_TERMINAL_TARGET)" "$(USER_NETDEMO_TARGET)" "$(USER_WGET_TARGET)" "$(USER_SDKDEMO_TARGET)" "$(USER_GUIDEMO_TARGET)")
 
 build-usb-init: build
 

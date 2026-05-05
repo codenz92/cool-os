@@ -1,7 +1,7 @@
 /// Host-side tool: creates a FAT32 disk image and populates it with
 /// /bin/hello.txt, userspace binaries, and the CoolFS backing image.
 ///
-/// Usage: fs-image <output-path> [hello-elf] [exec-elf] [pipe-elf] [read-elf] [piperd-elf] [pipewr-elf] [keyecho-elf] [terminal-elf] [netdemo-elf] [wget-elf] [sdkdemo-elf]
+/// Usage: fs-image <output-path> [hello-elf] [exec-elf] [pipe-elf] [read-elf] [piperd-elf] [pipewr-elf] [keyecho-elf] [terminal-elf] [netdemo-elf] [wget-elf] [sdkdemo-elf] [guidemo-elf]
 /// Output: a 64 MiB raw FAT32 disk image ready to attach as a QEMU IDE drive.
 use std::io::Write;
 
@@ -21,6 +21,7 @@ fn main() {
     let netdemo_elf = args.next();
     let wget_elf = args.next();
     let sdkdemo_elf = args.next();
+    let guidemo_elf = args.next();
 
     // Create or truncate the file, set it to the desired size.
     let file = std::fs::OpenOptions::new()
@@ -209,6 +210,18 @@ fn main() {
         sdkdemo_bin
             .write_all(&sdkdemo_bytes)
             .expect("failed to write sdkdemo");
+    }
+
+    if let Some(guidemo_path) = guidemo_elf {
+        let guidemo_bytes = std::fs::read(&guidemo_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {}", guidemo_path, e));
+        let mut guidemo_bin = bin
+            .create_file("guidemo")
+            .expect("failed to create guidemo");
+        guidemo_bin.truncate().unwrap();
+        guidemo_bin
+            .write_all(&guidemo_bytes)
+            .expect("failed to write guidemo");
     }
 
     println!("{}", out_path);

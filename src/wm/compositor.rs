@@ -10,7 +10,7 @@ use spin::Mutex;
 
 use crate::apps::{
     BrowserApp, ColorPickerApp, DisplaySettingsApp, FileManagerApp, FileManagerOpenRequest,
-    PersonalizeApp, SysMonApp, TerminalApp, TextViewerApp, UtilityApp,
+    PersonalizeApp, SysMonApp, TerminalApp, TextViewerApp, UserGuiApp, UtilityApp,
 };
 use crate::desktop_settings::{self, DesktopSortMode, WallpaperPreset};
 use crate::framebuffer::{BLACK, WHITE};
@@ -433,6 +433,7 @@ fn canonical_app_title(name: &str) -> &str {
         "Log Viewer" => "Log Viewer",
         "Boot Profiler" => "Boot Profiler",
         "Welcome" => "Welcome",
+        "Gui Demo" | "GUI Demo" | "Userspace GUI" => "GUI Demo",
         "File Mgr" | "File Manager" => "File Manager",
         _ => name,
     }
@@ -456,6 +457,7 @@ fn window_accent(title: &str) -> u32 {
         "Log Viewer" => 0x00_55_FF_BB,
         "Boot Profiler" => 0x00_FF_DD_55,
         "Welcome" => 0x00_88_CC_FF,
+        "GUI Demo" => 0x00_88_FF_CC,
         "File Manager" => 0x00_55_DD_FF,
         _ => ACCENT,
     }
@@ -479,6 +481,7 @@ fn window_glyph(title: &str) -> &'static str {
         "Log Viewer" => "LV",
         "Boot Profiler" => "BP",
         "Welcome" => "W?",
+        "GUI Demo" => "UG",
         "File Manager" => "FM",
         _ => "[]",
     }
@@ -715,6 +718,7 @@ pub enum AppWindow {
     Personalize(PersonalizeApp),
     FileManager(FileManagerApp),
     Utility(UtilityApp),
+    UserGui(UserGuiApp),
 }
 
 impl AppWindow {
@@ -729,6 +733,7 @@ impl AppWindow {
             AppWindow::Personalize(p) => &p.window,
             AppWindow::FileManager(f) => &f.window,
             AppWindow::Utility(u) => &u.window,
+            AppWindow::UserGui(g) => &g.window,
         }
     }
     pub fn window_mut(&mut self) -> &mut Window {
@@ -742,6 +747,7 @@ impl AppWindow {
             AppWindow::Personalize(p) => &mut p.window,
             AppWindow::FileManager(f) => &mut f.window,
             AppWindow::Utility(u) => &mut u.window,
+            AppWindow::UserGui(g) => &mut g.window,
         }
     }
     pub fn handle_key(&mut self, c: char) {
@@ -751,6 +757,7 @@ impl AppWindow {
             AppWindow::Browser(b) => b.handle_key(c),
             AppWindow::FileManager(f) => f.handle_key(c),
             AppWindow::Utility(u) => u.handle_key(c),
+            AppWindow::UserGui(g) => g.handle_key(c),
             _ => {}
         }
         self.window_mut().mark_dirty_all();
@@ -763,6 +770,7 @@ impl AppWindow {
             AppWindow::Personalize(p) => p.handle_click(lx, ly),
             AppWindow::Browser(b) => b.handle_click(lx, ly),
             AppWindow::Utility(u) => u.handle_click(lx, ly),
+            AppWindow::UserGui(g) => g.handle_click(lx, ly),
             _ => {}
         }
         self.window_mut().mark_dirty_all();
@@ -805,6 +813,7 @@ impl AppWindow {
             AppWindow::FileManager(f) => f.handle_scroll(delta),
             AppWindow::Browser(b) => b.handle_scroll(delta),
             AppWindow::Utility(u) => u.handle_scroll(delta),
+            AppWindow::UserGui(g) => g.handle_scroll(delta),
             _ => {}
         }
         self.window_mut().mark_dirty_all();
@@ -820,6 +829,16 @@ impl AppWindow {
             AppWindow::FileManager(f) => f.update(),
             AppWindow::Personalize(p) => p.update(),
             AppWindow::Utility(u) => u.update(),
+            AppWindow::UserGui(g) => g.update(),
+        }
+    }
+    pub fn request_close(&mut self) -> bool {
+        match self {
+            AppWindow::UserGui(g) => {
+                g.request_close();
+                false
+            }
+            _ => true,
         }
     }
     pub fn is_minimized(&self) -> bool {
@@ -835,6 +854,7 @@ pub struct WindowManager {
     z_order: Vec<usize>,
     focused: Option<usize>,
     current_workspace: usize,
+    next_user_gui_handle: u64,
     key_sink_fd: Option<usize>,
     key_sink_window: Option<usize>,
     drag: Option<DragState>,
@@ -918,6 +938,7 @@ impl WindowManager {
             z_order: Vec::new(),
             focused: None,
             current_workspace: 0,
+            next_user_gui_handle: 1,
             key_sink_fd: None,
             key_sink_window: None,
             drag: None,
@@ -980,6 +1001,87 @@ impl WindowManager {
         self.z_order.push(idx);
         self.focused = Some(idx);
         self.notify_session_changed();
+    }
+
+    pub fn open_user_gui(&mut self, owner: usize, _title: &str, width: u16, height: u16) -> u64 {
+        let handle = self.next_user_gui_handle;
+        self.next_user_gui_handle = self.next_user_gui_handle.wrapping_add(1).max(1);
+
+        let taskbar_y = self.shadow_height as i32 - TASKBAR_H;
+        let off = self.windows.len() as i32 * 18;
+        let wx = (40 + off).min(self.shadow_width as i32 - width as i32 - 24);
+        let wy = (48 + off).min(taskbar_y - height as i32 - TITLE_H - 16);
+        let x = wx.max(8);
+        let y = wy.max(8);
+        self.add_window(AppWindow::UserGui(UserGuiApp::new(
+            owner, handle, x, y, width, height,
+        )));
+        crate::app_lifecycle::record_app("GUI Demo");
+        crate::notifications::push_transient("Userspace GUI", "window opened from ring 3");
+        crate::wm::request_repaint();
+        handle
+    }
+
+    pub fn present_user_gui(&mut self, owner: usize, handle: u64, pixels: &[u8]) -> bool {
+        let Some(app) = self.find_user_gui_mut(owner, handle) else {
+            return false;
+        };
+        if app.present(pixels) {
+            crate::wm::request_repaint();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn poll_user_gui_event(
+        &mut self,
+        owner: usize,
+        handle: u64,
+        out: &mut [u8],
+    ) -> Option<usize> {
+        self.find_user_gui_mut(owner, handle)?.poll_event(out)
+    }
+
+    pub fn close_user_gui(&mut self, owner: usize, handle: u64) -> bool {
+        let Some(idx) = self.find_user_gui_index(owner, handle) else {
+            return false;
+        };
+        self.close_window(idx);
+        crate::wm::request_repaint();
+        true
+    }
+
+    pub fn close_user_gui_windows_for_owner(&mut self, owner: usize) {
+        let mut idx = 0usize;
+        let mut closed = 0usize;
+        while idx < self.windows.len() {
+            let owned =
+                matches!(&self.windows[idx], AppWindow::UserGui(app) if app.owner() == owner);
+            if owned {
+                self.close_window(idx);
+                closed += 1;
+            } else {
+                idx += 1;
+            }
+        }
+        if closed > 0 {
+            crate::wm::request_repaint();
+        }
+    }
+
+    fn find_user_gui_index(&self, owner: usize, handle: u64) -> Option<usize> {
+        self.windows.iter().position(|window| {
+            matches!(window, AppWindow::UserGui(app) if app.owner() == owner && app.handle() == handle)
+        })
+    }
+
+    fn find_user_gui_mut(&mut self, owner: usize, handle: u64) -> Option<&mut UserGuiApp> {
+        let idx = self.find_user_gui_index(owner, handle)?;
+        match self.windows.get_mut(idx) {
+            Some(AppWindow::UserGui(app)) => Some(app),
+            _ => None,
+        }
     }
 
     fn notify_session_changed(&mut self) {
@@ -1173,6 +1275,13 @@ impl WindowManager {
                 TextViewerApp::profiler_viewer(wx, wy),
             )),
             "Welcome" => self.add_window(AppWindow::TextViewer(TextViewerApp::welcome(wx, wy))),
+            "GUI Demo" => match crate::elf::spawn_elf_process("/bin/guidemo") {
+                Ok(()) => {
+                    crate::app_lifecycle::record_app("GUI Demo");
+                    crate::notifications::push_transient("GUI Demo", "spawned /bin/guidemo");
+                }
+                Err(err) => self.show_error_dialog("GUI Demo failed", err.as_str()),
+            },
             _ => {}
         }
         if self.windows.len() > before {
@@ -1825,7 +1934,7 @@ impl WindowManager {
                 self.snap_window(menu.window, SnapTarget::Maximize);
             }
             _ => {
-                self.close_window(menu.window);
+                self.request_or_close_window(menu.window);
             }
         }
         true
@@ -2298,7 +2407,7 @@ impl WindowManager {
             }
             Key::F4 if input.has_alt() => {
                 if let Some(idx) = self.focused {
-                    self.close_window(idx);
+                    self.request_or_close_window(idx);
                     true
                 } else {
                     false
@@ -2326,7 +2435,7 @@ impl WindowManager {
             }
             Key::Character('w') | Key::Character('W') if input.has_ctrl() => {
                 if let Some(idx) = self.focused {
-                    self.close_window(idx);
+                    self.request_or_close_window(idx);
                     true
                 } else {
                     false
@@ -2443,9 +2552,22 @@ impl WindowManager {
         self.notify_session_changed();
     }
 
+    fn request_or_close_window(&mut self, win_idx: usize) {
+        if win_idx >= self.windows.len() {
+            return;
+        }
+        if self.windows[win_idx].request_close() {
+            self.close_window(win_idx);
+        } else {
+            crate::wm::request_repaint();
+        }
+    }
+
     /// Full composite frame into shadow, then blit to hardware framebuffer.
     pub fn compose(&mut self) {
         let frame_start_tick = crate::interrupts::ticks();
+        crate::wm::drain_user_gui_owner_cleanup(self);
+
         // Drain buffered keystrokes.
         while let Some(input) = crate::keyboard::pop_input() {
             self.handle_key_input(input);
@@ -2573,7 +2695,7 @@ impl WindowManager {
                     let hit_scrollbar = self.windows[win_idx].window().hit_scrollbar(mx_i, my_i);
 
                     if hit_close {
-                        self.close_window(win_idx);
+                        self.request_or_close_window(win_idx);
                         crate::wm::request_repaint();
                     } else if hit_minimize {
                         self.windows[win_idx].window_mut().minimize();

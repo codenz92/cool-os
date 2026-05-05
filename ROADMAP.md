@@ -4,9 +4,9 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–20 are complete. Phase 20 moved app-facing syscall APIs into a
-reusable userspace SDK so coolOS programs can grow outside the kernel without
-copying raw assembly stubs into every binary.
+Phases 1–21 are complete. Phase 21 adds the first userspace GUI runtime so
+ring-3 programs can open compositor windows, present pixel buffers, and receive
+window input events without living inside the kernel.
 
 ---
 
@@ -671,6 +671,37 @@ pipe round-trip, mmap write/read, and clean completion.
 
 ---
 
+## ✅ Phase 21 — Userspace GUI Runtime
+
+**Goal:** Let a ring-3 ELF program own a desktop window without becoming a
+kernel-mode app module. The kernel still owns window chrome and compositing, but
+userspace owns the content pixels and receives compact input/window events.
+
+- [x] Add GUI syscalls: `gui_open`, `gui_present`, `gui_poll_event`, and
+      `gui_close`.
+- [x] Bump the userspace ABI to version 4 and surface the GUI calls through the
+      terminal `abi` command.
+- [x] Add `UserGuiApp`, a compositor window variant with an owner pid, window
+      handle, pixel surface, and bounded 16-byte event queue.
+- [x] Route keyboard, mouse, resize, and close events from the compositor into
+      userspace-owned GUI windows.
+- [x] Ensure exiting, killed, or faulted tasks have their owned GUI windows
+      cleaned up by the scheduler.
+- [x] Add `libcool::gui` wrappers for opening windows, presenting `u32`
+      framebuffers, polling events, closing windows, and drawing simple
+      rectangles/borders/text through a no_std `Canvas`.
+- [x] Add `/bin/guidemo`, a ring-3 GUI proof app that draws its own pixel UI,
+      presents frames, polls events, and keeps the window alive under QEMU.
+- [x] Wire `/bin/guidemo` into the disk image, app metadata, launcher, and
+      `make smoke-userspace-gui`.
+
+**Current status:** complete. `exec /bin/guidemo` opens a real desktop window
+from ring 3, draws via a userspace pixel buffer, and drives updates through
+`libcool::gui`. The launcher also exposes "GUI Demo" and spawns the ELF from
+`/bin/guidemo`.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -684,7 +715,8 @@ yielding — preemption is what makes the OS real.
 Userspace binaries are written in `#![no_std]` Rust and link against
 `userspace/libcool`. The SDK owns `_start`, panic aborts, initial argv parsing,
 raw syscall assembly, and convenience APIs such as `println!`, `File::open`,
-`pipe`, `mmap`, `shmem_create`, `read_event`, `dns_resolve`, and TCP sockets.
+`pipe`, `mmap`, `shmem_create`, `read_event`, `dns_resolve`, TCP sockets, and
+GUI windows through `libcool::gui`.
 
 ### Real hardware vs QEMU
 
@@ -704,4 +736,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v5.1 | Phase 17 complete: native plain-HTTP browser foundation |
 | v5.2 | Phase 18 complete: verified HTTPS/TLS foundation |
 | v5.3 | Phase 19 complete: browser rendering and trust hardening |
-| v5.4 | Current — Phase 20 complete: userspace SDK foundation |
+| v5.4 | Phase 20 complete: userspace SDK foundation |
+| v5.5 | Current — Phase 21 complete: userspace GUI runtime |

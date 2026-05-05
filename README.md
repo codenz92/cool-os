@@ -69,8 +69,8 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **Process isolation** | Two user processes share the same user-stack virtual address (`0x7FFF_0010_0000`) but map it to different physical frames. Guard pages (kernel-only) sit below each stack. |
 | **GDT + TSS** | Four segments (kernel code/data ring 0, user code/data ring 3) + TSS with RSP0 pointing to a dedicated 64 KiB ISR stack used when an IRQ fires during ring-3 execution. |
 | **SYSCALL/SYSRET** | EFER.SCE enabled. STAR/LSTAR/SFMASK MSRs configured. Naked `syscall_entry` saves context, switches to the currently scheduled task's private kernel stack top, dispatches on rax, restores context, and executes `sysretq`. |
-| **Syscall table** | `0 exit`, `1 write`, `2 yield`, `3 getpid`, `4 mmap(addr, len, flags)`, `5 open(path, len)`, `6 read(fd, buf, len)`, `7 close(fd)`, `8 exec(path, len)`, `9 pipe(fds_ptr)`, `10 dup(fd)`, `11 shmem_create(len)`, `12 shmem_map(id)`, `13 waitpid(pid, status_ptr)`, `14 spawn(path, len)`, `15 sleep_ms(ms)`, `16 abi_version()`, `17 dns_resolve(host, len)`, `18 http_get(host, len)`, `19 socket(domain, type, proto)`, `20 connect(socket, ipv4, port)`, `21 send(socket, buf, len)`, `22 recv(socket, buf, len)`. `sys_write` writes to stdout/stderr through the compositor ring buffer or to pipe write-ends through the VFS fd table. |
-| **Userspace** | Ring-3 code can run either as the original isolation stubs or as real ELF64 binaries loaded from `/bin`. The `libcool` SDK crate now provides no_std entry/argv setup plus process, file, pipe, mmap, shared-memory, event, DNS/HTTP, and TCP socket wrappers for userspace programs. `sys_exec` replaces the current userspace image in-place by swapping CR3 and rewriting the saved syscall return frame. `keydemo` relays fixed-size key and click event packets into a userspace child over a pipe. Shared memory (`sys_shmem_create`/`sys_shmem_map`) maps a region of physical frames into the caller's address space at a fixed VA. |
+| **Syscall table** | `0 exit`, `1 write`, `2 yield`, `3 getpid`, `4 mmap(addr, len, flags)`, `5 open(path, len)`, `6 read(fd, buf, len)`, `7 close(fd)`, `8 exec(path, len)`, `9 pipe(fds_ptr)`, `10 dup(fd)`, `11 shmem_create(len)`, `12 shmem_map(id)`, `13 waitpid(pid, status_ptr)`, `14 spawn(path, len)`, `15 sleep_ms(ms)`, `16 abi_version()`, `17 dns_resolve(host, len)`, `18 http_get(host, len)`, `19 socket(domain, type, proto)`, `20 connect(socket, ipv4, port)`, `21 send(socket, buf, len)`, `22 recv(socket, buf, len)`, `23 gui_open(title, len, dims)`, `24 gui_present(handle, pixels, len)`, `25 gui_poll_event(handle, packet, len)`, `26 gui_close(handle)`. `sys_write` writes to stdout/stderr through the compositor ring buffer or to pipe write-ends through the VFS fd table. |
+| **Userspace** | Ring-3 code can run either as the original isolation stubs or as real ELF64 binaries loaded from `/bin`. The `libcool` SDK crate now provides no_std entry/argv setup plus process, file, pipe, mmap, shared-memory, event, DNS/HTTP, TCP socket, and userspace GUI wrappers. `sys_exec` replaces the current userspace image in-place by swapping CR3 and rewriting the saved syscall return frame. `keydemo` relays fixed-size key and click event packets into a userspace child over a pipe. Shared memory (`sys_shmem_create`/`sys_shmem_map`) maps a region of physical frames into the caller's address space at a fixed VA. |
 | **ELF loader** | Validates ELF64 headers, maps `PT_LOAD` segments into a fresh address space, allocates a private user stack, builds an initial `argc/argv/envp` stack frame, and can either spawn a new task or prepare an image for `sys_exec`. |
 | **ATA PIO driver** | Primary-bus slave device (QEMU `if=ide,index=1`). LBA28 PIO reads, BSY/DRQ polling with timeout, nIEN=1 (device interrupts disabled). Wrapped in `without_interrupts` to prevent preemption mid-transfer. |
 | **FAT32 layer** | BPB parsing, FAT chain walking, short-name and long-filename lookup, directory traversal, cluster→sector mapping, create/write/rename/delete/copy helpers, temp-write+rename safe writes, free-space stats, and a basic `fsck` consistency summary. `fat32::read_file(path)` returns `Option<Vec<u8>>`. |
@@ -78,8 +78,8 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **VFS** | Task-local fd tables (16 slots, fds 0–2 reserved) backed by shared file/pipe/shmem objects. `vfs_open` reads whole files into heap buffers; `vfs_pipe` allocates a 512-byte kernel ring buffer and returns per-task read/write fds; `vfs_read_blocking` blocks tasks on empty pipes and wakes them on write/EOF; `ipc` selectively inherits pipe ends into child processes; `vfs_shmem_create`/`vfs_shmem_map` manage a shared memory region pool indexed by ID. |
 | **Networking** | Legacy PCI virtio-net driver for QEMU user networking, polling RX/TX virtqueues, Ethernet framing, ARP cache, IPv4, ICMP echo, UDP DNS queries, minimal TCP client sockets, userspace socket syscalls, HTTP/1.1, and verified TLS 1.3 HTTPS for the native browser/terminal path. |
 | **Kernel services** | Persistent kernel log buffer flushed to `/LOGS/KERNEL.TXT`, crash-screen log tail, central device registry for PCI/USB/system devices, package/app metadata and file associations, networking status, and ACPI power-control status foundation. |
-| **Applications** | Terminal, System Monitor, Text Viewer, Color Picker, File Manager, Web Browser, Trash Bin, Screenshot, Notes, and Text Editor. |
-| **Disk image** | `disk-image/src/fs_image.rs` builds `fs.img` (64 MiB FAT32) with `/COOLFS.IMG`, `/bin/hello.txt`, `/bin/hello`, `/bin/exec`, `/bin/pipe`, `/bin/piperd`, `/bin/pipewr`, `/bin/keyecho`, `/bin/read`, `/bin/terminal`, `/bin/netdemo`, `/bin/wget`, and `/bin/sdkdemo`. The Makefile attaches it to QEMU as the IDE slave. |
+| **Applications** | Terminal, System Monitor, Text Viewer, Color Picker, File Manager, Web Browser, Trash Bin, Screenshot, Notes, Text Editor, and the ring-3 GUI Demo. |
+| **Disk image** | `disk-image/src/fs_image.rs` builds `fs.img` (64 MiB FAT32) with `/COOLFS.IMG`, `/bin/hello.txt`, `/bin/hello`, `/bin/exec`, `/bin/pipe`, `/bin/piperd`, `/bin/pipewr`, `/bin/keyecho`, `/bin/read`, `/bin/terminal`, `/bin/netdemo`, `/bin/wget`, `/bin/sdkdemo`, and `/bin/guidemo`. The Makefile attaches it to QEMU as the IDE slave. |
 
 ### Applications
 
@@ -95,6 +95,7 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **Screenshot** | Launcher / desktop icon | Capture the focused window to `/Pictures` as a PPM image and open the target folder. |
 | **Notes** | Launcher / desktop icon | Persistent scratchpad backed by `/Documents/NOTES.TXT`. |
 | **Text Editor** | Launcher / desktop icon | Persistent text editor backed by `/Documents/UNTITLED.TXT`, with save/open-folder controls. |
+| **GUI Demo** | Launcher / `exec /bin/guidemo` | First ring-3 windowed app. It opens a compositor window, presents its own pixel buffer, and polls keyboard/mouse/close events through `libcool::gui`. |
 
 ### Desktop shortcuts
 
@@ -193,7 +194,7 @@ disk-image/
   src/fs_image.rs  Host tool — builds fs.img (64 MiB FAT32) with /bin/hello.txt,
                     /bin/hello, /bin/exec, /bin/pipe, /bin/piperd, /bin/pipewr,
                     /bin/keyecho, /bin/read, /bin/terminal, /bin/netdemo, /bin/wget,
-                    and /bin/sdkdemo
+                    /bin/sdkdemo, and /bin/guidemo
 src/
   main.rs          Kernel entry point — framebuffer init, GDT, heap, scheduler, main loop
   gdt.rs           GDT (ring-0/ring-3 segments) + TSS (RSP0 for ring-3 IRQ entry)
@@ -233,7 +234,7 @@ vfs.rs           VFS — task-local fd tables over shared file/pipe/shmem object
   keyboard.rs      Modifier-aware lock-free input queue — IRQ/USB handlers push key events,
                    compositor drains them into global shortcuts or focused apps
   wm/
-    mod.rs         Public WM API — request_repaint, compose_if_needed
+    mod.rs         Public WM API — request_repaint, compose_if_needed, userspace GUI bridge
     compositor.rs  WindowManager — shadow buffer, z-order, drag, taskbar,
                    context menu, syscall output drain, AppWindow enum dispatch, blit
     window.rs      Window struct — back-buffer, hit tests
@@ -242,10 +243,11 @@ vfs.rs           VFS — task-local fd tables over shared file/pipe/shmem object
     sysmon.rs      SysMonApp   — live CPU/heap/uptime/scheduler display
     textviewer.rs  TextViewerApp — scrollable static text
     colorpicker.rs ColorPickerApp — clickable EGA palette swatches
+    usergui.rs     UserGuiApp — compositor-owned window/surface/event queue for ring-3 apps
     utilities.rs   UtilityApp — Trash Bin, Screenshot, Notes, and Text Editor
 userspace/
   libcool/         no_std userspace SDK — entry, argv, syscalls, files, pipes,
-                   mmap, shmem, events, networking, print!/println!
+                   mmap, shmem, events, networking, GUI, print!/println!
   hello/
     src/main.rs    `/bin/hello` — minimal userspace ELF that writes and exits
     src/bin/exec.rs `/bin/exec` — userspace `sys_exec` demo that replaces itself with `/bin/hello`
@@ -257,6 +259,7 @@ userspace/
     src/bin/netdemo.rs `/bin/netdemo` — userspace DNS/HTTP syscall demo
     src/bin/wget.rs `/bin/wget` — userspace TCP socket HTTP client
     src/bin/sdkdemo.rs `/bin/sdkdemo` — libcool SDK coverage demo
+    src/bin/guidemo.rs `/bin/guidemo` — ring-3 GUI window demo
     linker.ld      Fixed-address linker script for the userspace ELF binaries
 ```
 
@@ -361,5 +364,6 @@ faults still panic.
 | 18 | HTTPS/TLS foundation — TLS 1.3, certificate validation, browser/terminal integration | **Done** |
 | 19 | Browser rendering — inline PNG image previews and trust hardening | **Done** |
 | 20 | Userspace SDK — `libcool` wrappers and `/bin/sdkdemo` coverage | **Done** |
+| 21 | Userspace GUI runtime — window/surface/event syscalls and `/bin/guidemo` | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

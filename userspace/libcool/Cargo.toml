@@ -6,6 +6,9 @@ edition = "2021"
 [lib]
 path = "src/lib.rs"
 
+[dependencies]
+font8x8 = { version = "0.2", default-features = false, features = ["unicode"] }
+
 [profile.dev]
 panic = "abort"
 

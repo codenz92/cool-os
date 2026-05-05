@@ -2267,8 +2267,7 @@ fn render_document(base_url: &str, response: &str, cols: usize) -> Vec<BrowserLi
                     || lower_name == "object"
                     || lower_name == "embed"
                     || lower_name == "head"
-                    || ((tag_is_hidden(&lower_tag)
-                        || style_hints.has_hidden_class(&lower_tag))
+                    || ((tag_is_hidden(&lower_tag) || style_hints.has_hidden_class(&lower_tag))
                         && !lower_tag.starts_with("input"))
                 {
                     flush_flow_text(&mut out, &mut text, cols, &mut state);
@@ -2276,14 +2275,7 @@ fn render_document(base_url: &str, response: &str, cols: usize) -> Vec<BrowserLi
                     i += end_rel + 1;
                     continue;
                 }
-                handle_tag(
-                    tag,
-                    &mut out,
-                    &mut text,
-                    &mut state,
-                    base_url,
-                    cols,
-                );
+                handle_tag(tag, &mut out, &mut text, &mut state, base_url, cols);
                 i += end_rel + 1;
                 continue;
             }

@@ -30,6 +30,10 @@
 ///   20 connect(socket, ipv4_be, port) → 0 on success, u64::MAX on failure
 ///   21 send(socket, buf_ptr, len) → bytes sent, u64::MAX on failure
 ///   22 recv(socket, buf_ptr, len) → bytes read, 0 on EOF/timeout, u64::MAX on failure
+///   23 gui_open(title_ptr, title_len, dims) → window handle
+///   24 gui_present(handle, pixels_ptr, len) → 0 on success
+///   25 gui_poll_event(handle, packet_ptr, len) → packet bytes, 0 if no event
+///   26 gui_close(handle) → 0 on success
 ///
 /// Output path: sys_write pushes bytes into SYSCALL_OUTPUT (a lock-free ring
 /// buffer modelled on keyboard.rs). compositor::compose() drains it into the
@@ -42,6 +46,7 @@ const OUTPUT_SIZE: usize = 1024;
 const USER_TOP: u64 = 0x0000_8000_0000_0000;
 const MAX_USER_STRING: u64 = 4096;
 const MAX_USER_BUFFER: u64 = 1024 * 1024;
+const MAX_GUI_SURFACE_BYTES: u64 = 2 * 1024 * 1024;
 const ZERO8: AtomicU8 = AtomicU8::new(0);
 static OUTPUT_BUF: [AtomicU8; OUTPUT_SIZE] = [ZERO8; OUTPUT_SIZE];
 static OUTPUT_HEAD: AtomicUsize = AtomicUsize::new(0);
@@ -228,6 +233,10 @@ extern "C" fn syscall_dispatch(
         20 => sys_connect(a1, a2, a3),
         21 => sys_send(a1, a2 as *const u8, a3),
         22 => sys_recv(a1, a2 as *mut u8, a3),
+        23 => sys_gui_open(a1 as *const u8, a2, a3),
+        24 => sys_gui_present(a1, a2 as *const u8, a3),
+        25 => sys_gui_poll_event(a1, a2 as *mut u8, a3),
+        26 => sys_gui_close(a1),
         _ => u64::MAX,
     }
 }
@@ -402,6 +411,63 @@ fn sys_recv(socket: u64, buf: *mut u8, len: u64) -> u64 {
             crate::println!("[net] sys_recv failed: {}", err);
             u64::MAX
         }
+    }
+}
+
+fn sys_gui_open(title_ptr: *const u8, title_len: u64, dims: u64) -> u64 {
+    let Some(title_bytes) = user_slice(title_ptr, title_len, MAX_USER_STRING) else {
+        return u64::MAX;
+    };
+    let title = match core::str::from_utf8(title_bytes) {
+        Ok(title) => title,
+        Err(_) => return u64::MAX,
+    };
+    let width = (dims & 0xffff) as u16;
+    let height = ((dims >> 16) & 0xffff) as u16;
+    if width == 0 || height == 0 {
+        return u64::MAX;
+    }
+    let owner = crate::scheduler::current_task_id();
+    crate::wm::user_gui_open(owner, title, width, height)
+}
+
+fn sys_gui_present(handle: u64, pixels_ptr: *const u8, len: u64) -> u64 {
+    if handle == 0 || len == 0 || len % 4 != 0 {
+        return u64::MAX;
+    }
+    let Some(pixels) = user_slice(pixels_ptr, len, MAX_GUI_SURFACE_BYTES) else {
+        return u64::MAX;
+    };
+    let owner = crate::scheduler::current_task_id();
+    if crate::wm::user_gui_present(owner, handle, pixels) {
+        0
+    } else {
+        u64::MAX
+    }
+}
+
+fn sys_gui_poll_event(handle: u64, packet_ptr: *mut u8, len: u64) -> u64 {
+    if handle == 0 || len == 0 {
+        return u64::MAX;
+    }
+    let Some(out) = user_slice_mut(packet_ptr, len, 64) else {
+        return u64::MAX;
+    };
+    let owner = crate::scheduler::current_task_id();
+    crate::wm::user_gui_poll_event(owner, handle, out)
+        .map(|n| n as u64)
+        .unwrap_or(0)
+}
+
+fn sys_gui_close(handle: u64) -> u64 {
+    if handle == 0 {
+        return u64::MAX;
+    }
+    let owner = crate::scheduler::current_task_id();
+    if crate::wm::user_gui_close(owner, handle) {
+        0
+    } else {
+        u64::MAX
     }
 }
 
