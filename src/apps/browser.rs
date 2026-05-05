@@ -1705,6 +1705,14 @@ fn render_document(base_url: &str, response: &str, cols: usize) -> Vec<BrowserLi
     let mut i = 0usize;
     while i < bytes.len() {
         if bytes[i] == b'<' {
+            if body[i..].starts_with("<!--") {
+                if let Some(end_rel) = body[i + 4..].find("-->") {
+                    i += end_rel + 7;
+                } else {
+                    i += 4;
+                }
+                continue;
+            }
             if let Some(end_rel) = body[i..].find('>') {
                 let tag = &body[i + 1..i + end_rel];
                 let lower_tag = lowercase_ascii(tag.trim());
@@ -1719,6 +1727,7 @@ fn render_document(base_url: &str, response: &str, cols: usize) -> Vec<BrowserLi
                 if lower_name == "script"
                     || lower_name == "style"
                     || lower_name == "noscript"
+                    || lower_name == "svg"
                     || lower_name == "head"
                     || (tag_is_hidden(&lower_tag) && !lower_tag.starts_with("input"))
                 {
@@ -2053,7 +2062,7 @@ fn push_named_control_line(out: &mut Vec<BrowserLine>, control: &str, tag: &str)
 }
 
 fn form_control_label(tag: &str, fallback: &str) -> String {
-    for attr in ["aria-label", "placeholder", "value", "name", "id"] {
+    for attr in ["aria-label", "placeholder", "value", "title", "name", "id"] {
         if let Some(value) = attr_value(tag, attr) {
             let decoded = clean_inline_text(&decode_entities(&value));
             if !decoded.is_empty() {
@@ -2282,7 +2291,13 @@ fn push_blank_line(out: &mut Vec<BrowserLine>) {
 }
 
 fn tag_is_hidden(lower_tag: &str) -> bool {
-    lower_tag.contains("hidden")
+    let name = tag_name_of(lower_tag);
+    let attrs = lower_tag[name.len()..].trim();
+    // "hidden" as a standalone boolean attribute, not aria-hidden or data-hidden
+    let has_hidden_attr = attrs.split(|c: char| c.is_ascii_whitespace()).any(|token| {
+        token == "hidden" || token.starts_with("hidden=")
+    });
+    has_hidden_attr
         || lower_tag.contains("display:none")
         || lower_tag.contains("display: none")
 }
@@ -2473,6 +2488,11 @@ fn decode_entities(input: &str) -> String {
     let bytes = input.as_bytes();
     while i < bytes.len() {
         if bytes[i] == b'&' {
+            if input[i..].starts_with("&nbsp;") {
+                out.push(' ');
+                i += 6;
+                continue;
+            }
             if input[i..].starts_with("&amp;") {
                 out.push('&');
                 i += 5;
