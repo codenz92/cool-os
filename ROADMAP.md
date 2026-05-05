@@ -4,7 +4,8 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–9 are complete. Everything below builds directly on that foundation.
+Phases 1–18 are complete. Phase 19 builds on the verified HTTPS/browser
+foundation with richer rendering and broader web compatibility.
 
 ---
 
@@ -582,11 +583,10 @@ pretending encryption or certificate checks exist.
       QEMU with virtio-net/USB and verify both terminal and Browser HTTPS paths.
 
 **Current status:** complete for the initial verified HTTPS path. The trust store
-is intentionally small in this phase: it ships the `AAA Certificate Services`
-root needed by the current `example.com` chain and reports the active root in the
-UI. Expanding to a full root bundle and stricter modern SAN-first hostname
-matching is the next trust-store hardening step; HTTPS support here is still real
-TLS 1.3 with chain/signature/time checks, not plaintext port-443 fetching.
+is generated from the host certificate bundle and the active root is reported in
+the UI. Stricter modern SAN-first hostname matching remains a trust hardening
+item for Phase 19; HTTPS support here is still real TLS 1.3 with
+chain/signature/time checks, not plaintext port-443 fetching.
 
 ### Phase 18 implementation notes
 
@@ -607,6 +607,28 @@ TLS 1.3 with chain/signature/time checks, not plaintext port-443 fetching.
 - The smoke paths log `[tls] https example.com/ via ... root=AAA Certificate Services`
   to QEMU debugcon so CI can verify the encrypted path; the Browser smoke also
   captures a framebuffer and asserts an application window is visible.
+
+---
+
+## Phase 19 — Browser Rendering & Trust Store
+
+**Goal:** Move the browser from text-only HTML extraction toward a small but real
+native rendering surface while hardening the HTTPS trust layer.
+
+- [x] Add a constrained PNG decoder for 8-bit RGB/RGBA, non-interlaced PNG files.
+- [x] Render direct `image/png` responses and local PNG files inline in the
+      Browser document pane.
+- [x] Keep the decoder bounded by a maximum pixel count and reject unsupported
+      PNG formats rather than risking unbounded allocations.
+- [x] Add a boot selftest for PNG inflate/filter/decode.
+- [ ] Add richer HTML layout primitives: tables, block quotes, and better spacing.
+- [ ] Add image extraction/fetching from HTML pages instead of only direct image URLs.
+- [ ] Strengthen hostname verification coverage around SAN/CN edge cases.
+- [x] Add browser smoke coverage for image responses.
+
+**Current status:** in progress. The first Phase 19 slice is PNG rendering:
+opening a PNG URL or local `.PNG` file now shows an inline bitmap preview, byte
+count, and source link.
 
 ---
 
@@ -641,3 +663,4 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v5.0 | Phase 15 complete: network-capable |
 | v5.1 | Phase 17 complete: native plain-HTTP browser foundation |
 | v5.2 | Current — Phase 18 complete: verified HTTPS/TLS foundation |
+| v5.3 | Phase 19 in progress: inline PNG browser rendering |

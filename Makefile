@@ -1,4 +1,4 @@
-.PHONY: run run-net run-usb run-usb-init run-remote run-vnc run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
+.PHONY: run run-net run-usb run-usb-init run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -92,6 +92,22 @@ run-vnc: build-usb-init
 		-display vnc="$(QEMU_VNC)" \
 		-debugcon stdio
 
+run-vnc-net: build-usb-init
+	@echo "Booting coolOS in QEMU VNC with virtio-net and USB tablet input on $(QEMU_VNC)..."
+	qemu-system-x86_64 \
+		-drive format=raw,file="$(USB_INIT_BIOS)",snapshot=on \
+		-drive file="$(USB_INIT_FSIMG)",if=ide,format=raw,index=1,snapshot=on \
+		-m 512M \
+		-cpu "$(QEMU_CPU)" \
+		-vga std \
+		-device qemu-xhci,id=xhci \
+		-device usb-kbd,bus=xhci.0 \
+		-device usb-tablet,bus=xhci.0 \
+		-netdev user,id=net0 \
+		-device virtio-net-pci,netdev=net0,disable-modern=on,disable-legacy=off \
+		-display vnc="$(QEMU_VNC)" \
+		-debugcon stdio
+
 run-remote: build-usb-init
 	@echo "Booting coolOS in a QEMU window with USB tablet input for remote desktop..."
 	qemu-system-x86_64 \
@@ -103,6 +119,22 @@ run-remote: build-usb-init
 		-device qemu-xhci,id=xhci \
 		-device usb-kbd,bus=xhci.0 \
 		-device usb-tablet,bus=xhci.0 \
+		-display cocoa \
+		-debugcon stdio
+
+run-remote-net: build-usb-init
+	@echo "Booting coolOS in a QEMU window with virtio-net and USB tablet input..."
+	qemu-system-x86_64 \
+		-drive format=raw,file="$(USB_INIT_BIOS)",snapshot=on \
+		-drive file="$(USB_INIT_FSIMG)",if=ide,format=raw,index=1,snapshot=on \
+		-m 512M \
+		-cpu "$(QEMU_CPU)" \
+		-vga std \
+		-device qemu-xhci,id=xhci \
+		-device usb-kbd,bus=xhci.0 \
+		-device usb-tablet,bus=xhci.0 \
+		-netdev user,id=net0 \
+		-device virtio-net-pci,netdev=net0,disable-modern=on,disable-legacy=off \
 		-display cocoa \
 		-debugcon stdio
 
@@ -206,6 +238,22 @@ smoke-framebuffer: build
 		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
 		--screendump "$(SMOKE_ARTIFACT_DIR)/framebuffer-smoke.ppm" \
 		--expect-framebuffer-desktop \
+		--expect "[boot] desktop ready"
+
+smoke-browser-png: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--hmp "sendkey ctrl-spc" \
+		--type-text "> browser file:///TMP/PNGTEST.PNG\n" \
+		--post-hmp-delay 2.0 \
+		--screendump "$(SMOKE_ARTIFACT_DIR)/browser-png-smoke.ppm" \
+		--expect-framebuffer-window \
+		--expect "[selftest] kernel unit checks ok=14 fail=0" \
 		--expect "[boot] desktop ready"
 
 smoke-ui-goldens: build
@@ -395,7 +443,7 @@ smoke-kernel-units: build
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--seconds $(SMOKE_SECONDS) \
-		--expect "[selftest] kernel unit checks ok=13 fail=0" \
+		--expect "[selftest] kernel unit checks ok=14 fail=0" \
 		--expect "[boot] desktop ready"
 
 smoke-boot-budget: build

@@ -20,6 +20,7 @@ const SEARCH_BUTTON_W: i32 = 72;
 const BOOKMARKS_PATH: &str = "/CONFIG/BROWSER.CFG";
 const DOWNLOADS_DIR: &str = "/Downloads";
 const MAX_BOOKMARKS: usize = 32;
+const MAX_INLINE_PNG_PIXELS: usize = 1_048_576;
 
 const BG: u32 = 0x00_03_06_10;
 const PAGE: u32 = 0x00_F2_F6_F8;
@@ -76,6 +77,7 @@ pub struct BrowserApp {
     last_width: i32,
     last_height: i32,
     last_page: Option<CachedPage>,
+    image_preview: Option<crate::png::PngImage>,
     pending_open: Option<FileManagerOpenRequest>,
 }
 
@@ -99,6 +101,7 @@ impl BrowserApp {
             last_width: BROWSER_W,
             last_height: BROWSER_H,
             last_page: None,
+            image_preview: None,
             pending_open: None,
         };
         app.render();
@@ -239,6 +242,7 @@ impl BrowserApp {
         }
         self.status = String::from("Loading...");
         self.title = String::from("Loading");
+        self.image_preview = None;
         self.lines = vec![BrowserLine {
             text: format!("Loading {}", url),
             link: None,
@@ -281,8 +285,15 @@ impl BrowserApp {
                         content_type: response.content_type.clone(),
                     });
                     self.lines = if is_image_content(response.content_type.as_deref()) {
-                        image_response_lines(&response)
+                        let preview_status = self.decode_image_preview(&response);
+                        image_response_lines(
+                            &response.final_url,
+                            response.content_type.as_deref(),
+                            response.body_bytes.len(),
+                            preview_status.as_deref(),
+                        )
                     } else {
+                        self.image_preview = None;
                         render_document(&response.final_url, &response.body, self.cols.max(48))
                     };
                     if self.lines.is_empty() {
@@ -300,6 +311,7 @@ impl BrowserApp {
                     self.title = String::from("Load failed");
                     self.status = format!("Network error: {}", err);
                     self.last_page = None;
+                    self.image_preview = None;
                     self.lines = vec![
                         kind_line("Unable to load page", BrowserLineKind::Error),
                         line(&format!("{}{}", host, path)),
@@ -311,6 +323,7 @@ impl BrowserApp {
                 self.title = String::from("Unsupported URL");
                 self.status = String::from(err);
                 self.last_page = None;
+                self.image_preview = None;
                 self.lines = vec![
                     BrowserLine {
                         text: String::from("Enter an http:// or https:// URL."),
@@ -338,6 +351,7 @@ impl BrowserApp {
         self.address_focused = false;
         self.address_selected = false;
         self.last_page = None;
+        self.image_preview = None;
         if add_history {
             self.push_history(String::from(url));
         }
@@ -474,6 +488,7 @@ impl BrowserApp {
                 self.status = format!("Save failed: {}", err.as_str());
             }
         }
+        self.image_preview = None;
         self.render();
     }
 
@@ -492,7 +507,11 @@ impl BrowserApp {
         if crate::vfs::vfs_list_dir(path).is_some() {
             self.pending_open = Some(FileManagerOpenRequest::Dir(String::from(path)));
             self.status = format!("Opening {}", path);
-        } else if crate::vfs::vfs_read_file(path).is_some() {
+        } else if let Some(bytes) = crate::vfs::vfs_read_file(path) {
+            if is_png_content(None, path) || bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+                self.show_local_image(path, bytes);
+                return true;
+            }
             self.pending_open = Some(FileManagerOpenRequest::File(String::from(path)));
             self.status = format!("Opening {}", path);
         } else {
@@ -503,11 +522,45 @@ impl BrowserApp {
                 kind_line(path, BrowserLineKind::Muted),
                 link_line("Downloads", "browser://downloads"),
             ];
+            self.image_preview = None;
         }
         self.address_focused = false;
         self.address_selected = false;
         self.render();
         true
+    }
+
+    fn show_local_image(&mut self, path: &str, bytes: Vec<u8>) {
+        let url = file_url_for_path(path);
+        self.address = url.clone();
+        self.title = String::from("Image");
+        self.status = format!("Local image {}", path);
+        self.last_page = Some(CachedPage {
+            url: url.clone(),
+            body: String::new(),
+            body_bytes: bytes.clone(),
+            content_type: Some(String::from("image/png")),
+        });
+        let preview_status = match crate::png::decode_rgb8(&bytes, MAX_INLINE_PNG_PIXELS) {
+            Ok(image) => {
+                let status = format!("PNG preview {}x{}", image.width, image.height);
+                self.image_preview = Some(image);
+                Some(status)
+            }
+            Err(err) => {
+                self.image_preview = None;
+                Some(format!("PNG preview unavailable: {}", err))
+            }
+        };
+        self.lines = image_response_lines(
+            &url,
+            Some("image/png"),
+            bytes.len(),
+            preview_status.as_deref(),
+        );
+        self.address_focused = false;
+        self.address_selected = false;
+        self.render();
     }
 
     fn search_lines(&self, query: &str) -> Vec<BrowserLine> {
@@ -534,6 +587,21 @@ impl BrowserApp {
             }
         }
         out
+    }
+
+    fn decode_image_preview(&mut self, response: &crate::net::HttpResponse) -> Option<String> {
+        self.image_preview = None;
+        if !is_png_content(response.content_type.as_deref(), &response.final_url) {
+            return Some(String::from("Preview unavailable: only PNG is supported"));
+        }
+        match crate::png::decode_rgb8(&response.body_bytes, MAX_INLINE_PNG_PIXELS) {
+            Ok(image) => {
+                let status = format!("PNG preview {}x{}", image.width, image.height);
+                self.image_preview = Some(image);
+                Some(status)
+            }
+            Err(err) => Some(format!("PNG preview unavailable: {}", err)),
+        }
     }
 
     fn scroll_by(&mut self, delta: i32) {
@@ -651,7 +719,24 @@ impl BrowserApp {
             0x00_BB_C6_CC,
         );
 
-        self.rows = doc_h / LINE_H;
+        let mut lines_y = doc_y;
+        let mut lines_h = doc_h;
+        if let Some(image) = self.image_preview.clone() {
+            let preview_h = self.draw_image_preview(
+                stride,
+                PAD_X,
+                doc_y,
+                width.saturating_sub(PAD_X * 2),
+                doc_h.saturating_sub(42).min(260),
+                &image,
+            );
+            if preview_h > 0 {
+                lines_y = lines_y.saturating_add(preview_h + 16);
+                lines_h = doc_h.saturating_sub(preview_h + 16);
+            }
+        }
+
+        self.rows = lines_h / LINE_H;
         self.cols = width.saturating_sub(PAD_X * 2 + 28) / CHAR_W;
         self.window.scroll.content_h = (self.lines.len() * LINE_H) as i32;
         self.window.scroll.offset = self.scroll as i32 * LINE_H as i32;
@@ -662,7 +747,7 @@ impl BrowserApp {
             let Some(line) = self.lines.get(idx).cloned() else {
                 break;
             };
-            let y = doc_y + row * LINE_H;
+            let y = lines_y + row * LINE_H;
             let color = match line.kind {
                 BrowserLineKind::Heading => 0x00_04_24_3A,
                 BrowserLineKind::Muted => MUTED,
@@ -761,6 +846,75 @@ impl BrowserApp {
         self.fill_rect(stride, x, y + h - 1, w, 1, color);
         self.fill_rect(stride, x, y, 1, h, color);
         self.fill_rect(stride, x + w - 1, y, 1, h, color);
+    }
+
+    fn draw_image_preview(
+        &mut self,
+        stride: usize,
+        x: usize,
+        y: usize,
+        max_w: usize,
+        max_h: usize,
+        image: &crate::png::PngImage,
+    ) -> usize {
+        if image.width == 0 || image.height == 0 || max_w < 8 || max_h < 8 {
+            return 0;
+        }
+        let (mut draw_w, mut draw_h) = if image.width <= max_w && image.height <= max_h {
+            let mut scale = 1usize;
+            while scale < 16
+                && image.width.saturating_mul(scale + 1) <= max_w
+                && image.height.saturating_mul(scale + 1) <= max_h
+                && image.width.saturating_mul(scale) < 320
+                && image.height.saturating_mul(scale) < 220
+            {
+                scale += 1;
+            }
+            (
+                image.width.saturating_mul(scale),
+                image.height.saturating_mul(scale),
+            )
+        } else {
+            let mut draw_w = image.width.min(max_w);
+            let mut draw_h = image.height.saturating_mul(draw_w) / image.width;
+            if draw_h > max_h {
+                draw_h = max_h;
+                draw_w = image.width.saturating_mul(draw_h) / image.height;
+            }
+            (draw_w, draw_h)
+        };
+        if draw_w > max_w {
+            draw_w = max_w;
+            draw_h = image.height.saturating_mul(draw_w) / image.width;
+        }
+        if draw_h > max_h {
+            draw_h = max_h;
+            draw_w = image.width.saturating_mul(draw_h) / image.height;
+        }
+        draw_w = draw_w.max(1);
+        draw_h = draw_h.max(1);
+
+        let frame_w = draw_w + 8;
+        let frame_h = draw_h + 8;
+        self.fill_rect(stride, x, y, frame_w, frame_h, 0x00_E8_EF_F3);
+        self.draw_rect(stride, x, y, frame_w, frame_h, 0x00_91_A6_B5);
+
+        for dy in 0..draw_h {
+            let src_y = dy.saturating_mul(image.height) / draw_h;
+            for dx in 0..draw_w {
+                let src_x = dx.saturating_mul(image.width) / draw_w;
+                let Some(&color) = image.pixels.get(src_y * image.width + src_x) else {
+                    continue;
+                };
+                let px = x + 4 + dx;
+                let py = y + 4 + dy;
+                let idx = py.saturating_mul(stride).saturating_add(px);
+                if idx < self.window.buf.len() {
+                    self.window.buf[idx] = color;
+                }
+            }
+        }
+        frame_h
     }
 
     fn put_str(&mut self, stride: usize, px: usize, py: usize, s: &str, color: u32) {
@@ -897,21 +1051,26 @@ fn downloads_lines() -> Vec<BrowserLine> {
     out
 }
 
-fn image_response_lines(response: &crate::net::HttpResponse) -> Vec<BrowserLine> {
+fn image_response_lines(
+    url: &str,
+    content_type: Option<&str>,
+    byte_len: usize,
+    preview_status: Option<&str>,
+) -> Vec<BrowserLine> {
     let mut out = vec![
         kind_line("Image", BrowserLineKind::Heading),
-        kind_line(
-            response.content_type.as_deref().unwrap_or("image/*"),
-            BrowserLineKind::Muted,
-        ),
+        kind_line(content_type.unwrap_or("image/*"), BrowserLineKind::Muted),
         line(""),
     ];
+    if let Some(status) = preview_status {
+        out.push(kind_line(status, BrowserLineKind::Muted));
+    }
     out.push(BrowserLine {
-        text: format!("{} bytes received", response.body_bytes.len()),
+        text: format!("{} bytes received", byte_len),
         link: None,
         kind: BrowserLineKind::Image,
     });
-    out.push(link_line("Image source URL", &response.final_url));
+    out.push(link_line("Image source URL", url));
     out
 }
 
@@ -919,6 +1078,19 @@ fn is_image_content(content_type: Option<&str>) -> bool {
     content_type
         .map(|value| value.trim().to_ascii_lowercase().starts_with("image/"))
         .unwrap_or(false)
+}
+
+fn is_png_content(content_type: Option<&str>, url: &str) -> bool {
+    content_type
+        .map(|value| {
+            value
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .eq_ignore_ascii_case("image/png")
+        })
+        .unwrap_or_else(|| extension_from_path(url).eq_ignore_ascii_case("png"))
 }
 
 fn response_body_text(response: &str) -> Option<&str> {

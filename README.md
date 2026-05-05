@@ -348,5 +348,6 @@ faults still panic.
 | 16 | UI polish — desktop shell, launcher, taskbar, settings | **Done** |
 | 17 | Browser foundation — HTTP/1.1, redirects, chunked responses, local browser UX | **Done** |
 | 18 | HTTPS/TLS foundation — TLS 1.3, certificate validation, browser/terminal integration | **Done** |
+| 19 | Browser rendering — inline PNG image previews and trust hardening | **In progress** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).
