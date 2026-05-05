@@ -42,15 +42,6 @@ impl FileManagerApp {
 
         self.draw_back_button(back);
         self.draw_forward_button(fwd);
-        let mut tabs = String::from("tab ");
-        fmt_push_u(&mut tabs, (self.active_tab + 1) as u64);
-        tabs.push('/');
-        fmt_push_u(&mut tabs, self.tabs.len() as u64);
-        tabs.push_str("  T new  W close");
-        if self.split_view {
-            tabs.push_str("  split");
-        }
-        self.put_str(74, (COMMAND_H + 3) as usize, &tabs, FM_TEXT_MUTED);
         self.fill_rect(crumb.x, crumb.y, crumb.w, crumb.h, FM_PANEL);
         self.draw_rect_border(crumb.x, crumb.y, crumb.w, crumb.h, FM_BORDER);
         self.draw_breadcrumbs(crumb);
