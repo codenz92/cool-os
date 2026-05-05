@@ -1689,6 +1689,32 @@ fn parse_web_host_path(scheme: &str, rest: &str) -> Result<(String, String), &'s
     Ok((String::from(host), String::from(path)))
 }
 
+fn extract_base_href(body: &str, fallback: &str) -> String {
+    let head_end = {
+        let lower = lowercase_ascii(body);
+        lower.find("</head>").unwrap_or(body.len().min(8192))
+    };
+    let search = &body[..head_end];
+    let lower_search = lowercase_ascii(search);
+    let mut i = 0usize;
+    while let Some(rel) = lower_search[i..].find("<base") {
+        let abs = i + rel;
+        if let Some(end) = lower_search[abs..].find('>') {
+            let tag = &body[abs + 1..abs + end];
+            if let Some(href) = attr_value(tag, "href") {
+                let href = String::from(href.trim());
+                if !href.is_empty() {
+                    return href;
+                }
+            }
+            i = abs + end + 1;
+        } else {
+            break;
+        }
+    }
+    String::from(fallback)
+}
+
 fn render_document(base_url: &str, response: &str, cols: usize) -> Vec<BrowserLine> {
     let body = response
         .split_once("\r\n\r\n")
@@ -1698,6 +1724,8 @@ fn render_document(base_url: &str, response: &str, cols: usize) -> Vec<BrowserLi
     if !body.contains('<') {
         return wrap_plain_text(body, cols, None);
     }
+    let effective_base = extract_base_href(body, base_url);
+    let base_url: &str = &effective_base;
     let mut out = Vec::new();
     let mut text = String::new();
     let mut state = HtmlRenderState::new();
@@ -1713,7 +1741,7 @@ fn render_document(base_url: &str, response: &str, cols: usize) -> Vec<BrowserLi
                 }
                 continue;
             }
-            if let Some(end_rel) = body[i..].find('>') {
+            if let Some(end_rel) = find_tag_end(&body[i..]) {
                 let tag = &body[i + 1..i + end_rel];
                 let lower_tag = lowercase_ascii(tag.trim());
                 if let Some(end_tag) = state.skip_until.as_ref() {
@@ -1728,6 +1756,13 @@ fn render_document(base_url: &str, response: &str, cols: usize) -> Vec<BrowserLi
                     || lower_name == "style"
                     || lower_name == "noscript"
                     || lower_name == "svg"
+                    || lower_name == "canvas"
+                    || lower_name == "template"
+                    || lower_name == "iframe"
+                    || lower_name == "video"
+                    || lower_name == "audio"
+                    || lower_name == "object"
+                    || lower_name == "embed"
                     || lower_name == "head"
                     || (tag_is_hidden(&lower_tag) && !lower_tag.starts_with("input"))
                 {
@@ -1817,6 +1852,16 @@ struct TableCell {
     header: bool,
 }
 
+fn is_inline_tag(name: &str) -> bool {
+    matches!(
+        name,
+        "span" | "strong" | "em" | "b" | "i" | "small" | "big" | "sub" | "sup" | "s" | "u"
+            | "del" | "ins" | "mark" | "cite" | "abbr" | "time" | "var" | "samp" | "kbd"
+            | "wbr" | "bdi" | "bdo" | "data" | "q" | "dfn" | "label" | "output" | "meter"
+            | "progress"
+    )
+}
+
 fn handle_tag(
     tag: &str,
     out: &mut Vec<BrowserLine>,
@@ -1835,6 +1880,10 @@ fn handle_tag(
         return;
     }
 
+    if is_inline_tag(name) {
+        return;
+    }
+
     flush_flow_text(out, text, cols, state);
 
     match name {
@@ -1842,7 +1891,7 @@ fn handle_tag(
             if closing {
                 state.link = None;
             } else if let Some(href) = attr_value(tag, "href") {
-                state.link = Some(resolve_url(base_url, &href));
+                state.link = Some(resolve_url(base_url, &decode_entities(&href)));
             }
         }
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
@@ -1960,6 +2009,7 @@ fn handle_tag(
             state.table_cell_is_header = name == "th";
             state.table_cell_text.clear();
         }
+        "thead" | "tbody" | "tfoot" | "colgroup" | "col" | "caption" => {}
         "br" => push_blank_line(out),
         "hr" => out.push(kind_line(&rule_line(cols), BrowserLineKind::Muted)),
         "p" | "div" | "section" | "article" | "main" | "aside" | "header" | "footer" | "nav"
@@ -2521,7 +2571,7 @@ fn decode_entities(input: &str) -> String {
             if input[i..].starts_with("&#x") || input[i..].starts_with("&#X") {
                 if let Some(end) = input[i + 3..].find(';') {
                     if let Some(value) = parse_entity_number(&input[i + 3..i + 3 + end], 16) {
-                        out.push(value as char);
+                        out.push(value);
                         i += end + 4;
                         continue;
                     }
@@ -2530,7 +2580,7 @@ fn decode_entities(input: &str) -> String {
             if input[i..].starts_with("&#") {
                 if let Some(end) = input[i + 2..].find(';') {
                     if let Some(value) = parse_entity_number(&input[i + 2..i + 2 + end], 10) {
-                        out.push(value as char);
+                        out.push(value);
                         i += end + 3;
                         continue;
                     }
@@ -2543,7 +2593,7 @@ fn decode_entities(input: &str) -> String {
     out
 }
 
-fn parse_entity_number(input: &str, radix: u32) -> Option<u8> {
+fn parse_entity_number(input: &str, radix: u32) -> Option<char> {
     let mut value = 0u32;
     for b in input.bytes() {
         let digit = match b {
@@ -2556,11 +2606,11 @@ fn parse_entity_number(input: &str, radix: u32) -> Option<u8> {
             return None;
         }
         value = value.checked_mul(radix)?.checked_add(digit)?;
-        if value > 0xff {
+        if value > 0x10_ffff {
             return None;
         }
     }
-    Some(value as u8)
+    char::from_u32(value)
 }
 
 fn extract_title(response: &str) -> Option<String> {
@@ -2689,6 +2739,31 @@ fn resolve_url(base: &str, href: &str) -> String {
     out.push_str(&dir);
     out.push_str(href);
     out
+}
+
+fn find_tag_end(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'>' => return Some(i),
+            b'"' => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'"' {
+                    i += 1;
+                }
+            }
+            b'\'' => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'\'' {
+                    i += 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 fn lowercase_ascii(input: &str) -> String {
