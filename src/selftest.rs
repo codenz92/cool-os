@@ -237,7 +237,7 @@ fn png_decode_roundtrip() -> bool {
 }
 
 fn browser_html_render_roundtrip() -> bool {
-    let html = "<!doctype html><html><body><h1>Heading</h1><blockquote>Quoted words</blockquote><ul><li>First</li></ul><table><tr><th>Name</th><th>Status</th></tr><tr><td>PNG</td><td>ready</td></tr></table><img src=\"PNGTEST.PNG\" alt=\"checker\"></body></html>";
+    let html = "<!doctype html><html><body><h1>Heading</h1><blockquote>Quoted words</blockquote><ul><li>First</li></ul><table><tr><th>Name</th><th>Status</th></tr><tr><td>PNG</td><td>ready</td></tr></table><form action=\"/search\"><input type=\"search\" name=\"q\" placeholder=\"Search\"><input type=\"submit\" value=\"Go\"></form><img src=\"PNGTEST.PNG\" alt=\"checker\" width=\"2\" height=\"2\"></body></html>";
     let lines =
         crate::apps::browser::render_document_debug_for_test("file:///TMP/PHASE19.HTML", html, 72);
     let has_heading = lines.iter().any(|line| line == "Heading");
@@ -245,8 +245,12 @@ fn browser_html_render_roundtrip() -> bool {
     let has_table = lines
         .iter()
         .any(|line| line.contains("| Name") && line.contains("Status"));
-    let has_image = lines
-        .iter()
-        .any(|line| line.contains("[image] checker") && line.contains("file:///TMP/PNGTEST.PNG"));
-    has_heading && has_quote && has_table && has_image
+    let has_image = lines.iter().any(|line| {
+        line.contains("[image 2x2] checker") && line.contains("file:///TMP/PNGTEST.PNG")
+    });
+    let has_form = lines.iter().any(|line| line == "[search] Search")
+        && lines
+            .iter()
+            .any(|line| line.contains("[button] Go") && line.contains("file:///search"));
+    has_heading && has_quote && has_table && has_image && has_form
 }

@@ -335,11 +335,7 @@ impl BrowserApp {
                     self.last_page = None;
                     self.image_preview = None;
                     self.inline_images.clear();
-                    self.lines = vec![
-                        kind_line("Unable to load page", BrowserLineKind::Error),
-                        line(&format!("{}{}", host, path)),
-                        kind_line(err, BrowserLineKind::Muted),
-                    ];
+                    self.lines = network_error_lines(&url, &host, &path, err);
                 }
             },
             Err(err) => {
@@ -508,6 +504,7 @@ impl BrowserApp {
                     kind_line("Saved download", BrowserLineKind::Heading),
                     line(""),
                     link_line(&path, &file_url_for_path(&path)),
+                    kind_line(&format!("{} bytes", data.len()), BrowserLineKind::Muted),
                     link_line("Open Downloads", "browser://downloads"),
                 ];
             }
@@ -1222,6 +1219,17 @@ fn downloads_lines() -> Vec<BrowserLine> {
         ));
         return out;
     }
+    let file_count = entries.iter().filter(|entry| !entry.is_dir).count();
+    let total_bytes = entries
+        .iter()
+        .filter(|entry| !entry.is_dir)
+        .fold(0usize, |total, entry| {
+            total.saturating_add(entry.size as usize)
+        });
+    out.push(kind_line(
+        &format!("{} file(s), {} bytes", file_count, total_bytes),
+        BrowserLineKind::Muted,
+    ));
     out.push(kind_line("Files", BrowserLineKind::Muted));
     for entry in entries.into_iter().take(48) {
         let mut path = String::from(DOWNLOADS_DIR);
@@ -1332,11 +1340,21 @@ fn scaled_image_size(image_w: usize, image_h: usize, max_w: usize, max_h: usize)
 }
 
 fn image_alt_from_line(text: &str) -> String {
-    text.strip_prefix("[image]")
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| String::from("image"))
+    if let Some(rest) = text.strip_prefix("[image]") {
+        let label = rest.trim();
+        if !label.is_empty() {
+            return String::from(label);
+        }
+    }
+    if let Some(rest) = text.strip_prefix("[image ") {
+        if let Some((_, label)) = rest.split_once(']') {
+            let label = label.trim();
+            if !label.is_empty() {
+                return String::from(label);
+            }
+        }
+    }
+    String::from("image")
 }
 
 fn fetch_png_for_browser(url: &str) -> Result<(crate::png::PngImage, String, usize), &'static str> {
@@ -1499,6 +1517,47 @@ fn link_line(text: &str, url: &str) -> BrowserLine {
         kind: BrowserLineKind::Link,
         image_slot: None,
     }
+}
+
+fn network_error_lines(url: &str, host: &str, path: &str, err: &str) -> Vec<BrowserLine> {
+    let mut lines = vec![
+        kind_line("Unable to load page", BrowserLineKind::Error),
+        line(url),
+        kind_line(err, BrowserLineKind::Muted),
+        line(""),
+    ];
+    if err.contains("timeout") {
+        lines.push(kind_line(
+            "The connection timed out before the page finished loading.",
+            BrowserLineKind::Muted,
+        ));
+    } else if err.contains("certificate") || err.contains("hostname") {
+        lines.push(kind_line(
+            "The TLS certificate could not be verified for this host.",
+            BrowserLineKind::Muted,
+        ));
+    } else if err.contains("DNS") {
+        lines.push(kind_line(
+            "The hostname did not resolve through the configured DNS server.",
+            BrowserLineKind::Muted,
+        ));
+    }
+    lines.push(link_line("Retry", url));
+    if path != "/" {
+        let mut origin = if url.starts_with("http://") {
+            String::from("http://")
+        } else {
+            String::from("https://")
+        };
+        origin.push_str(host);
+        origin.push('/');
+        lines.push(link_line("Open site root", &origin));
+    }
+    lines.push(link_line(
+        "Open known-good HTTPS page",
+        "https://example.com/",
+    ));
+    lines
 }
 
 fn normalize_address_input(input: &str) -> String {
@@ -1720,6 +1779,7 @@ struct HtmlRenderState {
     table_cell_is_header: bool,
     table_cell_text: String,
     table_row: Vec<TableCell>,
+    form_action: Option<String>,
 }
 
 impl HtmlRenderState {
@@ -1738,6 +1798,7 @@ impl HtmlRenderState {
             table_cell_is_header: false,
             table_cell_text: String::new(),
             table_row: Vec::new(),
+            form_action: None,
         }
     }
 }
@@ -1835,6 +1896,35 @@ fn handle_tag(
             push_blank_line(out);
             state.pending_prefix = Some(list_prefix(state));
         }
+        "form" => {
+            if closing {
+                state.form_action = None;
+                push_blank_line(out);
+            } else {
+                state.form_action = form_action_url(tag, base_url);
+                push_blank_line(out);
+            }
+        }
+        "input" => {
+            if !closing {
+                push_input_line(out, tag, state);
+            }
+        }
+        "button" => {
+            if !closing {
+                push_button_line(out, tag, state);
+            }
+        }
+        "select" => {
+            if !closing {
+                push_named_control_line(out, "select", tag);
+            }
+        }
+        "textarea" => {
+            if !closing {
+                push_named_control_line(out, "textarea", tag);
+            }
+        }
         "img" => push_image_line(out, tag, base_url),
         "table" => {
             if closing {
@@ -1869,6 +1959,109 @@ fn handle_tag(
         }
         _ => {}
     }
+}
+
+fn form_action_url(tag: &str, base_url: &str) -> Option<String> {
+    let method = attr_value(tag, "method").unwrap_or_else(|| String::from("get"));
+    if method.eq_ignore_ascii_case("post") {
+        return None;
+    }
+    let action = attr_value(tag, "action").unwrap_or_else(|| String::from(base_url));
+    if action.trim().is_empty() {
+        Some(String::from(base_url))
+    } else {
+        Some(resolve_url(base_url, &action))
+    }
+}
+
+fn push_input_line(out: &mut Vec<BrowserLine>, tag: &str, state: &HtmlRenderState) {
+    let input_type = attr_value(tag, "type").unwrap_or_else(|| String::from("text"));
+    let input_type = lowercase_ascii(input_type.trim());
+    if input_type == "hidden" {
+        return;
+    }
+    let label = form_control_label(tag, &input_type);
+    let mut text = String::new();
+    let mut link = None;
+    match input_type.as_str() {
+        "submit" | "button" | "reset" => {
+            text.push_str("[button] ");
+            text.push_str(&label);
+            if input_type == "submit" {
+                link = state.form_action.clone();
+            }
+        }
+        "checkbox" => {
+            text.push_str("[checkbox] ");
+            text.push_str(&label);
+        }
+        "radio" => {
+            text.push_str("[radio] ");
+            text.push_str(&label);
+        }
+        "search" => {
+            text.push_str("[search] ");
+            text.push_str(&label);
+        }
+        "image" => {
+            text.push_str("[image button] ");
+            text.push_str(&label);
+            link = state.form_action.clone();
+        }
+        _ => {
+            text.push_str("[input] ");
+            text.push_str(&label);
+        }
+    }
+    out.push(BrowserLine {
+        text,
+        kind: line_kind_for_link(&link, BrowserLineKind::Code),
+        link,
+        image_slot: None,
+    });
+}
+
+fn push_button_line(out: &mut Vec<BrowserLine>, tag: &str, state: &HtmlRenderState) {
+    if attr_value(tag, "aria-label").is_none()
+        && attr_value(tag, "value").is_none()
+        && attr_value(tag, "name").is_none()
+        && attr_value(tag, "id").is_none()
+    {
+        return;
+    }
+    let button_type = attr_value(tag, "type").unwrap_or_else(|| String::from("submit"));
+    let label = form_control_label(tag, "button");
+    let link = if button_type.eq_ignore_ascii_case("submit") {
+        state.form_action.clone()
+    } else {
+        None
+    };
+    out.push(BrowserLine {
+        text: format!("[button] {}", label),
+        kind: line_kind_for_link(&link, BrowserLineKind::Code),
+        link,
+        image_slot: None,
+    });
+}
+
+fn push_named_control_line(out: &mut Vec<BrowserLine>, control: &str, tag: &str) {
+    let label = form_control_label(tag, control);
+    out.push(kind_line(
+        &format!("[{}] {}", control, label),
+        BrowserLineKind::Code,
+    ));
+}
+
+fn form_control_label(tag: &str, fallback: &str) -> String {
+    for attr in ["aria-label", "placeholder", "value", "name", "id"] {
+        if let Some(value) = attr_value(tag, attr) {
+            let decoded = clean_inline_text(&decode_entities(&value));
+            if !decoded.is_empty() {
+                return decoded;
+            }
+        }
+    }
+    String::from(fallback)
 }
 
 fn handle_table_cell_tag(
@@ -1906,7 +2099,12 @@ fn handle_table_cell_tag(
             if !state.table_cell_text.ends_with(' ') && !state.table_cell_text.is_empty() {
                 state.table_cell_text.push(' ');
             }
-            state.table_cell_text.push_str("[image ");
+            state.table_cell_text.push_str("[image");
+            if let Some(size) = image_size_label(tag) {
+                state.table_cell_text.push(' ');
+                state.table_cell_text.push_str(&size);
+            }
+            state.table_cell_text.push(' ');
             state.table_cell_text.push_str(&label);
             state.table_cell_text.push(']');
         }
@@ -1920,7 +2118,12 @@ fn push_image_line(out: &mut Vec<BrowserLine>, tag: &str, base_url: &str) {
         .map(|alt| decode_entities(&alt))
         .filter(|alt| !alt.trim().is_empty())
         .unwrap_or_else(|| src.clone().unwrap_or_else(|| String::from("image")));
-    let mut text = String::from("[image] ");
+    let mut text = String::from("[image");
+    if let Some(size) = image_size_label(tag) {
+        text.push(' ');
+        text.push_str(&size);
+    }
+    text.push_str("] ");
     text.push_str(&label);
     out.push(BrowserLine {
         text,
@@ -1928,6 +2131,34 @@ fn push_image_line(out: &mut Vec<BrowserLine>, tag: &str, base_url: &str) {
         kind: BrowserLineKind::Image,
         image_slot: None,
     });
+}
+
+fn image_size_label(tag: &str) -> Option<String> {
+    let width = attr_value(tag, "width").and_then(|value| parse_dimension(&value));
+    let height = attr_value(tag, "height").and_then(|value| parse_dimension(&value));
+    match (width, height) {
+        (Some(width), Some(height)) => Some(format!("{}x{}", width, height)),
+        (Some(width), None) => Some(format!("{}w", width)),
+        (None, Some(height)) => Some(format!("{}h", height)),
+        (None, None) => None,
+    }
+}
+
+fn parse_dimension(value: &str) -> Option<usize> {
+    let mut out = 0usize;
+    let mut saw_digit = false;
+    for b in value.trim().bytes() {
+        if !b.is_ascii_digit() {
+            break;
+        }
+        saw_digit = true;
+        out = out.saturating_mul(10).saturating_add((b - b'0') as usize);
+    }
+    if saw_digit && out > 0 && out <= 10_000 {
+        Some(out)
+    } else {
+        None
+    }
 }
 
 fn list_prefix(state: &mut HtmlRenderState) -> String {

@@ -196,10 +196,7 @@ unsafe fn parse_fadt(ptr: *const u8) {
     // IAPC_BOOT_ARCH lives at offset 109 (2 bytes); only present in FADT >= 1.0
     // with length >= 111.  Bit 1 = 8042 PS/2 controller present.
     if fadt_len >= 111 {
-        let iapc = u16::from_le_bytes([
-            ptr.add(109).read_volatile(),
-            ptr.add(110).read_volatile(),
-        ]);
+        let iapc = u16::from_le_bytes([ptr.add(109).read_volatile(), ptr.add(110).read_volatile()]);
         HAS_8042.store(iapc & 0x0002 != 0, Ordering::Relaxed);
     }
     // If FADT is too short the field is absent; HAS_8042 stays true (conservative).

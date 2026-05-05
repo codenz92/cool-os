@@ -1,4 +1,4 @@
-.PHONY: run run-net run-usb run-usb-init run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
+.PHONY: run run-net run-usb run-usb-init run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -430,6 +430,25 @@ smoke-net-browser-https: build
 		--expect "[net] virtio-net ready driver=virtio-net" \
 		--expect "[tls] https example.com/ via" \
 		--expect "root=AAA Certificate Services" \
+		--expect "[boot] desktop ready"
+
+smoke-net-browser-google: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--net \
+		--usb \
+		--seconds 140 \
+		--hmp "sendkey ctrl-spc" \
+		--type-text "> browser https://google.com/\n" \
+		--post-hmp-delay 36.0 \
+		--screendump "$(SMOKE_ARTIFACT_DIR)/browser-google-smoke.ppm" \
+		--expect-framebuffer-window \
+		--expect "[net] virtio-net ready driver=virtio-net" \
+		--expect "[tls] https google.com/ via" \
+		--expect "root=GTS Root R1" \
 		--expect "[boot] desktop ready"
 
 smoke-usb-init: build-usb-init

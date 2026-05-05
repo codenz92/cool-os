@@ -16,6 +16,8 @@ const DNS_ADDR: u32 = 0x0a00_0203;
 const EXAMPLE_ADDR: u32 = 0x5db8_d822; // 93.184.216.34
 const BROADCAST_MAC: [u8; 6] = [0xff; 6];
 const TCP_MSS: usize = 1200;
+const TCP_RX_WINDOW: usize = 32 * 1024;
+const TCP_OUT_OF_ORDER_MAX: usize = 8;
 const SOCKET_BASE: u64 = 1024;
 pub(crate) const KERNEL_SOCKET_OWNER: usize = usize::MAX;
 const POLL_SPINS: usize = 3_000_000;
@@ -93,7 +95,13 @@ struct TcpSocket {
     ack: u32,
     state: TcpState,
     rx: Vec<u8>,
+    pending_rx: Vec<TcpPendingSegment>,
     peer_closed: bool,
+}
+
+struct TcpPendingSegment {
+    seq: u32,
+    data: Vec<u8>,
 }
 
 struct TcpReply {
@@ -103,6 +111,7 @@ struct TcpReply {
     seq: u32,
     ack: u32,
     flags: u8,
+    window: u16,
 }
 
 static ADAPTERS: Mutex<Vec<NetAdapter>> = Mutex::new(Vec::new());
@@ -305,7 +314,10 @@ pub fn protocol_lines() -> Vec<String> {
             state.dns_waits.len(),
             state.dns_cache.len()
         ),
-        format!("TCP: open_socket(s)={} mss={}", open_sockets, TCP_MSS),
+        format!(
+            "TCP: open_socket(s)={} mss={} window={}",
+            open_sockets, TCP_MSS, TCP_RX_WINDOW
+        ),
         String::from("TLS: TLS 1.3 over kernel TCP with verified certificate chains"),
         String::from("Socket syscalls: socket/connect/send/recv exposed as 19-22"),
     ]
@@ -466,14 +478,6 @@ fn http_get_response_follow(
         return Err("invalid host");
     }
     let path = if path.is_empty() { "/" } else { path };
-    // QEMU user networking currently sees bare google.com close after TLS tickets;
-    // use the canonical host that Google's public redirect targets.
-    if scheme == "https" && host.eq_ignore_ascii_case("google.com") {
-        if redirect_count >= HTTP_MAX_REDIRECTS {
-            return Err("HTTP redirect limit reached");
-        }
-        return http_get_response_follow("https", "www.google.com", path, redirect_count + 1);
-    }
 
     let mut request = String::from("GET ");
     request.push_str(path);
@@ -1016,6 +1020,7 @@ pub fn socket_open(
         ack: 0,
         state: TcpState::Closed,
         rx: Vec::new(),
+        pending_rx: Vec::new(),
         peer_closed: false,
     };
     for (idx, slot) in state.sockets.iter_mut().enumerate() {
@@ -1046,7 +1051,16 @@ pub fn socket_connect(
         (socket.local_port, socket.seq)
     };
     for _attempt in 0..TCP_MAX_RETRIES {
-        send_tcp_segment(local_port, remote_ip, remote_port, seq, 0, 0x02, &[])?;
+        send_tcp_segment(
+            local_port,
+            remote_ip,
+            remote_port,
+            seq,
+            0,
+            0x02,
+            tcp_full_window(),
+            &[],
+        )?;
         for _ in 0..TCP_RETRY_SPINS {
             poll();
             if socket_state(owner, socket_fd) == Some(TcpState::Established) {
@@ -1065,7 +1079,7 @@ pub fn socket_send(owner: usize, socket_fd: u64, bytes: &[u8]) -> Result<usize, 
     let mut sent = 0usize;
     while sent < bytes.len() {
         let take = (bytes.len() - sent).min(TCP_MSS);
-        let (local_port, remote_ip, remote_port, seq, ack) = {
+        let (local_port, remote_ip, remote_port, seq, ack, window) = {
             let mut state = NET_STATE.lock();
             let socket = socket_mut_locked(&mut state, owner, socket_fd)?;
             if socket.state != TcpState::Established {
@@ -1079,6 +1093,7 @@ pub fn socket_send(owner: usize, socket_fd: u64, bytes: &[u8]) -> Result<usize, 
                 socket.remote_port,
                 seq,
                 socket.ack,
+                tcp_receive_window(socket),
             )
         };
         let target_ack = seq.wrapping_add(take as u32);
@@ -1091,6 +1106,7 @@ pub fn socket_send(owner: usize, socket_fd: u64, bytes: &[u8]) -> Result<usize, 
                 seq,
                 ack,
                 0x18,
+                window,
                 &bytes[sent..sent + take],
             )?;
             for _ in 0..TCP_RETRY_SPINS {
@@ -1118,18 +1134,53 @@ pub fn socket_recv(owner: usize, socket_fd: u64, out: &mut [u8]) -> Result<usize
         return Ok(0);
     }
     for _ in 0..POLL_SPINS {
+        let mut window_update = None;
+        let mut received = None;
         {
             let mut state = NET_STATE.lock();
             let socket = socket_mut_locked(&mut state, owner, socket_fd)?;
             if !socket.rx.is_empty() {
+                let old_window = tcp_receive_window(socket);
                 let n = out.len().min(socket.rx.len());
                 out[..n].copy_from_slice(&socket.rx[..n]);
                 socket.rx.drain(0..n);
-                return Ok(n);
+                let new_window = tcp_receive_window(socket);
+                if old_window == 0
+                    && new_window > 0
+                    && socket.remote_ip != 0
+                    && (socket.state == TcpState::Established
+                        || socket.state == TcpState::CloseWait)
+                {
+                    window_update = Some(TcpReply {
+                        src_port: socket.local_port,
+                        dst_ip: socket.remote_ip,
+                        dst_port: socket.remote_port,
+                        seq: socket.seq,
+                        ack: socket.ack,
+                        flags: 0x10,
+                        window: new_window,
+                    });
+                }
+                received = Some(n);
             }
-            if socket.peer_closed {
+            if received.is_none() && socket.peer_closed {
                 return Ok(0);
             }
+        }
+        if let Some(reply) = window_update {
+            let _ = send_tcp_segment(
+                reply.src_port,
+                reply.dst_ip,
+                reply.dst_port,
+                reply.seq,
+                reply.ack,
+                reply.flags,
+                reply.window,
+                &[],
+            );
+        }
+        if let Some(n) = received {
+            return Ok(n);
         }
         poll();
         core::hint::spin_loop();
@@ -1154,16 +1205,48 @@ pub fn socket_close(owner: usize, socket_fd: u64) -> bool {
     let Some(idx) = socket_index(socket_fd) else {
         return false;
     };
-    let mut state = NET_STATE.lock();
-    let Some(slot) = state.sockets.get_mut(idx) else {
-        return false;
-    };
-    if slot.as_ref().map(|s| s.owner == owner).unwrap_or(false) {
+    let reply = {
+        let mut state = NET_STATE.lock();
+        let Some(slot) = state.sockets.get_mut(idx) else {
+            return false;
+        };
+        let Some(socket) = slot.as_ref() else {
+            return false;
+        };
+        if socket.owner != owner {
+            return false;
+        }
+        let reply = if socket.remote_ip != 0
+            && (socket.state == TcpState::Established || socket.state == TcpState::CloseWait)
+        {
+            Some(TcpReply {
+                src_port: socket.local_port,
+                dst_ip: socket.remote_ip,
+                dst_port: socket.remote_port,
+                seq: socket.seq,
+                ack: socket.ack,
+                flags: 0x11,
+                window: tcp_receive_window(socket),
+            })
+        } else {
+            None
+        };
         *slot = None;
-        true
-    } else {
-        false
+        reply
+    };
+    if let Some(reply) = reply {
+        let _ = send_tcp_segment(
+            reply.src_port,
+            reply.dst_ip,
+            reply.dst_port,
+            reply.seq,
+            reply.ack,
+            reply.flags,
+            reply.window,
+            &[],
+        );
     }
+    true
 }
 
 pub fn ipv4_string(addr: u32) -> String {
@@ -1362,26 +1445,36 @@ fn handle_tcp(src_ip: u32, packet: &[u8]) {
                     seq: socket.seq,
                     ack: socket.ack,
                     flags: 0x10,
+                    window: tcp_receive_window(socket),
                 });
                 break;
             }
 
             if socket.state == TcpState::Established || socket.state == TcpState::CloseWait {
+                if flags & 0x04 != 0 {
+                    socket.peer_closed = true;
+                    socket.state = TcpState::Closed;
+                    socket.pending_rx.clear();
+                    break;
+                }
                 if flags & 0x10 != 0 && seq_at_or_after(ack_no, socket.tx_acked) {
                     socket.tx_acked = ack_no;
                 }
-                let mut ack = socket.ack;
-                if !payload.is_empty() && seq == socket.ack {
-                    socket.rx.extend_from_slice(payload);
-                    ack = seq.wrapping_add(payload.len() as u32);
+                let mut should_ack = false;
+                if !payload.is_empty() {
+                    let _ = receive_tcp_payload(socket, seq, payload);
+                    should_ack = true;
                 }
                 if flags & 0x01 != 0 {
-                    ack = ack.wrapping_add(1);
-                    socket.peer_closed = true;
-                    socket.state = TcpState::CloseWait;
+                    should_ack = true;
+                    let fin_seq = seq.wrapping_add(payload.len() as u32);
+                    if fin_seq == socket.ack {
+                        socket.ack = socket.ack.wrapping_add(1);
+                        socket.peer_closed = true;
+                        socket.state = TcpState::CloseWait;
+                    }
                 }
-                if ack != socket.ack || flags & 0x01 != 0 {
-                    socket.ack = ack;
+                if should_ack {
                     reply = Some(TcpReply {
                         src_port: socket.local_port,
                         dst_ip: src_ip,
@@ -1389,6 +1482,7 @@ fn handle_tcp(src_ip: u32, packet: &[u8]) {
                         seq: socket.seq,
                         ack: socket.ack,
                         flags: 0x10,
+                        window: tcp_receive_window(socket),
                     });
                 }
                 break;
@@ -1404,6 +1498,7 @@ fn handle_tcp(src_ip: u32, packet: &[u8]) {
             reply.seq,
             reply.ack,
             reply.flags,
+            reply.window,
             &[],
         );
     }
@@ -1427,6 +1522,7 @@ fn send_tcp_segment(
     seq: u32,
     ack: u32,
     flags: u8,
+    window: u16,
     payload: &[u8],
 ) -> Result<(), &'static str> {
     let mut packet = Vec::with_capacity(20 + payload.len());
@@ -1436,7 +1532,7 @@ fn send_tcp_segment(
     push_be32(&mut packet, ack);
     packet.push(5 << 4);
     packet.push(flags);
-    push_be16(&mut packet, 4096);
+    push_be16(&mut packet, window);
     push_be16(&mut packet, 0);
     push_be16(&mut packet, 0);
     packet.extend_from_slice(payload);
@@ -1674,6 +1770,91 @@ impl NetState {
     }
 }
 
+fn receive_tcp_payload(socket: &mut TcpSocket, seq: u32, payload: &[u8]) -> bool {
+    if payload.is_empty() {
+        return false;
+    }
+    if seq == socket.ack {
+        if !append_tcp_payload(socket, payload) {
+            return false;
+        }
+        let _ = drain_pending_tcp_payloads(socket);
+        return true;
+    }
+    if seq_before(seq, socket.ack) {
+        let offset = socket.ack.wrapping_sub(seq) as usize;
+        if offset < payload.len() && append_tcp_payload(socket, &payload[offset..]) {
+            let _ = drain_pending_tcp_payloads(socket);
+            return true;
+        }
+        return false;
+    }
+    store_pending_tcp_payload(socket, seq, payload)
+}
+
+fn append_tcp_payload(socket: &mut TcpSocket, payload: &[u8]) -> bool {
+    if tcp_buffered_bytes(socket).saturating_add(payload.len()) > TCP_RX_WINDOW {
+        return false;
+    }
+    socket.rx.extend_from_slice(payload);
+    socket.ack = socket.ack.wrapping_add(payload.len() as u32);
+    true
+}
+
+fn drain_pending_tcp_payloads(socket: &mut TcpSocket) -> bool {
+    let mut advanced = false;
+    loop {
+        let Some(pos) = socket
+            .pending_rx
+            .iter()
+            .position(|segment| segment.seq == socket.ack)
+        else {
+            break;
+        };
+        let segment = socket.pending_rx.remove(pos);
+        if !append_tcp_payload(socket, &segment.data) {
+            socket.pending_rx.insert(pos, segment);
+            break;
+        }
+        advanced = true;
+    }
+    advanced
+}
+
+fn store_pending_tcp_payload(socket: &mut TcpSocket, seq: u32, payload: &[u8]) -> bool {
+    if socket.pending_rx.len() >= TCP_OUT_OF_ORDER_MAX
+        || socket.pending_rx.iter().any(|segment| segment.seq == seq)
+        || seq.wrapping_sub(socket.ack) as usize > TCP_RX_WINDOW
+        || tcp_buffered_bytes(socket).saturating_add(payload.len()) > TCP_RX_WINDOW
+    {
+        return false;
+    }
+    socket.pending_rx.push(TcpPendingSegment {
+        seq,
+        data: payload.to_vec(),
+    });
+    true
+}
+
+fn tcp_buffered_bytes(socket: &TcpSocket) -> usize {
+    socket
+        .pending_rx
+        .iter()
+        .fold(socket.rx.len(), |total, segment| {
+            total.saturating_add(segment.data.len())
+        })
+}
+
+fn tcp_receive_window(socket: &TcpSocket) -> u16 {
+    TCP_RX_WINDOW
+        .saturating_sub(tcp_buffered_bytes(socket))
+        .min(u16::MAX as usize) as u16
+}
+
+fn tcp_full_window() -> u16 {
+    TCP_RX_WINDOW.min(u16::MAX as usize) as u16
+}
+
 fn socket_state(owner: usize, socket_fd: u64) -> Option<TcpState> {
     let state = NET_STATE.lock();
     let idx = socket_index(socket_fd)?;
@@ -1701,6 +1882,10 @@ fn socket_tx_acked(owner: usize, socket_fd: u64, target_ack: u32) -> Result<bool
 
 fn seq_at_or_after(current: u32, target: u32) -> bool {
     current == target || current.wrapping_sub(target) < 0x8000_0000
+}
+
+fn seq_before(current: u32, target: u32) -> bool {
+    current != target && target.wrapping_sub(current) < 0x8000_0000
 }
 
 fn socket_mut_locked<'a>(
