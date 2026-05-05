@@ -2488,6 +2488,8 @@ fn tag_is_hidden(lower_tag: &str) -> bool {
     has_hidden_attr
         || lower_tag.contains("display:none")
         || lower_tag.contains("display: none")
+        || lower_tag.contains("visibility:hidden")
+        || lower_tag.contains("visibility: hidden")
 }
 
 fn tag_name_of(lower_tag: &str) -> &str {
@@ -2642,6 +2644,14 @@ fn line_kind_for_link(link: &Option<String>, fallback: BrowserLineKind) -> Brows
     }
 }
 
+fn is_separator_only(text: &str) -> bool {
+    let t = text.trim();
+    if t.is_empty() {
+        return false;
+    }
+    t.chars().all(|c| matches!(c, '-' | '|' | '·' | '•' | '/' | '\\' | '_'))
+}
+
 fn compact_lines(lines: Vec<BrowserLine>) -> Vec<BrowserLine> {
     let mut out = Vec::new();
     let mut last_blank = false;
@@ -2650,9 +2660,66 @@ fn compact_lines(lines: Vec<BrowserLine>) -> Vec<BrowserLine> {
         if blank && last_blank {
             continue;
         }
+        // Drop separator-only lines (e.g. lone "-" between footer links) with no link
+        if line.link.is_none() && is_separator_only(&line.text) {
+            continue;
+        }
         last_blank = blank;
         out.push(line);
     }
+    // Defer clusters of link lines that appear before the first image/heading/form
+    defer_leading_links(out)
+}
+
+fn defer_leading_links(lines: Vec<BrowserLine>) -> Vec<BrowserLine> {
+    // Find where real content starts: first Image, Heading, or a non-Link non-blank line
+    let first_content = lines.iter().position(|l| {
+        matches!(l.kind, BrowserLineKind::Image | BrowserLineKind::Heading)
+            || (l.kind != BrowserLineKind::Link && !l.text.trim().is_empty())
+    });
+    let first_content = match first_content {
+        Some(idx) if idx > 0 => idx,
+        _ => return lines, // nothing to defer
+    };
+    // Check that the leading section is all links (or blanks)
+    let leading_all_links = lines[..first_content].iter().all(|l| {
+        l.kind == BrowserLineKind::Link || l.text.trim().is_empty()
+    });
+    if !leading_all_links {
+        return lines;
+    }
+    // Count link lines at the top (must be at least 2 to trigger deferral)
+    let link_count = lines[..first_content]
+        .iter()
+        .filter(|l| l.kind == BrowserLineKind::Link)
+        .count();
+    if link_count < 2 {
+        return lines;
+    }
+    // Find the end of the first content block (next blank line after content start)
+    let insert_after = lines[first_content..]
+        .iter()
+        .position(|l| l.text.trim().is_empty())
+        .map(|p| first_content + p)
+        .unwrap_or(lines.len());
+    // Split into: leading links, content block, rest
+    let mut leading: Vec<BrowserLine> = lines[..first_content]
+        .iter()
+        .filter(|l| l.kind == BrowserLineKind::Link)
+        .cloned()
+        .collect();
+    let mut out: Vec<BrowserLine> = lines[first_content..insert_after].to_vec();
+    // Add a blank separator before deferred links
+    if !out.is_empty() {
+        out.push(BrowserLine {
+            text: String::new(),
+            link: None,
+            kind: BrowserLineKind::Text,
+            image_slot: None,
+        });
+    }
+    out.append(&mut leading);
+    out.extend_from_slice(&lines[insert_after..]);
     out
 }
 
