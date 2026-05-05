@@ -1090,6 +1090,13 @@ impl TerminalApp {
                 self.print_str(" -> ");
                 self.print_str(&crate::net::ipv4_string(response.resolved_addr));
                 self.print_char('\n');
+                if response.redirect_count > 0 {
+                    self.print_str("final ");
+                    self.print_str(&response.final_url);
+                    self.print_str(" redirects=");
+                    self.print_u64(response.redirect_count as u64);
+                    self.print_char('\n');
+                }
                 self.print_str(&response.request);
                 self.print_str(&response.body);
                 self.print_char('\n');

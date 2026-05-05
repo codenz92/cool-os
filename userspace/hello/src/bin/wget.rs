@@ -61,9 +61,13 @@ fn run(url: &[u8]) -> Result<(), &'static [u8]> {
     let mut len = 0usize;
     append(&mut request, &mut len, b"GET ")?;
     append(&mut request, &mut len, path)?;
-    append(&mut request, &mut len, b" HTTP/1.0\r\nHost: ")?;
+    append(&mut request, &mut len, b" HTTP/1.1\r\nHost: ")?;
     append(&mut request, &mut len, host)?;
-    append(&mut request, &mut len, b"\r\nConnection: close\r\n\r\n")?;
+    append(
+        &mut request,
+        &mut len,
+        b"\r\nUser-Agent: coolOS-wget/17\r\nAccept: */*\r\nConnection: close\r\n\r\n",
+    )?;
 
     let sent = syscall3(SYS_SEND, sock, request.as_ptr() as u64, len as u64);
     if sent == u64::MAX {

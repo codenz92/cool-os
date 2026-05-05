@@ -417,6 +417,7 @@ response over virtio-net/QEMU user networking and writes it to the terminal.
 | 14 | USB HID — real hardware input | 9 |
 | 15 | Networking (virtio-net, TCP/IP) | 13 |
 | 16 | UI Polish — desktop surface, window chrome, taskbar & start menu | 12 |
+| 17 | Browser Foundation — HTTP/1.1, redirects, chunked responses, browser UX | 15, 16 |
 
 ---
 
@@ -515,6 +516,50 @@ cursor. The notification slot is reserved for Phase 14/15 hardware status icons.
 
 ---
 
+## ✅ Phase 17 — Browser Foundation
+
+**Goal:** Turn networking into a usable desktop browsing surface without pretending
+TLS and JavaScript exist before the crypto/rendering foundations are in place.
+
+- [x] Ship a native Web Browser app with a toolbar, address/search box, status bar,
+      clickable links, back/forward navigation, refresh, scrolling, and desktop/launcher
+      integration.
+- [x] Add browser internal pages: `browser://home`, `browser://history`,
+      `browser://bookmarks`, and `browser://search?q=...`.
+- [x] Add session history and persistent local bookmarks.
+- [x] Upgrade kernel HTTP requests to HTTP/1.1 with a user agent, accept header, and
+      connection-close semantics.
+- [x] Follow HTTP redirects up to a bounded limit, including relative and absolute
+      `Location` values for plain HTTP.
+- [x] Decode `Transfer-Encoding: chunked` responses before handing the response to
+      apps.
+- [x] Raise the kernel HTTP response cap to support larger text pages while keeping
+      a hard upper bound.
+- [x] Improve HTML text extraction: skip script/style bodies, preserve image alt text,
+      wrap long words, handle more entities, and resolve links against the final URL
+      after redirects.
+- [x] Keep boot clean: the desktop starts with no app windows open, but manual session
+      restore remains available from the launcher.
+
+**Current status:** complete for plain HTTP browsing. HTTPS is explicitly blocked
+until a real TLS/X.509/crypto layer lands; no fake port-443 passthrough is counted
+as browser support.
+
+### Phase 17 implementation notes
+
+- `src/net.rs` owns HTTP redirect following and chunked transfer decoding so Terminal,
+  browser, and syscall callers share one HTTP implementation.
+- `src/apps/browser.rs` remains a native no_std GUI app; it does not embed a web
+  engine. It renders a useful text view over basic HTML and exposes internal browser
+  pages for local state.
+- `/bin/wget` now sends an HTTP/1.1 request with a coolOS user agent, keeping it as a
+  raw userspace socket demo.
+- The next browser phase is TLS: entropy, hashes, AES-GCM/ChaCha20-Poly1305,
+  ECDHE/X25519 or P-256, certificate parsing, trust roots, hostname verification,
+  and a TLS 1.2/1.3 state machine.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -543,4 +588,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v2.0 | Phase 16 complete: scrollbars wired, IntelliMouse scroll wheel |
 | v3.0 | Phase 9 complete — first userspace process |
 | v4.0 | Phase 12 complete — ELF binaries load from disk |
-| v5.0 | Current — Phase 15 complete: network-capable |
+| v5.0 | Phase 15 complete: network-capable |
+| v5.1 | Current — Phase 17 complete: native plain-HTTP browser foundation |

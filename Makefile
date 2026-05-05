@@ -254,12 +254,13 @@ smoke-net-api: build
 		--artifact-name "$@" \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
+		--usb \
 		--seconds $(SMOKE_SECONDS) \
 		--hmp "sendkey ctrl-spc" \
 		--type-text "> exec /bin/netdemo\n" \
 		--post-hmp-delay 2.0 \
 		--expect "netdemo: dns example.com =" \
-		--expect "GET / HTTP/1.0" \
+		--expect "GET / HTTP/1.1" \
 		--expect "netdemo: http bytes" \
 		--expect "[boot] desktop ready"
 

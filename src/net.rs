@@ -19,6 +19,8 @@ const TCP_MSS: usize = 1200;
 const SOCKET_BASE: u64 = 1024;
 const KERNEL_SOCKET_OWNER: usize = usize::MAX;
 const POLL_SPINS: usize = 3_000_000;
+const HTTP_MAX_BYTES: usize = 128 * 1024;
+const HTTP_MAX_REDIRECTS: usize = 5;
 
 #[derive(Clone)]
 pub struct NetAdapter {
@@ -33,6 +35,8 @@ pub struct NetAdapter {
 pub struct HttpResponse {
     pub host: String,
     pub path: String,
+    pub final_url: String,
+    pub redirect_count: usize,
     pub resolved_addr: u32,
     pub request: String,
     pub status_line: String,
@@ -368,6 +372,14 @@ pub fn http_get(host: &str, path: &str) -> Result<String, &'static str> {
 }
 
 pub fn http_get_response(host: &str, path: &str) -> Result<HttpResponse, &'static str> {
+    http_get_response_follow(host, path, 0)
+}
+
+fn http_get_response_follow(
+    host: &str,
+    path: &str,
+    redirect_count: usize,
+) -> Result<HttpResponse, &'static str> {
     let settings = crate::settings_state::snapshot();
     if !settings.network_http_enabled {
         return Err("HTTP API disabled in Settings");
@@ -382,23 +394,25 @@ pub fn http_get_response(host: &str, path: &str) -> Result<HttpResponse, &'stati
 
     let mut request = String::from("GET ");
     request.push_str(path);
-    request.push_str(" HTTP/1.0\r\nHost: ");
+    request.push_str(" HTTP/1.1\r\nHost: ");
     request.push_str(host);
-    request.push_str("\r\nConnection: close\r\n\r\n");
+    request.push_str("\r\nUser-Agent: coolOS/17\r\nAccept: text/html,text/plain,*/*\r\nConnection: close\r\n\r\n");
 
     if !has_link() {
         if settings.network_offline_api {
             let body = format!(
-                "coolOS offline HTTP response from {} at {}",
+                "HTTP/1.1 200 OK (offline)\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\ncoolOS offline HTTP response from {} at {}",
                 host,
                 ipv4_string(resolved_addr)
             );
             return Ok(HttpResponse {
                 host: String::from(host),
                 path: String::from(path),
+                final_url: format!("http://{}{}", host, path),
+                redirect_count,
                 resolved_addr,
                 request,
-                status_line: String::from("HTTP/1.0 200 OK (offline)"),
+                status_line: String::from("HTTP/1.1 200 OK (offline)"),
                 body,
             });
         }
@@ -422,7 +436,7 @@ pub fn http_get_response(host: &str, path: &str) -> Result<HttpResponse, &'stati
                         break;
                     }
                     body_bytes.extend_from_slice(&buf[..n]);
-                    if body_bytes.len() > 16 * 1024 {
+                    if body_bytes.len() > HTTP_MAX_BYTES {
                         break;
                     }
                 }
@@ -439,21 +453,243 @@ pub fn http_get_response(host: &str, path: &str) -> Result<HttpResponse, &'stati
         return Err(last_err);
     }
 
-    let body = String::from_utf8_lossy(&body_bytes).into_owned();
+    let body = normalize_http_response(&String::from_utf8_lossy(&body_bytes));
     let status_line = String::from(
         body.split('\n')
             .next()
             .map(|line| line.trim_end_matches('\r'))
             .unwrap_or("HTTP response"),
     );
+    let status = http_status_code(&status_line).unwrap_or(0);
+    if is_redirect_status(status) {
+        if redirect_count >= HTTP_MAX_REDIRECTS {
+            return Err("HTTP redirect limit reached");
+        }
+        let Some(location) = http_header_value(&body, "location") else {
+            return Err("HTTP redirect missing Location");
+        };
+        let (next_host, next_path) = resolve_http_location(host, path, &location)?;
+        return http_get_response_follow(&next_host, &next_path, redirect_count + 1);
+    }
+
     Ok(HttpResponse {
         host: String::from(host),
         path: String::from(path),
+        final_url: format!("http://{}{}", host, path),
+        redirect_count,
         resolved_addr: connected_addr,
         request,
         status_line,
         body,
     })
+}
+
+fn is_redirect_status(status: u16) -> bool {
+    matches!(status, 301 | 302 | 303 | 307 | 308)
+}
+
+fn http_status_code(status_line: &str) -> Option<u16> {
+    status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse::<u16>().ok())
+}
+
+fn http_header_value(response: &str, name: &str) -> Option<String> {
+    let header_block = response
+        .split_once("\r\n\r\n")
+        .map(|(headers, _)| headers)
+        .or_else(|| response.split_once("\n\n").map(|(headers, _)| headers))
+        .unwrap_or(response);
+    for line in header_block.lines().skip(1) {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        if key.trim().eq_ignore_ascii_case(name) {
+            return Some(String::from(value.trim()));
+        }
+    }
+    None
+}
+
+fn normalize_http_response(response: &str) -> String {
+    let Some((headers, body, sep)) = split_http_response(response) else {
+        return String::from(response);
+    };
+    if http_header_value(response, "transfer-encoding")
+        .map(|value| header_contains_token(&value, "chunked"))
+        .unwrap_or(false)
+    {
+        if let Ok(decoded) = decode_chunked_body(body) {
+            let mut out = headers_without_transfer_encoding(headers);
+            out.push_str(sep);
+            out.push_str(&decoded);
+            return out;
+        }
+    }
+    String::from(response)
+}
+
+fn headers_without_transfer_encoding(headers: &str) -> String {
+    let mut out = String::new();
+    for line in headers.lines() {
+        let is_transfer_encoding = line
+            .split_once(':')
+            .map(|(name, _)| name.trim().eq_ignore_ascii_case("transfer-encoding"))
+            .unwrap_or(false);
+        if is_transfer_encoding {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push_str("\r\n");
+        }
+        out.push_str(line.trim_end_matches('\r'));
+    }
+    out
+}
+
+fn split_http_response(response: &str) -> Option<(&str, &str, &'static str)> {
+    if let Some((headers, body)) = response.split_once("\r\n\r\n") {
+        Some((headers, body, "\r\n\r\n"))
+    } else {
+        response
+            .split_once("\n\n")
+            .map(|(headers, body)| (headers, body, "\n\n"))
+    }
+}
+
+fn header_contains_token(value: &str, token: &str) -> bool {
+    value
+        .split(',')
+        .any(|part| part.trim().eq_ignore_ascii_case(token))
+}
+
+fn decode_chunked_body(body: &str) -> Result<String, &'static str> {
+    let bytes = body.as_bytes();
+    let mut out = Vec::new();
+    let mut pos = 0usize;
+    loop {
+        if pos >= bytes.len() {
+            return if out.is_empty() {
+                Err("bad chunk header")
+            } else {
+                Ok(String::from_utf8_lossy(&out).into_owned())
+            };
+        }
+        let line_end = find_crlf(bytes, pos).ok_or("bad chunk header")?;
+        let header = core::str::from_utf8(&bytes[pos..line_end]).map_err(|_| "bad chunk header")?;
+        let size_text = header.split(';').next().unwrap_or("").trim();
+        let size = parse_hex_usize(size_text).ok_or("bad chunk size")?;
+        pos = line_end + crlf_len(bytes, line_end);
+        if size == 0 {
+            break;
+        }
+        if pos + size > bytes.len() {
+            return Err("truncated chunk body");
+        }
+        out.extend_from_slice(&bytes[pos..pos + size]);
+        pos += size;
+        if pos < bytes.len() {
+            if bytes.get(pos) == Some(&b'\r') && bytes.get(pos + 1) == Some(&b'\n') {
+                pos += 2;
+            } else if bytes.get(pos) == Some(&b'\n') {
+                pos += 1;
+            } else {
+                return Err("bad chunk terminator");
+            }
+        }
+        if out.len() > HTTP_MAX_BYTES {
+            return Err("decoded response too large");
+        }
+    }
+    Ok(String::from_utf8_lossy(&out).into_owned())
+}
+
+fn find_crlf(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut i = start;
+    while i < bytes.len() {
+        if bytes[i] == b'\n' {
+            return Some(if i > start && bytes[i - 1] == b'\r' {
+                i - 1
+            } else {
+                i
+            });
+        }
+        i += 1;
+    }
+    None
+}
+
+fn crlf_len(bytes: &[u8], line_end: usize) -> usize {
+    if bytes.get(line_end) == Some(&b'\r') && bytes.get(line_end + 1) == Some(&b'\n') {
+        2
+    } else {
+        1
+    }
+}
+
+fn parse_hex_usize(input: &str) -> Option<usize> {
+    let mut value = 0usize;
+    let mut saw_digit = false;
+    for b in input.bytes() {
+        let digit = match b {
+            b'0'..=b'9' => (b - b'0') as usize,
+            b'a'..=b'f' => (b - b'a' + 10) as usize,
+            b'A'..=b'F' => (b - b'A' + 10) as usize,
+            _ => return None,
+        };
+        value = value.checked_mul(16)?.checked_add(digit)?;
+        saw_digit = true;
+    }
+    saw_digit.then_some(value)
+}
+
+fn resolve_http_location(
+    base_host: &str,
+    base_path: &str,
+    location: &str,
+) -> Result<(String, String), &'static str> {
+    let location = location.trim();
+    if location.starts_with("https://") {
+        return Err("HTTPS redirect requires TLS");
+    }
+    if let Some(rest) = location.strip_prefix("http://") {
+        return split_http_host_path(rest);
+    }
+    if let Some(rest) = location.strip_prefix("//") {
+        return split_http_host_path(rest);
+    }
+    if location.starts_with('/') {
+        return Ok((String::from(base_host), String::from(location)));
+    }
+    let mut dir = String::from(base_path);
+    if let Some(pos) = dir.rfind('/') {
+        dir.truncate(pos + 1);
+    } else {
+        dir = String::from("/");
+    }
+    dir.push_str(location);
+    Ok((String::from(base_host), dir))
+}
+
+fn split_http_host_path(rest: &str) -> Result<(String, String), &'static str> {
+    let slash = rest.find('/').unwrap_or(rest.len());
+    let host = rest[..slash].trim();
+    if host.is_empty() || host.len() > 253 || host.contains(' ') {
+        return Err("invalid redirect host");
+    }
+    if let Some((name, port)) = host.rsplit_once(':') {
+        if port != "80" {
+            return Err("HTTP redirect port unsupported");
+        }
+        if name.is_empty() {
+            return Err("invalid redirect host");
+        }
+        let path = if slash < rest.len() { &rest[slash..] } else { "/" };
+        return Ok((String::from(name), String::from(path)));
+    }
+    let path = if slash < rest.len() { &rest[slash..] } else { "/" };
+    Ok((String::from(host), String::from(path)))
 }
 
 pub fn icmp_ping(dst: u32) -> Result<(), &'static str> {

@@ -46,7 +46,9 @@ streams focused terminal keystrokes into a userspace process over an inherited
 pipe, and `exec /bin/read` exercises userspace `open/read/close` against the
 FAT32-backed VFS. With QEMU virtio networking enabled, `exec /bin/wget
 http://example.com/` resolves DNS, opens a TCP socket, fetches the HTTP
-response, and streams it to the terminal.
+response, and streams it to the terminal. The native Web Browser app can open
+plain HTTP pages, follow HTTP redirects, decode chunked responses, render basic
+HTML text, and keep session history plus persistent local bookmarks.
 
 ### What's working
 
@@ -69,20 +71,21 @@ response, and streams it to the terminal.
 | **ATA PIO driver** | Primary-bus slave device (QEMU `if=ide,index=1`). LBA28 PIO reads, BSY/DRQ polling with timeout, nIEN=1 (device interrupts disabled). Wrapped in `without_interrupts` to prevent preemption mid-transfer. |
 | **FAT32 layer** | BPB parsing, FAT chain walking, short-name and long-filename lookup, directory traversal, cluster→sector mapping, create/write/rename/delete/copy helpers, temp-write+rename safe writes, free-space stats, and a basic `fsck` consistency summary. `fat32::read_file(path)` returns `Option<Vec<u8>>`. |
 | **VFS** | Task-local fd tables (16 slots, fds 0–2 reserved) backed by shared file/pipe/shmem objects. `vfs_open` reads whole files into heap buffers; `vfs_pipe` allocates a 512-byte kernel ring buffer and returns per-task read/write fds; `vfs_read_blocking` blocks tasks on empty pipes and wakes them on write/EOF; `ipc` selectively inherits pipe ends into child processes; `vfs_shmem_create`/`vfs_shmem_map` manage a shared memory region pool indexed by ID. |
-| **Networking** | Legacy PCI virtio-net driver for QEMU user networking, polling RX/TX virtqueues, Ethernet framing, ARP cache, IPv4, ICMP echo, UDP DNS queries, minimal TCP client sockets, and userspace socket syscalls. |
+| **Networking** | Legacy PCI virtio-net driver for QEMU user networking, polling RX/TX virtqueues, Ethernet framing, ARP cache, IPv4, ICMP echo, UDP DNS queries, minimal TCP client sockets, userspace socket syscalls, and an HTTP/1.1 client with redirects and chunked-transfer decoding. |
 | **Kernel services** | Persistent kernel log buffer flushed to `/LOGS/KERNEL.TXT`, crash-screen log tail, central device registry for PCI/USB/system devices, package/app metadata and file associations, networking status, and ACPI power-control status foundation. |
-| **Applications** | Terminal, System Monitor, Text Viewer, Color Picker, and File Manager. |
+| **Applications** | Terminal, System Monitor, Text Viewer, Color Picker, File Manager, and Web Browser. |
 | **Disk image** | `disk-image/src/fs-image.rs` builds `fs.img` (64 MiB FAT32) with `/bin/hello.txt`, `/bin/hello`, `/bin/exec`, `/bin/pipe`, `/bin/piperd`, `/bin/pipewr`, `/bin/keyecho`, `/bin/read`, `/bin/terminal`, `/bin/netdemo`, and `/bin/wget`. The Makefile attaches it to QEMU as the IDE slave. |
 
 ### Applications
 
 | App | How to open | Description |
 | :-- | :---------- | :---------- |
-| **Terminal** | Boot / right-click | Interactive shell. Type commands, press Enter. |
+| **Terminal** | Launcher / right-click | Interactive shell. Type commands, press Enter. |
 | **System Monitor** | Right-click | Live CPU vendor, heap usage, uptime, scheduler counts, and USB/input status. |
 | **Text Viewer** | Right-click | Scrollable "About" doc; `j`/`k` to scroll. |
 | **Color Picker** | Right-click | Clickable 16-colour EGA palette grid. |
 | **File Manager** | Right-click / desktop icon | Browse and mutate the FAT32 disk image with breadcrumbs, recursive search, sorting, multi-select, clipboard copy/cut/paste, Trash-backed delete, properties, text editing, and ELF launch routing. |
+| **Web Browser** | Launcher / desktop icon | Native HTTP browser with address/search bar, redirects, decoded chunked responses, basic HTML text rendering, clickable links, session history, and persistent bookmarks. |
 
 ### Desktop shortcuts
 
@@ -333,5 +336,7 @@ faults still panic.
 | 13 | Pipes + shared memory + IPC | **Done** |
 | 14 | USB HID — real hardware input | **Done** |
 | 15 | Networking — virtio-net, TCP/IP | **Done** |
+| 16 | UI polish — desktop shell, launcher, taskbar, settings | **Done** |
+| 17 | Browser foundation — HTTP/1.1, redirects, chunked responses, local browser UX | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).
