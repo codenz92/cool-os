@@ -134,8 +134,6 @@ const GREETER_BG_BOTTOM: u32 = 0x00_00_01_06;
 const GREETER_PANEL_BG: u32 = 0x00_02_08_16;
 const GREETER_PANEL_EDGE_DIM: u32 = 0x00_00_3E_70;
 const GREETER_TITLE: u32 = 0x00_EE_FB_FF;
-const GREETER_LABEL: u32 = 0x00_58_8A_A8;
-const GREETER_TEXT: u32 = 0x00_C8_F6_FF;
 const GREETER_FIELD_BG: u32 = 0x00_00_05_10;
 
 // Desktop icons — CRT phosphor colour set
@@ -1073,7 +1071,7 @@ impl WindowManager {
             greeter_user: default_login_user_name(),
             greeter_password: String::new(),
             greeter_focus: GreeterFocus::Password,
-            greeter_message: String::from("Sign in to coolOS"),
+            greeter_message: String::new(),
             greeter_error: false,
             greeter_attempts: 0,
             session_ready: true,
@@ -6789,17 +6787,19 @@ fn draw_greeter_overlay(
         layout.user_x + layout.field_w,
     );
 
-    let msg_color = if error { 0x00_FF_88_88 } else { 0x00_88_DD_CC };
-    s_draw_str_small(
-        s,
-        sw,
-        layout.user_x,
-        layout.button_y + 39,
-        message,
-        msg_color,
-        GREETER_PANEL_BG,
-        layout.user_x + layout.field_w,
-    );
+    if !message.is_empty() {
+        let msg_color = if error { 0x00_FF_88_88 } else { 0x00_88_DD_CC };
+        s_draw_str_small(
+            s,
+            sw,
+            layout.user_x,
+            layout.button_y + 39,
+            message,
+            msg_color,
+            GREETER_PANEL_BG,
+            layout.user_x + layout.field_w,
+        );
+    }
     if attempts > 0 {
         let attempt_text = format!("attempts {}", attempts);
         s_draw_str_small(
@@ -6878,29 +6878,6 @@ fn draw_greeter_overlay(
         );
         row += 1;
     }
-
-    let info_y =
-        (layout.users_y + row * GREETER_USER_ROW_H + 12).min(layout.panel_y + layout.panel_h - 38);
-    s_draw_str_small(
-        s,
-        sw,
-        layout.user_x,
-        info_y,
-        "login sequence",
-        GREETER_LABEL,
-        GREETER_PANEL_BG,
-        layout.user_x + layout.field_w,
-    );
-    s_draw_str_small(
-        s,
-        sw,
-        layout.user_x,
-        info_y + 18,
-        "awaiting credentials",
-        GREETER_TEXT,
-        GREETER_PANEL_BG,
-        layout.user_x + layout.field_w,
-    );
 }
 
 fn draw_greeter_backdrop(s: &mut [u32], sw: usize, w: i32, h: i32) {

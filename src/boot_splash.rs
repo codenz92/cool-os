@@ -23,7 +23,6 @@ const PANEL_BG: u32 = 0x00_02_08_16;
 const PANEL_EDGE: u32 = 0x00_00_BB_FF;
 const PANEL_EDGE_DIM: u32 = 0x00_00_3E_70;
 const TITLE: u32 = 0x00_EE_FB_FF;
-const SUBTITLE: u32 = 0x00_77_BB_DD;
 const LABEL: u32 = 0x00_58_8A_A8;
 const TEXT: u32 = 0x00_C8_F6_FF;
 const BAR_BG: u32 = 0x00_01_04_0A;
@@ -103,28 +102,19 @@ fn draw_static() {
     );
 
     let icon_s = 84;
-    let title_y = panel_y + 34;
-    let subtitle_y = panel_y + 82;
+    let title_y = panel_y + 52;
     let title_w = text_width_scaled_with_tracking("coolOS", 4, 0);
-    let subtitle_w = text_width_scaled("PHOSPHOR DESKTOP", 1);
-    let text_w = title_w.max(subtitle_w);
+    let text_w = title_w;
     let lockup_gap = 28;
     let lockup_w = icon_s + lockup_gap + text_w;
     let lockup_x = panel_x + (panel_w - lockup_w) / 2;
     let icon_x = lockup_x;
     let text_x = icon_x + icon_s + lockup_gap;
     let logo_size = 18 * 4;
-    let logo_y = title_y + (((subtitle_y + 8) - title_y) - logo_size) / 2;
+    let logo_y = title_y + ((8 * 4) - logo_size) / 2;
     draw_logo_icon(icon_x + 6, logo_y);
 
     draw_str_scaled_with_tracking(text_x, title_y, "coolOS", TITLE, 4, 0);
-    draw_str_scaled(
-        text_x + (text_w - subtitle_w) / 2,
-        subtitle_y,
-        "PHOSPHOR DESKTOP",
-        SUBTITLE,
-        1,
-    );
     draw_str_scaled(
         panel_x + 36,
         panel_y + panel_h - 78,
@@ -257,10 +247,6 @@ fn draw_str_scaled_with_tracking(
         draw_char_scaled(cx, y, ch, color, scale);
         cx += 8 * scale as i32 + tracking;
     }
-}
-
-fn text_width_scaled(text: &str, scale: usize) -> i32 {
-    text_width_scaled_with_tracking(text, scale, scale as i32)
 }
 
 fn text_width_scaled_with_tracking(text: &str, scale: usize, tracking: i32) -> i32 {
