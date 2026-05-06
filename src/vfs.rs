@@ -463,7 +463,7 @@ pub fn vfs_create_file(path: &str) -> Result<(), crate::fat32::FsError> {
         &path,
         creds.uid,
         creds.gid,
-        crate::security::DEFAULT_FILE_MODE,
+        crate::security::apply_umask(crate::security::DEFAULT_FILE_MODE),
     )
 }
 
@@ -475,7 +475,7 @@ pub fn vfs_create_dir(path: &str) -> Result<(), crate::fat32::FsError> {
         &path,
         creds.uid,
         creds.gid,
-        crate::security::DEFAULT_DIR_MODE,
+        crate::security::apply_umask(crate::security::DEFAULT_DIR_MODE),
     )
 }
 
@@ -495,7 +495,7 @@ pub fn vfs_safe_write_file(path: &str, data: &[u8]) -> Result<(), crate::fat32::
     let (uid, gid, mode) = meta.map(|meta| (meta.uid, meta.gid, meta.mode)).unwrap_or((
         creds.uid,
         creds.gid,
-        crate::security::DEFAULT_FILE_MODE,
+        crate::security::apply_umask(crate::security::DEFAULT_FILE_MODE),
     ));
     safe_write_file_for(&path, data, uid, gid, mode)
 }
@@ -544,7 +544,7 @@ pub fn vfs_copy_file(src: &str, dst: &str) -> Result<(), crate::fat32::FsError> 
         &dst,
         creds.uid,
         creds.gid,
-        crate::security::DEFAULT_FILE_MODE,
+        crate::security::apply_umask(crate::security::DEFAULT_FILE_MODE),
     )
 }
 
@@ -889,6 +889,9 @@ fn default_mode_for_path(path: &str, is_dir: bool) -> u16 {
 }
 
 fn default_owner_for_path(path: &str) -> (u32, u32) {
+    if let Some(owner) = crate::security::home_owner_for_path(path) {
+        return owner;
+    }
     let user_owned = path == "/TMP"
         || path.starts_with("/TMP/")
         || path == "/Documents"

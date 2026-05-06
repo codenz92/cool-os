@@ -71,6 +71,7 @@ fn main() {
         "APPS",
         "DEV",
         "TMP",
+        "Users",
         "Documents",
         "Pictures",
         "Desktop",
@@ -83,6 +84,8 @@ fn main() {
             .unwrap_or_else(|e| panic!("failed to create /{}: {}", dir, e));
         coolfs.create_dir(&format!("/{}", dir));
     }
+    coolfs.create_dir("/Users/jamie");
+    coolfs.create_dir("/Users/guest");
 
     // /bin/
     root.create_dir("bin").expect("failed to create /bin");
@@ -106,9 +109,12 @@ fn main() {
         .create_file("motd.txt")
         .expect("failed to create motd.txt");
     motd.truncate().unwrap();
-    let motd_txt = b"coolOS Phase 28 - CoolFS permissions online!\n";
+    let motd_txt = b"coolOS Phase 29 - sessions and services online!\n";
     motd.write_all(motd_txt).expect("failed to write motd.txt");
     coolfs.create_file("/bin/motd.txt", motd_txt);
+
+    let users_db = default_users_db();
+    coolfs.create_file("/CONFIG/USERS.DB", users_db.as_bytes());
 
     if let Some(hello_path) = hello_elf {
         let hello_bytes = std::fs::read(&hello_path)
@@ -662,6 +668,7 @@ const CF_ROOT_UID: u32 = 0;
 const CF_ROOT_GID: u32 = 0;
 const CF_USER_UID: u32 = 1000;
 const CF_USER_GID: u32 = 1000;
+const CF_GUEST_UID: u32 = 1001;
 const CF_DEFAULT_DIR_MODE: u16 = 0o755;
 const CF_DEFAULT_FILE_MODE: u16 = 0o644;
 const CF_DEFAULT_EXEC_MODE: u16 = 0o755;
@@ -1060,6 +1067,20 @@ fn split_parent_and_name(path: &str) -> (String, String) {
 
 fn default_metadata_for_path(path: &str, is_dir: bool) -> (u32, u32, u16) {
     let normalized = normalize_abs_path(path);
+    if normalized == "/Users/jamie" || normalized.starts_with("/Users/jamie/") {
+        return (
+            CF_USER_UID,
+            CF_USER_GID,
+            if is_dir { 0o700 } else { CF_DEFAULT_FILE_MODE },
+        );
+    }
+    if normalized == "/Users/guest" || normalized.starts_with("/Users/guest/") {
+        return (
+            CF_GUEST_UID,
+            CF_USER_GID,
+            if is_dir { 0o700 } else { CF_DEFAULT_FILE_MODE },
+        );
+    }
     let user_owned = normalized == "/TMP"
         || normalized.starts_with("/TMP/")
         || normalized == "/Documents"
@@ -1087,6 +1108,28 @@ fn default_metadata_for_path(path: &str, is_dir: bool) -> (u32, u32, u16) {
     } else {
         (CF_ROOT_UID, CF_ROOT_GID, mode)
     }
+}
+
+fn default_users_db() -> String {
+    format!(
+        "# coolOS users v1: name:uid:gid:role:home:passhash:login\nroot:0:0:root:/root:{}:disabled\njamie:1000:1000:admin:/Users/jamie:{}:enabled\nguest:1001:1000:user:/Users/guest:{}:enabled\n",
+        password_hash("root", "root"),
+        password_hash("jamie", "cool"),
+        password_hash("guest", "guest"),
+    )
+}
+
+fn password_hash(name: &str, password: &str) -> u32 {
+    let mut hash = 0x811c_9dc5u32;
+    for byte in name
+        .bytes()
+        .chain(std::iter::once(b':'))
+        .chain(password.bytes())
+    {
+        hash ^= byte as u32;
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash
 }
 
 fn normalize_abs_path(path: &str) -> String {

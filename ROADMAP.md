@@ -4,9 +4,9 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–28 are complete. Phase 28 adds real users, CoolFS ownership/modes,
-per-task credentials, and package launch grants enforced by the VFS and
-userspace syscall paths.
+Phases 1–29 are complete. Phase 29 adds a persistent user database, login
+sessions, home directory ownership, umask handling, admin-gated mutations, and
+credentialed service supervision.
 
 ---
 
@@ -914,6 +914,45 @@ packages launch with bounded capabilities derived from their manifests.
 
 ---
 
+## ✅ Phase 29 — Login, Sessions, and Service Supervision
+
+**Goal:** Turn Phase 28's uid/gid/mode enforcement into a real desktop session
+model. The OS should know which user is logged in, persist local users, apply
+home-directory ownership, and keep service authority separate from desktop
+authority.
+
+- [x] Add a CoolFS-backed user database at `/CONFIG/USERS.DB` with hashed
+      passwords, roles, homes, uid/gid fields, and enabled/disabled login state.
+- [x] Seed default users: disabled `root`, admin `jamie` uid/gid 1000, and
+      non-admin `guest` uid 1001.
+- [x] Add `/Users`, `/Users/jamie`, and `/Users/guest` to the generated image
+      and boot repair path; home directories are owner-only and owned by their
+      matching user.
+- [x] Replace hardcoded interactive credentials with session-derived
+      credentials and make launched packages inherit the active session uid/gid.
+- [x] Separate admin authority from package `shell` grants so package manifests
+      cannot gain ownership/service control just by asking for shell-like
+      capabilities.
+- [x] Add Terminal `login`, `su`, `logout`, `passwd`, `id`, `groups`, and
+      `umask` commands.
+- [x] Apply the active session umask to newly created user files and
+      directories.
+- [x] Require admin credentials for package install/remove and service
+      supervisor mutations.
+- [x] Add per-service credentials, service status output, deterministic
+      supervisor ticks, and restart accounting for failed services.
+- [x] Add boot selftests for session ownership, umask enforcement, package
+      grant non-admin behavior, and service supervisor restart behavior.
+- [x] Add `make smoke-phase29-sessions` to prove session switching,
+      cross-user/admin denial, admin chown recovery, and service restart status.
+
+**Current status:** complete. coolOS now boots into a real local session backed
+by a persistent user database, creates user homes with durable CoolFS ownership,
+applies session credentials to shell and package-launched tasks, and supervises
+kernel services under dedicated service credentials.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -957,4 +996,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v5.9 | Phase 25 complete: package platform |
 | v6.0 | Phase 26 complete: CoolFS root filesystem |
 | v6.1 | Phase 27 complete: native CoolFS disk backend |
-| v6.2 | Current — Phase 28 complete: users, permissions, and app sandboxing |
+| v6.2 | Phase 28 complete: users, permissions, and app sandboxing |
+| v6.3 | Current — Phase 29 complete: login, sessions, and service supervision |

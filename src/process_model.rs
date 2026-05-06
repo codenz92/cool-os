@@ -68,7 +68,7 @@ pub fn zombie_policy_lines() -> Vec<String> {
     alloc::vec![
         String::from("policy: exited children remain zombies until waitpid/reap"),
         String::from("shell reap command may reap all exited tasks"),
-        String::from("future: service supervisor will reap owned service children"),
+        String::from("service supervisor restarts failed service work under service credentials"),
     ]
 }
 

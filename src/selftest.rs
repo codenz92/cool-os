@@ -69,6 +69,19 @@ pub fn run_boot_tests() {
         &mut fail,
     );
     check(
+        "session-switch",
+        session_login_roundtrip(),
+        &mut ok,
+        &mut fail,
+    );
+    check("umask", umask_roundtrip(), &mut ok, &mut fail);
+    check(
+        "service-supervisor",
+        crate::services::service_roundtrip_for_test(),
+        &mut ok,
+        &mut fail,
+    );
+    check(
         "app-manifest-validation",
         crate::app_metadata::validate_installed_manifests().is_ok(),
         &mut ok,
@@ -273,11 +286,60 @@ fn package_grants_roundtrip() -> bool {
     let desktop = crate::security::package_credentials("desktop");
     let network = crate::security::package_credentials("network");
     let files = crate::security::package_credentials("filesystem");
+    let shell = crate::security::package_credentials("shell");
     crate::security::can_desktop(desktop)
         && !crate::security::can_network(desktop)
         && crate::security::can_network(network)
         && crate::security::can_write_files(files)
         && crate::security::can_execute_files(desktop)
+        && !crate::security::can_admin(shell)
+}
+
+fn session_login_roundtrip() -> bool {
+    let restore_name = crate::security::current_user().name;
+    let restore = || crate::security::set_session_for_test(&restore_name);
+    if !crate::security::set_session_for_test("guest") {
+        return false;
+    }
+    let guest = crate::security::current_user();
+    if guest.uid != crate::security::GUEST_UID || crate::security::require_admin().is_ok() {
+        return restore() && false;
+    }
+    if !matches!(
+        crate::vfs::vfs_create_file("/Users/jamie/GUEST_DENY"),
+        Err(crate::fat32::FsError::PermissionDenied)
+    ) {
+        return restore() && false;
+    }
+    let path = "/Users/guest/SESSION.TXT";
+    let _ = crate::vfs::vfs_kernel_delete(path);
+    match crate::vfs::vfs_create_file(path) {
+        Ok(()) | Err(crate::fat32::FsError::AlreadyExists) => {}
+        Err(_) => return restore() && false,
+    }
+    if crate::vfs::vfs_write_file(path, b"guest\n").is_err() {
+        return restore() && false;
+    }
+    let Some(meta) = crate::vfs::vfs_metadata(path) else {
+        return restore() && false;
+    };
+    let denied_chown = matches!(
+        crate::vfs::vfs_chown(path, crate::security::ROOT_UID, crate::security::ROOT_GID),
+        Err(crate::fat32::FsError::PermissionDenied)
+    );
+    restore() && denied_chown && meta.uid == crate::security::GUEST_UID
+}
+
+fn umask_roundtrip() -> bool {
+    let old = crate::security::set_umask(0o077);
+    let path = "/TMP/UMASK.TXT";
+    let _ = crate::vfs::vfs_kernel_delete(path);
+    let created = crate::vfs::vfs_create_file(path).is_ok();
+    let mode_ok = crate::vfs::vfs_metadata(path)
+        .map(|meta| meta.mode == 0o600)
+        .unwrap_or(false);
+    crate::security::set_umask(old);
+    created && mode_ok
 }
 
 fn png_decode_roundtrip() -> bool {

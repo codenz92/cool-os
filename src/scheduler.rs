@@ -433,6 +433,14 @@ pub fn current_credentials() -> Option<crate::security::Credentials> {
     sched.tasks.get(sched.current).map(|task| task.credentials)
 }
 
+pub fn set_current_credentials(credentials: crate::security::Credentials) {
+    let mut sched = SCHEDULER.lock();
+    let current = sched.current;
+    if let Some(task) = sched.tasks.get_mut(current) {
+        task.credentials = credentials;
+    }
+}
+
 #[allow(dead_code)]
 pub fn task_credentials(task_id: usize) -> Option<crate::security::Credentials> {
     SCHEDULER

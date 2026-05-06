@@ -13,7 +13,7 @@ memory, and per-task fd tables.
 
 ---
 
-# Current state — v6.2
+# Current state — v6.3
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -34,6 +34,10 @@ contribute launcher aliases and file associations, launch a declared userspace
 executable through `exec=`, and be removed without leaving stale launcher
 entries. Manifest permission labels become launch-time task capabilities, and
 the VFS/syscall layer enforces filesystem, network, desktop, and execute access.
+The active desktop session is backed by a persistent CoolFS user database, so
+Terminal commands, launched ELF tasks, and package apps inherit the logged-in
+user's uid/gid and non-admin users cannot mutate protected ownership or service
+state without switching back to an admin session.
 
 | Context | Mode | Description |
 | :------ | :--- | :---------- |
@@ -86,7 +90,7 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **FAT32 layer** | Optional legacy import mount at `/FAT`, formatted in a separate 8 MiB-offset disk region. BPB parsing, FAT chain walking, short-name and long-filename lookup, directory traversal, cluster→sector mapping, mutation helpers, free-space stats, and `fsck` remain available without being required for CoolFS boot. |
 | **VFS** | CoolFS-root path routing, `/FAT` legacy routing, CoolFS read/write/execute permission enforcement, and task-local fd tables (16 slots, fds 0–2 reserved) backed by shared file/pipe/shmem objects. `vfs_open` reads whole files into heap buffers after access checks; `vfs_pipe` allocates a 512-byte kernel ring buffer and returns per-task read/write fds; `vfs_read_blocking` blocks tasks on empty pipes and wakes them on write/EOF; `ipc` selectively inherits pipe ends into child processes; `vfs_shmem_create`/`vfs_shmem_map` manage a shared memory region pool indexed by ID. |
 | **Networking** | Legacy PCI virtio-net driver for QEMU user networking, polling RX/TX virtqueues, Ethernet framing, ARP cache, IPv4, ICMP echo, UDP DNS queries, minimal TCP client sockets, userspace socket syscalls, HTTP/1.1, and verified TLS 1.3 HTTPS for the native browser/terminal path. |
-| **Kernel services** | Persistent kernel log buffer flushed to `/LOGS/KERNEL.TXT`, crash-screen log tail, central device registry for PCI/USB/system devices, installable package/app manifests with file associations, networking status, and ACPI power-control status foundation. |
+| **Kernel services** | Persistent kernel log buffer flushed to `/LOGS/KERNEL.TXT`, crash-screen log tail, central device registry for PCI/USB/system devices, installable package/app manifests with file associations, networking status, ACPI power-control status foundation, and a credentialed service supervisor that restarts failed services under service uid/gid 200. |
 | **Applications** | Terminal, System Monitor, Text Viewer, Color Picker, File Manager, Web Browser, ring-3 Notes, Text Editor, Trash Bin, Screenshot, and GUI Demo. Text-file opens route into `/bin/editor <path>` with kernel viewer fallback, while File Manager exposes explicit Open With Editor/Viewer actions. |
 | **Disk image** | `disk-image/src/fs_image.rs` builds `fs.img` as a 64 MiB raw OS disk: native CoolFS starts at LBA 0 with root-owned system paths, user-owned writable paths, executable `/bin` ELFs, `/Packages/guidemo.pkg`, and `/Documents/package-demo.p25`; an optional FAT32 `/FAT` import region starts at 8 MiB. The Makefile attaches it to QEMU as the IDE slave. |
 
@@ -367,6 +371,16 @@ to launch-time grants, so package-launched apps run with bounded access instead
 of inheriting unrestricted shell authority. Terminal commands `whoami`, `perm`,
 `chmod`, and `chown` expose the model for smoke tests and manual inspection.
 
+**Login, sessions, and service supervision (Phase 29).** `/CONFIG/USERS.DB`
+stores persistent users with hashed passwords, roles, homes, and login state.
+The default admin session is `jamie` uid/gid 1000 with password `cool`, and
+`guest` uid 1001 uses password `guest` with non-admin caps. `/Users/jamie` and
+`/Users/guest` are created with owner-only access, new files honor the session
+umask, `login`/`logout`/`passwd`/`id`/`groups`/`umask` expose the model in the
+Terminal, package installs and service mutations require admin credentials, and
+the service supervisor reports per-service credentials and deterministic restart
+state through `services`.
+
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
 empty). `vmm::new_process_pml4` handles the clone; `vmm::map_page_in` / `vmm::map_region`
@@ -413,5 +427,6 @@ faults still panic.
 | 26 | CoolFS root filesystem — `/` backed by CoolFS with `/FAT` compatibility | **Done** |
 | 27 | Native CoolFS disk backend — CoolFS at LBA 0, optional `/FAT` import region, remount persistence smoke | **Done** |
 | 28 | Users, permissions, and app sandboxing — CoolFS uid/gid/mode, task credentials, package grants, syscall enforcement | **Done** |
+| 29 | Login, sessions, and service supervision — CoolFS user DB, home ownership, umask, admin-gated mutations, credentialed services | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

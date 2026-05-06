@@ -26,9 +26,11 @@ pub struct Service {
     pub order: u8,
     pub restart: &'static str,
     pub state: ServiceState,
+    pub credentials: crate::security::Credentials,
     pub restarts: u32,
     pub last_tick: u64,
     pub loops: u64,
+    pub reap_count: u32,
 }
 
 static SERVICES: Mutex<Vec<Service>> = Mutex::new(Vec::new());
@@ -63,6 +65,14 @@ pub fn fail(name: &str) -> bool {
 }
 
 pub fn supervise() {
+    supervise_inner();
+}
+
+pub fn supervise_once() {
+    supervise_inner();
+}
+
+fn supervise_inner() {
     let now = crate::interrupts::ticks();
     let mut services = SERVICES.lock();
     for service in services.iter_mut() {
@@ -72,6 +82,7 @@ pub fn supervise() {
             service.state = ServiceState::Running;
             service.restarts = service.restarts.saturating_add(1);
             service.last_tick = now;
+            service.reap_count = service.reap_count.saturating_add(1);
             crate::event_bus::emit("services", "restart", service.name);
             crate::profiler::record_service(service.name, "restarted");
         }
@@ -113,17 +124,59 @@ pub fn lines() -> Vec<String> {
         .iter()
         .map(|service| {
             format!(
-                "{:02} {} state={} restart={} restarts={} loops={} last_tick={}",
+                "{:02} {} state={} restart={} uid={} gid={} caps={} restarts={} loops={} reaped={} last_tick={}",
                 service.order,
                 service.name,
                 service.state.label(),
                 service.restart,
+                service.credentials.uid,
+                service.credentials.gid,
+                crate::security::capability_label(service.credentials.caps),
                 service.restarts,
                 service.loops,
+                service.reap_count,
                 service.last_tick
             )
         })
         .collect()
+}
+
+pub fn status_lines(name: &str) -> Option<Vec<String>> {
+    let services = SERVICES.lock();
+    let service = services
+        .iter()
+        .find(|service| service.name.eq_ignore_ascii_case(name))?;
+    Some(alloc::vec![format!(
+        "{} state={} restart={} uid={} gid={} caps={} restarts={} loops={} reaped={} last_tick={}",
+        service.name,
+        service.state.label(),
+        service.restart,
+        service.credentials.uid,
+        service.credentials.gid,
+        crate::security::capability_label(service.credentials.caps),
+        service.restarts,
+        service.loops,
+        service.reap_count,
+        service.last_tick
+    )])
+}
+
+pub fn service_roundtrip_for_test() -> bool {
+    if !fail("package-db") {
+        return false;
+    }
+    supervise_once();
+    let services = SERVICES.lock();
+    let Some(service) = services
+        .iter()
+        .find(|service| service.name.eq_ignore_ascii_case("package-db"))
+    else {
+        return false;
+    };
+    service.state == ServiceState::Running
+        && service.restarts > 0
+        && service.credentials.uid == crate::security::SERVICE_UID
+        && crate::security::can_write_files(service.credentials)
 }
 
 fn set_state(name: &str, state: ServiceState) -> bool {
@@ -135,6 +188,7 @@ fn set_state(name: &str, state: ServiceState) -> bool {
         return false;
     };
     service.state = state;
+    service.last_tick = crate::interrupts::ticks();
     crate::event_bus::emit("services", state.label(), service.name);
     crate::profiler::record_service(service.name, state.label());
     true
@@ -146,8 +200,10 @@ fn service(name: &'static str, order: u8, restart: &'static str) -> Service {
         order,
         restart,
         state: ServiceState::Running,
+        credentials: crate::security::service_credentials(name),
         restarts: 0,
         last_tick: 0,
         loops: 0,
+        reap_count: 0,
     }
 }

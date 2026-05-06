@@ -573,6 +573,18 @@ impl TerminalApp {
 
             Some("whoami") => self.cmd_whoami(),
 
+            Some("id") => self.cmd_id(words.next()),
+
+            Some("groups") => self.cmd_groups(words.next()),
+
+            Some("login") | Some("su") => self.cmd_login(words.next(), words.next()),
+
+            Some("logout") => self.cmd_logout(),
+
+            Some("passwd") => self.cmd_passwd(words.next(), words.next()),
+
+            Some("umask") => self.cmd_umask(words.next()),
+
             Some("users") => self.cmd_lines("USERS", crate::security::lines()),
 
             Some("security") => self.cmd_lines("SECURITY", crate::security::lines()),
@@ -896,6 +908,12 @@ impl TerminalApp {
             ("search <query>", "search indexed files"),
             ("index", "rebuild desktop search index"),
             ("whoami", "current user and task grants"),
+            ("id [user]", "user identity and home"),
+            ("groups [user]", "group membership"),
+            ("login <user> <pass>", "switch active session"),
+            ("logout", "return to guest session"),
+            ("passwd <old> <new>", "change current password"),
+            ("umask [mode]", "view/set file creation mask"),
             ("users", "user/security status"),
             ("pkg <op>", "package list/install/remove/run"),
             ("proc", "process groups and signals"),
@@ -1335,14 +1353,157 @@ impl TerminalApp {
         let user = crate::security::current_user();
         let creds = crate::security::current_credentials();
         self.set_fg(FG_OUTPUT);
-        self.print_str(user.name);
+        self.print_str(&user.name);
         self.print_str(" uid=");
         self.print_u64(creds.uid as u64);
         self.print_str(" gid=");
         self.print_u64(creds.gid as u64);
         self.print_str(" caps=");
         self.print_str(&crate::security::capability_label(creds.caps));
+        self.print_str(" home=");
+        self.print_str(&user.home);
         self.print_char('\n');
+    }
+
+    fn cmd_id(&mut self, user: Option<&str>) {
+        let user = match user {
+            Some(name) => crate::security::user_by_name(name),
+            None => Some(crate::security::current_user()),
+        };
+        match user {
+            Some(user) => {
+                self.set_fg(FG_OUTPUT);
+                self.print_str(&user.name);
+                self.print_str(" uid=");
+                self.print_u64(user.uid as u64);
+                self.print_str(" gid=");
+                self.print_u64(user.gid as u64);
+                self.print_str(" role=");
+                self.print_str(&user.role);
+                self.print_str(" home=");
+                self.print_str(&user.home);
+                self.print_str(" login=");
+                self.print_str(if user.login_enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                });
+                self.print_char('\n');
+            }
+            None => {
+                self.set_fg(FG_ERROR);
+                self.print_str("id: no such user\n");
+            }
+        }
+    }
+
+    fn cmd_groups(&mut self, user: Option<&str>) {
+        let name = user
+            .map(String::from)
+            .unwrap_or_else(|| crate::security::current_user().name);
+        match crate::security::groups_for(&name) {
+            Some(groups) => {
+                self.set_fg(FG_OUTPUT);
+                self.print_str(&name);
+                self.print_str(":");
+                for group in groups {
+                    self.print_char(' ');
+                    self.print_str(&group.name);
+                    self.print_char('(');
+                    self.print_u64(group.gid as u64);
+                    self.print_char(')');
+                }
+                self.print_char('\n');
+            }
+            None => {
+                self.set_fg(FG_ERROR);
+                self.print_str("groups: no such user\n");
+            }
+        }
+    }
+
+    fn cmd_login(&mut self, user: Option<&str>, password: Option<&str>) {
+        let (Some(user), Some(password)) = (user, password) else {
+            self.set_fg(FG_ERROR);
+            self.print_str("usage: login <user> <password>\n");
+            return;
+        };
+        match crate::security::login(user, password) {
+            Ok(user) => {
+                self.set_fg(FG_ACCENT);
+                self.print_str("session user ");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(&user.name);
+                self.print_str(" uid=");
+                self.print_u64(user.uid as u64);
+                self.print_char('\n');
+            }
+            Err(err) => {
+                self.set_fg(FG_ERROR);
+                self.print_str("login: ");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(err.as_str());
+                self.print_char('\n');
+            }
+        }
+    }
+
+    fn cmd_logout(&mut self) {
+        let user = crate::security::logout();
+        self.set_fg(FG_ACCENT);
+        self.print_str("session user ");
+        self.set_fg(FG_OUTPUT);
+        self.print_str(&user.name);
+        self.print_str(" uid=");
+        self.print_u64(user.uid as u64);
+        self.print_char('\n');
+    }
+
+    fn cmd_passwd(&mut self, old_password: Option<&str>, new_password: Option<&str>) {
+        let (Some(old_password), Some(new_password)) = (old_password, new_password) else {
+            self.set_fg(FG_ERROR);
+            self.print_str("usage: passwd <old-password> <new-password>\n");
+            return;
+        };
+        match crate::security::change_password(old_password, new_password) {
+            Ok(()) => {
+                self.set_fg(FG_ACCENT);
+                self.print_str("password updated\n");
+            }
+            Err(err) => {
+                self.set_fg(FG_ERROR);
+                self.print_str("passwd: ");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(err.as_str());
+                self.print_char('\n');
+            }
+        }
+    }
+
+    fn cmd_umask(&mut self, mode: Option<&str>) {
+        match mode {
+            Some(mode) => {
+                let Some(mode) = crate::security::parse_mode(mode) else {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("umask: invalid mode\n");
+                    return;
+                };
+                let old = crate::security::set_umask(mode);
+                self.set_fg(FG_ACCENT);
+                self.print_str("umask ");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(&crate::security::format_mode(old));
+                self.print_str(" -> ");
+                self.print_str(&crate::security::format_mode(mode));
+                self.print_char('\n');
+            }
+            None => {
+                self.set_fg(FG_OUTPUT);
+                self.print_str("umask ");
+                self.print_str(&crate::security::format_mode(crate::security::umask()));
+                self.print_char('\n');
+            }
+        }
     }
 
     fn cmd_http(&mut self, scheme: &str, host: &str, path: &str) {
@@ -1489,9 +1650,17 @@ impl TerminalApp {
     fn cmd_pkg(&mut self, op: Option<&str>, arg: Option<&str>, args: Vec<&str>) {
         match (op, arg) {
             (None, _) | (Some("list"), _) => self.cmd_lines("PACKAGES", crate::packages::lines()),
-            (Some("install"), Some(id)) => self.print_result("pkg", crate::packages::install(id)),
+            (Some("install"), Some(id)) => {
+                if !self.require_admin("pkg") {
+                    return;
+                }
+                self.print_result("pkg", crate::packages::install(id));
+            }
             (Some("remove"), Some(id)) | (Some("uninstall"), Some(id)) => {
-                self.print_result("pkg", crate::packages::uninstall(id))
+                if !self.require_admin("pkg") {
+                    return;
+                }
+                self.print_result("pkg", crate::packages::uninstall(id));
             }
             (Some("run"), Some(id)) | (Some("launch"), Some(id)) => {
                 match crate::packages::launch(id, &args) {
@@ -1575,12 +1744,44 @@ impl TerminalApp {
     fn cmd_services(&mut self, op: Option<&str>, name: Option<&str>) {
         match (op, name) {
             (None, _) | (Some("list"), _) => self.cmd_lines("SERVICES", crate::services::lines()),
-            (Some("start"), Some(name)) => self.print_bool("service", crate::services::start(name)),
-            (Some("stop"), Some(name)) => self.print_bool("service", crate::services::stop(name)),
-            (Some("fail"), Some(name)) => self.print_bool("service", crate::services::fail(name)),
+            (Some("run"), _) => {
+                if !self.require_admin("services") {
+                    return;
+                }
+                crate::services::supervise_once();
+                self.set_fg(FG_ACCENT);
+                self.print_str("service supervisor tick\n");
+            }
+            (Some("start"), Some(name)) => {
+                if !self.require_admin("services") {
+                    return;
+                }
+                self.print_bool("service", crate::services::start(name));
+            }
+            (Some("stop"), Some(name)) => {
+                if !self.require_admin("services") {
+                    return;
+                }
+                self.print_bool("service", crate::services::stop(name));
+            }
+            (Some("fail"), Some(name)) => {
+                if !self.require_admin("services") {
+                    return;
+                }
+                self.print_bool("service", crate::services::fail(name));
+            }
+            (Some(name), None) => match crate::services::status_lines(name) {
+                Some(lines) => self.cmd_lines("SERVICE", lines),
+                None => {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("services: no such service\n");
+                }
+            },
             _ => {
                 self.set_fg(FG_ERROR);
-                self.print_str("usage: services [list|start <name>|stop <name>|fail <name>]\n");
+                self.print_str(
+                    "usage: services [list|run|<name>|start <name>|stop <name>|fail <name>]\n",
+                );
             }
         }
     }
@@ -1658,6 +1859,21 @@ impl TerminalApp {
             self.set_fg(FG_ERROR);
             self.print_str(prefix);
             self.print_str(": not found\n");
+        }
+    }
+
+    fn require_admin(&mut self, prefix: &str) -> bool {
+        match crate::security::require_admin() {
+            Ok(()) => true,
+            Err(err) => {
+                self.set_fg(FG_ERROR);
+                self.print_str(prefix);
+                self.print_str(": ");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(err.as_str());
+                self.print_char('\n');
+                false
+            }
         }
     }
 
