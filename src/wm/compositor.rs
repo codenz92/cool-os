@@ -720,6 +720,14 @@ struct StartMenuEntry {
     kind: LauncherMatchKind,
 }
 
+#[derive(Clone, Copy)]
+struct StartMenuQuickAction {
+    label: &'static str,
+    glyph: &'static str,
+    action: &'static str,
+    accent: u32,
+}
+
 struct TaskbarMenu {
     window: usize,
     x: i32,
@@ -2086,6 +2094,16 @@ impl WindowManager {
     fn activate_start_item(&mut self, item: &str, wx: i32, wy: i32) {
         let kind = start_item_kind(item);
         self.activate_launcher_kind(&kind, wx, wy);
+    }
+
+    fn activate_start_menu_quick_action(&mut self, action: &str, wx: i32, wy: i32) {
+        if let Some(app) = action.strip_prefix("app:") {
+            self.launch_app(app, wx, wy);
+        } else if let Some(path) = action.strip_prefix("path:") {
+            self.launch_file_manager_at(path, wx, wy);
+        } else {
+            self.run_inline_launcher_action(action, wx, wy);
+        }
     }
 
     fn quick_launch_pinned(&mut self, slot: usize) -> bool {
@@ -3494,7 +3512,7 @@ impl WindowManager {
             let menu_h = prefs.height.clamp(320, taskbar_y - 4);
             let left_w = (if prefs.compact { 230i32 } else { 280i32 }).min(menu_w - 220);
             let bottom_h = 36i32;
-            let left_hdr_h = 32i32;
+            let left_hdr_h = 66i32;
             let menu_x = 0i32;
             let menu_y = taskbar_y - menu_h;
             let bar_y = menu_y + menu_h - bottom_h;
@@ -3509,9 +3527,9 @@ impl WindowManager {
                     let item_h = if prefs.compact { 32i32 } else { 40i32 };
                     let items_y = menu_y + left_hdr_h + 8;
                     let srch_x = menu_x + 8;
-                    let srch_y = bar_y + 7;
+                    let srch_y = menu_y + 38;
                     let srch_w = left_w - 16;
-                    let srch_h = 20i32;
+                    let srch_h = 22i32;
                     let limit = pinned_apps.len().min(start_menu_pinned_limit(
                         menu_h, bottom_h, left_hdr_h, item_h,
                     ));
@@ -3549,26 +3567,21 @@ impl WindowManager {
                 } else {
                     let banner_x = rc_x + 6;
                     let banner_y = menu_y + 10;
-                    let banner_h = 84i32;
-                    let settings_w = 104i32;
-                    let settings_h = 20i32;
-                    let settings_x = banner_x + 56;
-                    let settings_y = banner_y + 38;
+                    let banner_w = rc_w - 12;
+                    let banner_h = 112i32;
                     let link_h = 22i32;
                     let links_y = banner_y + banner_h + 8;
                     let sd_w = 96i32;
                     let sd_x = menu_x + left_w + (right_w - sd_w) / 2;
                     let sd_y = bar_y + 8;
                     let sd_h = 20i32;
-                    if mx_i >= settings_x
-                        && mx_i < settings_x + settings_w
-                        && my_i >= settings_y
-                        && my_i < settings_y + settings_h
+                    if let Some(action) =
+                        start_menu_quick_action_at(mx_i - banner_x, my_i - banner_y, banner_w)
                     {
                         let off = self.windows.len() as i32 * 16;
                         let wx = (10 + off).min(sw as i32 - 200);
                         let wy = (10 + off).min(bar_y - 80);
-                        self.launch_app("Display Settings", wx, wy);
+                        self.activate_start_menu_quick_action(action, wx, wy);
                         self.start_menu_open = false;
                         crate::wm::request_repaint();
                     } else if mx_i >= sd_x
@@ -4126,7 +4139,7 @@ impl WindowManager {
                 let left_w = (if prefs.compact { 230i32 } else { 280i32 }).min(menu_w - 220);
                 let right_w = menu_w - left_w;
                 let bottom_h = 36i32;
-                let left_hdr_h = 32i32;
+                let left_hdr_h = 66i32;
                 let menu_x = 0i32;
                 let menu_y = taskbar_y - menu_h;
                 let bar_y = menu_y + menu_h - bottom_h;
@@ -4210,27 +4223,36 @@ impl WindowManager {
                     s,
                     sw,
                     menu_x + 10,
-                    left_hdr_y + 8,
-                    "PINNED + FAVORITES",
+                    left_hdr_y + 7,
+                    "START",
                     0x00_00_EE_FF,
                     left_hdr_bg,
                     menu_x + left_w - 12,
                 );
+                let pinned_count = self.start_menu_pinned.len();
+                let recent_count = crate::app_lifecycle::recent_apps().len()
+                    + crate::app_lifecycle::recent_files().len()
+                    + crate::app_lifecycle::recent_commands().len();
+                let mut menu_summary = String::new();
+                push_decimal(&mut menu_summary, pinned_count as u64);
+                menu_summary.push_str(" pinned  ");
+                push_decimal(&mut menu_summary, recent_count as u64);
+                menu_summary.push_str(" recent");
                 s_draw_str_small(
                     s,
                     sw,
-                    menu_x + 10,
-                    left_hdr_y + 20,
-                    "Ctrl+1..9 quick launch",
+                    menu_x + 60,
+                    left_hdr_y + 7,
+                    &menu_summary,
                     0x00_33_66_88,
                     left_hdr_bg,
                     menu_x + left_w - 12,
                 );
 
                 let srch_x = menu_x + 8;
-                let srch_y = bar_y + 7;
+                let srch_y = menu_y + 38;
                 let srch_w = left_w - 16;
-                let srch_h = 20i32;
+                let srch_h = 22i32;
                 let srch_bg = 0x00_00_03_0C;
                 s_fill(s, sw, srch_x, srch_y, srch_w, srch_h, srch_bg);
                 draw_rect_border(s, sw, srch_x, srch_y, srch_w, srch_h, 0x00_00_44_88);
@@ -4329,16 +4351,24 @@ impl WindowManager {
                     let text_left = menu_x + 40;
                     let text_right = menu_x + left_w - 24;
                     let display_name = start_item_label(name);
-                    let text_w = display_name.chars().count() as i32 * 8;
-                    let text_x = text_left + ((text_right - text_left - text_w).max(0) / 2);
-                    let text_y = iy + (item_h - 8) / 2;
                     s_draw_str_small(
                         s,
                         sw,
-                        text_x,
-                        text_y,
+                        text_left,
+                        iy + if prefs.compact { 7 } else { 9 },
                         &display_name,
                         if is_hov { WHITE } else { 0x00_AA_DD_FF },
+                        row_bg,
+                        text_right,
+                    );
+                    let detail = start_item_detail(name);
+                    s_draw_str_small(
+                        s,
+                        sw,
+                        text_left,
+                        iy + if prefs.compact { 18 } else { 22 },
+                        &detail,
+                        if is_hov { 0x00_66_AA_DD } else { 0x00_44_77_99 },
                         row_bg,
                         text_right,
                     );
@@ -4396,8 +4426,9 @@ impl WindowManager {
                 let banner_x = rc_x + 6;
                 let banner_y = menu_y + 10;
                 let banner_w = rc_w - 12;
-                let banner_h = 84i32;
+                let banner_h = 112i32;
                 let banner_bg = 0x00_00_0A_20;
+                let session_user = crate::security::current_user();
                 s_fill(s, sw, banner_x, banner_y, banner_w, banner_h, banner_bg);
                 draw_rect_border(s, sw, banner_x, banner_y, banner_w, banner_h, 0x00_00_33_66);
                 let av_x = banner_x + 8;
@@ -4408,10 +4439,6 @@ impl WindowManager {
                 s_fill(s, sw, av_x + 9, av_y + 20, 22, 14, 0x00_00_44_77);
                 let clock_right = banner_x + banner_w - 10;
                 let time_x = clock_right - banner_time.chars().count() as i32 * 8;
-                let settings_w = 104i32;
-                let settings_h = 20i32;
-                let settings_x = banner_x + 56;
-                let settings_y = banner_y + 38;
                 let date_x = av_x + 48;
                 let date_y = av_y + 16;
                 s_draw_str_small(
@@ -4419,7 +4446,7 @@ impl WindowManager {
                     sw,
                     av_x + 48,
                     av_y + 4,
-                    "user",
+                    &session_user.name,
                     0x00_CC_EE_FF,
                     banner_bg,
                     banner_x + banner_w - 10,
@@ -4444,45 +4471,26 @@ impl WindowManager {
                     banner_bg,
                     clock_right,
                 );
-
-                let settings_hot = mx_i >= settings_x
-                    && mx_i < settings_x + settings_w
-                    && my_i >= settings_y
-                    && my_i < settings_y + settings_h;
-                let settings_bg = if settings_hot {
-                    0x00_00_14_30
-                } else {
-                    0x00_00_07_18
-                };
-                s_fill(
-                    s,
-                    sw,
-                    settings_x,
-                    settings_y,
-                    settings_w,
-                    settings_h,
-                    settings_bg,
-                );
                 s_draw_str_small(
                     s,
                     sw,
-                    settings_x + ((settings_w - ("Settings".len() as i32 * 8)) / 2),
-                    settings_y + 6,
-                    "Settings",
-                    if settings_hot { WHITE } else { 0x00_AA_DD_FF },
-                    settings_bg,
-                    settings_x + settings_w - 6,
+                    date_x,
+                    date_y + 12,
+                    &session_user.role,
+                    0x00_66_AA_DD,
+                    banner_bg,
+                    clock_right,
                 );
-                draw_rect_border(
+
+                draw_start_menu_quick_actions(
                     s,
                     sw,
-                    settings_x,
-                    settings_y,
-                    settings_w,
-                    settings_h,
-                    if settings_hot { ACCENT } else { 0x00_00_33_66 },
+                    banner_x,
+                    banner_y,
+                    banner_w,
+                    mx_i - banner_x,
+                    my_i - banner_y,
                 );
-                s_fill(s, sw, settings_x, settings_y, settings_w, 2, ACCENT);
 
                 let link_h = 22i32;
                 let links_y = banner_y + banner_h + 8;
@@ -4556,10 +4564,10 @@ impl WindowManager {
                     draw_start_menu_widgets(
                         s,
                         sw,
-                        banner_x + 56,
-                        banner_y + 62,
-                        (banner_w - 66).max(64),
-                        16,
+                        menu_x + 10,
+                        bar_y + 8,
+                        (sd_x - menu_x - 18).max(96),
+                        20,
                         &self.start_menu_widget_line,
                     );
                 }
@@ -7869,6 +7877,57 @@ fn power_actions() -> &'static [(&'static str, &'static str)] {
     ]
 }
 
+fn start_menu_quick_actions() -> &'static [StartMenuQuickAction] {
+    &[
+        StartMenuQuickAction {
+            label: "Terminal",
+            glyph: "TR",
+            action: "app:Terminal",
+            accent: 0x00_00_FF_88,
+        },
+        StartMenuQuickAction {
+            label: "Files",
+            glyph: "FS",
+            action: "path:/",
+            accent: 0x00_55_DD_FF,
+        },
+        StartMenuQuickAction {
+            label: "Settings",
+            glyph: "DS",
+            action: "settings:desktop",
+            accent: 0x00_66_CC_FF,
+        },
+        StartMenuQuickAction {
+            label: "Lock",
+            glyph: "LK",
+            action: "lock",
+            accent: 0x00_FF_DD_55,
+        },
+    ]
+}
+
+fn start_menu_quick_action_rect(index: usize, banner_w: i32) -> (i32, i32, i32, i32) {
+    let gap = 5i32;
+    let cols = 2i32;
+    let tile_w = ((banner_w - 16 - gap) / cols).max(72);
+    let tile_h = 22i32;
+    let col = index as i32 % cols;
+    let row = index as i32 / cols;
+    let x = 8 + col * (tile_w + gap);
+    let y = 58 + row * (tile_h + gap);
+    (x, y, tile_w, tile_h)
+}
+
+fn start_menu_quick_action_at(rel_x: i32, rel_y: i32, banner_w: i32) -> Option<&'static str> {
+    for (idx, action) in start_menu_quick_actions().iter().enumerate() {
+        let (x, y, w, h) = start_menu_quick_action_rect(idx, banner_w);
+        if rel_x >= x && rel_x < x + w && rel_y >= y && rel_y < y + h {
+            return Some(action.action);
+        }
+    }
+    None
+}
+
 fn settings_action(page: &str) -> String {
     let mut action = String::from("settings:");
     action.push_str(page);
@@ -8024,6 +8083,36 @@ fn start_item_label(item: &str) -> String {
     }
 }
 
+fn start_item_detail(item: &str) -> String {
+    match start_item_kind(item) {
+        LauncherMatchKind::App(app) => crate::app_metadata::app_by_id_or_command(&app)
+            .or_else(|| crate::app_metadata::app_by_name(&app))
+            .map(|meta| {
+                let mut detail = String::from(meta.category.label());
+                detail.push_str(" app");
+                detail
+            })
+            .unwrap_or_else(|| String::from("app")),
+        LauncherMatchKind::Path(path) => {
+            if path.ends_with('/') || path == "/" {
+                String::from("folder")
+            } else {
+                String::from("file or folder")
+            }
+        }
+        LauncherMatchKind::Command(_) => String::from("terminal command"),
+        LauncherMatchKind::Inline(action) if action.starts_with("settings:") => {
+            String::from("settings page")
+        }
+        LauncherMatchKind::Inline(action)
+            if action == "lock" || action == "logout" || action == "shutdown" =>
+        {
+            String::from("session action")
+        }
+        LauncherMatchKind::Inline(_) => String::from("quick action"),
+    }
+}
+
 fn launcher_pin_label(entry: &LauncherMatch) -> String {
     match &entry.kind {
         LauncherMatchKind::App(app) => app.clone(),
@@ -8104,6 +8193,59 @@ fn start_menu_widget_status_line() -> String {
     line.push_str("  job ");
     push_decimal(&mut line, crate::jobs::recent(6).len() as u64);
     line
+}
+
+fn draw_start_menu_quick_actions(
+    s: &mut [u32],
+    sw: usize,
+    banner_x: i32,
+    banner_y: i32,
+    banner_w: i32,
+    rel_mx: i32,
+    rel_my: i32,
+) {
+    for (idx, action) in start_menu_quick_actions().iter().enumerate() {
+        let (x, y, w, h) = start_menu_quick_action_rect(idx, banner_w);
+        let hot = rel_mx >= x && rel_mx < x + w && rel_my >= y && rel_my < y + h;
+        let bg = if hot { 0x00_00_18_34 } else { 0x00_00_07_18 };
+        let ax = banner_x + x;
+        let ay = banner_y + y;
+        s_fill(s, sw, ax, ay, w, h, bg);
+        draw_rect_border(
+            s,
+            sw,
+            ax,
+            ay,
+            w,
+            h,
+            if hot {
+                action.accent
+            } else {
+                blend_color(action.accent, 0x00_00_07_18, 80)
+            },
+        );
+        s_fill(s, sw, ax, ay, w, 2, action.accent);
+        s_draw_str_small(
+            s,
+            sw,
+            ax + 6,
+            ay + 7,
+            action.glyph,
+            action.accent,
+            bg,
+            ax + 24,
+        );
+        s_draw_str_small(
+            s,
+            sw,
+            ax + 28,
+            ay + 7,
+            action.label,
+            if hot { WHITE } else { 0x00_AA_DD_FF },
+            bg,
+            ax + w - 6,
+        );
+    }
 }
 
 fn draw_start_menu_widgets(s: &mut [u32], sw: usize, x: i32, y: i32, w: i32, h: i32, line: &str) {
