@@ -126,11 +126,12 @@ impl AuthError {
 }
 
 pub fn init() {
-    let users = load_users_from_disk().unwrap_or_else(default_users);
+    let mut users = load_users_from_disk().unwrap_or_else(default_users);
+    normalize_default_admin(&mut users);
     let groups = default_groups();
     let session = users
         .iter()
-        .find(|user| user.uid == USER_UID)
+        .find(|user| user.uid == USER_UID && user.login_enabled)
         .cloned()
         .unwrap_or_else(default_admin_user);
     {
@@ -683,6 +684,34 @@ fn load_users_from_disk() -> Option<Vec<UserRecord>> {
     }
 }
 
+fn normalize_default_admin(users: &mut Vec<UserRecord>) {
+    users.retain(|user| {
+        !(user.uid == ROOT_UID && user.name.eq_ignore_ascii_case("root") && !user.login_enabled)
+    });
+
+    let root_admin = users
+        .iter()
+        .any(|user| user.uid == USER_UID && user.name.eq_ignore_ascii_case("root"));
+    if !root_admin {
+        if let Some(user) = users
+            .iter_mut()
+            .find(|user| user.uid == USER_UID && user.role == "admin")
+        {
+            user.name = String::from("root");
+            user.home = String::from("/Users/root");
+            user.pass_hash = password_hash("root", "cool");
+            user.login_enabled = true;
+        }
+    }
+
+    if !users.iter().any(|user| user.uid == USER_UID) {
+        users.push(default_admin_user());
+    }
+    if !users.iter().any(|user| user.uid == GUEST_UID) {
+        users.push(default_guest_user());
+    }
+}
+
 fn parse_user_record(line: &str) -> Option<UserRecord> {
     let mut parts = line.split(':');
     let name = parts.next()?.trim();
@@ -739,15 +768,6 @@ fn persist_users() -> Result<(), crate::fat32::FsError> {
 
 fn default_users() -> Vec<UserRecord> {
     let mut users = Vec::new();
-    users.push(UserRecord {
-        name: String::from("root"),
-        role: String::from("root"),
-        uid: ROOT_UID,
-        gid: ROOT_GID,
-        home: String::from("/root"),
-        pass_hash: password_hash("root", "root"),
-        login_enabled: false,
-    });
     users.push(default_admin_user());
     users.push(default_guest_user());
     users
@@ -755,12 +775,12 @@ fn default_users() -> Vec<UserRecord> {
 
 fn default_admin_user() -> UserRecord {
     UserRecord {
-        name: String::from("jamie"),
+        name: String::from("root"),
         role: String::from("admin"),
         uid: USER_UID,
         gid: USER_GID,
-        home: String::from("/Users/jamie"),
-        pass_hash: password_hash("jamie", "cool"),
+        home: String::from("/Users/root"),
+        pass_hash: password_hash("root", "cool"),
         login_enabled: true,
     }
 }

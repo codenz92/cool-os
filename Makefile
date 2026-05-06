@@ -558,7 +558,7 @@ smoke-phase28-permissions: build
 		--seconds 45 \
 		--retries $(SMOKE_RETRIES) \
 		--fw-cmd "whoami;;perm /bin/hello;;perm /TMP;;write /TMP/P28 ok;;chmod 400 /TMP/P28;;write /TMP/P28 no;;chmod 600 /TMP/P28;;write /TMP/P28 yes;;hash /TMP/P28;;perm /TMP/P28;;exec /TMP/P28" \
-		--expect "jamie uid=1000 gid=1000 caps=all" \
+		--expect "root uid=1000 gid=1000 caps=all" \
 		--expect "/bin/hello file uid=0 gid=0 mode=755" \
 		--expect "/TMP dir uid=1000 gid=1000 mode=755" \
 		--expect "wrote /TMP/P28" \
@@ -578,13 +578,13 @@ smoke-phase29-sessions: build
 		--usb \
 		--seconds 45 \
 		--retries $(SMOKE_RETRIES) \
-		--fw-cmd "id;;login guest guest;;whoami;;write /Users/guest/P29 ok;;chown 0:0 /Users/guest/P29;;login jamie cool;;chown 0:0 /Users/guest/P29;;perm /Users/guest/P29;;services fail package-db;;services run;;services package-db" \
-		--expect "jamie uid=1000 gid=1000 role=admin home=/Users/jamie" \
+		--fw-cmd "id;;login guest guest;;whoami;;write /Users/guest/P29 ok;;chown 0:0 /Users/guest/P29;;login root cool;;chown 0:0 /Users/guest/P29;;perm /Users/guest/P29;;services fail package-db;;services run;;services package-db" \
+		--expect "root uid=1000 gid=1000 role=admin home=/Users/root" \
 		--expect "session user guest uid=1001" \
 		--expect "guest uid=1001 gid=1000 caps=read-fs,write-fs,exec,network,desktop" \
 		--expect "wrote /Users/guest/P29" \
 		--expect "chown: permission denied" \
-		--expect "session user jamie uid=1000" \
+		--expect "session user root uid=1000" \
 		--expect "/Users/guest/P29 file uid=0 gid=0 mode=644" \
 		--expect "service supervisor tick" \
 		--expect "package-db state=running restart=on-failure uid=200 gid=200" \

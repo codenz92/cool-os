@@ -257,7 +257,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     let smoke_commands = fw_cfg::smoke_commands();
     if !smoke_commands.is_empty() {
         apps::terminal::set_debug_mirror(true);
-        wm::queue_startup_command_immediate("login jamie cool");
+        wm::queue_startup_command_immediate("login root cool");
     }
     let immediate_smoke = smoke_commands.iter().all(|command| {
         matches!(

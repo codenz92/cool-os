@@ -923,9 +923,9 @@ authority.
 
 - [x] Add a CoolFS-backed user database at `/CONFIG/USERS.DB` with hashed
       passwords, roles, homes, uid/gid fields, and enabled/disabled login state.
-- [x] Seed default users: disabled `root`, admin `jamie` uid/gid 1000, and
-      non-admin `guest` uid 1001.
-- [x] Add `/Users`, `/Users/jamie`, and `/Users/guest` to the generated image
+- [x] Seed default users: admin `root` uid/gid 1000 and non-admin `guest`
+      uid 1001.
+- [x] Add `/Users`, `/Users/root`, and `/Users/guest` to the generated image
       and boot repair path; home directories are owner-only and owned by their
       matching user.
 - [x] Replace hardcoded interactive credentials with session-derived
@@ -960,9 +960,9 @@ should boot to a greeter, authenticate with the existing user database, block
 desktop input while locked, and expose lock/logout flows through both GUI shell
 chrome and the Terminal.
 
-- [x] Boot the compositor in a locked state and render a centered coolOS greeter
-      with account list, username/password fields, masked password entry, status
-      messages, and clock/date context.
+- [x] Boot the compositor in a locked state and render a boot-splash-style
+      coolOS greeter with account list, username/password fields, masked
+      password entry, status messages, and splash lockup treatment.
 - [x] Route keyboard and mouse input to the greeter while locked; normal window,
       taskbar, launcher, desktop-icon, scroll, and shortcut input is suppressed
       until authentication succeeds.
@@ -978,9 +978,9 @@ chrome and the Terminal.
       login UI.
 
 **Current status:** complete. coolOS now has a real GUI login path instead of
-only Terminal-driven session switching; the desktop is hidden behind the greeter
-at boot and after lock/logout, while existing session permissions remain the
-source of truth.
+only Terminal-driven session switching; the desktop is hidden behind the
+splash-style greeter at boot and after lock/logout, while existing session
+permissions remain the source of truth.
 
 ---
 

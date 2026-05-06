@@ -44,8 +44,8 @@ const TASKBAR_MENU_W: i32 = 152;
 const TASKBAR_MENU_ROW_H: i32 = 24;
 const TASKBAR_MENU_H: i32 = TASKBAR_MENU_ROW_H * 3 + 10;
 const START_MENU_SECTION_H: i32 = 11;
-const GREETER_PANEL_W: i32 = 456;
-const GREETER_PANEL_H: i32 = 330;
+const GREETER_PANEL_W: i32 = 576;
+const GREETER_PANEL_H: i32 = 430;
 const GREETER_FIELD_H: i32 = 28;
 const GREETER_USER_ROW_H: i32 = 22;
 
@@ -124,6 +124,16 @@ const DESK_BL: u32 = 0x00_00_01_06; // bottom-left
 const DESK_BR: u32 = 0x00_00_02_0A; // bottom-right
                                     // CRT phosphor glow toward screen centre
 const BLOOM_1: u32 = 0x00_00_55_CC; // primary phosphor blue bloom (richer)
+
+// Splash/greeter
+const GREETER_BG_TOP: u32 = 0x00_02_04_10;
+const GREETER_BG_BOTTOM: u32 = 0x00_00_01_06;
+const GREETER_PANEL_BG: u32 = 0x00_02_08_16;
+const GREETER_PANEL_EDGE_DIM: u32 = 0x00_00_3E_70;
+const GREETER_TITLE: u32 = 0x00_EE_FB_FF;
+const GREETER_LABEL: u32 = 0x00_58_8A_A8;
+const GREETER_TEXT: u32 = 0x00_C8_F6_FF;
+const GREETER_FIELD_BG: u32 = 0x00_00_05_10;
 
 // Desktop icons — CRT phosphor colour set
 const ICON_TERM_BG: u32 = 0x00_00_16_08; // terminal — dark green-black
@@ -1424,6 +1434,9 @@ impl WindowManager {
             .filter(|user| user.login_enabled)
         {
             let y = layout.users_y + row * GREETER_USER_ROW_H;
+            if y + GREETER_USER_ROW_H > layout.panel_y + layout.panel_h - 12 {
+                break;
+            }
             if rect_contains(
                 layout.user_x,
                 y,
@@ -6490,7 +6503,7 @@ fn draw_greeter_overlay(
     attempts: u32,
     mx: i32,
     my: i32,
-    uptime_ticks: u64,
+    _uptime_ticks: u64,
 ) {
     let sw_i = sw as i32;
     let sh_i = if sw > 0 {
@@ -6499,41 +6512,17 @@ fn draw_greeter_overlay(
         taskbar_y
     };
     let layout = greeter_layout(sw_i, taskbar_y);
-    let panel_bg = 0x00_03_0A_18;
-    let field_bg = 0x00_00_05_10;
 
-    draw_greeter_backdrop(s, sw, sw_i, sh_i, uptime_ticks);
+    draw_greeter_backdrop(s, sw, sw_i, sh_i);
 
-    let (time, date) = start_menu_banner_clock(uptime_ticks);
-    s_draw_str_small(
-        s,
-        sw,
-        28,
-        24,
-        &time,
-        0x00_DD_FF_FF,
-        0x00_00_00_00,
-        sw_i - 28,
-    );
-    s_draw_str_small(
-        s,
-        sw,
-        28,
-        42,
-        &date,
-        0x00_66_AA_DD,
-        0x00_00_00_00,
-        sw_i - 28,
-    );
-
-    s_fill_alpha(
+    s_fill(
         s,
         sw,
         layout.panel_x + 8,
         layout.panel_y + 8,
         layout.panel_w,
         layout.panel_h,
-        0x70_00_00_00,
+        0x00_00_01_05,
     );
     s_fill(
         s,
@@ -6542,7 +6531,7 @@ fn draw_greeter_overlay(
         layout.panel_y,
         layout.panel_w,
         layout.panel_h,
-        panel_bg,
+        GREETER_PANEL_BG,
     );
     s_fill(
         s,
@@ -6550,8 +6539,17 @@ fn draw_greeter_overlay(
         layout.panel_x,
         layout.panel_y,
         layout.panel_w,
-        4,
-        ACCENT,
+        1,
+        GREETER_PANEL_EDGE_DIM,
+    );
+    draw_rect_border(
+        s,
+        sw,
+        layout.panel_x - 2,
+        layout.panel_y - 2,
+        layout.panel_w + 4,
+        layout.panel_h + 4,
+        GREETER_PANEL_EDGE_DIM,
     );
     draw_rect_border(
         s,
@@ -6560,7 +6558,7 @@ fn draw_greeter_overlay(
         layout.panel_y,
         layout.panel_w,
         layout.panel_h,
-        0x00_00_77_BB,
+        ACCENT,
     );
     draw_rect_border(
         s,
@@ -6569,38 +6567,19 @@ fn draw_greeter_overlay(
         layout.panel_y + 1,
         layout.panel_w - 2,
         layout.panel_h - 2,
-        0x00_00_18_34,
+        GREETER_PANEL_EDGE_DIM,
     );
 
-    draw_snowflake_logo(
-        s,
-        sw,
-        layout.panel_x + 28,
-        layout.panel_y + 26,
-        2,
-        ACCENT,
-        ACCENT_HOV,
-    );
-    s_draw_str_small(
-        s,
-        sw,
-        layout.panel_x + 78,
-        layout.panel_y + 30,
-        "coolOS",
-        WHITE,
-        panel_bg,
-        layout.panel_x + layout.panel_w - 24,
-    );
-    s_draw_str_small(
-        s,
-        sw,
-        layout.panel_x + 78,
-        layout.panel_y + 50,
-        "Local session",
-        0x00_66_AA_DD,
-        panel_bg,
-        layout.panel_x + layout.panel_w - 24,
-    );
+    let title_w = s_text_width_scaled_with_tracking("coolOS", 4, 0);
+    let logo_size = 18 * 4;
+    let lockup_gap = 28;
+    let lockup_w = logo_size + lockup_gap + title_w;
+    let lockup_x = layout.panel_x + (layout.panel_w - lockup_w) / 2;
+    let logo_y = layout.panel_y + 34;
+    let title_y = logo_y + (logo_size - 8 * 4) / 2;
+    draw_snowflake_logo(s, sw, lockup_x, logo_y, 4, ACCENT, ACCENT_HOV);
+    let text_x = lockup_x + logo_size + lockup_gap;
+    s_draw_str_scaled_with_tracking(s, sw, text_x, title_y, "coolOS", GREETER_TITLE, 4, 0);
 
     s_draw_str_small(
         s,
@@ -6609,7 +6588,7 @@ fn draw_greeter_overlay(
         layout.user_y - 17,
         "User",
         0x00_88_CC_EE,
-        panel_bg,
+        GREETER_PANEL_BG,
         layout.user_x + layout.field_w,
     );
     draw_greeter_field(
@@ -6620,7 +6599,7 @@ fn draw_greeter_overlay(
         layout.field_w,
         user,
         focus == GreeterFocus::User,
-        field_bg,
+        GREETER_FIELD_BG,
     );
 
     let mut masked = String::new();
@@ -6637,7 +6616,7 @@ fn draw_greeter_overlay(
         layout.pass_y - 17,
         "Password",
         0x00_88_CC_EE,
-        panel_bg,
+        GREETER_PANEL_BG,
         layout.user_x + layout.field_w,
     );
     draw_greeter_field(
@@ -6648,7 +6627,7 @@ fn draw_greeter_overlay(
         layout.field_w,
         &masked,
         focus == GreeterFocus::Password,
-        field_bg,
+        GREETER_FIELD_BG,
     );
 
     let button_hot = rect_contains(
@@ -6716,7 +6695,7 @@ fn draw_greeter_overlay(
         layout.button_y + 39,
         message,
         msg_color,
-        panel_bg,
+        GREETER_PANEL_BG,
         layout.user_x + layout.field_w,
     );
     if attempts > 0 {
@@ -6728,7 +6707,7 @@ fn draw_greeter_overlay(
             layout.button_y + 39,
             &attempt_text,
             0x00_66_AA_DD,
-            panel_bg,
+            GREETER_PANEL_BG,
             layout.user_x + layout.field_w,
         );
     }
@@ -6740,9 +6719,10 @@ fn draw_greeter_overlay(
         layout.users_y - 16,
         "Accounts",
         0x00_66_AA_DD,
-        panel_bg,
+        GREETER_PANEL_BG,
         layout.user_x + layout.field_w,
     );
+    let accounts_bottom = layout.panel_y + layout.panel_h - 50;
     let mut row = 0i32;
     for account in crate::security::users()
         .into_iter()
@@ -6752,6 +6732,9 @@ fn draw_greeter_overlay(
             break;
         }
         let y = layout.users_y + row * GREETER_USER_ROW_H;
+        if y + GREETER_USER_ROW_H > accounts_bottom {
+            break;
+        }
         let selected = account.name.eq_ignore_ascii_case(user);
         let hot = rect_contains(
             layout.user_x,
@@ -6766,7 +6749,7 @@ fn draw_greeter_overlay(
         } else if hot {
             0x00_00_10_24
         } else {
-            panel_bg
+            GREETER_PANEL_BG
         };
         s_fill(
             s,
@@ -6793,28 +6776,42 @@ fn draw_greeter_overlay(
         );
         row += 1;
     }
+
+    let info_y =
+        (layout.users_y + row * GREETER_USER_ROW_H + 12).min(layout.panel_y + layout.panel_h - 38);
+    s_draw_str_small(
+        s,
+        sw,
+        layout.user_x,
+        info_y,
+        "login sequence",
+        GREETER_LABEL,
+        GREETER_PANEL_BG,
+        layout.user_x + layout.field_w,
+    );
+    s_draw_str_small(
+        s,
+        sw,
+        layout.user_x,
+        info_y + 18,
+        "awaiting credentials",
+        GREETER_TEXT,
+        GREETER_PANEL_BG,
+        layout.user_x + layout.field_w,
+    );
 }
 
-fn draw_greeter_backdrop(s: &mut [u32], sw: usize, w: i32, h: i32, uptime_ticks: u64) {
-    let top = 0x00_00_01_05;
-    let bottom = 0x00_00_04_12;
+fn draw_greeter_backdrop(s: &mut [u32], sw: usize, w: i32, h: i32) {
     let h = h.max(1);
+    let w = w.max(1);
     for y in 0..h {
-        let t = (y as u32).saturating_mul(255) / h as u32;
-        let row = blend_color(top, bottom, t);
+        let t = (y as u32).saturating_mul(255) / (h - 1).max(1) as u32;
+        let mut row = blend_color(GREETER_BG_TOP, GREETER_BG_BOTTOM, t);
+        if y % 3 == 2 {
+            row = darken_color(row, 26);
+        }
         s_fill(s, sw, 0, y, w, 1, row);
     }
-
-    let pulse_step = (crate::interrupts::TIMER_HZ / 4).max(1) as u64;
-    let pulse = ((uptime_ticks / pulse_step) % 24) as u32;
-    let mut y = 72i32;
-    while y < h {
-        let col = blend_color(0x00_00_0B_20, 0x00_00_20_44, pulse * 3);
-        s_fill(s, sw, 0, y, w, 1, col);
-        y += 96;
-    }
-
-    s_fill(s, sw, 0, h - 2, w, 2, 0x00_00_33_66);
 }
 
 fn draw_greeter_field(
@@ -8099,20 +8096,22 @@ fn default_login_user_name() -> String {
             return user.name;
         }
     }
-    String::from("jamie")
+    String::from("root")
 }
 
 fn greeter_layout(sw: i32, taskbar_y: i32) -> GreeterLayout {
-    let panel_w = GREETER_PANEL_W.min((sw - 32).max(300));
-    let panel_h = GREETER_PANEL_H.min((taskbar_y - 28).max(270));
+    let panel_w = GREETER_PANEL_W.min((sw - 32).max(360));
+    let panel_h = GREETER_PANEL_H.min((taskbar_y - 28).max(360));
     let panel_x = ((sw - panel_w) / 2).max(8);
-    let panel_y = ((taskbar_y - panel_h) / 2).max(24);
-    let user_x = panel_x + 32;
-    let field_w = panel_w - 64;
-    let user_y = panel_y + 104;
+    let panel_y = ((taskbar_y - panel_h) / 2).max(14);
+    let field_w = (panel_w - 72).min(392).max(260);
+    let user_x = panel_x + (panel_w - field_w) / 2;
+    let user_y = panel_y + 154;
     let pass_y = user_y + 54;
     let button_y = pass_y + 46;
-    let users_y = button_y + 68;
+    let min_users_y = button_y + 58;
+    let max_users_y = panel_y + panel_h - GREETER_USER_ROW_H * 2 - 18;
+    let users_y = (button_y + 68).min(max_users_y).max(min_users_y);
     GreeterLayout {
         panel_x,
         panel_y,
@@ -8293,6 +8292,49 @@ fn s_draw_str_small(
     }
 }
 
+fn s_draw_str_scaled_with_tracking(
+    s: &mut [u32],
+    sw: usize,
+    x: i32,
+    y: i32,
+    text: &str,
+    color: u32,
+    scale: usize,
+    tracking: i32,
+) {
+    let mut cx = x;
+    for ch in text.chars() {
+        s_draw_char_scaled(s, sw, cx, y, ch, color, scale);
+        cx += 8 * scale as i32 + tracking;
+    }
+}
+
+fn s_text_width_scaled_with_tracking(text: &str, scale: usize, tracking: i32) -> i32 {
+    let chars = text.chars().count() as i32;
+    if chars == 0 {
+        0
+    } else {
+        chars * (8 * scale as i32) + (chars - 1) * tracking
+    }
+}
+
+fn s_draw_char_scaled(s: &mut [u32], sw: usize, x: i32, y: i32, c: char, color: u32, scale: usize) {
+    use font8x8::UnicodeFonts;
+    let glyph = font8x8::BASIC_FONTS
+        .get(c)
+        .unwrap_or_else(|| font8x8::BASIC_FONTS.get(' ').unwrap());
+    for (gy, &byte) in glyph.iter().enumerate() {
+        for bit in 0..8usize {
+            if byte & (1 << bit) == 0 {
+                continue;
+            }
+            let px = x + (bit * scale) as i32;
+            let py = y + (gy * scale) as i32;
+            s_fill(s, sw, px, py, scale as i32, scale as i32, color);
+        }
+    }
+}
+
 /// Draw a 1-pixel-wide unfilled rectangle border.
 fn draw_rect_border(s: &mut [u32], sw: usize, x: i32, y: i32, w: i32, h: i32, color: u32) {
     s_fill(s, sw, x, y, w, 1, color); // top
@@ -8364,6 +8406,14 @@ fn blend_color(a: u32, b: u32, t: u32) -> u32 {
     let g = lerp((a >> 8) & 0xFF, (b >> 8) & 0xFF);
     let bl = lerp(a & 0xFF, b & 0xFF);
     (r << 16) | (g << 8) | bl
+}
+
+fn darken_color(color: u32, amount: u8) -> u32 {
+    let factor = 255u32.saturating_sub(amount as u32);
+    let r = ((color >> 16) & 0xFF) * factor / 255;
+    let g = ((color >> 8) & 0xFF) * factor / 255;
+    let b = (color & 0xFF) * factor / 255;
+    (r << 16) | (g << 8) | b
 }
 
 /// Bilinear interpolation for a single u8 channel across four corners.

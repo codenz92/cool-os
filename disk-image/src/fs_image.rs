@@ -84,7 +84,7 @@ fn main() {
             .unwrap_or_else(|e| panic!("failed to create /{}: {}", dir, e));
         coolfs.create_dir(&format!("/{}", dir));
     }
-    coolfs.create_dir("/Users/jamie");
+    coolfs.create_dir("/Users/root");
     coolfs.create_dir("/Users/guest");
 
     // /bin/
@@ -1067,7 +1067,7 @@ fn split_parent_and_name(path: &str) -> (String, String) {
 
 fn default_metadata_for_path(path: &str, is_dir: bool) -> (u32, u32, u16) {
     let normalized = normalize_abs_path(path);
-    if normalized == "/Users/jamie" || normalized.starts_with("/Users/jamie/") {
+    if normalized == "/Users/root" || normalized.starts_with("/Users/root/") {
         return (
             CF_USER_UID,
             CF_USER_GID,
@@ -1112,9 +1112,8 @@ fn default_metadata_for_path(path: &str, is_dir: bool) -> (u32, u32, u16) {
 
 fn default_users_db() -> String {
     format!(
-        "# coolOS users v1: name:uid:gid:role:home:passhash:login\nroot:0:0:root:/root:{}:disabled\njamie:1000:1000:admin:/Users/jamie:{}:enabled\nguest:1001:1000:user:/Users/guest:{}:enabled\n",
-        password_hash("root", "root"),
-        password_hash("jamie", "cool"),
+        "# coolOS users v1: name:uid:gid:role:home:passhash:login\nroot:1000:1000:admin:/Users/root:{}:enabled\nguest:1001:1000:user:/Users/guest:{}:enabled\n",
+        password_hash("root", "cool"),
         password_hash("guest", "guest"),
     )
 }

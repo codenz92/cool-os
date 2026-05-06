@@ -306,7 +306,7 @@ fn session_login_roundtrip() -> bool {
         return restore() && false;
     }
     if !matches!(
-        crate::vfs::vfs_create_file("/Users/jamie/GUEST_DENY"),
+        crate::vfs::vfs_create_file("/Users/root/GUEST_DENY"),
         Err(crate::fat32::FsError::PermissionDenied)
     ) {
         return restore() && false;

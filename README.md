@@ -21,10 +21,10 @@ on boot. Right-clicking the desktop opens a context menu to launch additional
 apps, and the shell also exposes desktop icons plus a start menu/taskbar flow,
 global keyboard shortcuts, a `Ctrl+Space` launcher/search palette, a task
 switcher overlay, edge/keyboard window snapping, taskbar previews/actions,
-GUI login/lock screen, session restore, File Manager drag/drop/open-with
-actions, a shared clipboard, notification center, userspace app lifecycle
-tracking with System Monitor close/kill/path controls, and desktop settings
-that persist to the CoolFS root.
+boot-splash-style GUI login/lock screen, session restore, File Manager
+drag/drop/open-with actions, a shared clipboard, notification center, userspace
+app lifecycle tracking with System Monitor close/kill/path controls, and
+desktop settings that persist to the CoolFS root.
 A preemptive round-robin scheduler is driven by the PIT timer at **100 Hz**;
 the kernel boot stack remains the idle/window-manager context, the boot path
 performs a synchronous CoolFS read check, and the terminal can also spawn
@@ -375,8 +375,8 @@ of inheriting unrestricted shell authority. Terminal commands `whoami`, `perm`,
 
 **Login, sessions, and service supervision (Phase 29).** `/CONFIG/USERS.DB`
 stores persistent users with hashed passwords, roles, homes, and login state.
-The default admin session is `jamie` uid/gid 1000 with password `cool`, and
-`guest` uid 1001 uses password `guest` with non-admin caps. `/Users/jamie` and
+The default admin session is `root` uid/gid 1000 with password `cool`, and
+`guest` uid 1001 uses password `guest` with non-admin caps. `/Users/root` and
 `/Users/guest` are created with owner-only access, new files honor the session
 umask, `login`/`logout`/`passwd`/`id`/`groups`/`umask` expose the model in the
 Terminal, package installs and service mutations require admin credentials, and
@@ -384,11 +384,11 @@ the service supervisor reports per-service credentials and deterministic restart
 state through `services`.
 
 **GUI login and lock screen (Phase 30).** The desktop now boots into a
-compositor-owned greeter instead of exposing the session immediately. The
-greeter authenticates through the same `/CONFIG/USERS.DB` model as Terminal
-`login`, supports keyboard and mouse account selection, masks passwords, blocks
-ordinary desktop input while locked, and lets the Start menu or Terminal `lock`
-and `logout` commands return to the greeter.
+boot-splash-style compositor greeter instead of exposing the session
+immediately. The greeter authenticates through the same `/CONFIG/USERS.DB`
+model as Terminal `login`, supports keyboard and mouse account selection, masks
+passwords, blocks ordinary desktop input while locked, and lets the Start menu
+or Terminal `lock` and `logout` commands return to the same splash login screen.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
