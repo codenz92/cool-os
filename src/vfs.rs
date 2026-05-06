@@ -878,6 +878,9 @@ fn parent_path(path: &str) -> Result<String, crate::fat32::FsError> {
 }
 
 fn default_mode_for_path(path: &str, is_dir: bool) -> u16 {
+    if is_dir && path.eq_ignore_ascii_case("/TMP") {
+        return crate::security::SHARED_TMP_MODE;
+    }
     if is_dir {
         return crate::security::DEFAULT_DIR_MODE;
     }

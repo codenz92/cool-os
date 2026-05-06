@@ -1,4 +1,4 @@
-.PHONY: run run-net run-usb run-usb-init run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
+.PHONY: run run-net run-usb run-usb-init run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-phase31-accounts smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -279,7 +279,7 @@ smoke-ui-ready-state: build
 		--screendump "$(SMOKE_ARTIFACT_DIR)/ui-ready-state.ppm" \
 		--expect-framebuffer-start-menu \
 		--expect "[boot] desktop ready" \
-		--expect "[ui] ready pinned=Terminal|File Manager|System Monitor|Diagnostics|Display Settings|Personalize"
+		--expect "[ui] ready pinned=Terminal|File Manager|System Monitor|Diagnostics|Display Settings|Accounts|Personalize"
 
 smoke-framebuffer: build
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
@@ -307,7 +307,7 @@ smoke-browser-png: build
 		--post-hmp-delay 2.0 \
 		--screendump "$(SMOKE_ARTIFACT_DIR)/browser-png-smoke.ppm" \
 		--expect-framebuffer-window \
-		--expect "[selftest] kernel unit checks ok=22 fail=0" \
+		--expect "[selftest] kernel unit checks ok=23 fail=0" \
 		--expect "[boot] desktop ready"
 
 smoke-browser-html: build
@@ -324,7 +324,7 @@ smoke-browser-html: build
 		--post-hmp-delay 2.0 \
 		--screendump "$(SMOKE_ARTIFACT_DIR)/browser-html-smoke.ppm" \
 		--expect-framebuffer-window \
-		--expect "[selftest] kernel unit checks ok=22 fail=0" \
+		--expect "[selftest] kernel unit checks ok=23 fail=0" \
 		--expect "[boot] desktop ready"
 
 smoke-ui-goldens: build
@@ -560,7 +560,7 @@ smoke-phase28-permissions: build
 		--fw-cmd "whoami;;perm /bin/hello;;perm /TMP;;write /TMP/P28 ok;;chmod 400 /TMP/P28;;write /TMP/P28 no;;chmod 600 /TMP/P28;;write /TMP/P28 yes;;hash /TMP/P28;;perm /TMP/P28;;exec /TMP/P28" \
 		--expect "root uid=1000 gid=1000 caps=all" \
 		--expect "/bin/hello file uid=0 gid=0 mode=755" \
-		--expect "/TMP dir uid=1000 gid=1000 mode=755" \
+		--expect "/TMP dir uid=1000 gid=1000 mode=777" \
 		--expect "wrote /TMP/P28" \
 		--expect "chmod /TMP/P28" \
 		--expect "write: permission denied" \
@@ -588,6 +588,88 @@ smoke-phase29-sessions: build
 		--expect "/Users/guest/P29 file uid=0 gid=0 mode=644" \
 		--expect "service supervisor tick" \
 		--expect "package-db state=running restart=on-failure uid=200 gid=200" \
+		--expect "[boot] desktop ready"
+
+smoke-phase31-accounts: build
+	mkdir -p "$(SMOKE_ARTIFACT_DIR)"
+	rm -f "$(SMOKE_ARTIFACT_DIR)/phase31-accounts.img"
+	cp "$(FSIMG)" "$(SMOKE_ARTIFACT_DIR)/phase31-accounts.img"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-auth" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds 45 \
+		--retries $(SMOKE_RETRIES) \
+		--fw-cmd "account add p31 p31pass31 admin;;id p31;;account disable guest;;login guest guest;;account enable guest;;account pass p31 p31next31;;login p31 p31next31;;whoami" \
+		--expect "account added p31 uid=" \
+		--expect "p31 uid=" \
+		--expect "account disabled guest uid=1001 role=user login=disabled" \
+		--expect "login: login disabled" \
+		--expect "account enabled guest uid=1001 role=user login=enabled" \
+		--expect "account password p31" \
+		--expect "session user p31 uid=" \
+		--expect "p31 uid=1002 gid=1000 caps=all home=/Users/p31" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-role-delete" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds 45 \
+		--retries $(SMOKE_RETRIES) \
+		--fw-cmd "account add p31 p31pass31 admin;;account role p31 user;;id p31;;account role p31 admin;;account delete p31" \
+		--expect "account added p31 uid=" \
+		--expect "account role p31 uid=1002 role=user login=enabled" \
+		--expect "p31 uid=1002 gid=1000 role=user home=/Users/p31 login=enabled" \
+		--expect "account role p31 uid=1002 role=admin login=enabled" \
+		--expect "account deleted p31" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-throttle" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds 45 \
+		--retries $(SMOKE_RETRIES) \
+		--fw-cmd "login guest badpass31;;login guest badpass31;;login guest badpass31;;login guest guest" \
+		--expect "login: bad password" \
+		--expect "login: login temporarily locked" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-setup" \
+		--bios "$(BIOS)" \
+		--fsimg "$(SMOKE_ARTIFACT_DIR)/phase31-accounts.img" \
+		--fs-writable \
+		--usb \
+		--seconds 45 \
+		--retries $(SMOKE_RETRIES) \
+		--fw-cmd "setup owner31 ownerpass31;;cat /CONFIG/USERS.DB;;flush;;id owner31;;login root cool" \
+		--expect "first-run admin owner31 uid=" \
+		--expect "owner31:1002:1000:admin:/Users/owner31" \
+		--expect "flush: ok" \
+		--expect "owner31 uid=" \
+		--expect "login: login disabled" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-persist" \
+		--bios "$(BIOS)" \
+		--fsimg "$(SMOKE_ARTIFACT_DIR)/phase31-accounts.img" \
+		--fs-writable \
+		--usb \
+		--seconds 45 \
+		--retries $(SMOKE_RETRIES) \
+		--fw-cmd "login owner31 ownerpass31;;cat /CONFIG/USERS.DB;;id owner31;;login root cool" \
+		--expect "[selftest] kernel unit checks ok=23 fail=0" \
+		--expect "[session] login owner31 uid=" \
+		--expect "owner31:1002:1000:admin:/Users/owner31" \
+		--expect "owner31 uid=" \
+		--expect "login: login disabled" \
 		--expect "[boot] desktop ready"
 
 smoke-coolfs-native: build
@@ -773,7 +855,7 @@ smoke-kernel-units: build
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--seconds $(SMOKE_SECONDS) \
-		--expect "[selftest] kernel unit checks ok=22 fail=0" \
+		--expect "[selftest] kernel unit checks ok=23 fail=0" \
 		--expect "[boot] desktop ready"
 
 smoke-boot-budget: build

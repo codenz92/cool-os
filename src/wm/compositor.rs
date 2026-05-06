@@ -445,6 +445,7 @@ fn canonical_app_title(name: &str) -> &str {
         "Browser" | "Web" | "Web Browser" => "Web Browser",
         "Color Pick" | "Color Picker" => "Color Picker",
         "Display Settings" => "Display Settings",
+        "Account" | "Accounts" | "Users" => "Accounts",
         "Personalize" => "Personalize",
         "Crash Viewer" => "Crash Viewer",
         "Log Viewer" => "Log Viewer",
@@ -469,6 +470,7 @@ fn window_accent(title: &str) -> u32 {
         "Web Browser" => 0x00_33_CC_99,
         "Color Picker" => ICON_COL_ACC,
         "Display Settings" => 0x00_66_CC_FF,
+        "Accounts" => 0x00_00_FF_AA,
         "Personalize" => 0x00_CC_66_FF,
         "Crash Viewer" => 0x00_FF_66_66,
         "Log Viewer" => 0x00_55_FF_BB,
@@ -493,6 +495,7 @@ fn window_glyph(title: &str) -> &'static str {
         "Web Browser" => "WB",
         "Color Picker" => "CP",
         "Display Settings" => "DS",
+        "Accounts" => "U+",
         "Personalize" => "P*",
         "Crash Viewer" => "CV",
         "Log Viewer" => "LV",
@@ -1528,7 +1531,7 @@ impl WindowManager {
                 }
                 "Terminal" | "System Monitor" | "Diagnostics" | "Text Viewer" | "Text Editor"
                 | "Notes" | "Trash Bin" | "Screenshot" | "Web Browser" | "Color Picker"
-                | "Display Settings" | "Personalize" => self.launch_app(title, x, y),
+                | "Display Settings" | "Accounts" | "Personalize" => self.launch_app(title, x, y),
                 _ => {}
             }
 
@@ -1636,6 +1639,9 @@ impl WindowManager {
             "Display Settings" => {
                 self.add_window(AppWindow::DisplaySettings(DisplaySettingsApp::new(wx, wy)))
             }
+            "Accounts" => self.add_window(AppWindow::DisplaySettings(
+                DisplaySettingsApp::with_page(wx, wy, "accounts"),
+            )),
             "File Manager" => self.launch_file_manager_at("/", wx, wy),
             "Personalize" => self.add_window(AppWindow::Personalize(PersonalizeApp::new(wx, wy))),
             "Crash Viewer" => {
@@ -7802,6 +7808,7 @@ fn settings_shortcuts() -> &'static [(&'static str, &'static str)] {
         ("Diagnostics settings", "diagnostics"),
         ("Network settings", "network"),
         ("Storage settings", "storage"),
+        ("Accounts settings", "accounts"),
         ("Log viewer settings", "logs"),
         ("Power settings", "power"),
         ("Updates", "logs"),

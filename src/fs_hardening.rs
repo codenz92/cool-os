@@ -27,6 +27,7 @@ pub fn init() {
     ] {
         let _ = crate::vfs::vfs_kernel_create_dir(dir);
     }
+    harden_shared_dirs();
     replay_journal();
     journal_operation(
         "mount",
@@ -125,6 +126,7 @@ pub fn repair() -> Vec<String> {
             Err(err) => lines.push(format!("{}: {}", dir, err.as_str())),
         }
     }
+    harden_shared_dirs();
     match crate::coolfs::mount_or_format() {
         Ok(()) => lines.push(String::from("ok / coolfs native root")),
         Err(err) => lines.push(format!("/: {}", err.as_str())),
@@ -154,6 +156,10 @@ pub fn repair() -> Vec<String> {
     }
     journal_operation("repair", "standard directories");
     lines
+}
+
+fn harden_shared_dirs() {
+    let _ = crate::vfs::vfs_chmod("/TMP", crate::security::SHARED_TMP_MODE);
 }
 
 pub fn journal_lines() -> Vec<String> {

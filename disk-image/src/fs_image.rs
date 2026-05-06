@@ -561,6 +561,16 @@ const BUILTIN_APP_MANIFESTS: &[BuiltinAppManifest] = &[
         associations: &[],
     },
     BuiltinAppManifest {
+        id: "app.accounts",
+        name: "Accounts",
+        glyph: "U+",
+        command: "accounts",
+        category: "Settings",
+        permission: "settings",
+        aliases: &["account", "accounts", "users", "password", "login"],
+        associations: &[],
+    },
+    BuiltinAppManifest {
         id: "app.crash",
         name: "Crash Viewer",
         glyph: "CV",
@@ -1096,7 +1106,9 @@ fn default_metadata_for_path(path: &str, is_dir: bool) -> (u32, u32, u16) {
         || normalized == "/Packages"
         || normalized.starts_with("/Packages/");
     let executable = !is_dir && normalized.starts_with("/bin/") && !normalized.ends_with(".txt");
-    let mode = if is_dir {
+    let mode = if is_dir && normalized == "/TMP" {
+        0o777
+    } else if is_dir {
         CF_DEFAULT_DIR_MODE
     } else if executable {
         CF_DEFAULT_EXEC_MODE

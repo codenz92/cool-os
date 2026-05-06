@@ -4,9 +4,9 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–30 are complete. Phase 30 adds the GUI login and lock screen on top of
-the persistent user database, session credentials, and service supervision work
-from Phase 29.
+Phases 1–31 are complete. Phase 31 adds first-run setup, account management,
+login throttling, and persistence coverage on top of the GUI login and session
+model from Phases 29 and 30.
 
 ---
 
@@ -889,9 +889,10 @@ carry credentials, and user-facing syscalls should enforce those permissions.
 
 - [x] Store `uid`, `gid`, and Unix-style `rwx` mode bits in the reserved area of
       each CoolFS inode without increasing the inode-table footprint.
-- [x] Populate the host-built CoolFS image with root-owned system paths, user-owned
-      writable paths (`/TMP`, `/Documents`, `/Pictures`, `/Desktop`, `/Trash`,
-      `/Downloads`, `/Packages`), and executable mode bits for `/bin` ELF files.
+- [x] Populate the host-built CoolFS image with root-owned system paths, a
+      shared-writable `/TMP`, user-facing paths (`/Documents`, `/Pictures`,
+      `/Desktop`, `/Trash`, `/Downloads`, `/Packages`), and executable mode
+      bits for `/bin` ELF files.
 - [x] Add per-task credentials to the scheduler and include `uid`, `gid`, and
       capability summaries in process status output.
 - [x] Enforce CoolFS read/write/execute checks in the VFS path used by terminal,
@@ -984,6 +985,37 @@ permissions remain the source of truth.
 
 ---
 
+## ✅ Phase 31 — First-Run Setup and Account Management
+
+**Goal:** Finish the local-account story so the shipped default admin is only a
+handoff state. The OS should be able to create the first real admin account,
+manage users from both GUI and Terminal surfaces, prevent admin lockout, and
+prove that those records survive CoolFS remounts.
+
+- [x] Detect first-run state when the only enabled admin is the default
+      `root/cool` handoff.
+- [x] Add Terminal `setup <user> <pass>` to create or convert the first real
+      admin account and disable the default handoff when a replacement admin is
+      created.
+- [x] Add Terminal `account` subcommands for `list`, `add`, `enable`,
+      `disable`, `role`, `pass`, and `delete`.
+- [x] Enforce account safety rules: stronger new-password minimums, protected
+      built-in names, no deletion/disable of the active session, and no action
+      that would remove the last enabled admin.
+- [x] Add repeated-login-failure throttling shared by Terminal and GUI login.
+- [x] Add an Accounts settings panel, launcher metadata, start-menu pinning,
+      and disk-image app manifest entries for account administration.
+- [x] Extend boot selftests with an account-management roundtrip covering
+      create, disable/enable, role change, password reset, login, and delete.
+- [x] Add `make smoke-phase31-accounts` with account lifecycle and writable
+      CoolFS persistence coverage for first-run setup.
+
+**Current status:** complete. coolOS now treats `root/cool` as a first-run
+handoff, exposes persistent account management through both Terminal and GUI,
+and verifies account lifecycle plus first-run persistence in QEMU smoke tests.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -1029,4 +1061,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v6.1 | Phase 27 complete: native CoolFS disk backend |
 | v6.2 | Phase 28 complete: users, permissions, and app sandboxing |
 | v6.3 | Phase 29 complete: login, sessions, and service supervision |
-| v6.4 | Current — Phase 30 complete: GUI login and lock screen |
+| v6.4 | Phase 30 complete: GUI login and lock screen |
+| v6.5 | Current — Phase 31 complete: first-run setup and account management |

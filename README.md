@@ -13,7 +13,7 @@ memory, and per-task fd tables.
 
 ---
 
-# Current state — v6.4
+# Current state — v6.5
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -21,7 +21,8 @@ on boot. Right-clicking the desktop opens a context menu to launch additional
 apps, and the shell also exposes desktop icons plus a start menu/taskbar flow,
 global keyboard shortcuts, a `Ctrl+Space` launcher/search palette, a task
 switcher overlay, edge/keyboard window snapping, taskbar previews/actions,
-boot-splash-style GUI login/lock screen, session restore, File Manager
+boot-splash-style GUI login/lock screen with first-run setup, session restore,
+Accounts settings, File Manager
 drag/drop/open-with actions, a shared clipboard, notification center, userspace
 app lifecycle tracking with System Monitor close/kill/path controls, and
 desktop settings that persist to the CoolFS root.
@@ -39,7 +40,9 @@ The desktop now starts behind a compositor-owned greeter; the active session is
 backed by a persistent CoolFS user database, so
 Terminal commands, launched ELF tasks, and package apps inherit the logged-in
 user's uid/gid and non-admin users cannot mutate protected ownership or service
-state without switching back to an admin session.
+state without switching back to an admin session. Phase 31 adds a first-run
+admin handoff, account create/disable/role/password/delete flows, login
+throttling, and persistence smoke coverage for those account records.
 
 | Context | Mode | Description |
 | :------ | :--- | :---------- |
@@ -76,7 +79,7 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **Framebuffer** | `bootloader 0.11` linear framebuffer at ≥1280×720. 3bpp and 4bpp both handled. Shadow-buffer compositor — full frame rendered in a heap `Vec<u32>`, blitted per-row with correct bpp conversion. No tearing. |
 | **PS/2 mouse** | Full hardware init (CCB, 0xF6/0xF4), 9-bit signed X/Y deltas, IRQ12 packet collection via atomics. |
 | **Window manager** | Z-ordered windows, focus-on-click, title-bar drag, edge snapping, keyboard snapping, task switcher overlay, minimise/maximise/restore, resize grip, close button, taskbar previews/right-click actions, per-window pixel back-buffer. |
-| **Desktop shell** | Wallpaper, desktop icons, right-click context menu, start menu, taskbar window buttons, configurable shortcuts, launcher/search palette, login/lock greeter, notification center, File Manager drag/drop/open-with routing, shared clipboard plumbing, userspace app lifecycle tracking with System Monitor controls, persistent settings, session restore, and clock. |
+| **Desktop shell** | Wallpaper, desktop icons, right-click context menu, start menu, taskbar window buttons, configurable shortcuts, launcher/search palette, login/lock greeter, Accounts settings, notification center, File Manager drag/drop/open-with routing, shared clipboard plumbing, userspace app lifecycle tracking with System Monitor controls, persistent settings, session restore, and clock. |
 | **Heap** | `LockedHeap` allocator — `String`, `Vec`, `Box` all work. 32 MiB heap to accommodate large shadow and window buffers. |
 | **Paging / VMM** | 4-level `OffsetPageTable` + global `BootInfoFrameAllocator`. Per-process PML4 cloned from kernel upper half; private user-space mappings in lower half. `vmm::` module exposes `new_process_pml4`, `map_page_in`, `map_region`, `switch_to`. |
 | **IDT** | Breakpoint, Double Fault, Page Fault (lazy allocator for user faults), General Protection Fault, Invalid Opcode, Timer (IRQ0), Keyboard (IRQ1), Mouse (IRQ12). |
@@ -106,6 +109,7 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **Color Picker** | Right-click | Clickable 16-colour EGA palette grid. |
 | **File Manager** | Right-click / desktop icon | Browse and mutate the CoolFS root with breadcrumbs, recursive search, sorting, multi-select, clipboard copy/cut/paste, Trash-backed delete, properties, inline text editing, Open With Editor/Viewer, and ELF launch routing. |
 | **Web Browser** | Launcher / desktop icon | Native HTTP/HTTPS/local-file browser with address/search bar, redirects, decoded chunked responses, headings/lists/quotes/tables, direct and HTML-sourced inline PNG previews, clickable links, session history, visible TLS trust-root status, and persistent bookmarks. |
+| **Accounts** | Launcher / Display Settings Users tab | Admin account management for first-run setup, account creation, role changes, enable/disable, password reset, and deletion. |
 | **Trash Bin** | Launcher / desktop icon / `exec /bin/trash` | Ring-3 GUI utility that lists deleted items staged in `/Trash` and can permanently empty them. |
 | **Screenshot** | Launcher / desktop icon / `exec /bin/screenshot` | Ring-3 GUI utility that queues a focused-window PPM capture to `/Pictures`. |
 | **Notes** | Launcher / desktop icon / `exec /bin/notes [path]` | Ring-3 scratchpad backed by `/documents/notes.txt` by default, with New, Open, Save, and Save As document flow. |
@@ -143,6 +147,8 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `rm <path>` | Remove a file or empty folder |
 | `hash <path>` | Print file length and byte-sum for storage checks |
 | `whoami` | Print current user and task capabilities |
+| `setup <user> <pass>` | Complete first-run admin setup and replace the default `root` handoff if needed |
+| `account <op>` | Admin account management: `list`, `add`, `enable`, `disable`, `role`, `pass`, and `delete` |
 | `perm <path>` | Print owner, group, mode, type, and size |
 | `chmod <mode> <path>` | Change a CoolFS inode mode |
 | `chown <uid>[:gid] <path>` | Change a CoolFS inode owner/group |
@@ -253,6 +259,8 @@ src/
   virtio_net.rs    Legacy PCI virtio-net driver over polling virtqueues
   acpi.rs          Power-control status foundation
   app_metadata.rs  App/package metadata and file associations
+  security.rs      CoolFS-backed local users, password hashes, login throttling,
+                   first-run setup, account mutation, and session credentials
   shortcuts.rs     /CONFIG/SHORTCUT.CFG global shortcut loader
   framebuffer.rs   Linear framebuffer driver — 3bpp/4bpp, draw_char, scroll
   vga_buffer.rs    Text layer over framebuffer — used by print!/panic handler
@@ -267,6 +275,8 @@ src/
   apps/
     terminal.rs    TerminalApp — keyboard input, shell commands, text render
     sysmon.rs      SysMonApp   — live CPU/heap/uptime/scheduler/app lifecycle controls
+    displaysettings.rs DisplaySettingsApp — display/personalization/security settings,
+                   including the Users/Accounts panel
     textviewer.rs  TextViewerApp — scrollable static text
     colorpicker.rs ColorPickerApp — clickable EGA palette swatches
     usergui.rs     UserGuiApp — compositor-owned window/surface/event queue for ring-3 apps
@@ -363,9 +373,9 @@ filesystem check reads `/bin/hello.txt` from CoolFS.
 **Users, permissions, and app sandboxing (Phase 28).** CoolFS stores durable
 `uid`, `gid`, and `rwx` mode bits in each inode. The generated disk image marks
 system paths such as `/bin`, `/CONFIG`, `/APPS`, `/LOGS`, and `/DEV` as
-root-owned, marks user-writable locations such as `/TMP`, `/Documents`,
-`/Pictures`, `/Desktop`, `/Trash`, `/Downloads`, and `/Packages` as uid/gid
-1000, and sets execute bits on `/bin` ELF files. Every scheduler task carries
+root-owned, keeps `/TMP` shared-writable, marks user-facing locations such as
+`/Documents`, `/Pictures`, `/Desktop`, `/Trash`, `/Downloads`, and `/Packages`
+as uid/gid 1000, and sets execute bits on `/bin` ELF files. Every scheduler task carries
 credentials and capabilities; `exec` requires execute permission, VFS file and
 directory operations check mode bits, and userspace network/desktop syscalls are
 gated by task capabilities. Package manifest `permission=` labels are converted
@@ -389,6 +399,14 @@ immediately. The greeter authenticates through the same `/CONFIG/USERS.DB`
 model as Terminal `login`, supports keyboard and mouse account selection, masks
 passwords, blocks ordinary desktop input while locked, and lets the Start menu
 or Terminal `lock` and `logout` commands return to the same splash login screen.
+
+**First-run setup and account management (Phase 31).** The default `root/cool`
+handoff is now treated as a first-run state. `setup <user> <pass>` can create
+or convert the first real admin account, disable the default handoff, and write
+the result back to `/CONFIG/USERS.DB`. Admins can manage accounts through the
+Terminal `account` command or the Accounts settings panel, with checks that keep
+one enabled admin account available, protect built-in records, enforce stronger
+new passwords, and throttle repeated failed login attempts.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
@@ -438,5 +456,6 @@ faults still panic.
 | 28 | Users, permissions, and app sandboxing — CoolFS uid/gid/mode, task credentials, package grants, syscall enforcement | **Done** |
 | 29 | Login, sessions, and service supervision — CoolFS user DB, home ownership, umask, admin-gated mutations, credentialed services | **Done** |
 | 30 | GUI login and lock screen — compositor greeter, locked-input gate, lock/logout shell hooks, smoke coverage | **Done** |
+| 31 | First-run setup and account management — admin handoff, Accounts UI, account CLI, login throttling, persistence smoke | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

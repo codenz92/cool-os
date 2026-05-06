@@ -585,6 +585,10 @@ impl TerminalApp {
 
             Some("passwd") => self.cmd_passwd(words.next(), words.next()),
 
+            Some("setup") => self.cmd_setup(words.next(), words.next()),
+
+            Some("account") => self.cmd_account(words.collect()),
+
             Some("umask") => self.cmd_umask(words.next()),
 
             Some("users") => self.cmd_lines("USERS", crate::security::lines()),
@@ -916,6 +920,8 @@ impl TerminalApp {
             ("lock", "lock the desktop session"),
             ("logout", "return to guest session"),
             ("passwd <old> <new>", "change current password"),
+            ("setup <user> <pass>", "complete first-run admin setup"),
+            ("account <op>", "admin user management"),
             ("umask [mode]", "view/set file creation mask"),
             ("users", "user/security status"),
             ("pkg <op>", "package list/install/remove/run"),
@@ -1488,6 +1494,132 @@ impl TerminalApp {
                 self.print_char('\n');
             }
         }
+    }
+
+    fn cmd_setup(&mut self, user: Option<&str>, password: Option<&str>) {
+        let (Some(user), Some(password)) = (user, password) else {
+            self.set_fg(FG_ERROR);
+            self.print_str("usage: setup <admin-user> <password>\n");
+            return;
+        };
+        match crate::security::complete_first_run_admin(user, password) {
+            Ok(user) => {
+                self.set_fg(FG_ACCENT);
+                self.print_str("first-run admin ");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(&user.name);
+                self.print_str(" uid=");
+                self.print_u64(user.uid as u64);
+                self.print_char('\n');
+            }
+            Err(err) => self.print_account_error("setup", err),
+        }
+    }
+
+    fn cmd_account(&mut self, args: Vec<&str>) {
+        let Some(op) = args.first().copied() else {
+            self.print_account_usage();
+            return;
+        };
+        match op {
+            "list" | "ls" => self.cmd_lines("ACCOUNTS", crate::security::lines()),
+            "add" => {
+                let (Some(name), Some(password)) = (args.get(1), args.get(2)) else {
+                    self.print_account_usage();
+                    return;
+                };
+                let role = args.get(3).copied().unwrap_or("user");
+                match crate::security::create_user(name, password, role) {
+                    Ok(user) => self.print_account_user("added", &user),
+                    Err(err) => self.print_account_error("account add", err),
+                }
+            }
+            "enable" => {
+                let Some(name) = args.get(1) else {
+                    self.print_account_usage();
+                    return;
+                };
+                match crate::security::set_user_enabled(name, true) {
+                    Ok(user) => self.print_account_user("enabled", &user),
+                    Err(err) => self.print_account_error("account enable", err),
+                }
+            }
+            "disable" => {
+                let Some(name) = args.get(1) else {
+                    self.print_account_usage();
+                    return;
+                };
+                match crate::security::set_user_enabled(name, false) {
+                    Ok(user) => self.print_account_user("disabled", &user),
+                    Err(err) => self.print_account_error("account disable", err),
+                }
+            }
+            "role" => {
+                let (Some(name), Some(role)) = (args.get(1), args.get(2)) else {
+                    self.print_account_usage();
+                    return;
+                };
+                match crate::security::set_user_role(name, role) {
+                    Ok(user) => self.print_account_user("role", &user),
+                    Err(err) => self.print_account_error("account role", err),
+                }
+            }
+            "pass" | "password" => {
+                let (Some(name), Some(password)) = (args.get(1), args.get(2)) else {
+                    self.print_account_usage();
+                    return;
+                };
+                match crate::security::reset_user_password(name, password) {
+                    Ok(user) => self.print_account_user("password", &user),
+                    Err(err) => self.print_account_error("account pass", err),
+                }
+            }
+            "delete" | "del" | "remove" | "rm" => {
+                let Some(name) = args.get(1) else {
+                    self.print_account_usage();
+                    return;
+                };
+                match crate::security::delete_user(name) {
+                    Ok(user) => self.print_account_user("deleted", &user),
+                    Err(err) => self.print_account_error("account delete", err),
+                }
+            }
+            _ => self.print_account_usage(),
+        }
+    }
+
+    fn print_account_usage(&mut self) {
+        self.set_fg(FG_ERROR);
+        self.print_str("usage: account list|add <user> <pass> [admin|user]|enable <user>|disable <user>|role <user> <admin|user>|pass <user> <pass>|delete <user>\n");
+    }
+
+    fn print_account_user(&mut self, action: &str, user: &crate::security::User) {
+        self.set_fg(FG_ACCENT);
+        self.print_str("account ");
+        self.print_str(action);
+        self.print_char(' ');
+        self.set_fg(FG_OUTPUT);
+        self.print_str(&user.name);
+        self.print_str(" uid=");
+        self.print_u64(user.uid as u64);
+        self.print_str(" role=");
+        self.print_str(&user.role);
+        self.print_str(" login=");
+        self.print_str(if user.login_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        });
+        self.print_char('\n');
+    }
+
+    fn print_account_error(&mut self, label: &str, err: crate::security::AccountError) {
+        self.set_fg(FG_ERROR);
+        self.print_str(label);
+        self.print_str(": ");
+        self.set_fg(FG_OUTPUT);
+        self.print_str(err.as_str());
+        self.print_char('\n');
     }
 
     fn cmd_umask(&mut self, mode: Option<&str>) {

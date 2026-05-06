@@ -14,6 +14,7 @@ const DEFAULT_PINNED: &[&str] = &[
     "System Monitor",
     "Diagnostics",
     "Display Settings",
+    "Accounts",
     "Personalize",
 ];
 

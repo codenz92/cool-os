@@ -8,7 +8,7 @@ use crate::framebuffer::WHITE;
 use crate::settings_state::SystemSettings;
 use crate::wm::window::{Window, TITLE_H};
 
-pub const DISPLAY_SETTINGS_W: i32 = 440;
+pub const DISPLAY_SETTINGS_W: i32 = 520;
 pub const DISPLAY_SETTINGS_H: i32 = 388;
 
 const BG_A: u32 = 0x00_03_07_16;
@@ -23,9 +23,9 @@ const MUTED: u32 = 0x00_55_7A_92;
 const GOOD: u32 = 0x00_00_FF_AA;
 const TAB_X: usize = 14;
 const TAB_Y: usize = 46;
-const TAB_W: usize = 64;
+const TAB_W: usize = 62;
 const TAB_H: usize = 22;
-const TAB_STEP: usize = 68;
+const TAB_STEP: usize = 64;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SettingsPage {
@@ -35,15 +35,17 @@ enum SettingsPage {
     Logs,
     Network,
     Storage,
+    Accounts,
 }
 
-const SETTINGS_PAGES: [(SettingsPage, &str); 6] = [
+const SETTINGS_PAGES: [(SettingsPage, &str); 7] = [
     (SettingsPage::Desktop, "Desktop"),
     (SettingsPage::Accessibility, "Access"),
     (SettingsPage::Diagnostics, "Diag"),
     (SettingsPage::Logs, "Logs"),
     (SettingsPage::Network, "Net"),
     (SettingsPage::Storage, "Storage"),
+    (SettingsPage::Accounts, "Users"),
 ];
 
 pub struct DisplaySettingsApp {
@@ -52,8 +54,11 @@ pub struct DisplaySettingsApp {
     last_height: i32,
     last_settings: DesktopSettings,
     last_system_settings: SystemSettings,
+    last_security_revision: u64,
     page: SettingsPage,
     last_page: SettingsPage,
+    selected_user: usize,
+    account_status: String,
 }
 
 impl DisplaySettingsApp {
@@ -63,20 +68,22 @@ impl DisplaySettingsApp {
 
     pub fn with_page(x: i32, y: i32, page_name: &str) -> Self {
         let page = page_from_name(page_name);
+        let title = if page == SettingsPage::Accounts {
+            "Accounts"
+        } else {
+            "Display Settings"
+        };
         let mut app = DisplaySettingsApp {
-            window: Window::new(
-                x,
-                y,
-                DISPLAY_SETTINGS_W,
-                DISPLAY_SETTINGS_H,
-                "Display Settings",
-            ),
+            window: Window::new(x, y, DISPLAY_SETTINGS_W, DISPLAY_SETTINGS_H, title),
             last_width: DISPLAY_SETTINGS_W,
             last_height: DISPLAY_SETTINGS_H,
             last_settings: desktop_settings::snapshot(),
             last_system_settings: crate::settings_state::snapshot(),
+            last_security_revision: crate::security::revision(),
             page,
             last_page: page,
+            selected_user: 0,
+            account_status: String::new(),
         };
         app.render();
         app
@@ -148,6 +155,8 @@ impl DisplaySettingsApp {
         } else if self.page == SettingsPage::Storage && self.hit_toggle(lx, ly, 136) {
             let prefs = crate::settings_state::snapshot();
             crate::settings_state::set("storage_fsck_on_boot", !prefs.storage_fsck_on_boot);
+        } else if self.page == SettingsPage::Accounts {
+            self.handle_accounts_click(lx, ly);
         } else {
             return;
         }
@@ -159,10 +168,12 @@ impl DisplaySettingsApp {
     pub fn update(&mut self) {
         let settings = desktop_settings::snapshot();
         let system_settings = crate::settings_state::snapshot();
+        let security_revision = crate::security::revision();
         if self.window.width != self.last_width
             || self.window.height != self.last_height
             || settings != self.last_settings
             || system_settings != self.last_system_settings
+            || security_revision != self.last_security_revision
             || self.page != self.last_page
         {
             self.render();
@@ -177,6 +188,7 @@ impl DisplaySettingsApp {
         self.last_height = self.window.height;
         self.last_settings = settings;
         self.last_system_settings = system_settings;
+        self.last_security_revision = crate::security::revision();
         self.last_page = self.page;
 
         let stride = self.window.width.max(0) as usize;
@@ -192,7 +204,7 @@ impl DisplaySettingsApp {
             stride,
             18,
             24,
-            "desktop, diagnostics, logs, network, storage, accessibility",
+            "desktop, accessibility, diagnostics, logs, network, storage, accounts",
             MUTED,
         );
         self.draw_page_tabs(stride);
@@ -204,6 +216,7 @@ impl DisplaySettingsApp {
             SettingsPage::Logs => self.render_logs_page(stride, system_settings),
             SettingsPage::Network => self.render_network_page(stride, system_settings),
             SettingsPage::Storage => self.render_storage_page(stride, system_settings),
+            SettingsPage::Accounts => self.render_accounts_page(stride),
         }
         self.window.mark_dirty_all();
     }
@@ -464,6 +477,161 @@ impl DisplaySettingsApp {
         self.put_lines(stride, 28, 212, &lines, 10);
     }
 
+    fn handle_accounts_click(&mut self, lx: i32, ly: i32) {
+        let users = crate::security::users();
+        let row_x = 28i32;
+        let row_w = 288i32;
+        for (idx, _) in users.iter().enumerate().take(7) {
+            let y = 116i32 + idx as i32 * 24;
+            if lx >= row_x && lx < row_x + row_w && ly >= y && ly < y + 22 {
+                self.selected_user = idx;
+                self.account_status.clear();
+                self.render();
+                return;
+            }
+        }
+
+        let selected = users.get(self.selected_user.min(users.len().saturating_sub(1)));
+        if self.hit_button(lx, ly, 336, 104, 150, 22) {
+            if crate::security::first_run_required() {
+                self.set_account_result(
+                    "setup",
+                    crate::security::complete_first_run_admin("owner", "ownerpass31"),
+                );
+            } else {
+                self.account_status = String::from("setup already complete");
+            }
+        } else if self.hit_button(lx, ly, 336, 136, 150, 22) {
+            let name = crate::security::suggested_user_name("user");
+            self.set_account_result(
+                "add",
+                crate::security::create_user(&name, "changeme31", "user"),
+            );
+            self.selected_user = crate::security::users()
+                .iter()
+                .position(|user| user.name.eq_ignore_ascii_case(&name))
+                .unwrap_or(self.selected_user);
+        } else if self.hit_button(lx, ly, 336, 168, 150, 22) {
+            if let Some(user) = selected {
+                let role = if user.role == "admin" {
+                    "user"
+                } else {
+                    "admin"
+                };
+                self.set_account_result("role", crate::security::set_user_role(&user.name, role));
+            }
+        } else if self.hit_button(lx, ly, 336, 200, 150, 22) {
+            if let Some(user) = selected {
+                self.set_account_result(
+                    "login",
+                    crate::security::set_user_enabled(&user.name, !user.login_enabled),
+                );
+            }
+        } else if self.hit_button(lx, ly, 336, 232, 150, 22) {
+            if let Some(user) = selected {
+                self.set_account_result(
+                    "password",
+                    crate::security::reset_user_password(&user.name, "changeme31"),
+                );
+            }
+        } else if self.hit_button(lx, ly, 336, 264, 150, 22) {
+            if let Some(user) = selected {
+                self.set_account_result("delete", crate::security::delete_user(&user.name));
+                self.selected_user = self.selected_user.saturating_sub(1);
+            }
+        } else {
+            return;
+        }
+        crate::wm::request_repaint();
+        self.render();
+    }
+
+    fn set_account_result(
+        &mut self,
+        action: &str,
+        result: Result<crate::security::User, crate::security::AccountError>,
+    ) {
+        self.account_status.clear();
+        self.account_status.push_str(action);
+        self.account_status.push_str(": ");
+        match result {
+            Ok(user) => {
+                self.account_status.push_str(&user.name);
+                self.account_status.push_str(" ok");
+            }
+            Err(err) => self.account_status.push_str(err.as_str()),
+        }
+    }
+
+    fn render_accounts_page(&mut self, stride: usize) {
+        let panel_w = (self.window.width.max(0) as usize).saturating_sub(32);
+        self.draw_panel(stride, 16, 82, 308, 206);
+        self.draw_panel(stride, 328, 82, panel_w.saturating_sub(312), 206);
+        self.draw_panel(stride, 16, 298, panel_w, 58);
+
+        self.put_str(stride, 28, 96, "ACCOUNTS", LABEL);
+        self.put_str(stride, 336, 96, "ACTIONS", LABEL);
+
+        let users = crate::security::users();
+        if self.selected_user >= users.len() {
+            self.selected_user = users.len().saturating_sub(1);
+        }
+        for (idx, user) in users.iter().enumerate().take(7) {
+            let y = 116usize + idx * 24;
+            let selected = idx == self.selected_user;
+            self.fill_rect(
+                stride,
+                28,
+                y,
+                288,
+                22,
+                if selected { 0x00_00_18_34 } else { PANEL },
+            );
+            if selected {
+                self.fill_rect(stride, 28, y, 3, 22, ACCENT);
+            }
+            let mut line = user.name.clone();
+            line.push_str(" uid=");
+            push_number(&mut line, user.uid as usize);
+            line.push(' ');
+            line.push_str(&user.role);
+            line.push(' ');
+            line.push_str(if user.login_enabled { "on" } else { "off" });
+            self.put_str(
+                stride,
+                38,
+                y + 7,
+                &line,
+                if selected { WHITE } else { MUTED },
+            );
+        }
+
+        self.draw_button(stride, 336, 104, 150, "Complete setup");
+        self.draw_button(stride, 336, 136, 150, "Add user");
+        self.draw_button(stride, 336, 168, 150, "Toggle role");
+        self.draw_button(stride, 336, 200, 150, "Enable/disable");
+        self.draw_button(stride, 336, 232, 150, "Reset password");
+        self.draw_button(stride, 336, 264, 150, "Delete user");
+
+        let setup = if crate::security::first_run_required() {
+            "first-run setup required"
+        } else {
+            "first-run setup complete"
+        };
+        self.put_str(stride, 28, 312, setup, LABEL);
+        self.put_str(
+            stride,
+            28,
+            328,
+            "GUI defaults: owner/ownerpass31, userN/changeme31",
+            MUTED,
+        );
+        if !self.account_status.is_empty() {
+            let status = self.account_status.clone();
+            self.put_str(stride, 28, 344, &status, GOOD);
+        }
+    }
+
     fn put_lines(
         &mut self,
         stride: usize,
@@ -556,6 +724,17 @@ impl DisplaySettingsApp {
             if active { "ON" } else { "OFF" },
             if active { 0x00_00_09_18 } else { WHITE },
         );
+    }
+
+    fn draw_button(&mut self, stride: usize, x: usize, y: usize, w: usize, label: &str) {
+        self.fill_rect(stride, x, y, w, 22, PANEL_ALT);
+        self.draw_rect_border(stride, x, y, w, 22, BORDER);
+        self.fill_rect(stride, x, y, w, 2, ACCENT);
+        self.put_str(stride, x + 8, y + 7, label, WHITE);
+    }
+
+    fn hit_button(&self, lx: i32, ly: i32, x: i32, y: i32, w: i32, h: i32) -> bool {
+        lx >= x && lx < x + w && ly >= y && ly < y + h
     }
 
     fn draw_sort_buttons(&mut self, stride: usize, x: usize, y: usize, current: DesktopSortMode) {
@@ -700,6 +879,7 @@ fn page_from_name(name: &str) -> SettingsPage {
         "logs" | "log" | "profiler" => SettingsPage::Logs,
         "net" | "network" => SettingsPage::Network,
         "storage" | "disk" => SettingsPage::Storage,
+        "users" | "accounts" | "account" => SettingsPage::Accounts,
         _ => SettingsPage::Desktop,
     }
 }

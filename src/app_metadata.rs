@@ -216,6 +216,16 @@ pub const APPS: &[AppMetadata] = &[
         associations: &[],
     },
     AppMetadata {
+        id: "app.accounts",
+        name: "Accounts",
+        glyph: "U+",
+        command: "accounts",
+        category: AppCategory::Settings,
+        permission: "settings",
+        aliases: &["account", "accounts", "users", "password", "login"],
+        associations: &[],
+    },
+    AppMetadata {
         id: "app.crash",
         name: "Crash Viewer",
         glyph: "CV",
@@ -307,6 +317,11 @@ pub const LAUNCHER_ENTRIES: &[LauncherEntry] = &[
         label: "Display Settings",
         detail: "desktop settings",
         kind: LauncherKind::App("Display Settings"),
+    },
+    LauncherEntry {
+        label: "Accounts",
+        detail: "users and passwords",
+        kind: LauncherKind::App("Accounts"),
     },
     LauncherEntry {
         label: "Personalize",

@@ -74,6 +74,12 @@ pub fn run_boot_tests() {
         &mut ok,
         &mut fail,
     );
+    check(
+        "account-management",
+        account_management_roundtrip(),
+        &mut ok,
+        &mut fail,
+    );
     check("umask", umask_roundtrip(), &mut ok, &mut fail);
     check(
         "service-supervisor",
@@ -227,6 +233,7 @@ fn vfs_write_enforcement() -> bool {
 
     let _ = crate::vfs::vfs_create_dir("/TMP");
     let path = "/TMP/VFS_OK.TXT";
+    let _ = crate::vfs::vfs_kernel_delete(path);
     match crate::vfs::vfs_create_file(path) {
         Ok(()) | Err(crate::fat32::FsError::AlreadyExists) => {}
         Err(_) => return false,
@@ -240,6 +247,7 @@ fn vfs_write_enforcement() -> bool {
 }
 
 fn coolfs_permission_roundtrip() -> bool {
+    let current = crate::security::current_user();
     let Some(bin) = crate::vfs::vfs_metadata("/bin/hello") else {
         return false;
     };
@@ -249,7 +257,10 @@ fn coolfs_permission_roundtrip() -> bool {
     let Some(tmp) = crate::vfs::vfs_metadata("/TMP") else {
         return false;
     };
-    if tmp.uid != crate::security::USER_UID || tmp.mode & 0o200 == 0 {
+    if tmp.uid != crate::security::USER_UID
+        || tmp.gid != crate::security::USER_GID
+        || tmp.mode & 0o002 == 0
+    {
         return false;
     }
     if !crate::vfs::vfs_can_execute("/bin/hello") || crate::vfs::vfs_can_execute("/bin/motd.txt") {
@@ -257,6 +268,7 @@ fn coolfs_permission_roundtrip() -> bool {
     }
 
     let path = "/TMP/PERMTEST.TXT";
+    let _ = crate::vfs::vfs_kernel_delete(path);
     match crate::vfs::vfs_create_file(path) {
         Ok(()) | Err(crate::fat32::FsError::AlreadyExists) => {}
         Err(_) => return false,
@@ -276,7 +288,10 @@ fn coolfs_permission_roundtrip() -> bool {
     if crate::vfs::vfs_chmod(path, 0o600).is_err() {
         return false;
     }
-    if crate::vfs::vfs_chown(path, crate::security::USER_UID, crate::security::USER_GID).is_err() {
+    if crate::vfs::vfs_chown(path, crate::security::GUEST_UID, crate::security::USER_GID).is_err() {
+        return false;
+    }
+    if crate::vfs::vfs_chown(path, current.uid, current.gid).is_err() {
         return false;
     }
     crate::vfs::vfs_write_file(path, b"allowed-again\n").is_ok()
@@ -328,6 +343,31 @@ fn session_login_roundtrip() -> bool {
         Err(crate::fat32::FsError::PermissionDenied)
     );
     restore() && denied_chown && meta.uid == crate::security::GUEST_UID
+}
+
+fn account_management_roundtrip() -> bool {
+    let restore_name = crate::security::current_user().name;
+    let restore = || crate::security::set_session_for_test(&restore_name);
+    let _ = crate::security::delete_user("accttest");
+    let created = match crate::security::create_user("accttest", "acctpass31", "user") {
+        Ok(user) => user.uid >= crate::security::GUEST_UID && user.role == "user",
+        Err(_) => return restore() && false,
+    };
+    let disabled = crate::security::set_user_enabled("accttest", false)
+        .map(|user| !user.login_enabled)
+        .unwrap_or(false);
+    let enabled = crate::security::set_user_enabled("accttest", true)
+        .map(|user| user.login_enabled)
+        .unwrap_or(false);
+    let promoted = crate::security::set_user_role("accttest", "admin")
+        .map(|user| user.role == "admin")
+        .unwrap_or(false);
+    let password = crate::security::reset_user_password("accttest", "newpass31").is_ok()
+        && crate::security::login("accttest", "newpass31").is_ok();
+    let _ = restore();
+    let deleted = crate::security::delete_user("accttest").is_ok()
+        && crate::security::user_by_name("accttest").is_none();
+    restore() && created && disabled && enabled && promoted && password && deleted
 }
 
 fn umask_roundtrip() -> bool {

@@ -4,6 +4,9 @@ use alloc::{format, string::String, vec::Vec};
 use spin::Mutex;
 
 const USERS_PATH: &str = "/CONFIG/USERS.DB";
+const MIN_PASSWORD_LEN: usize = 8;
+const MAX_LOGIN_FAILURES: u32 = 3;
+const LOGIN_LOCKOUT_MS: u64 = 5_000;
 
 pub const ROOT_UID: u32 = 0;
 pub const ROOT_GID: u32 = 0;
@@ -16,6 +19,7 @@ pub const SERVICE_GID: u32 = 200;
 pub const DEFAULT_DIR_MODE: u16 = 0o755;
 pub const DEFAULT_FILE_MODE: u16 = 0o644;
 pub const DEFAULT_EXEC_MODE: u16 = 0o755;
+pub const SHARED_TMP_MODE: u16 = 0o777;
 
 const CAP_READ_FS: u32 = 1 << 0;
 const CAP_WRITE_FS: u32 = 1 << 1;
@@ -78,13 +82,22 @@ struct GroupRecord {
     gid: u32,
 }
 
+#[derive(Clone)]
+struct LoginAttempt {
+    name: String,
+    failures: u32,
+    locked_until_tick: u64,
+}
+
 struct SecurityState {
     users: Vec<UserRecord>,
     groups: Vec<GroupRecord>,
+    login_attempts: Vec<LoginAttempt>,
     session_uid: u32,
     session_gid: u32,
     session_caps: u32,
     umask: u16,
+    revision: u64,
 }
 
 impl SecurityState {
@@ -92,10 +105,12 @@ impl SecurityState {
         Self {
             users: Vec::new(),
             groups: Vec::new(),
+            login_attempts: Vec::new(),
             session_uid: USER_UID,
             session_gid: USER_GID,
             session_caps: CAP_ALL_USER,
             umask: 0o022,
+            revision: 0,
         }
     }
 }
@@ -108,6 +123,7 @@ pub enum AuthError {
     LoginDisabled,
     BadPassword,
     PasswordTooShort,
+    LoginThrottled,
     PermissionDenied,
     Io,
 }
@@ -119,8 +135,40 @@ impl AuthError {
             AuthError::LoginDisabled => "login disabled",
             AuthError::BadPassword => "bad password",
             AuthError::PasswordTooShort => "password too short",
+            AuthError::LoginThrottled => "login temporarily locked",
             AuthError::PermissionDenied => "permission denied",
             AuthError::Io => "could not persist user database",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AccountError {
+    NoSuchUser,
+    DuplicateUser,
+    InvalidName,
+    InvalidRole,
+    PasswordTooShort,
+    PermissionDenied,
+    LastAdmin,
+    ProtectedUser,
+    AlreadyConfigured,
+    Io,
+}
+
+impl AccountError {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            AccountError::NoSuchUser => "no such user",
+            AccountError::DuplicateUser => "user already exists",
+            AccountError::InvalidName => "invalid user name",
+            AccountError::InvalidRole => "invalid role",
+            AccountError::PasswordTooShort => "password too short",
+            AccountError::PermissionDenied => "permission denied",
+            AccountError::LastAdmin => "cannot remove the last enabled admin",
+            AccountError::ProtectedUser => "protected user",
+            AccountError::AlreadyConfigured => "first-run setup already completed",
+            AccountError::Io => "could not persist user database",
         }
     }
 }
@@ -129,19 +177,17 @@ pub fn init() {
     let mut users = load_users_from_disk().unwrap_or_else(default_users);
     normalize_default_admin(&mut users);
     let groups = default_groups();
-    let session = users
-        .iter()
-        .find(|user| user.uid == USER_UID && user.login_enabled)
-        .cloned()
-        .unwrap_or_else(default_admin_user);
+    let session = default_session_user(&users);
     {
         let mut state = SECURITY.lock();
         state.users = users;
         state.groups = groups;
+        state.login_attempts.clear();
         state.session_uid = session.uid;
         state.session_gid = session.gid;
         state.session_caps = caps_for_role(&session.role);
         state.umask = 0o022;
+        state.revision = state.revision.wrapping_add(1);
     }
     let _ = persist_users();
     ensure_home_dirs();
@@ -165,6 +211,14 @@ pub fn current_user() -> User {
 
 pub fn users() -> Vec<User> {
     SECURITY.lock().users.iter().map(public_user).collect()
+}
+
+pub fn revision() -> u64 {
+    SECURITY.lock().revision
+}
+
+pub fn first_run_required() -> bool {
+    SECURITY.lock().users.iter().any(is_default_admin_password)
 }
 
 #[allow(dead_code)]
@@ -250,6 +304,9 @@ pub fn service_credentials(name: &str) -> Credentials {
 }
 
 pub fn login(name: &str, password: &str) -> Result<User, AuthError> {
+    if login_locked(name) {
+        return Err(AuthError::LoginThrottled);
+    }
     let user = {
         let state = SECURITY.lock();
         let user = state
@@ -262,10 +319,14 @@ pub fn login(name: &str, password: &str) -> Result<User, AuthError> {
             return Err(AuthError::LoginDisabled);
         }
         if user.pass_hash != password_hash(&user.name, password) {
+            let attempted = user.name.clone();
+            drop(state);
+            record_login_failure(&attempted);
             return Err(AuthError::BadPassword);
         }
         user
     };
+    clear_login_failures(&user.name);
     set_session_from_user(&user);
     crate::event_bus::emit("security", "login", &user.name);
     Ok(public_user(&user))
@@ -303,7 +364,7 @@ pub fn set_session_for_test(name: &str) -> bool {
 }
 
 pub fn change_password(old_password: &str, new_password: &str) -> Result<(), AuthError> {
-    if new_password.len() < 4 {
+    if !valid_password(new_password) {
         return Err(AuthError::PasswordTooShort);
     }
     {
@@ -318,8 +379,208 @@ pub fn change_password(old_password: &str, new_password: &str) -> Result<(), Aut
             return Err(AuthError::BadPassword);
         }
         user.pass_hash = password_hash(&user.name, new_password);
+        state.revision = state.revision.wrapping_add(1);
     }
     persist_users().map_err(|_| AuthError::Io)
+}
+
+pub fn complete_first_run_admin(name: &str, password: &str) -> Result<User, AccountError> {
+    let name = clean_user_name(name)?;
+    if name.eq_ignore_ascii_case("guest") {
+        return Err(AccountError::ProtectedUser);
+    }
+    validate_password_for_account(password)?;
+    let user = {
+        let mut state = SECURITY.lock();
+        if !state.users.iter().any(is_default_admin_password) {
+            return Err(AccountError::AlreadyConfigured);
+        }
+        let user = if name.eq_ignore_ascii_case("root") {
+            let user = state
+                .users
+                .iter_mut()
+                .find(|user| user.name.eq_ignore_ascii_case(&name))
+                .ok_or(AccountError::NoSuchUser)?;
+            user.role = String::from("admin");
+            user.pass_hash = password_hash(&user.name, password);
+            user.login_enabled = true;
+            user.clone()
+        } else {
+            if state
+                .users
+                .iter()
+                .any(|user| user.name.eq_ignore_ascii_case(&name))
+            {
+                return Err(AccountError::DuplicateUser);
+            }
+            let new_user = UserRecord {
+                name: name.clone(),
+                role: String::from("admin"),
+                uid: next_available_uid(&state.users),
+                gid: USER_GID,
+                home: user_home(&name),
+                pass_hash: password_hash(&name, password),
+                login_enabled: true,
+            };
+            for user in state.users.iter_mut() {
+                if is_default_admin_password(user) {
+                    user.login_enabled = false;
+                    user.pass_hash = password_hash(&user.name, "disabled");
+                }
+            }
+            state.users.push(new_user.clone());
+            new_user
+        };
+        state.revision = state.revision.wrapping_add(1);
+        user
+    };
+    persist_users().map_err(|_| AccountError::Io)?;
+    ensure_home_dirs();
+    set_session_from_user(&user);
+    crate::event_bus::emit("security", "first-run", &user.name);
+    Ok(public_user(&user))
+}
+
+pub fn create_user(name: &str, password: &str, role: &str) -> Result<User, AccountError> {
+    require_admin_account()?;
+    let name = clean_user_name(name)?;
+    validate_password_for_account(password)?;
+    let role = clean_role(role)?;
+    let user = {
+        let mut state = SECURITY.lock();
+        if state
+            .users
+            .iter()
+            .any(|user| user.name.eq_ignore_ascii_case(&name))
+        {
+            return Err(AccountError::DuplicateUser);
+        }
+        let user = UserRecord {
+            name: name.clone(),
+            role,
+            uid: next_available_uid(&state.users),
+            gid: USER_GID,
+            home: user_home(&name),
+            pass_hash: password_hash(&name, password),
+            login_enabled: true,
+        };
+        state.users.push(user.clone());
+        state.revision = state.revision.wrapping_add(1);
+        user
+    };
+    persist_users().map_err(|_| AccountError::Io)?;
+    ensure_home_dirs();
+    crate::event_bus::emit("security", "user-create", &user.name);
+    Ok(public_user(&user))
+}
+
+pub fn set_user_enabled(name: &str, enabled: bool) -> Result<User, AccountError> {
+    require_admin_account()?;
+    let user = {
+        let mut state = SECURITY.lock();
+        let idx = user_index(&state.users, name).ok_or(AccountError::NoSuchUser)?;
+        if !enabled && state.users[idx].uid == state.session_uid {
+            return Err(AccountError::ProtectedUser);
+        }
+        if !enabled && is_admin_record(&state.users[idx]) && enabled_admin_count(&state.users) <= 1
+        {
+            return Err(AccountError::LastAdmin);
+        }
+        state.users[idx].login_enabled = enabled;
+        let user = state.users[idx].clone();
+        state.revision = state.revision.wrapping_add(1);
+        user
+    };
+    persist_users().map_err(|_| AccountError::Io)?;
+    crate::event_bus::emit(
+        "security",
+        if enabled {
+            "user-enable"
+        } else {
+            "user-disable"
+        },
+        &user.name,
+    );
+    Ok(public_user(&user))
+}
+
+pub fn set_user_role(name: &str, role: &str) -> Result<User, AccountError> {
+    require_admin_account()?;
+    let role = clean_role(role)?;
+    let (user, refresh_session) = {
+        let mut state = SECURITY.lock();
+        let idx = user_index(&state.users, name).ok_or(AccountError::NoSuchUser)?;
+        if !is_admin_role(&role)
+            && is_admin_record(&state.users[idx])
+            && enabled_admin_count(&state.users) <= 1
+        {
+            return Err(AccountError::LastAdmin);
+        }
+        let refresh_session = state.users[idx].uid == state.session_uid;
+        state.users[idx].role = role;
+        let user = state.users[idx].clone();
+        state.revision = state.revision.wrapping_add(1);
+        (user, refresh_session)
+    };
+    persist_users().map_err(|_| AccountError::Io)?;
+    if refresh_session {
+        set_session_from_user(&user);
+    }
+    crate::event_bus::emit("security", "user-role", &user.name);
+    Ok(public_user(&user))
+}
+
+pub fn reset_user_password(name: &str, password: &str) -> Result<User, AccountError> {
+    require_admin_account()?;
+    validate_password_for_account(password)?;
+    let user = {
+        let mut state = SECURITY.lock();
+        let idx = user_index(&state.users, name).ok_or(AccountError::NoSuchUser)?;
+        let user_name = state.users[idx].name.clone();
+        state.users[idx].pass_hash = password_hash(&user_name, password);
+        let user = state.users[idx].clone();
+        state.revision = state.revision.wrapping_add(1);
+        user
+    };
+    clear_login_failures(&user.name);
+    persist_users().map_err(|_| AccountError::Io)?;
+    crate::event_bus::emit("security", "user-password", &user.name);
+    Ok(public_user(&user))
+}
+
+pub fn delete_user(name: &str) -> Result<User, AccountError> {
+    require_admin_account()?;
+    let user = {
+        let mut state = SECURITY.lock();
+        let idx = user_index(&state.users, name).ok_or(AccountError::NoSuchUser)?;
+        if state.users[idx].uid == state.session_uid
+            || state.users[idx].name.eq_ignore_ascii_case("root")
+            || state.users[idx].name.eq_ignore_ascii_case("guest")
+        {
+            return Err(AccountError::ProtectedUser);
+        }
+        if is_admin_record(&state.users[idx]) && enabled_admin_count(&state.users) <= 1 {
+            return Err(AccountError::LastAdmin);
+        }
+        let user = state.users.remove(idx);
+        state.revision = state.revision.wrapping_add(1);
+        user
+    };
+    persist_users().map_err(|_| AccountError::Io)?;
+    crate::event_bus::emit("security", "user-delete", &user.name);
+    Ok(public_user(&user))
+}
+
+pub fn suggested_user_name(prefix: &str) -> String {
+    let base = if prefix.is_empty() { "user" } else { prefix };
+    for idx in 1..1000usize {
+        let mut name = String::from(base);
+        push_u32(&mut name, idx as u32);
+        if user_by_name(&name).is_none() {
+            return name;
+        }
+    }
+    String::from("user")
 }
 
 pub fn require_admin() -> Result<(), AuthError> {
@@ -575,6 +836,14 @@ pub fn lines() -> Vec<String> {
         ),
         format!("current task {}", credentials_label(creds)),
         format!("umask={}", format_mode(umask())),
+        format!(
+            "first-run setup={}",
+            if first_run_required() {
+                "required"
+            } else {
+                "complete"
+            }
+        ),
         String::from("users:"),
     ];
     for user in users() {
@@ -604,6 +873,161 @@ pub fn lines() -> Vec<String> {
     ));
     lines.extend(app_permission_lines());
     lines
+}
+
+fn require_admin_account() -> Result<(), AccountError> {
+    require_admin().map_err(|_| AccountError::PermissionDenied)
+}
+
+fn default_session_user(users: &[UserRecord]) -> UserRecord {
+    users
+        .iter()
+        .find(|user| user.uid == USER_UID && user.login_enabled)
+        .or_else(|| {
+            users
+                .iter()
+                .find(|user| user.login_enabled && (user.role == "admin" || user.role == "root"))
+        })
+        .or_else(|| users.iter().find(|user| user.login_enabled))
+        .cloned()
+        .unwrap_or_else(default_admin_user)
+}
+
+fn user_index(users: &[UserRecord], name: &str) -> Option<usize> {
+    users
+        .iter()
+        .position(|user| user.name.eq_ignore_ascii_case(name))
+}
+
+fn enabled_admin_count(users: &[UserRecord]) -> usize {
+    users
+        .iter()
+        .filter(|user| user.login_enabled && is_admin_record(user))
+        .count()
+}
+
+fn is_admin_record(user: &UserRecord) -> bool {
+    is_admin_role(&user.role)
+}
+
+fn is_admin_role(role: &str) -> bool {
+    role == "admin" || role == "root"
+}
+
+fn is_default_admin_password(user: &UserRecord) -> bool {
+    user.name.eq_ignore_ascii_case("root")
+        && user.uid == USER_UID
+        && user.login_enabled
+        && user.pass_hash == password_hash("root", "cool")
+}
+
+fn next_available_uid(users: &[UserRecord]) -> u32 {
+    let mut uid = users
+        .iter()
+        .map(|user| user.uid)
+        .filter(|uid| *uid >= GUEST_UID)
+        .max()
+        .unwrap_or(GUEST_UID)
+        .saturating_add(1);
+    while users.iter().any(|user| user.uid == uid) {
+        uid = uid.saturating_add(1);
+    }
+    uid
+}
+
+fn clean_role(role: &str) -> Result<String, AccountError> {
+    let role = role.trim();
+    if role.eq_ignore_ascii_case("admin") || role.eq_ignore_ascii_case("root") {
+        Ok(String::from("admin"))
+    } else if role.eq_ignore_ascii_case("user") || role.eq_ignore_ascii_case("guest") {
+        Ok(String::from("user"))
+    } else {
+        Err(AccountError::InvalidRole)
+    }
+}
+
+fn clean_user_name(name: &str) -> Result<String, AccountError> {
+    let name = name.trim();
+    let len = name.chars().count();
+    if len < 2 || len > 16 {
+        return Err(AccountError::InvalidName);
+    }
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return Err(AccountError::InvalidName);
+    };
+    if !first.is_ascii_alphabetic() {
+        return Err(AccountError::InvalidName);
+    }
+    if !name
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        return Err(AccountError::InvalidName);
+    }
+    Ok(String::from(name))
+}
+
+fn user_home(name: &str) -> String {
+    let mut home = String::from("/Users/");
+    home.push_str(name);
+    home
+}
+
+fn valid_password(password: &str) -> bool {
+    password.len() >= MIN_PASSWORD_LEN && !password.contains(':') && !password.contains('\n')
+}
+
+fn validate_password_for_account(password: &str) -> Result<(), AccountError> {
+    if valid_password(password) {
+        Ok(())
+    } else {
+        Err(AccountError::PasswordTooShort)
+    }
+}
+
+fn login_locked(name: &str) -> bool {
+    let now = crate::interrupts::ticks();
+    SECURITY
+        .lock()
+        .login_attempts
+        .iter()
+        .find(|attempt| attempt.name.eq_ignore_ascii_case(name))
+        .map(|attempt| attempt.locked_until_tick > now)
+        .unwrap_or(false)
+}
+
+fn record_login_failure(name: &str) {
+    let now = crate::interrupts::ticks();
+    let lockout_ticks = crate::interrupts::ticks_for_millis(LOGIN_LOCKOUT_MS);
+    let mut state = SECURITY.lock();
+    let idx = state
+        .login_attempts
+        .iter()
+        .position(|attempt| attempt.name.eq_ignore_ascii_case(name));
+    let Some(idx) = idx else {
+        state.login_attempts.push(LoginAttempt {
+            name: String::from(name),
+            failures: 1,
+            locked_until_tick: 0,
+        });
+        return;
+    };
+    let attempt = &mut state.login_attempts[idx];
+    if attempt.locked_until_tick <= now {
+        attempt.failures = attempt.failures.saturating_add(1);
+    }
+    if attempt.failures >= MAX_LOGIN_FAILURES {
+        attempt.locked_until_tick = now.wrapping_add(lockout_ticks);
+        attempt.failures = 0;
+    }
+}
+
+fn clear_login_failures(name: &str) {
+    SECURITY
+        .lock()
+        .login_attempts
+        .retain(|attempt| !attempt.name.eq_ignore_ascii_case(name));
 }
 
 fn set_session_from_user(user: &UserRecord) {
