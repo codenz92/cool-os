@@ -23,24 +23,26 @@ switcher overlay, edge/keyboard window snapping, taskbar previews/actions,
 session restore, File Manager drag/drop/open-with actions, a shared clipboard,
 notification center, userspace app lifecycle tracking with System Monitor
 close/kill/path controls, and desktop settings that persist to the CoolFS root.
-A preemptive round-robin scheduler runs five boot tasks driven by the PIT
-timer at **100 Hz**; the terminal can also spawn additional ring-3 ELF tasks
-from disk with `exec`. The shell also has a real package/app manifest path:
+A preemptive round-robin scheduler is driven by the PIT timer at **100 Hz**;
+the kernel boot stack remains the idle/window-manager context, the boot path
+performs a synchronous CoolFS read check, and the terminal can also spawn
+additional ring-3 ELF tasks from disk with `exec`. The shell also has a real
+package/app manifest path:
 UTF-8 `.PKG` manifests can install apps into `/APPS/<command>/APP.CFG`,
 contribute launcher aliases and file associations, launch a declared userspace
 executable through `exec=`, and be removed without leaving stale launcher
 entries:
 
-| Task | Ring | Description |
-| :--- | :--- | :---------- |
-| **idle/wm** | 0 | The kernel boot stack — runs `compose_if_needed()` + `hlt`. |
-| **counter** | 0 | Tight loop incrementing `BACKGROUND_COUNTER`. Visible in System Monitor. |
-| **fs-test** | 0 | One-shot: reads `/bin/hello.txt` from disk and prints it, then blocks. |
-| **user1** | 3 | Own PML4 + private user stack. Writes sentinel `0xDEAD0001`, reads it back, prints `[ring3 pid=1] sentinel ok`. |
-| **user2** | 3 | Own PML4 + private user stack at the same VA as user1. Writes `0xDEAD0002` — cannot see user1's memory. |
+| Context | Mode | Description |
+| :------ | :--- | :---------- |
+| **idle/wm** | ring 0 | Kernel boot stack and idle context; runs `compose_if_needed()` and `hlt`. |
+| **boot fs check** | ring 0 | Synchronous `fs_test_once()`: reads `/bin/hello.txt` from CoolFS and prints it during boot. |
+| **timer counter** | IRQ0 | PIT timer increments `BACKGROUND_COUNTER`. Visible in System Monitor. |
+| **user1** | ring 3 | Own PML4 + private user stack. Writes sentinel `0xDEAD0001`, reads it back, prints `[ring3 pid=1] sentinel ok`. |
+| **user2** | ring 3 | Own PML4 + private user stack at the same VA as user1. Writes `0xDEAD0002` — cannot see user1's memory. |
 
 On boot, the contents of `/bin/hello.txt` are printed to the console by the
-`fs-test` task. Both `[ring3 pid=1] sentinel ok` and `[ring3 pid=2] sentinel ok`
+synchronous filesystem check. Both `[ring3 pid=1] sentinel ok` and `[ring3 pid=2] sentinel ok`
 appear in the terminal, proving process isolation: same virtual address,
 different physical frames. Typing `exec /bin/hello` launches a real userspace
 ELF from disk, `exec /bin/exec` demonstrates `sys_exec` by replacing a running
@@ -339,8 +341,8 @@ vectors from reaching the CPU. CoolFS uses fixed inodes, a block bitmap, 4 KiB
 blocks, direct blocks, and a single indirect block for larger userspace
 binaries. The VFS routes normal absolute paths to CoolFS, routes `/FAT/*` to the
 container, and wraps reads into a 16-slot FD table. Syscalls 5–7 (`open`,
-`read`, `close`) expose the VFS to ring-3 code, and the kernel's `fs-test` task
-reads `/bin/hello.txt` from CoolFS on boot.
+`read`, `close`) expose the VFS to ring-3 code, and the synchronous boot
+filesystem check reads `/bin/hello.txt` from CoolFS.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half

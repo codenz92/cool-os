@@ -82,9 +82,10 @@ depends on it.
       exist; full wiring to I/O events deferred to Phase 9.
 - [x] Port the existing main loop (compositor tick + `hlt`) to run as the idle task
       (task 0, uses the kernel boot stack — no separate allocation needed).
-- [x] Verify: `counter_task` (task 1) increments `BACKGROUND_COUNTER` in a tight
-      loop while the WM loop (idle task) runs the desktop; the System Monitor
-      displays the counter in cyan, confirming both tasks make progress.
+- [x] Historical verification: `counter_task` (then task 1) incremented
+      `BACKGROUND_COUNTER` in a tight loop while the WM loop (idle task) ran the
+      desktop; the System Monitor displayed the counter in cyan, confirming both
+      tasks made progress. The current kernel increments this counter from IRQ0.
 
 **Exit criteria:** at least two kernel tasks preempt each other correctly under the
 timer; no stack corruption; `hlt` in the idle task still fires when no other task is runnable.
@@ -265,8 +266,10 @@ a write to an unmapped address in one process does not affect the other.
   at `vmm::init` time and writes it to CR3 when the scheduler resumes a kernel
   task (`pml4 = None`).
 
-**Exit criteria met:** the `fs-test` kernel task opens `/bin/hello.txt` from the
-FAT32 image on boot and prints its contents to the console.
+**Exit criteria met at the time:** the `fs-test` kernel task opened
+`/bin/hello.txt` from the FAT32 image on boot and printed its contents to the
+console. Phase 26 later superseded this path with CoolFS at `/` and a
+synchronous `fs_test_once()` boot check.
 
 ---
 
