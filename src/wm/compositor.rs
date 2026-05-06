@@ -964,7 +964,6 @@ pub struct WindowManager {
     start_menu_open: bool,
     start_menu_pinned: Vec<String>,
     start_menu_entries: Vec<StartMenuEntry>,
-    start_menu_widget_line: String,
     notification_center_open: bool,
     launcher: Option<LauncherState>,
     taskbar_menu: Option<TaskbarMenu>,
@@ -1053,7 +1052,6 @@ impl WindowManager {
             start_menu_open: false,
             start_menu_pinned: Vec::new(),
             start_menu_entries: Vec::new(),
-            start_menu_widget_line: String::new(),
             notification_center_open: false,
             launcher: None,
             taskbar_menu: None,
@@ -1865,7 +1863,6 @@ impl WindowManager {
     fn refresh_start_menu_cache(&mut self) {
         self.start_menu_pinned = crate::app_lifecycle::pinned_apps();
         self.start_menu_entries = build_start_menu_entries();
-        self.start_menu_widget_line = start_menu_widget_status_line();
     }
 
     fn handle_launcher_input(&mut self, input: KeyInput) -> bool {
@@ -4558,18 +4555,6 @@ impl WindowManager {
                         rc_x + rc_w - 4,
                     );
                     row_y += link_h;
-                }
-
-                if prefs.show_widgets {
-                    draw_start_menu_widgets(
-                        s,
-                        sw,
-                        menu_x + 10,
-                        bar_y + 8,
-                        (sd_x - menu_x - 18).max(96),
-                        20,
-                        &self.start_menu_widget_line,
-                    );
                 }
             }
 
@@ -8175,26 +8160,6 @@ fn ctrl_number_slot(c: char) -> Option<usize> {
     }
 }
 
-fn start_menu_widget_status_line() -> String {
-    let mut line = String::new();
-    if let Some(stats) = crate::coolfs::stats() {
-        line.push_str("disk ");
-        push_decimal(&mut line, stats.free_blocks as u64);
-        line.push_str(" blocks free");
-    } else {
-        line.push_str("disk ?");
-    }
-    line.push_str("  net ");
-    line.push_str(if crate::net::protocol_lines().is_empty() {
-        "idle"
-    } else {
-        "ok"
-    });
-    line.push_str("  job ");
-    push_decimal(&mut line, crate::jobs::recent(6).len() as u64);
-    line
-}
-
 fn draw_start_menu_quick_actions(
     s: &mut [u32],
     sw: usize,
@@ -8246,13 +8211,6 @@ fn draw_start_menu_quick_actions(
             ax + w - 6,
         );
     }
-}
-
-fn draw_start_menu_widgets(s: &mut [u32], sw: usize, x: i32, y: i32, w: i32, h: i32, line: &str) {
-    let bg = 0x00_00_05_12;
-    s_fill(s, sw, x, y, w, h, bg);
-    draw_rect_border(s, sw, x, y, w, h, 0x00_00_33_66);
-    s_draw_str_small(s, sw, x + 6, y + 5, line, 0x00_66_AA_DD, bg, x + w - 6);
 }
 
 fn file_name(path: &str) -> String {
