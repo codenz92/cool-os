@@ -50,6 +50,7 @@ pub enum TaskStatus {
     Ready,
     Running,
     Blocked,
+    Stopped,
     Exited,
     Reaped,
 }
@@ -301,27 +302,27 @@ impl Scheduler {
             }
             if let Some(signal) = task.pending_signal.take() {
                 match signal {
-                    crate::process_model::Signal::Term | crate::process_model::Signal::Int => {
-                        if idx != 0
-                            && task.status != TaskStatus::Exited
-                            && task.status != TaskStatus::Reaped
-                        {
-                            task.status = TaskStatus::Exited;
-                            task.exit_code =
-                                Some(if signal == crate::process_model::Signal::Term {
-                                    143
-                                } else {
-                                    130
-                                });
-                            task.wake_tick = None;
-                        }
-                    }
                     crate::process_model::Signal::User1 => {
                         task.wake_tick = None;
                         if task.status == TaskStatus::Blocked {
                             task.status = TaskStatus::Ready;
                         }
                     }
+                    crate::process_model::Signal::Stop => {
+                        if idx != 0
+                            && task.status != TaskStatus::Exited
+                            && task.status != TaskStatus::Reaped
+                        {
+                            task.status = TaskStatus::Stopped;
+                            task.wake_tick = None;
+                        }
+                    }
+                    crate::process_model::Signal::Continue => {
+                        if task.status == TaskStatus::Stopped {
+                            task.status = TaskStatus::Ready;
+                        }
+                    }
+                    crate::process_model::Signal::Term | crate::process_model::Signal::Int => {}
                 }
             }
         }
@@ -374,6 +375,7 @@ pub enum KillError {
     AlreadyExited,
     AlreadyReaped,
     NotChild,
+    PermissionDenied,
 }
 
 impl KillError {
@@ -385,6 +387,7 @@ impl KillError {
             KillError::AlreadyExited => "task already exited",
             KillError::AlreadyReaped => "task already reaped",
             KillError::NotChild => "not a child task",
+            KillError::PermissionDenied => "permission denied",
         }
     }
 }
@@ -409,7 +412,10 @@ impl WaitError {
 
 pub enum SignalError {
     InvalidTask,
+    InvalidGroup,
     CannotSignalIdle,
+    PermissionDenied,
+    AlreadyExited,
     AlreadyReaped,
 }
 
@@ -417,7 +423,10 @@ impl SignalError {
     pub const fn as_str(self) -> &'static str {
         match self {
             SignalError::InvalidTask => "no such task",
+            SignalError::InvalidGroup => "no such process group",
             SignalError::CannotSignalIdle => "cannot signal idle task",
+            SignalError::PermissionDenied => "permission denied",
+            SignalError::AlreadyExited => "task already exited",
             SignalError::AlreadyReaped => "task already reaped",
         }
     }
@@ -451,8 +460,40 @@ pub fn task_credentials(task_id: usize) -> Option<crate::security::Credentials> 
         .map(|task| task.credentials)
 }
 
+fn can_control_task_locked(sched: &Scheduler, actor: usize, target: usize) -> bool {
+    if actor == target {
+        return true;
+    }
+    let Some(actor_task) = sched.tasks.get(actor) else {
+        return false;
+    };
+    let Some(target_task) = sched.tasks.get(target) else {
+        return false;
+    };
+    crate::security::can_admin(actor_task.credentials)
+        || target_task.parent == Some(actor)
+        || actor_task.credentials.uid == target_task.credentials.uid
+}
+
 pub fn task_name(task_id: usize) -> Option<&'static str> {
     SCHEDULER.lock().tasks.get(task_id).map(|task| task.name)
+}
+
+pub fn task_status_exit(task_id: usize) -> Option<(TaskStatus, Option<u64>)> {
+    SCHEDULER
+        .lock()
+        .tasks
+        .get(task_id)
+        .map(|task| (task.status, task.exit_code))
+}
+
+pub fn current_process_group() -> usize {
+    let sched = SCHEDULER.lock();
+    sched
+        .tasks
+        .get(sched.current)
+        .map(|task| task.process_group)
+        .unwrap_or(0)
 }
 
 pub fn current_task_blocked() -> bool {
@@ -552,6 +593,9 @@ pub fn kill_task(task_id: usize, code: u64) -> Result<(), KillError> {
         let Some(task) = sched.tasks.get(task_id) else {
             return Err(KillError::InvalidTask);
         };
+        if !can_control_task_locked(&sched, current, task_id) {
+            return Err(KillError::PermissionDenied);
+        }
         if task.status == TaskStatus::Exited {
             return Err(KillError::AlreadyExited);
         }
@@ -566,6 +610,7 @@ pub fn kill_task(task_id: usize, code: u64) -> Result<(), KillError> {
         let name = task.name;
         task.status = TaskStatus::Exited;
         task.exit_code = Some(code);
+        task.wake_tick = None;
         name
     };
     crate::vfs::drop_task(task_id);
@@ -612,32 +657,155 @@ pub fn send_signal(
     if task_id == 0 {
         return Err(SignalError::CannotSignalIdle);
     }
+    if let Some(code) = signal.exit_code() {
+        let current = {
+            let sched = SCHEDULER.lock();
+            sched.current
+        };
+        if task_id == current {
+            exit_current(code);
+            return Ok(());
+        }
+        return kill_task(task_id, code).map_err(signal_error_from_kill);
+    }
+
     {
         let mut sched = SCHEDULER.lock();
+        let current = sched.current;
+        if sched.tasks.get(task_id).is_none() {
+            return Err(SignalError::InvalidTask);
+        }
+        if !can_control_task_locked(&sched, current, task_id) {
+            return Err(SignalError::PermissionDenied);
+        }
         let task = sched
             .tasks
             .get_mut(task_id)
             .ok_or(SignalError::InvalidTask)?;
+        if task.status == TaskStatus::Exited {
+            return Err(SignalError::AlreadyExited);
+        }
         if task.status == TaskStatus::Reaped {
             return Err(SignalError::AlreadyReaped);
         }
-        task.pending_signal = Some(signal);
+        match signal {
+            crate::process_model::Signal::User1 => {
+                task.pending_signal = Some(signal);
+                if task.status == TaskStatus::Blocked {
+                    task.wake_tick = None;
+                    task.status = TaskStatus::Ready;
+                }
+            }
+            crate::process_model::Signal::Stop => {
+                task.pending_signal = None;
+                task.wake_tick = None;
+                task.status = TaskStatus::Stopped;
+            }
+            crate::process_model::Signal::Continue => {
+                task.pending_signal = None;
+                if task.status == TaskStatus::Stopped {
+                    task.status = TaskStatus::Ready;
+                }
+            }
+            crate::process_model::Signal::Term | crate::process_model::Signal::Int => {}
+        }
     }
     crate::notifications::push_transient(
-        "Signal queued",
+        "Signal delivered",
         &format!("pid {} {}", task_id, signal.label()),
     );
     Ok(())
 }
 
+pub fn send_signal_to_group(
+    group: usize,
+    signal: crate::process_model::Signal,
+) -> Result<usize, SignalError> {
+    let ids = {
+        let sched = SCHEDULER.lock();
+        let current = sched.current;
+        let ids: Vec<usize> = sched
+            .tasks
+            .iter()
+            .enumerate()
+            .filter(|(idx, task)| {
+                *idx != 0
+                    && task.process_group == group
+                    && task.status != TaskStatus::Exited
+                    && task.status != TaskStatus::Reaped
+                    && can_control_task_locked(&sched, current, *idx)
+            })
+            .map(|(idx, _)| idx)
+            .collect();
+        ids
+    };
+    if ids.is_empty() {
+        return Err(SignalError::InvalidGroup);
+    }
+    let mut delivered = 0usize;
+    for id in ids {
+        if send_signal(id, signal).is_ok() {
+            delivered += 1;
+        }
+    }
+    if delivered == 0 {
+        Err(SignalError::PermissionDenied)
+    } else {
+        Ok(delivered)
+    }
+}
+
 pub fn set_process_group(task_id: usize, group: usize) -> Result<(), SignalError> {
+    let current = {
+        let sched = SCHEDULER.lock();
+        sched.current
+    };
+    set_process_group_as(current, task_id, group)
+}
+
+pub fn set_process_group_as(actor: usize, task_id: usize, group: usize) -> Result<(), SignalError> {
+    if task_id == 0 {
+        return Err(SignalError::CannotSignalIdle);
+    }
     let mut sched = SCHEDULER.lock();
+    if sched.tasks.get(task_id).is_none() {
+        return Err(SignalError::InvalidTask);
+    }
+    if !can_control_task_locked(&sched, actor, task_id) {
+        return Err(SignalError::PermissionDenied);
+    }
     let task = sched
         .tasks
         .get_mut(task_id)
         .ok_or(SignalError::InvalidTask)?;
+    if task.status == TaskStatus::Exited {
+        return Err(SignalError::AlreadyExited);
+    }
+    if task.status == TaskStatus::Reaped {
+        return Err(SignalError::AlreadyReaped);
+    }
     task.process_group = group;
     Ok(())
+}
+
+pub fn get_process_group(task_id: usize) -> Result<usize, SignalError> {
+    let sched = SCHEDULER.lock();
+    let task = sched.tasks.get(task_id).ok_or(SignalError::InvalidTask)?;
+    if task.status == TaskStatus::Reaped {
+        return Err(SignalError::AlreadyReaped);
+    }
+    Ok(task.process_group)
+}
+
+fn signal_error_from_kill(err: KillError) -> SignalError {
+    match err {
+        KillError::CannotKillIdle => SignalError::CannotSignalIdle,
+        KillError::InvalidTask => SignalError::InvalidTask,
+        KillError::AlreadyExited => SignalError::AlreadyExited,
+        KillError::AlreadyReaped => SignalError::AlreadyReaped,
+        KillError::PermissionDenied => SignalError::PermissionDenied,
+        KillError::CannotKillCurrent | KillError::NotChild => SignalError::InvalidTask,
+    }
 }
 
 pub fn waitpid(parent: usize, task_id: usize) -> Result<u64, WaitError> {

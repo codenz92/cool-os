@@ -275,6 +275,16 @@ pub const APPS: &[AppMetadata] = &[
         aliases: &["gui", "userspace", "sdk", "window"],
         associations: &[],
     },
+    AppMetadata {
+        id: "app.procdemo",
+        name: "Process Demo",
+        glyph: "P3",
+        command: "procdemo",
+        category: AppCategory::Development,
+        permission: "diagnostics",
+        aliases: &["process", "signals", "jobs", "phase33"],
+        associations: &[],
+    },
 ];
 
 pub const APP_CATEGORIES: &[AppCategory] = &[
@@ -728,7 +738,7 @@ fn parse_manifest_list(value: &str) -> Vec<String> {
 
 fn default_exec_for_command(command: &str) -> String {
     match command {
-        "editor" | "notes" | "trash" | "screenshot" | "guidemo" => {
+        "editor" | "notes" | "trash" | "screenshot" | "guidemo" | "procdemo" => {
             let mut path = String::from("/bin/");
             path.push_str(command);
             path

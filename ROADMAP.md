@@ -4,10 +4,10 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–32 are complete. Phase 32 hardens the user/kernel boundary: kernel
-mappings remain present for ring-0 execution but are supervisor-only, boot
-sentinels now run as normal ELF programs, and smoke coverage probes denied
-kernel pointers, mmap requests, exec paths, and direct ring-3 kernel reads.
+Phases 1–33 are complete. Phase 33 turns the existing process-control
+scaffolding into an ABI-backed model: userspace can signal tasks and process
+groups, STOP/CONT affects scheduler eligibility, terminal jobs can bind to real
+processes, and smoke coverage proves ring-3 process control plus job actions.
 
 ---
 
@@ -1048,6 +1048,36 @@ and a real user page fault.
 
 ---
 
+## ✅ Phase 33 — Process Control and Jobs
+
+**Goal:** Make process control a real kernel/userspace contract instead of a
+set of shell-only diagnostics. Ring-3 programs should be able to spawn children,
+manage process groups, deliver bounded signals, and observe wait/reap behavior,
+while the desktop job model should be able to control long-running processes.
+
+- [x] Add scheduler STOP/CONT state handling alongside TERM/INT/USR1 delivery.
+- [x] Enforce permission-aware process control: callers can control themselves,
+      their children, same-uid tasks, or any task when running with admin caps.
+- [x] Add process-control syscalls: `signal`, `setpgid`, `getpgid`, and
+      `signal_group`, and bump the userspace ABI to version 6.
+- [x] Extend `libcool` with typed signal and process-group wrappers.
+- [x] Add `/bin/procdemo`, a ring-3 proof binary that spawns `/bin/procsleep`,
+      moves it into its own process group, sends USR1/STOP/CONT/group TERM, and
+      waits for exit code 143.
+- [x] Bind Terminal jobs to real processes via `job run`, `job pause`,
+      `job resume`, and `job cancel`; process jobs now display pid/state and
+      use STOP/CONT/TERM under the hood.
+- [x] Fix ATA PIO reads to wait for post-transfer settle, preventing immediate
+      nested ELF loads from racing the disk device.
+- [x] Add `make smoke-phase33-process-control` with separate QEMU runs for the
+      ring-3 process-control ABI and process-bound job controls.
+
+**Current status:** complete. coolOS now exposes process groups and signals
+through both Terminal and `libcool`, and the scheduler has a real stopped state
+that removes tasks from the run queue until CONT resumes them.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -1095,4 +1125,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v6.3 | Phase 29 complete: login, sessions, and service supervision |
 | v6.4 | Phase 30 complete: GUI login and lock screen |
 | v6.5 | Phase 31 complete: first-run setup and account management |
-| v6.6 | Current — Phase 32 complete: user/kernel isolation hardening |
+| v6.6 | Phase 32 complete: user/kernel isolation hardening |
+| v6.7 | Current — Phase 33 complete: process control and jobs |

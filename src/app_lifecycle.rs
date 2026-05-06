@@ -298,15 +298,7 @@ pub fn record_process_start(pid: usize, app: &str, path: &str) {
                 window_handle: existing.and_then(|running| running.window_handle),
             },
         );
-        push_unique(
-            &mut state.recent_apps,
-            if app.is_empty() { path } else { app },
-        );
-        if state.recent_apps.len() > MAX_RECENT {
-            state.recent_apps.truncate(MAX_RECENT);
-        }
     }
-    let _ = save_to_disk();
 }
 
 pub fn record_user_window(pid: usize, title: &str, handle: u64) {

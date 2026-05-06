@@ -318,7 +318,7 @@ fn builtin_manifest(app: &crate::app_metadata::AppMetadata) -> crate::app_metada
 
 fn exec_for_app(app: &crate::app_metadata::AppMetadata) -> String {
     match app.command {
-        "editor" | "notes" | "trash" | "screenshot" | "guidemo" => {
+        "editor" | "notes" | "trash" | "screenshot" | "guidemo" | "procdemo" => {
             let mut path = String::from("/bin/");
             path.push_str(app.command);
             path

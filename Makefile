@@ -1,4 +1,4 @@
-.PHONY: run run-net run-usb run-usb-init run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-phase31-accounts smoke-phase32-isolation smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
+.PHONY: run run-net run-usb run-usb-init run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-phase31-accounts smoke-phase32-isolation smoke-phase33-process-control smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -25,6 +25,8 @@ USER_NOTES_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/releas
 USER_EDITOR_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/editor
 USER_TRASH_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/trash
 USER_SCREENSHOT_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/screenshot
+USER_PROCDEMO_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/procdemo
+USER_PROCSLEEP_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/procsleep
 USER_SENTINEL_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/sentinel
 USER_BADPTR_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/badptr
 USER_BADWRITE_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/badwrite
@@ -313,7 +315,7 @@ smoke-browser-png: build
 		--post-hmp-delay 2.0 \
 		--screendump "$(SMOKE_ARTIFACT_DIR)/browser-png-smoke.ppm" \
 		--expect-framebuffer-window \
-		--expect "[selftest] kernel unit checks ok=25 fail=0" \
+		--expect "[selftest] kernel unit checks ok=26 fail=0" \
 		--expect "[boot] desktop ready"
 
 smoke-browser-html: build
@@ -330,7 +332,7 @@ smoke-browser-html: build
 		--post-hmp-delay 2.0 \
 		--screendump "$(SMOKE_ARTIFACT_DIR)/browser-html-smoke.ppm" \
 		--expect-framebuffer-window \
-		--expect "[selftest] kernel unit checks ok=25 fail=0" \
+		--expect "[selftest] kernel unit checks ok=26 fail=0" \
 		--expect "[boot] desktop ready"
 
 smoke-ui-goldens: build
@@ -671,7 +673,7 @@ smoke-phase31-accounts: build
 		--seconds 45 \
 		--retries $(SMOKE_RETRIES) \
 		--fw-cmd "login owner31 ownerpass31;;cat /CONFIG/USERS.DB;;id owner31;;login root cool" \
-		--expect "[selftest] kernel unit checks ok=25 fail=0" \
+		--expect "[selftest] kernel unit checks ok=26 fail=0" \
 		--expect "[session] login owner31 uid=" \
 		--expect "owner31:1002:1000:admin:/Users/owner31" \
 		--expect "owner31 uid=" \
@@ -688,13 +690,48 @@ smoke-phase32-isolation: build
 		--seconds 45 \
 		--retries $(SMOKE_RETRIES) \
 		--fw-cmd "exec /bin/badptr;;exec /bin/badwrite;;exec /bin/badmmap;;exec /bin/badexec;;exec /bin/baduserread;;crash" \
-		--expect "[selftest] kernel unit checks ok=25 fail=0" \
+		--expect "[selftest] kernel unit checks ok=26 fail=0" \
 		--expect "badptr: denied" \
 		--expect "badwrite: denied" \
 		--expect "badmmap: denied" \
 		--expect "badexec: denied" \
 		--expect "baduserread: touching kernel page" \
 		--expect "reason=user page fault" \
+		--expect "[boot] desktop ready"
+
+smoke-phase33-process-control: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-procdemo" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds 30 \
+		--retries $(SMOKE_RETRIES) \
+		--fw-cmd "exec /bin/procdemo" \
+		--expect "[selftest] kernel unit checks ok=26 fail=0" \
+		--expect "procdemo: child pgid" \
+		--expect "procdemo: usr1 ok" \
+		--expect "procdemo: stop ok" \
+		--expect "procdemo: cont ok" \
+		--expect "procdemo: group term count=1" \
+		--expect "procdemo: wait exit 143" \
+		--expect "procdemo: phase33 ok" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-jobs" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds 30 \
+		--retries $(SMOKE_RETRIES) \
+		--fw-cmd "job run /bin/procsleep;;jobs;;job pause last;;jobs;;job resume last;;job cancel last;;jobs" \
+		--expect "[selftest] kernel unit checks ok=26 fail=0" \
+		--expect "job #" \
+		--expect "pid=" \
+		--expect "paused" \
+		--expect "cancelled" \
 		--expect "[boot] desktop ready"
 
 smoke-coolfs-native: build
@@ -880,7 +917,7 @@ smoke-kernel-units: build
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--seconds $(SMOKE_SECONDS) \
-		--expect "[selftest] kernel unit checks ok=25 fail=0" \
+		--expect "[selftest] kernel unit checks ok=26 fail=0" \
 		--expect "[boot] desktop ready"
 
 smoke-boot-budget: build
@@ -933,7 +970,7 @@ build:
 		--target-dir $(CURDIR)/target/userspace/hello \
 		-Z build-std=core,compiler_builtins
 	(cd disk-image && cargo run --bin disk-image -- "$(KERNEL)")
-	(cd disk-image && cargo run --bin fs-image -- "$(FSIMG)" "$(USER_TARGET)" "$(USER_EXEC_TARGET)" "$(USER_PIPE_TARGET)" "$(USER_READ_TARGET)" "$(USER_PIPERD_TARGET)" "$(USER_PIPEWR_TARGET)" "$(USER_KEYECHO_TARGET)" "$(USER_TERMINAL_TARGET)" "$(USER_NETDEMO_TARGET)" "$(USER_WGET_TARGET)" "$(USER_SDKDEMO_TARGET)" "$(USER_GUIDEMO_TARGET)" "$(USER_NOTES_TARGET)" "$(USER_EDITOR_TARGET)" "$(USER_TRASH_TARGET)" "$(USER_SCREENSHOT_TARGET)" "$(USER_SENTINEL_TARGET)" "$(USER_BADPTR_TARGET)" "$(USER_BADWRITE_TARGET)" "$(USER_BADMMAP_TARGET)" "$(USER_BADEXEC_TARGET)" "$(USER_BADUSERREAD_TARGET)")
+	(cd disk-image && cargo run --bin fs-image -- "$(FSIMG)" "$(USER_TARGET)" "$(USER_EXEC_TARGET)" "$(USER_PIPE_TARGET)" "$(USER_READ_TARGET)" "$(USER_PIPERD_TARGET)" "$(USER_PIPEWR_TARGET)" "$(USER_KEYECHO_TARGET)" "$(USER_TERMINAL_TARGET)" "$(USER_NETDEMO_TARGET)" "$(USER_WGET_TARGET)" "$(USER_SDKDEMO_TARGET)" "$(USER_GUIDEMO_TARGET)" "$(USER_NOTES_TARGET)" "$(USER_EDITOR_TARGET)" "$(USER_TRASH_TARGET)" "$(USER_SCREENSHOT_TARGET)" "$(USER_PROCDEMO_TARGET)" "$(USER_PROCSLEEP_TARGET)" "$(USER_SENTINEL_TARGET)" "$(USER_BADPTR_TARGET)" "$(USER_BADWRITE_TARGET)" "$(USER_BADMMAP_TARGET)" "$(USER_BADEXEC_TARGET)" "$(USER_BADUSERREAD_TARGET)")
 
 build-usb-init: build
 

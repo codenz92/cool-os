@@ -39,13 +39,17 @@
 ///   29 fs_delete_tree(path_ptr, path_len) → 0 on success
 ///   30 fs_list_dir(desc_ptr) → bytes written to output buffer
 ///   31 screenshot(path_ptr, path_len, flags) → 0 on queued
+///   32 signal(pid, signal) → 0 on success
+///   33 setpgid(pid, pgid) → 0 on success
+///   34 getpgid(pid) → pgid on success
+///   35 signal_group(pgid, signal) → delivered count on success
 ///
 /// Output path: sys_write pushes bytes into SYSCALL_OUTPUT (a lock-free ring
 /// buffer modelled on keyboard.rs). compositor::compose() drains it into the
 /// terminal window each frame, avoiding any lock contention with the WM.
 extern crate alloc;
 
-use alloc::vec::Vec;
+use alloc::{string::String, vec::Vec};
 use core::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
 // ── Syscall output ring buffer ────────────────────────────────────────────────
@@ -250,6 +254,10 @@ extern "C" fn syscall_dispatch(
         29 => sys_fs_delete_tree(a1 as *const u8, a2),
         30 => sys_fs_list_dir(a1 as *const u8),
         31 => sys_screenshot(a1 as *const u8, a2, a3),
+        32 => sys_signal(a1, a2),
+        33 => sys_setpgid(a1, a2),
+        34 => sys_getpgid(a1),
+        35 => sys_signal_group(a1, a2),
         _ => u64::MAX,
     }
 }
@@ -646,10 +654,76 @@ fn sys_spawn(path_ptr: *const u8, path_len: u64) -> u64 {
         Ok(path) => path,
         Err(_) => return u64::MAX,
     };
-    match crate::elf::spawn_elf_process_with_args(path, &[]) {
+    let path = String::from(path);
+    match crate::elf::spawn_elf_process_with_args(&path, &[]) {
         Ok(pid) => pid as u64,
         Err(_) => u64::MAX,
     }
+}
+
+fn sys_signal(pid: u64, signal_code: u64) -> u64 {
+    let Some(signal) = crate::process_model::Signal::from_code(signal_code) else {
+        return u64::MAX;
+    };
+    let target = if pid == 0 {
+        crate::scheduler::current_task_id()
+    } else if pid > usize::MAX as u64 {
+        return u64::MAX;
+    } else {
+        pid as usize
+    };
+    match crate::scheduler::send_signal(target, signal) {
+        Ok(()) => 0,
+        Err(_) => u64::MAX,
+    }
+}
+
+fn sys_setpgid(pid: u64, group: u64) -> u64 {
+    if pid > usize::MAX as u64 || group > usize::MAX as u64 {
+        return u64::MAX;
+    }
+    let target = if pid == 0 {
+        crate::scheduler::current_task_id()
+    } else {
+        pid as usize
+    };
+    let group = if group == 0 { target } else { group as usize };
+    let actor = crate::scheduler::current_task_id();
+    match crate::scheduler::set_process_group_as(actor, target, group) {
+        Ok(()) => 0,
+        Err(_) => u64::MAX,
+    }
+}
+
+fn sys_getpgid(pid: u64) -> u64 {
+    if pid > usize::MAX as u64 {
+        return u64::MAX;
+    }
+    let target = if pid == 0 {
+        crate::scheduler::current_task_id()
+    } else {
+        pid as usize
+    };
+    crate::scheduler::get_process_group(target)
+        .map(|group| group as u64)
+        .unwrap_or(u64::MAX)
+}
+
+fn sys_signal_group(group: u64, signal_code: u64) -> u64 {
+    if group > usize::MAX as u64 {
+        return u64::MAX;
+    }
+    let Some(signal) = crate::process_model::Signal::from_code(signal_code) else {
+        return u64::MAX;
+    };
+    let group = if group == 0 {
+        crate::scheduler::current_process_group()
+    } else {
+        group as usize
+    };
+    crate::scheduler::send_signal_to_group(group, signal)
+        .map(|count| count as u64)
+        .unwrap_or(u64::MAX)
 }
 
 fn sys_sleep_ms(ms: u64) {

@@ -452,6 +452,7 @@ fn canonical_app_title(name: &str) -> &str {
         "Boot Profiler" => "Boot Profiler",
         "Welcome" => "Welcome",
         "Gui Demo" | "GUI Demo" | "Userspace GUI" => "GUI Demo",
+        "Proc Demo" | "Process Demo" => "Process Demo",
         "File Mgr" | "File Manager" => "File Manager",
         _ => name,
     }
@@ -477,6 +478,7 @@ fn window_accent(title: &str) -> u32 {
         "Boot Profiler" => 0x00_FF_DD_55,
         "Welcome" => 0x00_88_CC_FF,
         "GUI Demo" => 0x00_88_FF_CC,
+        "Process Demo" => 0x00_FF_CC_66,
         "File Manager" => 0x00_55_DD_FF,
         _ => ACCENT,
     }
@@ -502,6 +504,7 @@ fn window_glyph(title: &str) -> &'static str {
         "Boot Profiler" => "BP",
         "Welcome" => "W?",
         "GUI Demo" => "UG",
+        "Process Demo" => "P3",
         "File Manager" => "FM",
         _ => "[]",
     }
@@ -1664,6 +1667,17 @@ impl WindowManager {
                     Err(err) => self.show_error_dialog("GUI Demo failed", err.as_str()),
                 }
             }
+            "Process Demo" => match crate::elf::spawn_elf_process_with_args("/bin/procdemo", &[]) {
+                Ok(pid) => {
+                    let job = crate::jobs::start_process("Process Demo", "/bin/procdemo", pid);
+                    crate::app_lifecycle::record_app("Process Demo");
+                    crate::notifications::push_transient(
+                        "Process Demo",
+                        &format!("pid {} job {}", pid, job),
+                    );
+                }
+                Err(err) => self.show_error_dialog("Process Demo failed", err.as_str()),
+            },
             _ => self.launch_manifest_app(title),
         }
         if self.windows.len() > before {

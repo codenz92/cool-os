@@ -149,6 +149,12 @@ pub fn run_boot_tests() {
         &mut ok,
         &mut fail,
     );
+    check(
+        "process-signals",
+        crate::process_model::signal_selftest_passes(),
+        &mut ok,
+        &mut fail,
+    );
     crate::println!("[selftest] kernel unit checks ok={} fail={}", ok, fail);
     crate::klog::log_owned(format!("selftest: ok={} fail={}", ok, fail));
 }

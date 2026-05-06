@@ -3,7 +3,7 @@
 use core::arch::asm;
 
 pub const SDK_VERSION: u64 = 1;
-pub const ABI_VERSION: u64 = 5;
+pub const ABI_VERSION: u64 = 6;
 pub const U64_MAX: u64 = u64::MAX;
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -60,6 +60,10 @@ pub mod sys {
     pub const FS_DELETE_TREE: u64 = 29;
     pub const FS_LIST_DIR: u64 = 30;
     pub const SCREENSHOT: u64 = 31;
+    pub const SIGNAL: u64 = 32;
+    pub const SETPGID: u64 = 33;
+    pub const GETPGID: u64 = 34;
+    pub const SIGNAL_GROUP: u64 = 35;
 
     #[inline]
     pub unsafe fn syscall0(nr: u64) -> u64 {
@@ -193,6 +197,27 @@ pub use args::Args;
 pub mod process {
     use super::{sys, Error, Result};
 
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Signal {
+        Int,
+        User1,
+        Term,
+        Continue,
+        Stop,
+    }
+
+    impl Signal {
+        pub const fn code(self) -> u64 {
+            match self {
+                Signal::Int => 2,
+                Signal::User1 => 10,
+                Signal::Term => 15,
+                Signal::Continue => 18,
+                Signal::Stop => 19,
+            }
+        }
+    }
+
     #[inline]
     pub fn exit(code: u64) -> ! {
         unsafe {
@@ -246,6 +271,26 @@ pub mod process {
         let mut status = 0u64;
         let ret = unsafe { sys::syscall2(sys::WAITPID, pid, &mut status as *mut u64 as u64) };
         Error::from_ret(ret).map(|_| status)
+    }
+
+    pub fn signal(pid: u64, signal: Signal) -> Result<()> {
+        let ret = unsafe { sys::syscall2(sys::SIGNAL, pid, signal.code()) };
+        Error::from_ret(ret).map(|_| ())
+    }
+
+    pub fn set_process_group(pid: u64, group: u64) -> Result<()> {
+        let ret = unsafe { sys::syscall2(sys::SETPGID, pid, group) };
+        Error::from_ret(ret).map(|_| ())
+    }
+
+    pub fn get_process_group(pid: u64) -> Result<u64> {
+        let ret = unsafe { sys::syscall1(sys::GETPGID, pid) };
+        Error::from_ret(ret)
+    }
+
+    pub fn signal_group(group: u64, signal: Signal) -> Result<u64> {
+        let ret = unsafe { sys::syscall2(sys::SIGNAL_GROUP, group, signal.code()) };
+        Error::from_ret(ret)
     }
 }
 
@@ -874,7 +919,10 @@ pub mod prelude {
     pub use crate::event::{read_event, Event, INPUT_FD};
     pub use crate::io::{close, open, pipe, read, write, write_all, write_stdout, File};
     pub use crate::memory::mmap;
-    pub use crate::process::{abi_version, exit, getpid, sleep_ms, spawn, waitpid, yield_now};
+    pub use crate::process::{
+        abi_version, exit, get_process_group, getpid, set_process_group, signal, signal_group,
+        sleep_ms, spawn, waitpid, yield_now, Signal,
+    };
     pub use crate::{entry, print, println, Error, Result, ABI_VERSION, SDK_VERSION};
 }
 

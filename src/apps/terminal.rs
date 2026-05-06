@@ -616,7 +616,7 @@ impl TerminalApp {
 
             Some("jobs") => self.cmd_lines("JOBS", crate::jobs::lines()),
 
-            Some("job") => self.cmd_job(words.next(), words.next()),
+            Some("job") => self.cmd_job(words.collect()),
 
             Some("services") => self.cmd_services(words.next(), words.next()),
 
@@ -927,11 +927,11 @@ impl TerminalApp {
             ("pkg <op>", "package list/install/remove/run"),
             ("proc", "process groups and signals"),
             ("zombies", "zombie cleanup policy"),
-            ("signal <pid> <sig>", "queue signal to task"),
-            ("pgroup <pid> <grp>", "set process group"),
+            ("signal <pid|-pgid> <sig>", "deliver signal to task/group"),
+            ("pgroup <pid> [grp]", "view/set process group"),
             ("events", "event bus tail"),
             ("jobs", "background job history"),
-            ("job <op> <id>", "cancel/pause/resume background job"),
+            ("job run|cancel|pause|resume", "manage background jobs"),
             ("services <op>", "service supervisor"),
             ("crash", "crash dump summary"),
             ("abi", "kernel/user ABI version"),
@@ -1264,6 +1264,7 @@ impl TerminalApp {
                 crate::scheduler::TaskStatus::Running => "running",
                 crate::scheduler::TaskStatus::Ready => "ready  ",
                 crate::scheduler::TaskStatus::Blocked => "blocked",
+                crate::scheduler::TaskStatus::Stopped => "stopped",
                 crate::scheduler::TaskStatus::Exited => "exited ",
                 crate::scheduler::TaskStatus::Reaped => "reaped ",
             };
@@ -1832,20 +1833,49 @@ impl TerminalApp {
     }
 
     fn cmd_signal(&mut self, pid: Option<&str>, signal: Option<&str>) {
-        let Some(pid) = pid.and_then(parse_usize) else {
+        let Some(target) = pid else {
             self.set_fg(FG_ERROR);
-            self.print_str("usage: signal <pid> <term|int|usr1>\n");
+            self.print_str("usage: signal <pid|-pgid> <term|int|usr1|stop|cont>\n");
             return;
         };
         let Some(signal) = signal.and_then(crate::process_model::Signal::parse) else {
             self.set_fg(FG_ERROR);
-            self.print_str("usage: signal <pid> <term|int|usr1>\n");
+            self.print_str("usage: signal <pid|-pgid> <term|int|usr1|stop|cont>\n");
+            return;
+        };
+        if let Some(group_text) = target.strip_prefix('-') {
+            let Some(group) = parse_usize(group_text) else {
+                self.set_fg(FG_ERROR);
+                self.print_str("usage: signal <pid|-pgid> <term|int|usr1|stop|cont>\n");
+                return;
+            };
+            match crate::scheduler::send_signal_to_group(group, signal) {
+                Ok(count) => {
+                    self.set_fg(FG_ACCENT);
+                    self.print_str("signal delivered to ");
+                    self.set_fg(FG_OUTPUT);
+                    self.print_u64(count as u64);
+                    self.print_str(" task(s)\n");
+                }
+                Err(err) => {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("signal: ");
+                    self.set_fg(FG_OUTPUT);
+                    self.print_str(err.as_str());
+                    self.print_char('\n');
+                }
+            }
+            return;
+        }
+        let Some(pid) = parse_usize(target) else {
+            self.set_fg(FG_ERROR);
+            self.print_str("usage: signal <pid|-pgid> <term|int|usr1|stop|cont>\n");
             return;
         };
         match crate::scheduler::send_signal(pid, signal) {
             Ok(()) => {
                 self.set_fg(FG_ACCENT);
-                self.print_str("signal queued\n");
+                self.print_str("signal delivered\n");
             }
             Err(err) => {
                 self.set_fg(FG_ERROR);
@@ -1860,12 +1890,31 @@ impl TerminalApp {
     fn cmd_pgroup(&mut self, pid: Option<&str>, group: Option<&str>) {
         let Some(pid) = pid.and_then(parse_usize) else {
             self.set_fg(FG_ERROR);
-            self.print_str("usage: pgroup <pid> <group>\n");
+            self.print_str("usage: pgroup <pid> [group]\n");
             return;
         };
+        if group.is_none() {
+            match crate::scheduler::get_process_group(pid) {
+                Ok(group) => {
+                    self.set_fg(FG_ACCENT);
+                    self.print_str("process group ");
+                    self.set_fg(FG_OUTPUT);
+                    self.print_u64(group as u64);
+                    self.print_char('\n');
+                }
+                Err(err) => {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("pgroup: ");
+                    self.set_fg(FG_OUTPUT);
+                    self.print_str(err.as_str());
+                    self.print_char('\n');
+                }
+            }
+            return;
+        }
         let Some(group) = group.and_then(parse_usize) else {
             self.set_fg(FG_ERROR);
-            self.print_str("usage: pgroup <pid> <group>\n");
+            self.print_str("usage: pgroup <pid> [group]\n");
             return;
         };
         match crate::scheduler::set_process_group(pid, group) {
@@ -1928,16 +1977,58 @@ impl TerminalApp {
         }
     }
 
-    fn cmd_job(&mut self, op: Option<&str>, id: Option<&str>) {
-        let Some(id) = id.and_then(parse_u64) else {
+    fn cmd_job(&mut self, args: Vec<&str>) {
+        let Some(op) = args.first().copied() else {
             self.set_fg(FG_ERROR);
-            self.print_str("usage: job <cancel|pause|resume> <id>\n");
+            self.print_str(
+                "usage: job run <path> [args...] | job <cancel|pause|resume> <id|last>\n",
+            );
+            return;
+        };
+        if op == "run" {
+            let Some(path) = args.get(1).copied() else {
+                self.set_fg(FG_ERROR);
+                self.print_str("usage: job run <path> [args...]\n");
+                return;
+            };
+            let exec_args: Vec<&str> = args.iter().skip(2).copied().collect();
+            let abs = resolve_path(&self.cwd, path);
+            match crate::elf::spawn_elf_process_with_args(&abs, &exec_args) {
+                Ok(pid) => {
+                    let job = crate::jobs::start_process("Process", &abs, pid);
+                    self.set_fg(FG_ACCENT);
+                    self.print_str("job #");
+                    self.set_fg(FG_OUTPUT);
+                    self.print_u64(job);
+                    self.print_str(" pid=");
+                    self.print_u64(pid as u64);
+                    self.print_char('\n');
+                }
+                Err(err) => {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("job: ");
+                    self.set_fg(FG_OUTPUT);
+                    self.print_str(err.as_str());
+                    self.print_char('\n');
+                }
+            }
+            return;
+        }
+
+        let Some(id_text) = args.get(1).copied() else {
+            self.set_fg(FG_ERROR);
+            self.print_str("usage: job <cancel|pause|resume> <id|last>\n");
+            return;
+        };
+        let Some(id) = parse_job_id(id_text) else {
+            self.set_fg(FG_ERROR);
+            self.print_str("job: no such job\n");
             return;
         };
         let ok = match op {
-            Some("cancel") => crate::jobs::cancel(id),
-            Some("pause") => crate::jobs::pause(id),
-            Some("resume") => crate::jobs::resume(id),
+            "cancel" => crate::jobs::cancel(id),
+            "pause" => crate::jobs::pause(id),
+            "resume" => crate::jobs::resume(id),
             _ => false,
         };
         self.print_bool("job", ok);
@@ -2465,6 +2556,13 @@ fn parse_u64(input: &str) -> Option<u64> {
         out = out.checked_mul(10)?.checked_add((b - b'0') as u64)?;
     }
     Some(out)
+}
+
+fn parse_job_id(input: &str) -> Option<u64> {
+    match input {
+        "last" | "latest" => crate::jobs::latest_id(),
+        _ => parse_u64(input),
+    }
 }
 
 fn parse_owner(input: &str) -> Option<(u32, u32)> {

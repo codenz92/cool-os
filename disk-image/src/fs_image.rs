@@ -2,7 +2,7 @@
 /// CoolFS starts at LBA 0 and is the root filesystem. A FAT32 compatibility
 /// region is still formatted at 8 MiB for the optional `/FAT` import mount.
 ///
-/// Usage: fs-image <output-path> [hello-elf] [exec-elf] [pipe-elf] [read-elf] [piperd-elf] [pipewr-elf] [keyecho-elf] [terminal-elf] [netdemo-elf] [wget-elf] [sdkdemo-elf] [guidemo-elf] [notes-elf] [editor-elf] [trash-elf] [screenshot-elf] [sentinel-elf] [badptr-elf] [badwrite-elf] [badmmap-elf] [badexec-elf] [baduserread-elf]
+/// Usage: fs-image <output-path> [hello-elf] [exec-elf] [pipe-elf] [read-elf] [piperd-elf] [pipewr-elf] [keyecho-elf] [terminal-elf] [netdemo-elf] [wget-elf] [sdkdemo-elf] [guidemo-elf] [notes-elf] [editor-elf] [trash-elf] [screenshot-elf] [procdemo-elf] [procsleep-elf] [sentinel-elf] [badptr-elf] [badwrite-elf] [badmmap-elf] [badexec-elf] [baduserread-elf]
 /// Output: a 64 MiB raw OS disk image ready to attach as a QEMU IDE drive.
 use std::io::{Read, Seek, SeekFrom, Write};
 
@@ -29,6 +29,8 @@ fn main() {
     let editor_elf = args.next();
     let trash_elf = args.next();
     let screenshot_elf = args.next();
+    let procdemo_elf = args.next();
+    let procsleep_elf = args.next();
     let sentinel_elf = args.next();
     let badptr_elf = args.next();
     let badwrite_elf = args.next();
@@ -308,6 +310,32 @@ fn main() {
             .write_all(&screenshot_bytes)
             .expect("failed to write screenshot");
         coolfs.create_file("/bin/screenshot", &screenshot_bytes);
+    }
+
+    if let Some(procdemo_path) = procdemo_elf {
+        let procdemo_bytes = std::fs::read(&procdemo_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {}", procdemo_path, e));
+        let mut procdemo_bin = bin
+            .create_file("procdemo")
+            .expect("failed to create procdemo");
+        procdemo_bin.truncate().unwrap();
+        procdemo_bin
+            .write_all(&procdemo_bytes)
+            .expect("failed to write procdemo");
+        coolfs.create_file("/bin/procdemo", &procdemo_bytes);
+    }
+
+    if let Some(procsleep_path) = procsleep_elf {
+        let procsleep_bytes = std::fs::read(&procsleep_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {}", procsleep_path, e));
+        let mut procsleep_bin = bin
+            .create_file("procsleep")
+            .expect("failed to create procsleep");
+        procsleep_bin.truncate().unwrap();
+        procsleep_bin
+            .write_all(&procsleep_bytes)
+            .expect("failed to write procsleep");
+        coolfs.create_file("/bin/procsleep", &procsleep_bytes);
     }
 
     if let Some(sentinel_path) = sentinel_elf {
@@ -702,6 +730,16 @@ const BUILTIN_APP_MANIFESTS: &[BuiltinAppManifest] = &[
         aliases: &["gui", "userspace", "sdk", "window"],
         associations: &[],
     },
+    BuiltinAppManifest {
+        id: "app.procdemo",
+        name: "Process Demo",
+        glyph: "P3",
+        command: "procdemo",
+        category: "Development",
+        permission: "diagnostics",
+        aliases: &["process", "signals", "jobs", "phase33"],
+        associations: &[],
+    },
 ];
 
 fn populate_builtin_app_manifests(coolfs: &mut CoolFsBuilder) {
@@ -731,7 +769,9 @@ fn builtin_manifest_text(app: &BuiltinAppManifest) -> String {
 
 fn builtin_exec_path(command: &str) -> String {
     match command {
-        "editor" | "notes" | "trash" | "screenshot" | "guidemo" => format!("/bin/{}", command),
+        "editor" | "notes" | "trash" | "screenshot" | "guidemo" | "procdemo" => {
+            format!("/bin/{}", command)
+        }
         _ => format!("internal:{}", command),
     }
 }

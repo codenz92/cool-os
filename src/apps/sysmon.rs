@@ -142,6 +142,7 @@ impl SysMonApp {
                     crate::scheduler::TaskStatus::Ready => ready += 1,
                     crate::scheduler::TaskStatus::Running => {}
                     crate::scheduler::TaskStatus::Blocked => blocked += 1,
+                    crate::scheduler::TaskStatus::Stopped => blocked += 1,
                     crate::scheduler::TaskStatus::Exited => exited += 1,
                     crate::scheduler::TaskStatus::Reaped => {}
                 }
