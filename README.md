@@ -13,7 +13,7 @@ memory, and per-task fd tables.
 
 ---
 
-# Current state — v6.3
+# Current state — v6.4
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -21,9 +21,10 @@ on boot. Right-clicking the desktop opens a context menu to launch additional
 apps, and the shell also exposes desktop icons plus a start menu/taskbar flow,
 global keyboard shortcuts, a `Ctrl+Space` launcher/search palette, a task
 switcher overlay, edge/keyboard window snapping, taskbar previews/actions,
-session restore, File Manager drag/drop/open-with actions, a shared clipboard,
-notification center, userspace app lifecycle tracking with System Monitor
-close/kill/path controls, and desktop settings that persist to the CoolFS root.
+GUI login/lock screen, session restore, File Manager drag/drop/open-with
+actions, a shared clipboard, notification center, userspace app lifecycle
+tracking with System Monitor close/kill/path controls, and desktop settings
+that persist to the CoolFS root.
 A preemptive round-robin scheduler is driven by the PIT timer at **100 Hz**;
 the kernel boot stack remains the idle/window-manager context, the boot path
 performs a synchronous CoolFS read check, and the terminal can also spawn
@@ -34,7 +35,8 @@ contribute launcher aliases and file associations, launch a declared userspace
 executable through `exec=`, and be removed without leaving stale launcher
 entries. Manifest permission labels become launch-time task capabilities, and
 the VFS/syscall layer enforces filesystem, network, desktop, and execute access.
-The active desktop session is backed by a persistent CoolFS user database, so
+The desktop now starts behind a compositor-owned greeter; the active session is
+backed by a persistent CoolFS user database, so
 Terminal commands, launched ELF tasks, and package apps inherit the logged-in
 user's uid/gid and non-admin users cannot mutate protected ownership or service
 state without switching back to an admin session.
@@ -74,7 +76,7 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **Framebuffer** | `bootloader 0.11` linear framebuffer at ≥1280×720. 3bpp and 4bpp both handled. Shadow-buffer compositor — full frame rendered in a heap `Vec<u32>`, blitted per-row with correct bpp conversion. No tearing. |
 | **PS/2 mouse** | Full hardware init (CCB, 0xF6/0xF4), 9-bit signed X/Y deltas, IRQ12 packet collection via atomics. |
 | **Window manager** | Z-ordered windows, focus-on-click, title-bar drag, edge snapping, keyboard snapping, task switcher overlay, minimise/maximise/restore, resize grip, close button, taskbar previews/right-click actions, per-window pixel back-buffer. |
-| **Desktop shell** | Wallpaper, desktop icons, right-click context menu, start menu, taskbar window buttons, configurable shortcuts, launcher/search palette, notification center, File Manager drag/drop/open-with routing, shared clipboard plumbing, userspace app lifecycle tracking with System Monitor controls, persistent settings, session restore, and clock. |
+| **Desktop shell** | Wallpaper, desktop icons, right-click context menu, start menu, taskbar window buttons, configurable shortcuts, launcher/search palette, login/lock greeter, notification center, File Manager drag/drop/open-with routing, shared clipboard plumbing, userspace app lifecycle tracking with System Monitor controls, persistent settings, session restore, and clock. |
 | **Heap** | `LockedHeap` allocator — `String`, `Vec`, `Box` all work. 32 MiB heap to accommodate large shadow and window buffers. |
 | **Paging / VMM** | 4-level `OffsetPageTable` + global `BootInfoFrameAllocator`. Per-process PML4 cloned from kernel upper half; private user-space mappings in lower half. `vmm::` module exposes `new_process_pml4`, `map_page_in`, `map_region`, `switch_to`. |
 | **IDT** | Breakpoint, Double Fault, Page Fault (lazy allocator for user faults), General Protection Fault, Invalid Opcode, Timer (IRQ0), Keyboard (IRQ1), Mouse (IRQ12). |
@@ -381,6 +383,13 @@ Terminal, package installs and service mutations require admin credentials, and
 the service supervisor reports per-service credentials and deterministic restart
 state through `services`.
 
+**GUI login and lock screen (Phase 30).** The desktop now boots into a
+compositor-owned greeter instead of exposing the session immediately. The
+greeter authenticates through the same `/CONFIG/USERS.DB` model as Terminal
+`login`, supports keyboard and mouse account selection, masks passwords, blocks
+ordinary desktop input while locked, and lets the Start menu or Terminal `lock`
+and `logout` commands return to the greeter.
+
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
 empty). `vmm::new_process_pml4` handles the clone; `vmm::map_page_in` / `vmm::map_region`
@@ -428,5 +437,6 @@ faults still panic.
 | 27 | Native CoolFS disk backend — CoolFS at LBA 0, optional `/FAT` import region, remount persistence smoke | **Done** |
 | 28 | Users, permissions, and app sandboxing — CoolFS uid/gid/mode, task credentials, package grants, syscall enforcement | **Done** |
 | 29 | Login, sessions, and service supervision — CoolFS user DB, home ownership, umask, admin-gated mutations, credentialed services | **Done** |
+| 30 | GUI login and lock screen — compositor greeter, locked-input gate, lock/logout shell hooks, smoke coverage | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

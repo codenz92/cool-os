@@ -4,9 +4,9 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–29 are complete. Phase 29 adds a persistent user database, login
-sessions, home directory ownership, umask handling, admin-gated mutations, and
-credentialed service supervision.
+Phases 1–30 are complete. Phase 30 adds the GUI login and lock screen on top of
+the persistent user database, session credentials, and service supervision work
+from Phase 29.
 
 ---
 
@@ -953,6 +953,37 @@ kernel services under dedicated service credentials.
 
 ---
 
+## ✅ Phase 30 — GUI Login and Lock Screen
+
+**Goal:** Put a real graphical gate in front of the desktop session. The shell
+should boot to a greeter, authenticate with the existing user database, block
+desktop input while locked, and expose lock/logout flows through both GUI shell
+chrome and the Terminal.
+
+- [x] Boot the compositor in a locked state and render a centered coolOS greeter
+      with account list, username/password fields, masked password entry, status
+      messages, and clock/date context.
+- [x] Route keyboard and mouse input to the greeter while locked; normal window,
+      taskbar, launcher, desktop-icon, scroll, and shortcut input is suppressed
+      until authentication succeeds.
+- [x] Authenticate the greeter through `security::login`, so GUI sign-in uses
+      the same `/CONFIG/USERS.DB` records and password hashes as Terminal
+      `login`.
+- [x] Add shell lock/logout actions: Start menu/session launcher entries call
+      the lock gate directly, Terminal `lock` requests the greeter, and Terminal
+      `logout` returns the session to guest before locking.
+- [x] Keep QEMU smoke automation deterministic by auto-signing into the greeter
+      for desktop-interaction smokes while still providing `make
+      smoke-login-screen` and `make smoke-lock-screen` coverage for the locked
+      login UI.
+
+**Current status:** complete. coolOS now has a real GUI login path instead of
+only Terminal-driven session switching; the desktop is hidden behind the greeter
+at boot and after lock/logout, while existing session permissions remain the
+source of truth.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -997,4 +1028,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v6.0 | Phase 26 complete: CoolFS root filesystem |
 | v6.1 | Phase 27 complete: native CoolFS disk backend |
 | v6.2 | Phase 28 complete: users, permissions, and app sandboxing |
-| v6.3 | Current — Phase 29 complete: login, sessions, and service supervision |
+| v6.3 | Phase 29 complete: login, sessions, and service supervision |
+| v6.4 | Current — Phase 30 complete: GUI login and lock screen |

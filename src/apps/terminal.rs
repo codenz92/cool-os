@@ -579,6 +579,8 @@ impl TerminalApp {
 
             Some("login") | Some("su") => self.cmd_login(words.next(), words.next()),
 
+            Some("lock") => self.cmd_lock(),
+
             Some("logout") => self.cmd_logout(),
 
             Some("passwd") => self.cmd_passwd(words.next(), words.next()),
@@ -911,6 +913,7 @@ impl TerminalApp {
             ("id [user]", "user identity and home"),
             ("groups [user]", "group membership"),
             ("login <user> <pass>", "switch active session"),
+            ("lock", "lock the desktop session"),
             ("logout", "return to guest session"),
             ("passwd <old> <new>", "change current password"),
             ("umask [mode]", "view/set file creation mask"),
@@ -1450,6 +1453,7 @@ impl TerminalApp {
 
     fn cmd_logout(&mut self) {
         let user = crate::security::logout();
+        crate::wm::request_session_lock();
         self.set_fg(FG_ACCENT);
         self.print_str("session user ");
         self.set_fg(FG_OUTPUT);
@@ -1457,6 +1461,12 @@ impl TerminalApp {
         self.print_str(" uid=");
         self.print_u64(user.uid as u64);
         self.print_char('\n');
+    }
+
+    fn cmd_lock(&mut self) {
+        crate::wm::request_session_lock();
+        self.set_fg(FG_ACCENT);
+        self.print_str("session locked\n");
     }
 
     fn cmd_passwd(&mut self, old_password: Option<&str>, new_password: Option<&str>) {

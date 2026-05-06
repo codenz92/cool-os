@@ -10,12 +10,22 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
 static REPAINT: AtomicBool = AtomicBool::new(false);
+static SESSION_LOCK_REQUEST: AtomicBool = AtomicBool::new(false);
 static SCREENSHOT_REQUEST: Mutex<Option<String>> = Mutex::new(None);
 static PENDING_USER_GUI_OWNER_CLEANUP: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 static PENDING_STARTUP_COMMANDS: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new());
 
 pub fn request_repaint() {
     REPAINT.store(true, Ordering::Relaxed);
+}
+
+pub fn request_session_lock() {
+    SESSION_LOCK_REQUEST.store(true, Ordering::Relaxed);
+    request_repaint();
+}
+
+pub(crate) fn take_session_lock_request() -> bool {
+    SESSION_LOCK_REQUEST.swap(false, Ordering::Relaxed)
 }
 
 pub fn compose_if_needed() {

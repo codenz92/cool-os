@@ -44,6 +44,10 @@ const TASKBAR_MENU_W: i32 = 152;
 const TASKBAR_MENU_ROW_H: i32 = 24;
 const TASKBAR_MENU_H: i32 = TASKBAR_MENU_ROW_H * 3 + 10;
 const START_MENU_SECTION_H: i32 = 11;
+const GREETER_PANEL_W: i32 = 456;
+const GREETER_PANEL_H: i32 = 330;
+const GREETER_FIELD_H: i32 = 28;
+const GREETER_USER_ROW_H: i32 = 22;
 
 static COMPOSITOR_FPS: AtomicU64 = AtomicU64::new(0);
 static COMPOSITOR_FRAME_TICKS_LAST: AtomicU64 = AtomicU64::new(0);
@@ -720,6 +724,27 @@ struct ShellDialog {
     restart_target: Option<String>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GreeterFocus {
+    User,
+    Password,
+}
+
+#[derive(Clone, Copy)]
+struct GreeterLayout {
+    panel_x: i32,
+    panel_y: i32,
+    panel_w: i32,
+    panel_h: i32,
+    user_x: i32,
+    user_y: i32,
+    field_w: i32,
+    pass_y: i32,
+    button_y: i32,
+    users_y: i32,
+    row_w: i32,
+}
+
 // ── AppWindow ─────────────────────────────────────────────────────────────────
 
 pub enum AppWindow {
@@ -908,6 +933,13 @@ pub struct WindowManager {
     launcher: Option<LauncherState>,
     taskbar_menu: Option<TaskbarMenu>,
     dialog: Option<ShellDialog>,
+    session_locked: bool,
+    greeter_user: String,
+    greeter_password: String,
+    greeter_focus: GreeterFocus,
+    greeter_message: String,
+    greeter_error: bool,
+    greeter_attempts: u32,
     session_ready: bool,
     session_dirty: bool,
     last_session_save_tick: u64,
@@ -990,6 +1022,13 @@ impl WindowManager {
             launcher: None,
             taskbar_menu: None,
             dialog: None,
+            session_locked: true,
+            greeter_user: default_login_user_name(),
+            greeter_password: String::new(),
+            greeter_focus: GreeterFocus::Password,
+            greeter_message: String::from("Sign in to coolOS"),
+            greeter_error: false,
+            greeter_attempts: 0,
             session_ready: true,
             session_dirty: false,
             last_session_save_tick: 0,
@@ -1130,6 +1169,277 @@ impl WindowManager {
         self.save_session();
         self.session_dirty = false;
         self.last_session_save_tick = ticks;
+    }
+
+    fn clear_session_chrome(&mut self) {
+        self.start_menu_open = false;
+        self.notification_center_open = false;
+        self.launcher = None;
+        self.taskbar_menu = None;
+        self.context_menu = None;
+        self.dialog = None;
+        self.task_switcher_until_tick = 0;
+        self.task_switcher_query.clear();
+        self.drag = None;
+        self.resize = None;
+        self.scroll_drag = None;
+        self.file_drag = None;
+        self.desktop_icon_drag = None;
+        self.desktop_select_drag = None;
+        self.pressed_icon = None;
+        self.stop_key_sink();
+    }
+
+    fn lock_session(&mut self) {
+        self.clear_session_chrome();
+        self.session_locked = true;
+        self.greeter_user = default_login_user_name();
+        self.greeter_password.clear();
+        self.greeter_focus = GreeterFocus::Password;
+        self.greeter_message = String::from("Session locked");
+        self.greeter_error = false;
+        self.full_damage_next = true;
+        crate::wm::request_repaint();
+        crate::event_bus::emit("security", "lock", &self.greeter_user);
+        crate::println!("[session] locked");
+    }
+
+    fn logout_session(&mut self) {
+        let user = crate::security::logout();
+        self.minimize_all_windows();
+        self.clear_session_chrome();
+        self.session_locked = true;
+        self.greeter_user = user.name.clone();
+        self.greeter_password.clear();
+        self.greeter_focus = GreeterFocus::Password;
+        self.greeter_message = String::from("Signed out");
+        self.greeter_error = false;
+        self.full_damage_next = true;
+        crate::wm::request_repaint();
+        crate::println!("[session] logout {}", user.name);
+    }
+
+    fn login_with_credentials(&mut self, name: &str, password: &str) -> bool {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            self.greeter_message = String::from("Enter a user name");
+            self.greeter_error = true;
+            self.greeter_focus = GreeterFocus::User;
+            crate::wm::request_repaint();
+            return false;
+        }
+        match crate::security::login(trimmed, password) {
+            Ok(user) => {
+                self.session_locked = false;
+                self.greeter_user = user.name.clone();
+                self.greeter_password.clear();
+                self.greeter_focus = GreeterFocus::Password;
+                self.greeter_message = format!("Welcome, {}", user.name);
+                self.greeter_error = false;
+                self.greeter_attempts = 0;
+                self.full_damage_next = true;
+                crate::notifications::push("Session", "signed in");
+                crate::wm::request_repaint();
+                crate::println!("[session] login {} uid={}", user.name, user.uid);
+                true
+            }
+            Err(err) => {
+                self.greeter_attempts = self.greeter_attempts.saturating_add(1);
+                self.greeter_password.clear();
+                self.greeter_focus = GreeterFocus::Password;
+                self.greeter_message = format!("Login failed: {}", err.as_str());
+                self.greeter_error = true;
+                crate::wm::request_repaint();
+                crate::println!("[session] login failed {}: {}", trimmed, err.as_str());
+                false
+            }
+        }
+    }
+
+    fn try_greeter_login(&mut self) -> bool {
+        let user = self.greeter_user.clone();
+        let password = self.greeter_password.clone();
+        self.login_with_credentials(&user, &password)
+    }
+
+    fn run_locked_startup_command(&mut self, command: &str) -> bool {
+        let mut words = command.split_whitespace();
+        match words.next() {
+            Some("login") | Some("su") => {
+                let (Some(user), Some(password)) = (words.next(), words.next()) else {
+                    self.greeter_message = String::from("Startup login missing credentials");
+                    self.greeter_error = true;
+                    crate::println!("[session] startup login missing credentials");
+                    return true;
+                };
+                self.login_with_credentials(user, password);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn select_greeter_user(&mut self, name: &str) {
+        self.greeter_user.clear();
+        self.greeter_user.push_str(name);
+        self.greeter_password.clear();
+        self.greeter_focus = GreeterFocus::Password;
+        self.greeter_message = format!("{} selected", name);
+        self.greeter_error = false;
+        crate::wm::request_repaint();
+    }
+
+    fn cycle_greeter_user(&mut self, step: i32) {
+        let users: Vec<_> = crate::security::users()
+            .into_iter()
+            .filter(|user| user.login_enabled)
+            .collect();
+        if users.is_empty() {
+            return;
+        }
+        let current = users
+            .iter()
+            .position(|user| user.name.eq_ignore_ascii_case(&self.greeter_user))
+            .unwrap_or(0);
+        let len = users.len() as i32;
+        let next = (current as i32 + step).rem_euclid(len) as usize;
+        self.select_greeter_user(&users[next].name);
+    }
+
+    fn handle_greeter_input(&mut self, input: KeyInput) {
+        if input.has_ctrl() || input.has_alt() {
+            return;
+        }
+        match input.key {
+            Key::Tab => {
+                if input.modifiers & crate::keyboard::MOD_SHIFT != 0 {
+                    self.greeter_focus = if self.greeter_focus == GreeterFocus::User {
+                        GreeterFocus::Password
+                    } else {
+                        GreeterFocus::User
+                    };
+                } else {
+                    self.greeter_focus = if self.greeter_focus == GreeterFocus::Password {
+                        GreeterFocus::User
+                    } else {
+                        GreeterFocus::Password
+                    };
+                }
+                self.greeter_error = false;
+                crate::wm::request_repaint();
+            }
+            Key::Enter => {
+                self.try_greeter_login();
+            }
+            Key::Backspace => {
+                match self.greeter_focus {
+                    GreeterFocus::User => {
+                        self.greeter_user.pop();
+                    }
+                    GreeterFocus::Password => {
+                        self.greeter_password.pop();
+                    }
+                }
+                self.greeter_error = false;
+                crate::wm::request_repaint();
+            }
+            Key::Escape => {
+                self.greeter_password.clear();
+                self.greeter_message = String::from("Session locked");
+                self.greeter_error = false;
+                self.greeter_focus = GreeterFocus::Password;
+                crate::wm::request_repaint();
+            }
+            Key::ArrowUp => self.cycle_greeter_user(-1),
+            Key::ArrowDown => self.cycle_greeter_user(1),
+            Key::Space => self.push_greeter_char(' '),
+            Key::Character(c) => self.push_greeter_char(c),
+            _ => {}
+        }
+    }
+
+    fn push_greeter_char(&mut self, c: char) {
+        if c < ' ' || c == '\u{7f}' {
+            return;
+        }
+        match self.greeter_focus {
+            GreeterFocus::User => {
+                if self.greeter_user.chars().count() < 32 {
+                    self.greeter_user.push(c);
+                }
+            }
+            GreeterFocus::Password => {
+                if self.greeter_password.chars().count() < 64 {
+                    self.greeter_password.push(c);
+                }
+            }
+        }
+        self.greeter_error = false;
+        crate::wm::request_repaint();
+    }
+
+    fn handle_greeter_click(&mut self, mx: i32, my: i32, sw: i32, taskbar_y: i32) {
+        let layout = greeter_layout(sw, taskbar_y);
+        if rect_contains(
+            layout.user_x,
+            layout.user_y,
+            layout.field_w,
+            GREETER_FIELD_H,
+            mx,
+            my,
+        ) {
+            self.greeter_focus = GreeterFocus::User;
+            self.greeter_error = false;
+            crate::wm::request_repaint();
+            return;
+        }
+        if rect_contains(
+            layout.user_x,
+            layout.pass_y,
+            layout.field_w,
+            GREETER_FIELD_H,
+            mx,
+            my,
+        ) {
+            self.greeter_focus = GreeterFocus::Password;
+            self.greeter_error = false;
+            crate::wm::request_repaint();
+            return;
+        }
+        if rect_contains(
+            layout.user_x,
+            layout.button_y,
+            layout.field_w,
+            GREETER_FIELD_H,
+            mx,
+            my,
+        ) {
+            self.try_greeter_login();
+            return;
+        }
+
+        let mut row = 0i32;
+        for user in crate::security::users()
+            .into_iter()
+            .filter(|user| user.login_enabled)
+        {
+            let y = layout.users_y + row * GREETER_USER_ROW_H;
+            if rect_contains(
+                layout.user_x,
+                y,
+                layout.row_w,
+                GREETER_USER_ROW_H - 2,
+                mx,
+                my,
+            ) {
+                self.select_greeter_user(&user.name);
+                return;
+            }
+            row += 1;
+            if row >= 4 {
+                break;
+            }
+        }
     }
 
     fn save_session(&self) {
@@ -1687,10 +1997,9 @@ impl WindowManager {
                 Some("Diagnostics"),
             );
         } else if action == "lock" {
-            crate::notifications::push("Session", "lock screen placeholder active");
+            self.lock_session();
         } else if action == "logout" {
-            self.minimize_all_windows();
-            crate::notifications::push("Session", "apps minimized for logout placeholder");
+            self.logout_session();
         } else if action == "sleep" {
             match crate::acpi::sleep() {
                 Ok(()) => crate::notifications::push("Power", "sleep requested"),
@@ -2470,6 +2779,11 @@ impl WindowManager {
     }
 
     pub fn handle_key_input(&mut self, input: KeyInput) {
+        if self.session_locked {
+            self.handle_greeter_input(input);
+            crate::wm::request_repaint();
+            return;
+        }
         if self.launcher.is_some()
             && !crate::shortcuts::matches(crate::shortcuts::Action::Launcher, input)
         {
@@ -2770,15 +3084,26 @@ impl WindowManager {
     pub fn compose(&mut self) {
         let frame_start_tick = crate::interrupts::ticks();
         crate::wm::drain_user_gui_owner_cleanup(self);
+        if crate::wm::take_session_lock_request() {
+            self.lock_session();
+        }
         let mut startup_drained = 0usize;
         while let Some(command) = crate::wm::take_startup_command() {
-            if !self.run_startup_exec_command(&command) {
+            if self.session_locked {
+                if !self.run_locked_startup_command(&command) {
+                    crate::wm::queue_startup_command(&command);
+                    break;
+                }
+            } else if !self.run_startup_exec_command(&command) {
                 self.run_terminal_command(&command);
             }
             startup_drained += 1;
             if startup_drained >= 16 {
                 break;
             }
+        }
+        if crate::wm::take_session_lock_request() {
+            self.lock_session();
         }
 
         // Drain buffered keystrokes.
@@ -2830,9 +3155,19 @@ impl WindowManager {
         let mx_i = mx as i32;
         let my_i = my as i32;
 
-        let left_pressed = left && !self.prev_left;
-        let left_released = !left && self.prev_left;
-        let right_pressed = right && !self.prev_right;
+        let raw_left_pressed = left && !self.prev_left;
+        let raw_right_pressed = right && !self.prev_right;
+        if self.session_locked {
+            if raw_left_pressed {
+                self.handle_greeter_click(mx_i, my_i, sw as i32, taskbar_y);
+            }
+            if raw_left_pressed || raw_right_pressed {
+                crate::wm::request_repaint();
+            }
+        }
+        let left_pressed = raw_left_pressed && !self.session_locked;
+        let left_released = !left && self.prev_left && !self.session_locked;
+        let right_pressed = raw_right_pressed && !self.session_locked;
         let mut left_press_consumed = false;
 
         // ── Input ─────────────────────────────────────────────────────────────
@@ -3332,7 +3667,7 @@ impl WindowManager {
 
         // ── Scroll wheel ─────────────────────────────────────────────────────
         let wheel_delta = crate::mouse::scroll_delta();
-        if wheel_delta != 0 {
+        if wheel_delta != 0 && !self.session_locked {
             if let Some(z_pos) = self.front_to_back_hit(mx_i, my_i) {
                 let win_idx = self.z_order[z_pos];
                 self.windows[win_idx].handle_scroll(wheel_delta);
@@ -3356,17 +3691,34 @@ impl WindowManager {
             let desk_pixels = taskbar_y as usize * sw;
             self.shadow[..desk_pixels].copy_from_slice(&self.wallpaper[..desk_pixels]);
         }
-        let resize_hover = self.resize.is_some()
-            || self
-                .front_to_back_hit(mx_i, my_i)
-                .map(|z_pos| {
-                    let wi = self.z_order[z_pos];
-                    wi < self.windows.len() && self.windows[wi].window().hit_resize(mx_i, my_i)
-                })
-                .unwrap_or(false);
+        let resize_hover = !self.session_locked
+            && (self.resize.is_some()
+                || self
+                    .front_to_back_hit(mx_i, my_i)
+                    .map(|z_pos| {
+                        let wi = self.z_order[z_pos];
+                        wi < self.windows.len() && self.windows[wi].window().hit_resize(mx_i, my_i)
+                    })
+                    .unwrap_or(false));
         let desktop_icons = self.desktop_icons();
-        let hovered_taskbar_window = self.taskbar_button_hit(mx_i, my_i, sw as i32, taskbar_y);
+        let hovered_taskbar_window = if self.session_locked {
+            None
+        } else {
+            self.taskbar_button_hit(mx_i, my_i, sw as i32, taskbar_y)
+        };
         let current_workspace = self.current_workspace;
+        let greeter_snapshot = if self.session_locked {
+            Some((
+                self.greeter_user.clone(),
+                self.greeter_password.chars().count(),
+                self.greeter_focus,
+                self.greeter_message.clone(),
+                self.greeter_error,
+                self.greeter_attempts,
+            ))
+        } else {
+            None
+        };
         {
             let s: &mut [u32] = self.shadow.as_mut_slice();
 
@@ -4550,6 +4902,23 @@ impl WindowManager {
 
             if let Some(ref file_drag) = self.file_drag {
                 draw_file_drag_badge(s, sw, mx_i + 16, my_i + 18, file_drag.paths.len());
+            }
+
+            if let Some((user, password_len, focus, message, error, attempts)) = &greeter_snapshot {
+                draw_greeter_overlay(
+                    s,
+                    sw,
+                    taskbar_y,
+                    user,
+                    *password_len,
+                    *focus,
+                    message,
+                    *error,
+                    *attempts,
+                    mx_i,
+                    my_i,
+                    uptime_ticks,
+                );
             }
 
             // ── Cursor — switches to resize cursor over resize handles ────────────
@@ -6109,6 +6478,355 @@ fn draw_live_window_thumbnail(
     }
 }
 
+fn draw_greeter_overlay(
+    s: &mut [u32],
+    sw: usize,
+    taskbar_y: i32,
+    user: &str,
+    password_len: usize,
+    focus: GreeterFocus,
+    message: &str,
+    error: bool,
+    attempts: u32,
+    mx: i32,
+    my: i32,
+    uptime_ticks: u64,
+) {
+    let sw_i = sw as i32;
+    let sh_i = if sw > 0 {
+        (s.len() / sw) as i32
+    } else {
+        taskbar_y
+    };
+    let layout = greeter_layout(sw_i, taskbar_y);
+    let panel_bg = 0x00_03_0A_18;
+    let field_bg = 0x00_00_05_10;
+
+    s_fill_alpha(s, sw, 0, 0, sw_i, sh_i, 0xB0_00_00_00);
+
+    let (time, date) = start_menu_banner_clock(uptime_ticks);
+    s_draw_str_small(
+        s,
+        sw,
+        28,
+        24,
+        &time,
+        0x00_DD_FF_FF,
+        0x00_00_00_00,
+        sw_i - 28,
+    );
+    s_draw_str_small(
+        s,
+        sw,
+        28,
+        42,
+        &date,
+        0x00_66_AA_DD,
+        0x00_00_00_00,
+        sw_i - 28,
+    );
+
+    s_fill_alpha(
+        s,
+        sw,
+        layout.panel_x + 8,
+        layout.panel_y + 8,
+        layout.panel_w,
+        layout.panel_h,
+        0x70_00_00_00,
+    );
+    s_fill(
+        s,
+        sw,
+        layout.panel_x,
+        layout.panel_y,
+        layout.panel_w,
+        layout.panel_h,
+        panel_bg,
+    );
+    s_fill(
+        s,
+        sw,
+        layout.panel_x,
+        layout.panel_y,
+        layout.panel_w,
+        4,
+        ACCENT,
+    );
+    draw_rect_border(
+        s,
+        sw,
+        layout.panel_x,
+        layout.panel_y,
+        layout.panel_w,
+        layout.panel_h,
+        0x00_00_77_BB,
+    );
+    draw_rect_border(
+        s,
+        sw,
+        layout.panel_x + 1,
+        layout.panel_y + 1,
+        layout.panel_w - 2,
+        layout.panel_h - 2,
+        0x00_00_18_34,
+    );
+
+    draw_snowflake_logo(
+        s,
+        sw,
+        layout.panel_x + 28,
+        layout.panel_y + 26,
+        2,
+        ACCENT,
+        ACCENT_HOV,
+    );
+    s_draw_str_small(
+        s,
+        sw,
+        layout.panel_x + 78,
+        layout.panel_y + 30,
+        "coolOS",
+        WHITE,
+        panel_bg,
+        layout.panel_x + layout.panel_w - 24,
+    );
+    s_draw_str_small(
+        s,
+        sw,
+        layout.panel_x + 78,
+        layout.panel_y + 50,
+        "Local session",
+        0x00_66_AA_DD,
+        panel_bg,
+        layout.panel_x + layout.panel_w - 24,
+    );
+
+    s_draw_str_small(
+        s,
+        sw,
+        layout.user_x,
+        layout.user_y - 17,
+        "User",
+        0x00_88_CC_EE,
+        panel_bg,
+        layout.user_x + layout.field_w,
+    );
+    draw_greeter_field(
+        s,
+        sw,
+        layout.user_x,
+        layout.user_y,
+        layout.field_w,
+        user,
+        focus == GreeterFocus::User,
+        field_bg,
+    );
+
+    let mut masked = String::new();
+    for _ in 0..password_len.min(28) {
+        masked.push('*');
+    }
+    if password_len > 28 {
+        masked.push_str("...");
+    }
+    s_draw_str_small(
+        s,
+        sw,
+        layout.user_x,
+        layout.pass_y - 17,
+        "Password",
+        0x00_88_CC_EE,
+        panel_bg,
+        layout.user_x + layout.field_w,
+    );
+    draw_greeter_field(
+        s,
+        sw,
+        layout.user_x,
+        layout.pass_y,
+        layout.field_w,
+        &masked,
+        focus == GreeterFocus::Password,
+        field_bg,
+    );
+
+    let button_hot = rect_contains(
+        layout.user_x,
+        layout.button_y,
+        layout.field_w,
+        GREETER_FIELD_H,
+        mx,
+        my,
+    );
+    let button_bg = if button_hot {
+        0x00_00_22_40
+    } else {
+        0x00_00_16_2C
+    };
+    s_fill(
+        s,
+        sw,
+        layout.user_x,
+        layout.button_y,
+        layout.field_w,
+        GREETER_FIELD_H,
+        button_bg,
+    );
+    s_fill(
+        s,
+        sw,
+        layout.user_x,
+        layout.button_y,
+        layout.field_w,
+        3,
+        ACCENT,
+    );
+    draw_rect_border(
+        s,
+        sw,
+        layout.user_x,
+        layout.button_y,
+        layout.field_w,
+        GREETER_FIELD_H,
+        if button_hot {
+            ACCENT_HOV
+        } else {
+            0x00_00_77_BB
+        },
+    );
+    let sign_in = "Sign in";
+    let sign_w = sign_in.chars().count() as i32 * 8;
+    s_draw_str_small(
+        s,
+        sw,
+        layout.user_x + (layout.field_w - sign_w) / 2,
+        layout.button_y + 10,
+        sign_in,
+        WHITE,
+        button_bg,
+        layout.user_x + layout.field_w,
+    );
+
+    let msg_color = if error { 0x00_FF_88_88 } else { 0x00_88_DD_CC };
+    s_draw_str_small(
+        s,
+        sw,
+        layout.user_x,
+        layout.button_y + 39,
+        message,
+        msg_color,
+        panel_bg,
+        layout.user_x + layout.field_w,
+    );
+    if attempts > 0 {
+        let attempt_text = format!("attempts {}", attempts);
+        s_draw_str_small(
+            s,
+            sw,
+            layout.user_x + layout.field_w - 112,
+            layout.button_y + 39,
+            &attempt_text,
+            0x00_66_AA_DD,
+            panel_bg,
+            layout.user_x + layout.field_w,
+        );
+    }
+
+    s_draw_str_small(
+        s,
+        sw,
+        layout.user_x,
+        layout.users_y - 16,
+        "Accounts",
+        0x00_66_AA_DD,
+        panel_bg,
+        layout.user_x + layout.field_w,
+    );
+    let mut row = 0i32;
+    for account in crate::security::users()
+        .into_iter()
+        .filter(|account| account.login_enabled)
+    {
+        if row >= 4 {
+            break;
+        }
+        let y = layout.users_y + row * GREETER_USER_ROW_H;
+        let selected = account.name.eq_ignore_ascii_case(user);
+        let hot = rect_contains(
+            layout.user_x,
+            y,
+            layout.row_w,
+            GREETER_USER_ROW_H - 2,
+            mx,
+            my,
+        );
+        let row_bg = if selected {
+            0x00_00_18_34
+        } else if hot {
+            0x00_00_10_24
+        } else {
+            panel_bg
+        };
+        s_fill(
+            s,
+            sw,
+            layout.user_x,
+            y,
+            layout.row_w,
+            GREETER_USER_ROW_H - 2,
+            row_bg,
+        );
+        if selected {
+            s_fill(s, sw, layout.user_x, y, 3, GREETER_USER_ROW_H - 2, ACCENT);
+        }
+        let line = format!("{}  uid={}  {}", account.name, account.uid, account.role);
+        s_draw_str_small(
+            s,
+            sw,
+            layout.user_x + 10,
+            y + 6,
+            &line,
+            if selected { WHITE } else { 0x00_CC_EE_FF },
+            row_bg,
+            layout.user_x + layout.row_w - 6,
+        );
+        row += 1;
+    }
+}
+
+fn draw_greeter_field(
+    s: &mut [u32],
+    sw: usize,
+    x: i32,
+    y: i32,
+    w: i32,
+    value: &str,
+    active: bool,
+    bg: u32,
+) {
+    s_fill(s, sw, x, y, w, GREETER_FIELD_H, bg);
+    s_fill(
+        s,
+        sw,
+        x,
+        y + GREETER_FIELD_H - 3,
+        w,
+        2,
+        if active { ACCENT } else { 0x00_00_44_77 },
+    );
+    draw_rect_border(
+        s,
+        sw,
+        x,
+        y,
+        w,
+        GREETER_FIELD_H,
+        if active { ACCENT_HOV } else { 0x00_00_44_77 },
+    );
+    s_draw_str_small(s, sw, x + 10, y + 10, value, WHITE, bg, x + w - 10);
+}
+
 fn draw_shell_dialog(s: &mut [u32], sw: usize, taskbar_y: i32, dialog: &ShellDialog) {
     let (x, y, w, h) = shell_dialog_rect(sw as i32, taskbar_y, dialog);
     let bg = 0x00_07_0D_1C;
@@ -7347,6 +8065,49 @@ fn workspace_label(workspace: usize) -> &'static str {
         3 => "WS4",
         _ => "WS?",
     }
+}
+
+fn default_login_user_name() -> String {
+    let current = crate::security::current_user();
+    if current.login_enabled {
+        return current.name;
+    }
+    for user in crate::security::users() {
+        if user.login_enabled {
+            return user.name;
+        }
+    }
+    String::from("jamie")
+}
+
+fn greeter_layout(sw: i32, taskbar_y: i32) -> GreeterLayout {
+    let panel_w = GREETER_PANEL_W.min((sw - 32).max(300));
+    let panel_h = GREETER_PANEL_H.min((taskbar_y - 28).max(270));
+    let panel_x = ((sw - panel_w) / 2).max(8);
+    let panel_y = ((taskbar_y - panel_h) / 2).max(24);
+    let user_x = panel_x + 32;
+    let field_w = panel_w - 64;
+    let user_y = panel_y + 104;
+    let pass_y = user_y + 54;
+    let button_y = pass_y + 46;
+    let users_y = button_y + 68;
+    GreeterLayout {
+        panel_x,
+        panel_y,
+        panel_w,
+        panel_h,
+        user_x,
+        user_y,
+        field_w,
+        pass_y,
+        button_y,
+        users_y,
+        row_w: field_w,
+    }
+}
+
+fn rect_contains(x: i32, y: i32, w: i32, h: i32, px: i32, py: i32) -> bool {
+    px >= x && px < x + w && py >= y && py < y + h
 }
 
 fn push_i32_decimal(out: &mut String, n: i32) {

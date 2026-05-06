@@ -56,6 +56,11 @@ def parse_args() -> argparse.Namespace:
         help="Assert the screendump contains the desktop taskbar instead of the splash screen",
     )
     parser.add_argument(
+        "--expect-framebuffer-login",
+        action="store_true",
+        help="Assert the screendump contains the coolOS login greeter",
+    )
+    parser.add_argument(
         "--expect-framebuffer-start-menu",
         action="store_true",
         help="Assert the screendump contains the open Start menu panel",
@@ -89,6 +94,22 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.0,
         help="Extra delay after each injected key; useful for long command lines",
+    )
+    parser.add_argument(
+        "--no-auto-login",
+        action="store_true",
+        help="Do not type the default greeter password before HMP/input/screendump actions",
+    )
+    parser.add_argument(
+        "--auto-login-text",
+        default="cool\\n",
+        help="Text typed at the greeter before desktop interactions; may include \\n",
+    )
+    parser.add_argument(
+        "--post-login-delay",
+        type=float,
+        default=0.8,
+        help="Seconds to wait after automatic greeter login before desktop interactions",
     )
     parser.add_argument(
         "--post-type-hmp",
@@ -205,6 +226,8 @@ def request_screendump(monitor_socket: str, out_path: str) -> None:
 def hmp_key_for_char(ch: str) -> str | None:
     if ch == "\n" or ch == "\r":
         return "ret"
+    if ch == "\t":
+        return "tab"
     if ch == " ":
         return "spc"
     if ch == ".":
@@ -267,6 +290,43 @@ def assert_desktop_framebuffer(path: str) -> None:
 
     if cyan_bottom < width // 3:
         raise AssertionError("desktop taskbar cyan edge not found in framebuffer")
+
+
+def assert_login_framebuffer(path: str) -> None:
+    width, height, pixels = read_ppm(path)
+    x0 = width // 4
+    x1 = width - x0
+    y0 = height // 5
+    y1 = min(height - 80, height * 4 // 5)
+    best_run = 0
+    best_y = 0
+    dark_panel_pixels = 0
+
+    for y in range(y0, y1):
+        row = y * width * 3
+        run = 0
+        for x in range(x0, x1):
+            r, g, b = pixels[row + x * 3 : row + x * 3 + 3]
+            is_cyan = r < 80 and g > 100 and b > 150
+            if is_cyan:
+                run += 1
+                if run > best_run:
+                    best_run = run
+                    best_y = y
+            else:
+                run = 0
+            if r < 25 and g < 45 and b < 80:
+                dark_panel_pixels += 1
+
+    min_run = min(260, max(180, width // 7))
+    if best_run < min_run:
+        raise AssertionError(
+            f"login greeter cyan edge not found; best horizontal run {best_run} at y={best_y}"
+        )
+
+    scan_area = max(1, (x1 - x0) * max(1, y1 - y0))
+    if dark_panel_pixels < scan_area // 5:
+        raise AssertionError("login greeter dark panel not found")
 
 
 def assert_start_menu_framebuffer(path: str) -> None:
@@ -454,6 +514,10 @@ def stop_qemu(proc: subprocess.Popen[bytes], reader_thread: threading.Thread) ->
 
 def run_once(args: argparse.Namespace, attempt: int) -> int:
     monitor_socket = None
+    needs_interaction = bool(args.hmp or args.type_text or args.post_type_hmp or args.screendump)
+    auto_login = needs_interaction and not args.no_auto_login and not args.expect_framebuffer_login
+    if auto_login and not args.usb:
+        args.usb = True
     if args.artifact_dir:
         os.makedirs(args.artifact_dir, exist_ok=True)
     if args.screendump or args.hmp or args.type_text or args.post_type_hmp:
@@ -480,7 +544,6 @@ def run_once(args: argparse.Namespace, attempt: int) -> int:
     started_at = time.time()
 
     try:
-        needs_interaction = bool(args.hmp or args.type_text or args.post_type_hmp or args.screendump)
         if needs_interaction and args.interact_after:
             if not wait_for_patterns(proc, get_output, [args.interact_after], deadline):
                 stop_qemu(proc, reader_thread)
@@ -497,6 +560,13 @@ def run_once(args: argparse.Namespace, attempt: int) -> int:
                 return 1
 
         if needs_interaction and monitor_socket:
+            if auto_login:
+                type_text(
+                    monitor_socket,
+                    args.auto_login_text.replace("\\n", "\n"),
+                    max(0.0, args.type_key_delay),
+                )
+                time.sleep(max(0.0, args.post_login_delay))
             for command in args.hmp:
                 run_monitor_command(monitor_socket, command)
             if args.type_text:
@@ -550,6 +620,13 @@ def run_once(args: argparse.Namespace, attempt: int) -> int:
             except AssertionError as exc:
                 print(f"framebuffer assertion failed: {exc}", file=sys.stderr)
                 write_artifacts(args, cmd, output, "desktop-framebuffer-failed")
+                return 1
+        if args.expect_framebuffer_login:
+            try:
+                assert_login_framebuffer(args.screendump)
+            except AssertionError as exc:
+                print(f"login framebuffer assertion failed: {exc}", file=sys.stderr)
+                write_artifacts(args, cmd, output, "login-framebuffer-failed")
                 return 1
         if args.expect_framebuffer_start_menu:
             try:

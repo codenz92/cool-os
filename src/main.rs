@@ -250,12 +250,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         "[ui] ready pinned={}",
         app_lifecycle::pinned_order_summary()
     );
+    println!("[boot] login ready");
     println!("[boot] desktop ready");
     profiler::record_boot_stage("desktop ready", boot_splash::BOOT_PROGRESS_TOTAL);
     boot_watchdog::complete();
     let smoke_commands = fw_cfg::smoke_commands();
     if !smoke_commands.is_empty() {
         apps::terminal::set_debug_mirror(true);
+        wm::queue_startup_command_immediate("login jamie cool");
     }
     let immediate_smoke = smoke_commands.iter().all(|command| {
         matches!(

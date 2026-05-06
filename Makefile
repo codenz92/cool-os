@@ -1,4 +1,4 @@
-.PHONY: run run-net run-usb run-usb-init run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
+.PHONY: run run-net run-usb run-usb-init run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -237,12 +237,42 @@ smoke-ui: build
 		--expect "[ring3 pid=2] sentinel ok" \
 		--expect "[boot] desktop ready"
 
+smoke-login-screen: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
+		--no-auto-login \
+		--screendump "$(SMOKE_ARTIFACT_DIR)/login-screen.ppm" \
+		--expect-framebuffer-login \
+		--expect "[boot] login ready" \
+		--expect "[boot] desktop ready"
+
+smoke-lock-screen: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
+		--fw-cmd "lock" \
+		--interact-after "session locked" \
+		--screendump "$(SMOKE_ARTIFACT_DIR)/lock-screen.ppm" \
+		--expect-framebuffer-login \
+		--expect "session locked" \
+		--expect "[session] locked" \
+		--expect "[boot] desktop ready"
+
 smoke-ui-ready-state: build
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
 		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
 		--artifact-name "$@" \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
+		--usb \
 		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
 		--hmp "sendkey ctrl-esc" \
 		--post-hmp-delay 0.8 \
@@ -257,6 +287,7 @@ smoke-framebuffer: build
 		--artifact-name "$@" \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
+		--usb \
 		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
 		--screendump "$(SMOKE_ARTIFACT_DIR)/framebuffer-smoke.ppm" \
 		--expect-framebuffer-desktop \
@@ -302,6 +333,7 @@ smoke-ui-goldens: build
 		--artifact-name "ui-golden-desktop" \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
+		--usb \
 		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
 		--screendump "$(SMOKE_ARTIFACT_DIR)/ui-golden-desktop.ppm" \
 		--expect-framebuffer-desktop \
@@ -311,6 +343,7 @@ smoke-ui-goldens: build
 		--artifact-name "ui-golden-file-manager" \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
+		--usb \
 		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
 		--hmp "sendkey ctrl-2" \
 		--post-hmp-delay 0.8 \
@@ -322,6 +355,7 @@ smoke-ui-goldens: build
 		--artifact-name "ui-golden-diagnostics" \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
+		--usb \
 		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
 		--hmp "sendkey ctrl-4" \
 		--post-hmp-delay 0.8 \
@@ -333,6 +367,7 @@ smoke-ui-goldens: build
 		--artifact-name "ui-golden-crash-dialog" \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
+		--usb \
 		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
 		--hmp "sendkey ctrl-spc" \
 		--pre-type-delay $(SMOKE_PRE_TYPE_DELAY) \
@@ -348,6 +383,7 @@ smoke-ui-settings: build
 		--artifact-name "$@" \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
+		--usb \
 		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
 		--hmp "sendkey ctrl-5" \
 		--post-hmp-delay 0.8 \
@@ -368,6 +404,7 @@ smoke-start-menu: build
 		--artifact-name "$@" \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
+		--usb \
 		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
 		--hmp "sendkey ctrl-esc" \
 		--post-hmp-delay 0.8 \
