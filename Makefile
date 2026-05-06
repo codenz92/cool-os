@@ -28,8 +28,9 @@ USER_SCREENSHOT_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/r
 SMOKE_SECONDS ?= 18
 SMOKE_FRAMEBUFFER_SECONDS ?= 30
 SMOKE_INTERACTIVE_SECONDS ?= $(SMOKE_FRAMEBUFFER_SECONDS)
-SMOKE_PRE_TYPE_DELAY ?= 0.8
+SMOKE_PRE_TYPE_DELAY ?= 1.5
 SMOKE_TYPE_KEY_DELAY ?= 0.15
+SMOKE_RETRIES ?= 1
 SMOKE_USB_SECONDS ?= 18
 SMOKE_BOOT_BUDGET_SECONDS ?= 8
 SMOKE_VGA_SECONDS ?= 24
@@ -418,11 +419,8 @@ smoke-userspace-utils: build
 		--fsimg "$(FSIMG)" \
 		--usb \
 		--seconds 60 \
-		--hmp "sendkey ctrl-n" \
-		--pre-type-delay $(SMOKE_PRE_TYPE_DELAY) \
-		--type-key-delay $(SMOKE_TYPE_KEY_DELAY) \
-		--type-text "exec /bin/notes /documents/notes.txt smoke\n" \
-		--post-hmp-delay 2.0 \
+		--retries $(SMOKE_RETRIES) \
+		--fw-cmd "exec /bin/notes /documents/notes.txt smoke" \
 		--expect "notes: window opened" \
 		--expect "notes: saved" \
 		--expect "[boot] desktop ready"
@@ -433,11 +431,8 @@ smoke-userspace-utils: build
 		--fsimg "$(FSIMG)" \
 		--usb \
 		--seconds 60 \
-		--hmp "sendkey ctrl-n" \
-		--pre-type-delay $(SMOKE_PRE_TYPE_DELAY) \
-		--type-key-delay $(SMOKE_TYPE_KEY_DELAY) \
-		--type-text "exec /bin/editor /documents/editor.txt smoke\n" \
-		--post-hmp-delay 2.0 \
+		--retries $(SMOKE_RETRIES) \
+		--fw-cmd "exec /bin/editor /documents/editor.txt smoke" \
 		--expect "editor: window opened" \
 		--expect "editor: saved" \
 		--expect "[boot] desktop ready"
@@ -448,11 +443,8 @@ smoke-userspace-utils: build
 		--fsimg "$(FSIMG)" \
 		--usb \
 		--seconds 45 \
-		--hmp "sendkey ctrl-n" \
-		--pre-type-delay $(SMOKE_PRE_TYPE_DELAY) \
-		--type-key-delay $(SMOKE_TYPE_KEY_DELAY) \
-		--type-text "exec /bin/trash smoke\n" \
-		--post-hmp-delay 2.0 \
+		--retries $(SMOKE_RETRIES) \
+		--fw-cmd "exec /bin/trash smoke" \
 		--expect "trash: window opened" \
 		--expect "trash: listed" \
 		--expect "trash: empty ok" \
@@ -464,11 +456,8 @@ smoke-userspace-utils: build
 		--fsimg "$(FSIMG)" \
 		--usb \
 		--seconds 45 \
-		--hmp "sendkey ctrl-n" \
-		--pre-type-delay $(SMOKE_PRE_TYPE_DELAY) \
-		--type-key-delay $(SMOKE_TYPE_KEY_DELAY) \
-		--type-text "exec /bin/screenshot smoke\n" \
-		--post-hmp-delay 2.0 \
+		--retries $(SMOKE_RETRIES) \
+		--fw-cmd "exec /bin/screenshot smoke" \
 		--expect "screenshot: window opened" \
 		--expect "screenshot: queued /Pictures/SMOKE.PPM" \
 		--expect "[boot] desktop ready"
@@ -481,11 +470,8 @@ smoke-userspace-file-open: build
 		--fsimg "$(FSIMG)" \
 		--usb \
 		--seconds 45 \
-		--hmp "sendkey ctrl-n" \
-		--pre-type-delay $(SMOKE_PRE_TYPE_DELAY) \
-		--type-key-delay $(SMOKE_TYPE_KEY_DELAY) \
-		--type-text "exec /bin/editor /documents/phase23.txt smoke\n" \
-		--post-hmp-delay 2.0 \
+		--retries $(SMOKE_RETRIES) \
+		--fw-cmd "exec /bin/editor /documents/phase23.txt smoke" \
 		--expect "editor: window opened" \
 		--expect "editor: saved /documents/phase23.txt" \
 		--expect "[boot] desktop ready"

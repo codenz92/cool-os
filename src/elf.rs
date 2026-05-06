@@ -55,12 +55,14 @@ struct Elf64ProgramHeader {
     p_align: u64,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ExecError {
     NotFound,
     InvalidElf(&'static str),
     OutOfMemory,
     MapFailed(&'static str),
     FdInstallFailed,
+    SchedulerBusy,
 }
 
 impl ExecError {
@@ -71,6 +73,7 @@ impl ExecError {
             ExecError::OutOfMemory => "out of memory",
             ExecError::MapFailed(msg) => msg,
             ExecError::FdInstallFailed => "fd install failed",
+            ExecError::SchedulerBusy => "scheduler busy",
         }
     }
 }
@@ -95,26 +98,41 @@ pub fn spawn_elf_process_with_fds(
     args: &[&str],
     inherited_fds: &[(usize, usize)],
 ) -> Result<usize, ExecError> {
+    let scheduler_ready = x86_64::instructions::interrupts::without_interrupts(|| {
+        crate::scheduler::SCHEDULER.try_lock().is_some()
+    });
+    if !scheduler_ready {
+        return Err(ExecError::SchedulerBusy);
+    }
+
     let image = load_elf_image_with_args(path, args)?;
 
     let task_id = x86_64::instructions::interrupts::without_interrupts(|| {
-        let mut sched = crate::scheduler::SCHEDULER.lock();
+        let Some(mut sched) = crate::scheduler::SCHEDULER.try_lock() else {
+            return Err(ExecError::SchedulerBusy);
+        };
         let before = sched.tasks.len();
-        if sched.spawn_user_with_fds(
-            "user-elf",
-            image.entry,
-            image.user_rsp,
-            image.pml4,
-            inherited_fds,
-        ) {
-            Some(before)
-        } else {
-            None
-        }
-    });
+        Ok(
+            if sched.spawn_user_with_fds(
+                "user-elf",
+                image.entry,
+                image.user_rsp,
+                image.pml4,
+                inherited_fds,
+            ) {
+                if let Some(task) = sched.tasks.get_mut(before) {
+                    task.status = crate::scheduler::TaskStatus::Blocked;
+                }
+                Some(before)
+            } else {
+                None
+            },
+        )
+    })?;
 
     let task_id = task_id.ok_or(ExecError::FdInstallFailed)?;
     crate::app_lifecycle::record_process_start(task_id, path, path);
+    crate::scheduler::unblock(task_id);
     Ok(task_id)
 }
 

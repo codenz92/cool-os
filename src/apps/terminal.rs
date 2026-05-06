@@ -125,6 +125,23 @@ impl TerminalApp {
         }
     }
 
+    pub fn execute_command(&mut self, command: &str) {
+        let command = command.trim();
+        if command.is_empty() {
+            return;
+        }
+        self.refresh_layout();
+        for c in command.chars() {
+            if !c.is_control() {
+                self.print_char(c);
+            }
+        }
+        self.print_char('\n');
+        self.push_history(command);
+        crate::app_lifecycle::record_command(command);
+        self.run_command(command);
+    }
+
     pub fn take_pending_key_sink(&mut self) -> Option<usize> {
         self.pending_key_sink_fd.take()
     }

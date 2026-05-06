@@ -30,6 +30,7 @@ mod fat32;
 mod font;
 mod framebuffer;
 mod fs_hardening;
+mod fw_cfg;
 mod gdt;
 mod interrupts;
 mod jobs;
@@ -252,6 +253,10 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     println!("[boot] desktop ready");
     profiler::record_boot_stage("desktop ready", boot_splash::BOOT_PROGRESS_TOTAL);
     boot_watchdog::complete();
+    if let Some(command) = fw_cfg::smoke_command() {
+        println!("[smoke] command {}", command);
+        wm::queue_startup_command(&command);
+    }
 
     loop {
         // Do NOT disable interrupts here — the WM mutex inside compose()

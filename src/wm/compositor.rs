@@ -10,7 +10,7 @@ use spin::Mutex;
 
 use crate::apps::{
     BrowserApp, ColorPickerApp, DisplaySettingsApp, FileManagerApp, FileManagerOpenRequest,
-    PersonalizeApp, SysMonApp, TerminalApp, TextViewerApp, UserGuiApp, UtilityApp,
+    PersonalizeApp, SysMonApp, SysMonRequest, TerminalApp, TextViewerApp, UserGuiApp, UtilityApp,
 };
 use crate::desktop_settings::{self, DesktopSortMode, WallpaperPreset};
 use crate::framebuffer::{BLACK, WHITE};
@@ -765,6 +765,7 @@ impl AppWindow {
     pub fn handle_key(&mut self, c: char) {
         match self {
             AppWindow::Terminal(t) => t.handle_key(c),
+            AppWindow::SysMon(s) => s.handle_key(c),
             AppWindow::TextViewer(v) => v.handle_key(c),
             AppWindow::Browser(b) => b.handle_key(c),
             AppWindow::FileManager(f) => f.handle_key(c),
@@ -776,6 +777,7 @@ impl AppWindow {
     }
     pub fn handle_click(&mut self, lx: i32, ly: i32) {
         match self {
+            AppWindow::SysMon(s) => s.handle_click(lx, ly),
             AppWindow::ColorPicker(cp) => cp.handle_click(lx, ly),
             AppWindow::DisplaySettings(ds) => ds.handle_click(lx, ly),
             AppWindow::FileManager(fm) => fm.handle_click(lx, ly),
@@ -802,6 +804,12 @@ impl AppWindow {
     pub fn begin_file_drag(&mut self, lx: i32, ly: i32) -> Option<Vec<String>> {
         match self {
             AppWindow::FileManager(fm) => fm.drag_paths_at(lx, ly),
+            _ => None,
+        }
+    }
+    pub fn take_sysmon_request(&mut self) -> Option<SysMonRequest> {
+        match self {
+            AppWindow::SysMon(sysmon) => sysmon.take_request(),
             _ => None,
         }
     }
@@ -1332,16 +1340,26 @@ impl WindowManager {
     }
 
     fn spawn_user_gui_app_with_args(&mut self, name: &str, path: &str, args: &[&str]) -> bool {
+        self.spawn_user_gui_app_with_args_result(name, path, args)
+            .is_ok()
+    }
+
+    fn spawn_user_gui_app_with_args_result(
+        &mut self,
+        name: &str,
+        path: &str,
+        args: &[&str],
+    ) -> Result<usize, crate::elf::ExecError> {
         match crate::elf::spawn_elf_process_with_args(path, args) {
             Ok(pid) => {
-                crate::app_lifecycle::record_process_start(pid, name, path);
-                crate::app_lifecycle::record_app(name);
                 crate::notifications::push_transient(name, path);
-                true
+                Ok(pid)
             }
             Err(err) => {
-                crate::notifications::push_transient(name, err.as_str());
-                false
+                if !matches!(err, crate::elf::ExecError::SchedulerBusy) {
+                    crate::notifications::push_transient(name, err.as_str());
+                }
+                Err(err)
             }
         }
     }
@@ -1772,7 +1790,35 @@ impl WindowManager {
         self.taskbar_menu = None;
     }
 
-    fn run_terminal_command(&mut self, command: &str) {
+    fn run_startup_exec_command(&mut self, command: &str) -> bool {
+        let mut words = command.split_whitespace();
+        if words.next() != Some("exec") {
+            return false;
+        }
+        let Some(path) = words.next() else {
+            return false;
+        };
+        let args: Vec<&str> = words.collect();
+        let result = match path {
+            "/bin/editor" => {
+                self.spawn_user_gui_app_with_args_result("Text Editor", "/bin/editor", &args)
+            }
+            "/bin/notes" => self.spawn_user_gui_app_with_args_result("Notes", "/bin/notes", &args),
+            "/bin/trash" => {
+                self.spawn_user_gui_app_with_args_result("Trash Bin", "/bin/trash", &args)
+            }
+            "/bin/screenshot" => {
+                self.spawn_user_gui_app_with_args_result("Screenshot", "/bin/screenshot", &args)
+            }
+            _ => return false,
+        };
+        if matches!(result, Err(crate::elf::ExecError::SchedulerBusy)) {
+            crate::wm::queue_startup_command(command);
+        }
+        true
+    }
+
+    pub fn run_terminal_command(&mut self, command: &str) {
         let mut idx = self
             .windows
             .iter()
@@ -1787,10 +1833,9 @@ impl WindowManager {
         }
         if let Some(win_idx) = idx {
             self.focus_window(win_idx);
-            for c in command.chars() {
-                self.windows[win_idx].handle_key(c);
+            if let AppWindow::Terminal(term) = &mut self.windows[win_idx] {
+                term.execute_command(command);
             }
-            self.windows[win_idx].handle_key('\n');
         }
     }
 
@@ -1806,50 +1851,104 @@ impl WindowManager {
     }
 
     fn consume_window_open_request(&mut self, win_idx: usize, sw: usize, taskbar_y: i32) {
-        let Some(request) = self
+        let open_request = self
             .windows
             .get_mut(win_idx)
-            .and_then(AppWindow::take_open_request)
-        else {
-            return;
-        };
+            .and_then(AppWindow::take_open_request);
+        let mut handled = false;
 
-        match request {
-            FileManagerOpenRequest::Dir(path) => {
-                let off = self.windows.len() as i32 * 16;
-                let wx = (20 + off).min(sw as i32 - 220);
-                let wy = (20 + off).min(taskbar_y - 120);
-                self.launch_file_manager_at(&path, wx, wy);
-            }
-            FileManagerOpenRequest::File(path) => {
-                let off = self.windows.len() as i32 * 16;
-                let wx = (20 + off).min(sw as i32 - 220);
-                let wy = (20 + off).min(taskbar_y - 120);
-                self.open_text_path_with_editor(&path, wx, wy);
-            }
-            FileManagerOpenRequest::Exec(path) => {
-                crate::app_lifecycle::record_file(&path);
-                if let Err(err) = crate::elf::spawn_elf_process(&path) {
-                    let body = err.as_str();
-                    if let Some(term) = self.windows.iter_mut().find_map(|w| match w {
-                        AppWindow::Terminal(t) => Some(t),
-                        _ => None,
-                    }) {
-                        term.print_str("exec failed: ");
-                        term.print_str(body);
-                        term.print_char('\n');
+        if let Some(request) = open_request {
+            handled = true;
+            match request {
+                FileManagerOpenRequest::Dir(path) => {
+                    let off = self.windows.len() as i32 * 16;
+                    let wx = (20 + off).min(sw as i32 - 220);
+                    let wy = (20 + off).min(taskbar_y - 120);
+                    self.launch_file_manager_at(&path, wx, wy);
+                }
+                FileManagerOpenRequest::File(path) => {
+                    let off = self.windows.len() as i32 * 16;
+                    let wx = (20 + off).min(sw as i32 - 220);
+                    let wy = (20 + off).min(taskbar_y - 120);
+                    self.open_text_path_with_editor(&path, wx, wy);
+                }
+                FileManagerOpenRequest::ViewFile(path) => {
+                    let off = self.windows.len() as i32 * 16;
+                    let wx = (20 + off).min(sw as i32 - 220);
+                    let wy = (20 + off).min(taskbar_y - 120);
+                    crate::app_lifecycle::record_file(&path);
+                    match TextViewerApp::open_file(wx, wy, &path) {
+                        Ok(viewer) => self.add_window(AppWindow::TextViewer(viewer)),
+                        Err(err) => self.show_error_dialog("Open failed", err),
                     }
-                    self.show_crash_dialog("App launch failed", body, Some(&path));
+                }
+                FileManagerOpenRequest::Exec(path) => {
+                    crate::app_lifecycle::record_file(&path);
+                    if let Err(err) = crate::elf::spawn_elf_process(&path) {
+                        let body = err.as_str();
+                        if let Some(term) = self.windows.iter_mut().find_map(|w| match w {
+                            AppWindow::Terminal(t) => Some(t),
+                            _ => None,
+                        }) {
+                            term.print_str("exec failed: ");
+                            term.print_str(body);
+                            term.print_char('\n');
+                        }
+                        self.show_crash_dialog("App launch failed", body, Some(&path));
+                    }
+                }
+                FileManagerOpenRequest::App(app) => {
+                    let off = self.windows.len() as i32 * 16;
+                    let wx = (10 + off).min(sw as i32 - 220);
+                    let wy = (10 + off).min(taskbar_y - 120);
+                    self.launch_app(app, wx, wy);
                 }
             }
-            FileManagerOpenRequest::App(app) => {
-                let off = self.windows.len() as i32 * 16;
-                let wx = (10 + off).min(sw as i32 - 220);
-                let wy = (10 + off).min(taskbar_y - 120);
-                self.launch_app(app, wx, wy);
+        }
+
+        if win_idx < self.windows.len() {
+            if let Some(request) = self.windows[win_idx].take_sysmon_request() {
+                handled = true;
+                self.handle_sysmon_request(request, sw, taskbar_y);
             }
         }
-        crate::wm::request_repaint();
+
+        if handled {
+            crate::wm::request_repaint();
+        }
+    }
+
+    fn handle_sysmon_request(&mut self, request: SysMonRequest, sw: usize, taskbar_y: i32) {
+        match request {
+            SysMonRequest::ClosePid(pid) => {
+                if let Some(idx) = self.windows.iter().position(
+                    |window| matches!(window, AppWindow::UserGui(app) if app.owner() == pid),
+                ) {
+                    self.request_or_close_window(idx);
+                    crate::notifications::push_transient(
+                        "App close requested",
+                        &format!("pid {}", pid),
+                    );
+                } else {
+                    crate::notifications::push_transient(
+                        "App close unavailable",
+                        &format!("pid {} has no GUI window", pid),
+                    );
+                }
+            }
+            SysMonRequest::KillPid(pid) => match crate::scheduler::kill_task(pid, 130) {
+                Ok(()) => {
+                    crate::notifications::push_transient("App killed", &format!("pid {}", pid))
+                }
+                Err(err) => crate::notifications::push_transient("Kill failed", err.as_str()),
+            },
+            SysMonRequest::OpenPath(path) => {
+                let off = self.windows.len() as i32 * 16;
+                let wx = (20 + off).min(sw as i32 - 220);
+                let wy = (20 + off).min(taskbar_y - 120);
+                self.launch_file_manager_at(parent_path(&path), wx, wy);
+            }
+        }
     }
 
     fn desktop_icons(&self) -> Vec<DesktopIcon> {
@@ -2635,6 +2734,11 @@ impl WindowManager {
     pub fn compose(&mut self) {
         let frame_start_tick = crate::interrupts::ticks();
         crate::wm::drain_user_gui_owner_cleanup(self);
+        if let Some(command) = crate::wm::take_startup_command() {
+            if !self.run_startup_exec_command(&command) {
+                self.run_terminal_command(&command);
+            }
+        }
 
         // Drain buffered keystrokes.
         while let Some(input) = crate::keyboard::pop_input() {

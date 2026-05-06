@@ -1,4 +1,8 @@
-use crate::framebuffer::{GREEN, LIGHT_CYAN, LIGHT_GRAY, WHITE, YELLOW};
+extern crate alloc;
+
+use alloc::string::String;
+
+use crate::framebuffer::{CYAN, GREEN, LIGHT_CYAN, LIGHT_GRAY, RED, WHITE, YELLOW};
 use crate::wm::window::Window;
 use font8x8::UnicodeFonts;
 
@@ -19,11 +23,21 @@ const MUTED: u32 = 0x00_55_7A_92;
 const USB_GOOD: u32 = 0x00_00_DD_99;
 const USB_WARN: u32 = 0x00_DD_AA_44;
 
+#[derive(Clone)]
+pub enum SysMonRequest {
+    ClosePid(usize),
+    KillPid(usize),
+    OpenPath(String),
+}
+
 pub struct SysMonApp {
     pub window: Window,
     last_redraw_tick: u64,
     last_width: i32,
     last_height: i32,
+    selected_app: usize,
+    status_note: &'static str,
+    pending_request: Option<SysMonRequest>,
 }
 
 impl SysMonApp {
@@ -33,9 +47,51 @@ impl SysMonApp {
             last_redraw_tick: 0,
             last_width: SYSMON_W,
             last_height: SYSMON_H,
+            selected_app: 0,
+            status_note: "ready",
+            pending_request: None,
         };
         app.update();
         app
+    }
+
+    pub fn take_request(&mut self) -> Option<SysMonRequest> {
+        self.pending_request.take()
+    }
+
+    pub fn handle_key(&mut self, c: char) {
+        match c {
+            'j' | 'J' => self.select_next_app(),
+            'k' | 'K' => self.select_prev_app(),
+            'c' | 'C' => self.request_close_selected(),
+            'x' | 'X' => self.request_kill_selected(),
+            'p' | 'P' => self.request_path_selected(),
+            _ => return,
+        }
+        self.force_redraw();
+    }
+
+    pub fn handle_click(&mut self, lx: i32, ly: i32) {
+        if lx >= 280 && lx < 492 && ly >= 220 && ly < 246 {
+            let row = ((ly - 220) / 12).max(0) as usize;
+            let running = crate::app_lifecycle::running_apps();
+            if row < running.len() {
+                self.selected_app = row;
+                self.status_note = "selected app";
+                self.force_redraw();
+                return;
+            }
+        }
+        if hit(lx, ly, 280, 258, 52, 15) {
+            self.request_close_selected();
+        } else if hit(lx, ly, 340, 258, 44, 15) {
+            self.request_kill_selected();
+        } else if hit(lx, ly, 392, 258, 48, 15) {
+            self.request_path_selected();
+        } else {
+            return;
+        }
+        self.force_redraw();
     }
 
     pub fn update(&mut self) {
@@ -99,12 +155,17 @@ impl SysMonApp {
             .iter()
             .any(|line| line.contains("active init ready"));
         let compositor = crate::wm::compositor::compositor_stats();
+        let running_apps = crate::app_lifecycle::running_apps();
+        let finished_apps = crate::app_lifecycle::finished_apps();
+        if self.selected_app >= running_apps.len() {
+            self.selected_app = running_apps.len().saturating_sub(1);
+        }
 
         self.put_str_centered_px(stride, 14, "SYSTEM DASHBOARD", LABEL);
         self.put_str_centered_px(
             stride,
             26,
-            "runtime view for scheduler, memory, and USB",
+            "runtime view for scheduler, memory, USB, and apps",
             MUTED,
         );
 
@@ -114,7 +175,8 @@ impl SysMonApp {
         self.draw_card_frame(stride, 268, 44, card_w, card_h, 0x00_FF_DD_55);
         self.draw_card_frame(stride, 16, 114, card_w, card_h, 0x00_55_FF_BB);
         self.draw_card_frame(stride, 268, 114, card_w, card_h, 0x00_66_BB_FF);
-        self.draw_card_frame(stride, 16, 184, 488, 98, 0x00_00_CC_FF);
+        self.draw_card_frame(stride, 16, 184, card_w, 98, 0x00_00_CC_FF);
+        self.draw_card_frame(stride, 268, 184, card_w, 98, 0x00_FF_77_99);
 
         self.put_str_px(stride, 28, 58, "CPU VENDOR", LABEL);
         self.put_str_px(stride, 28, 76, vendor, GREEN);
@@ -215,8 +277,8 @@ impl SysMonApp {
         );
         self.draw_status_pill(
             stride,
-            220,
-            214,
+            28,
+            232,
             "MOUSE",
             usb_mouse,
             if usb_mouse { USB_GOOD } else { MUTED },
@@ -225,16 +287,12 @@ impl SysMonApp {
         let mut comp_line = NumberLine::new();
         comp_line.push_str("fps ");
         comp_line.push_u64(compositor.fps);
-        comp_line.push_str(" frame ");
+        comp_line.push_str("  frame ");
         comp_line.push_u64(compositor.frame_ticks_last);
-        comp_line.push_str("t damage ");
-        comp_line.push_u64(compositor.damage_rows);
-        comp_line.push_str("r/");
-        comp_line.push_u64(compositor.damage_pixels);
-        comp_line.push_str("px");
-        self.put_str_px(stride, 28, 232, comp_line.as_str(), LIGHT_CYAN);
+        comp_line.push_str("t");
+        self.put_str_px(stride, 90, 235, comp_line.as_str(), LIGHT_CYAN);
 
-        let mut row = 244usize;
+        let mut row = 250usize;
         if usb_lines.is_empty() {
             self.put_str_px(stride, 28, row, "USB: no probe data", LIGHT_GRAY);
         } else {
@@ -246,7 +304,125 @@ impl SysMonApp {
                 row += 10;
             }
         }
+
+        self.put_str_px(stride, 280, 198, "APP LIFECYCLE", LABEL);
+        let mut app_summary = NumberLine::new();
+        app_summary.push_str("running ");
+        app_summary.push_usize(running_apps.len());
+        app_summary.push_str("  finished ");
+        app_summary.push_usize(finished_apps.len());
+        self.put_str_px(stride, 280, 208, app_summary.as_str(), MUTED);
+
+        if running_apps.is_empty() {
+            self.put_str_px(stride, 280, 224, "no userspace apps", LIGHT_GRAY);
+        } else {
+            for (idx, app) in running_apps.iter().take(2).enumerate() {
+                let y = 222 + idx * 12;
+                let selected = idx == self.selected_app;
+                if selected {
+                    self.fill_rect(stride, 278, y.saturating_sub(1), 214, 11, PANEL_INNER);
+                }
+                let mut app_line = NumberLine::new();
+                if selected {
+                    app_line.push_str("> ");
+                } else {
+                    app_line.push_str("  ");
+                }
+                app_line.push_str("pid ");
+                app_line.push_usize(app.pid);
+                app_line.push_str(" ");
+                app_line.push_str(&app.app);
+                self.put_str_px(
+                    stride,
+                    280,
+                    y,
+                    app_line.as_str(),
+                    if selected { WHITE } else { LIGHT_CYAN },
+                );
+            }
+        }
+
+        if let Some(app) = running_apps.get(self.selected_app) {
+            let mut path_line = NumberLine::new();
+            path_line.push_str("path ");
+            path_line.push_str(&app.path);
+            self.put_str_px(stride, 280, 250, path_line.as_str(), MUTED);
+        } else if let Some(done) = finished_apps.first() {
+            let mut done_line = NumberLine::new();
+            done_line.push_str("last ");
+            done_line.push_usize(done.pid);
+            done_line.push_str(" ");
+            done_line.push_str(&done.status);
+            self.put_str_px(stride, 280, 250, done_line.as_str(), MUTED);
+        }
+        self.draw_action_button(stride, 280, 258, 52, 15, "Close", CYAN);
+        self.draw_action_button(stride, 340, 258, 44, 15, "Kill", RED);
+        self.draw_action_button(stride, 392, 258, 48, 15, "Path", YELLOW);
+        self.put_str_px(stride, 280, 274, self.status_note, MUTED);
         self.window.mark_dirty_all();
+    }
+
+    fn select_next_app(&mut self) {
+        let running = crate::app_lifecycle::running_apps();
+        if running.is_empty() {
+            self.selected_app = 0;
+            self.status_note = "no app";
+            return;
+        }
+        self.selected_app = (self.selected_app + 1).min(running.len() - 1);
+        self.status_note = "selected app";
+    }
+
+    fn select_prev_app(&mut self) {
+        if crate::app_lifecycle::running_apps().is_empty() {
+            self.selected_app = 0;
+            self.status_note = "no app";
+            return;
+        }
+        self.selected_app = self.selected_app.saturating_sub(1);
+        self.status_note = "selected app";
+    }
+
+    fn selected_running_app(&self) -> Option<crate::app_lifecycle::RunningApp> {
+        crate::app_lifecycle::running_apps()
+            .get(self.selected_app)
+            .cloned()
+    }
+
+    fn request_close_selected(&mut self) {
+        if let Some(app) = self.selected_running_app() {
+            self.pending_request = Some(SysMonRequest::ClosePid(app.pid));
+            self.status_note = "close queued";
+        } else {
+            self.status_note = "no app";
+        }
+    }
+
+    fn request_kill_selected(&mut self) {
+        if let Some(app) = self.selected_running_app() {
+            self.pending_request = Some(SysMonRequest::KillPid(app.pid));
+            self.status_note = "kill queued";
+        } else {
+            self.status_note = "no app";
+        }
+    }
+
+    fn request_path_selected(&mut self) {
+        if let Some(app) = self.selected_running_app() {
+            if app.path.is_empty() {
+                self.status_note = "no path";
+            } else {
+                self.pending_request = Some(SysMonRequest::OpenPath(app.path));
+                self.status_note = "path queued";
+            }
+        } else {
+            self.status_note = "no app";
+        }
+    }
+
+    fn force_redraw(&mut self) {
+        self.last_redraw_tick = 0;
+        self.update();
     }
 
     fn fill_background(&mut self, stride: usize) {
@@ -326,6 +502,21 @@ impl SysMonApp {
             label,
             if active { WHITE } else { MUTED },
         );
+    }
+
+    fn draw_action_button(
+        &mut self,
+        stride: usize,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+        label: &str,
+        accent: u32,
+    ) {
+        self.fill_rect(stride, x, y, w, h, PANEL_BG);
+        self.draw_rect_border(stride, x, y, w, h, accent);
+        self.put_str_px(stride, x + 6, y + 4, label, WHITE);
     }
 
     fn fill_rect(&mut self, stride: usize, x: usize, y: usize, w: usize, h: usize, color: u32) {
@@ -487,4 +678,8 @@ fn put_char_buf_transparent(
             }
         }
     }
+}
+
+fn hit(px: i32, py: i32, x: i32, y: i32, w: i32, h: i32) -> bool {
+    px >= x && px < x + w && py >= y && py < y + h
 }

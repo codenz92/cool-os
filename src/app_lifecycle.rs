@@ -201,6 +201,16 @@ pub fn recent_searches() -> Vec<String> {
     STATE.lock().recent_searches.clone()
 }
 
+pub fn running_apps() -> Vec<RunningApp> {
+    ensure_loaded();
+    STATE.lock().running_apps.clone()
+}
+
+pub fn finished_apps() -> Vec<FinishedApp> {
+    ensure_loaded();
+    STATE.lock().finished_apps.clone()
+}
+
 pub fn start_menu_prefs() -> StartMenuPrefs {
     ensure_loaded();
     STATE.lock().start_menu

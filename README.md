@@ -12,7 +12,7 @@ FAT32 filesystem with VFS/syscalls, a native CoolFS mount, an ELF loader with
 
 ---
 
-# Current state — v5.7
+# Current state — v5.8
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -20,9 +20,9 @@ on boot. Right-clicking the desktop opens a context menu to launch additional
 apps, and the shell also exposes desktop icons plus a start menu/taskbar flow,
 global keyboard shortcuts, a `Ctrl+Space` launcher/search palette, a task
 switcher overlay, edge/keyboard window snapping, taskbar previews/actions,
-session restore, File Manager drag/drop between windows, a shared clipboard,
-notification center, userspace app lifecycle tracking, and desktop settings
-that persist to the FAT32 disk.
+session restore, File Manager drag/drop/open-with actions, a shared clipboard,
+notification center, userspace app lifecycle tracking with System Monitor
+close/kill/path controls, and desktop settings that persist to the FAT32 disk.
 A preemptive round-robin scheduler runs five boot tasks driven by the PIT
 timer at **100 Hz**; the terminal can also spawn additional ring-3 ELF tasks
 from disk with `exec`:
@@ -62,7 +62,7 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **Framebuffer** | `bootloader 0.11` linear framebuffer at ≥1280×720. 3bpp and 4bpp both handled. Shadow-buffer compositor — full frame rendered in a heap `Vec<u32>`, blitted per-row with correct bpp conversion. No tearing. |
 | **PS/2 mouse** | Full hardware init (CCB, 0xF6/0xF4), 9-bit signed X/Y deltas, IRQ12 packet collection via atomics. |
 | **Window manager** | Z-ordered windows, focus-on-click, title-bar drag, edge snapping, keyboard snapping, task switcher overlay, minimise/maximise/restore, resize grip, close button, taskbar previews/right-click actions, per-window pixel back-buffer. |
-| **Desktop shell** | Wallpaper, desktop icons, right-click context menu, start menu, taskbar window buttons, configurable shortcuts, launcher/search palette, notification center, File Manager drag/drop/open-with routing, shared clipboard plumbing, userspace app lifecycle tracking, persistent settings, session restore, and clock. |
+| **Desktop shell** | Wallpaper, desktop icons, right-click context menu, start menu, taskbar window buttons, configurable shortcuts, launcher/search palette, notification center, File Manager drag/drop/open-with routing, shared clipboard plumbing, userspace app lifecycle tracking with System Monitor controls, persistent settings, session restore, and clock. |
 | **Heap** | `LockedHeap` allocator — `String`, `Vec`, `Box` all work. 32 MiB heap to accommodate large shadow and window buffers. |
 | **Paging / VMM** | 4-level `OffsetPageTable` + global `BootInfoFrameAllocator`. Per-process PML4 cloned from kernel upper half; private user-space mappings in lower half. `vmm::` module exposes `new_process_pml4`, `map_page_in`, `map_region`, `switch_to`. |
 | **IDT** | Breakpoint, Double Fault, Page Fault (lazy allocator for user faults), General Protection Fault, Invalid Opcode, Timer (IRQ0), Keyboard (IRQ1), Mouse (IRQ12). |
@@ -79,7 +79,7 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **VFS** | Task-local fd tables (16 slots, fds 0–2 reserved) backed by shared file/pipe/shmem objects. `vfs_open` reads whole files into heap buffers; `vfs_pipe` allocates a 512-byte kernel ring buffer and returns per-task read/write fds; `vfs_read_blocking` blocks tasks on empty pipes and wakes them on write/EOF; `ipc` selectively inherits pipe ends into child processes; `vfs_shmem_create`/`vfs_shmem_map` manage a shared memory region pool indexed by ID. |
 | **Networking** | Legacy PCI virtio-net driver for QEMU user networking, polling RX/TX virtqueues, Ethernet framing, ARP cache, IPv4, ICMP echo, UDP DNS queries, minimal TCP client sockets, userspace socket syscalls, HTTP/1.1, and verified TLS 1.3 HTTPS for the native browser/terminal path. |
 | **Kernel services** | Persistent kernel log buffer flushed to `/LOGS/KERNEL.TXT`, crash-screen log tail, central device registry for PCI/USB/system devices, package/app metadata and file associations, networking status, and ACPI power-control status foundation. |
-| **Applications** | Terminal, System Monitor, Text Viewer, Color Picker, File Manager, Web Browser, ring-3 Notes, Text Editor, Trash Bin, Screenshot, and GUI Demo. Text-file opens route into `/bin/editor <path>` with kernel viewer fallback. |
+| **Applications** | Terminal, System Monitor, Text Viewer, Color Picker, File Manager, Web Browser, ring-3 Notes, Text Editor, Trash Bin, Screenshot, and GUI Demo. Text-file opens route into `/bin/editor <path>` with kernel viewer fallback, while File Manager exposes explicit Open With Editor/Viewer actions. |
 | **Disk image** | `disk-image/src/fs_image.rs` builds `fs.img` (64 MiB FAT32) with `/COOLFS.IMG`, `/bin/hello.txt`, `/bin/hello`, `/bin/exec`, `/bin/pipe`, `/bin/piperd`, `/bin/pipewr`, `/bin/keyecho`, `/bin/read`, `/bin/terminal`, `/bin/netdemo`, `/bin/wget`, `/bin/sdkdemo`, `/bin/guidemo`, `/bin/notes`, `/bin/editor`, `/bin/trash`, and `/bin/screenshot`. The Makefile attaches it to QEMU as the IDE slave. |
 
 ### Applications
@@ -87,15 +87,15 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | App | How to open | Description |
 | :-- | :---------- | :---------- |
 | **Terminal** | Launcher / right-click | Interactive shell. Type commands, press Enter. |
-| **System Monitor** | Right-click | Live CPU vendor, heap usage, uptime, scheduler counts, and USB/input status. |
+| **System Monitor** | Right-click | Live CPU vendor, heap usage, uptime, scheduler counts, USB/input status, and userspace app lifecycle controls for close, kill, and app path. |
 | **Text Viewer** | Right-click | Scrollable "About" doc; `j`/`k` to scroll. |
 | **Color Picker** | Right-click | Clickable 16-colour EGA palette grid. |
-| **File Manager** | Right-click / desktop icon | Browse and mutate the FAT32 disk image with breadcrumbs, recursive search, sorting, multi-select, clipboard copy/cut/paste, Trash-backed delete, properties, text editing, and ELF launch routing. |
+| **File Manager** | Right-click / desktop icon | Browse and mutate the FAT32 disk image with breadcrumbs, recursive search, sorting, multi-select, clipboard copy/cut/paste, Trash-backed delete, properties, inline text editing, Open With Editor/Viewer, and ELF launch routing. |
 | **Web Browser** | Launcher / desktop icon | Native HTTP/HTTPS/local-file browser with address/search bar, redirects, decoded chunked responses, headings/lists/quotes/tables, direct and HTML-sourced inline PNG previews, clickable links, session history, visible TLS trust-root status, and persistent bookmarks. |
 | **Trash Bin** | Launcher / desktop icon / `exec /bin/trash` | Ring-3 GUI utility that lists deleted items staged in `/Trash` and can permanently empty them. |
 | **Screenshot** | Launcher / desktop icon / `exec /bin/screenshot` | Ring-3 GUI utility that queues a focused-window PPM capture to `/Pictures`. |
-| **Notes** | Launcher / desktop icon / `exec /bin/notes` | Ring-3 persistent scratchpad backed by `/documents/notes.txt`. |
-| **Text Editor** | Launcher / desktop icon / `exec /bin/editor [path]` | Ring-3 persistent text editor backed by `/documents/editor.txt` by default, or any absolute file path passed as argv, with save and cursor controls. |
+| **Notes** | Launcher / desktop icon / `exec /bin/notes [path]` | Ring-3 scratchpad backed by `/documents/notes.txt` by default, with New, Open, Save, and Save As document flow. |
+| **Text Editor** | Launcher / desktop icon / `exec /bin/editor [path]` | Ring-3 text editor backed by `/documents/editor.txt` by default, or any absolute file path passed as argv, with New, Open, Save, Save As, and cursor controls. |
 | **GUI Demo** | Launcher / `exec /bin/guidemo` | First ring-3 windowed app. It opens a compositor window, presents its own pixel buffer, and polls keyboard/mouse/close events through `libcool::gui`. |
 
 ### Desktop shortcuts
@@ -243,7 +243,7 @@ vfs.rs           VFS — task-local fd tables over shared file/pipe/shmem object
     window.rs      Window struct — back-buffer, hit tests
   apps/
     terminal.rs    TerminalApp — keyboard input, shell commands, text render
-    sysmon.rs      SysMonApp   — live CPU/heap/uptime/scheduler display
+    sysmon.rs      SysMonApp   — live CPU/heap/uptime/scheduler/app lifecycle controls
     textviewer.rs  TextViewerApp — scrollable static text
     colorpicker.rs ColorPickerApp — clickable EGA palette swatches
     usergui.rs     UserGuiApp — compositor-owned window/surface/event queue for ring-3 apps
@@ -374,5 +374,6 @@ faults still panic.
 | 21 | Userspace GUI runtime — window/surface/event syscalls and `/bin/guidemo` | **Done** |
 | 22 | Userspace utility suite — Notes, Editor, Trash, Screenshot as ring-3 apps | **Done** |
 | 23 | App lifecycle + file-open plumbing — process/window ownership, close cleanup, editor argv routing | **Done** |
+| 24 | App platform polish — editor document flow, File Manager Open With, System Monitor lifecycle controls, deterministic utility smokes | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

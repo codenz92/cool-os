@@ -14,7 +14,7 @@ pub use colorpicker::ColorPickerApp;
 pub use displaysettings::DisplaySettingsApp;
 pub use filemanager::{FileManagerApp, FileManagerOpenRequest};
 pub use personalize::PersonalizeApp;
-pub use sysmon::SysMonApp;
+pub use sysmon::{SysMonApp, SysMonRequest};
 pub use terminal::TerminalApp;
 pub use textviewer::TextViewerApp;
 pub use usergui::UserGuiApp;

@@ -896,6 +896,15 @@ impl FileManagerApp {
                 .unwrap_or(false)
     }
 
+    pub(super) fn entry_can_open_with(&self, idx: usize) -> bool {
+        matches!(self.entry_kind(idx), EntryKind::Fs)
+            && self
+                .entries
+                .get(idx)
+                .map(|entry| !entry.is_dir)
+                .unwrap_or(false)
+    }
+
     pub(super) fn ensure_current_dir_exists(&self) -> Result<(), &'static str> {
         if self.path == "/" || crate::vfs::vfs_list_dir(&self.path).is_some() {
             return Ok(());
@@ -910,6 +919,10 @@ impl FileManagerApp {
         let mut items = Vec::new();
         if let Some(idx) = target {
             items.push(("Open", ContextAction::Open));
+            if self.entry_can_open_with(idx) {
+                items.push(("Open With Editor", ContextAction::OpenWithEditor));
+                items.push(("Open With Viewer", ContextAction::OpenWithViewer));
+            }
             if matches!(self.entry_kind(idx), EntryKind::Fs) {
                 items.push(("Copy", ContextAction::Copy));
                 items.push(("Cut", ContextAction::Cut));
@@ -967,6 +980,26 @@ impl FileManagerApp {
                 if let Some(idx) = target {
                     self.set_selected_single(idx);
                     self.open_selected();
+                }
+            }
+            ContextAction::OpenWithEditor => {
+                if let Some(idx) = target {
+                    self.set_selected_single(idx);
+                    if self.entry_can_open_with(idx) {
+                        let abs = self.make_abs(idx);
+                        crate::app_lifecycle::record_file(&abs);
+                        self.pending_open = Some(FileManagerOpenRequest::File(abs));
+                    }
+                }
+            }
+            ContextAction::OpenWithViewer => {
+                if let Some(idx) = target {
+                    self.set_selected_single(idx);
+                    if self.entry_can_open_with(idx) {
+                        let abs = self.make_abs(idx);
+                        crate::app_lifecycle::record_file(&abs);
+                        self.pending_open = Some(FileManagerOpenRequest::ViewFile(abs));
+                    }
                 }
             }
             ContextAction::Copy => {

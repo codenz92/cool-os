@@ -764,6 +764,35 @@ the ring-3 editor against the selected path.
 
 ---
 
+## ✅ Phase 24 — App Platform Polish + File Dialogs
+
+**Goal:** Make the Phase 22/23 utility apps feel like managed desktop
+applications: document-oriented editor flows, explicit open-with actions,
+desktop-visible lifecycle controls, and less flaky typed QEMU utility smokes.
+
+- [x] Add New, Open, Save, and Save As document flow to the shared userspace
+      editor implementation used by Notes and Text Editor.
+- [x] Keep `/bin/editor <path>` and `/bin/notes <path>` argv loading while
+      allowing newly-created untitled buffers to choose a save path before
+      writing.
+- [x] Add File Manager context-menu Open With Editor and Open With Viewer
+      actions, with compositor routing for direct viewer opens.
+- [x] Promote app lifecycle data into System Monitor with selected running app,
+      executable path, recent exit status, and Close/Kill/Path controls.
+- [x] Route System Monitor close/kill/path requests through the compositor so
+      close remains polite for userspace GUI windows and kill uses the scheduler
+      termination path.
+- [x] Add QEMU `fw_cfg` smoke command injection plus bounded retry support in
+      `scripts/qemu_smoke.py` so userspace utility smokes no longer depend on
+      HMP keyboard delivery through the emulated USB input path.
+
+**Current status:** complete. Notes and Text Editor now have file-dialog-style
+path prompts, File Manager can open files explicitly in either editor or viewer,
+System Monitor can manage running userspace GUI apps, and the utility smoke
+target now launches commands through deterministic QEMU `fw_cfg` injection.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -802,4 +831,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v5.4 | Phase 20 complete: userspace SDK foundation |
 | v5.5 | Phase 21 complete: userspace GUI runtime |
 | v5.6 | Phase 22 complete: userspace utility suite |
-| v5.7 | Current — Phase 23 complete: app lifecycle and file-open plumbing |
+| v5.7 | Phase 23 complete: app lifecycle and file-open plumbing |
+| v5.8 | Current — Phase 24 complete: app platform polish and file dialogs |

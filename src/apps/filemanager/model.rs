@@ -169,6 +169,8 @@ enum EntryKind {
 #[derive(Clone, Copy)]
 enum ContextAction {
     Open,
+    OpenWithEditor,
+    OpenWithViewer,
     Copy,
     Cut,
     Paste,
@@ -309,6 +311,7 @@ struct ClipboardState {
 pub enum FileManagerOpenRequest {
     Dir(String),
     File(String),
+    ViewFile(String),
     Exec(String),
     App(&'static str),
 }

@@ -9,6 +9,7 @@ pub const HEIGHT: usize = 252;
 pub const PIXELS: usize = WIDTH * HEIGHT;
 pub const MAX_TEXT: usize = 8192;
 pub const LIST_BYTES: usize = 4096;
+const MAX_PATH: usize = 192;
 
 const BG: u32 = 0x0003_0712;
 const PANEL: u32 = 0x0005_1324;
@@ -28,8 +29,27 @@ const LINE_H: i32 = 12;
 const PAD: i32 = 16;
 const BUTTON_Y: i32 = 48;
 const BUTTON_H: i32 = 22;
+const BTN_NEW_X: i32 = 18;
+const BTN_OPEN_X: i32 = 74;
+const BTN_SAVE_X: i32 = 140;
+const BTN_SAVE_AS_X: i32 = 206;
+const BTN_CURSOR_X: i32 = 286;
+const UNTITLED_PATH: &[u8] = b"/documents/untitled.txt";
 
 static SMOKE_MODE: AtomicU8 = AtomicU8::new(0);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PathPromptMode {
+    None,
+    Open,
+    SaveAs,
+}
+
+enum PathPromptResult {
+    None,
+    Cancel,
+    Commit(PathPromptMode),
+}
 
 pub fn run_editor(
     args: Args,
@@ -41,10 +61,17 @@ pub fn run_editor(
     seed: &'static [u8],
 ) -> ! {
     set_smoke_mode(args);
-    let path = editor_path_arg(args, default_path);
+    let initial_path = editor_path_arg(args, default_path);
+    let mut path_buf = [0u8; MAX_PATH];
+    let mut path_len = copy_path(&mut path_buf, initial_path);
+    let mut prompt_buf = [0u8; MAX_PATH];
+    let mut prompt_len = 0usize;
+    let mut path_mode = PathPromptMode::None;
     let _ = fs::create_dir(b"/documents");
 
-    let mut len = fs::read_file(path, text).unwrap_or(0).min(text.len());
+    let mut len = fs::read_file(&path_buf[..path_len], text)
+        .unwrap_or(0)
+        .min(text.len());
     let mut cursor = len;
     let mut scroll = 0usize;
     let mut status = if len == 0 {
@@ -63,12 +90,23 @@ pub fn run_editor(
         if insert_bytes(text, &mut len, &mut cursor, seed) {
             status = b"smoke text inserted";
         }
-        match fs::write_file(path, &text[..len]) {
-            Ok(()) => log_path(label, b"saved", path),
-            Err(_) => log_path(label, b"save failed", path),
+        match fs::write_file(&path_buf[..path_len], &text[..len]) {
+            Ok(()) => log_path(label, b"saved", &path_buf[..path_len]),
+            Err(_) => log_path(label, b"save failed", &path_buf[..path_len]),
         }
         ensure_cursor_visible(text, len, cursor, &mut scroll);
-        draw_editor(pixels, title, path, text, len, cursor, scroll, status);
+        draw_editor(
+            pixels,
+            title,
+            &path_buf[..path_len],
+            text,
+            len,
+            cursor,
+            scroll,
+            status,
+            path_mode,
+            &prompt_buf[..prompt_len],
+        );
         let _ = window.present(pixels);
         sleep_ms(250);
         let _ = window.close();
@@ -76,7 +114,18 @@ pub fn run_editor(
     }
 
     ensure_cursor_visible(text, len, cursor, &mut scroll);
-    draw_editor(pixels, title, path, text, len, cursor, scroll, status);
+    draw_editor(
+        pixels,
+        title,
+        &path_buf[..path_len],
+        text,
+        len,
+        cursor,
+        scroll,
+        status,
+        path_mode,
+        &prompt_buf[..prompt_len],
+    );
     let _ = window.present(pixels);
 
     loop {
@@ -84,7 +133,19 @@ pub fn run_editor(
         loop {
             match window.poll_event() {
                 Ok(Some(gui::Event::Close)) => {
-                    let _ = fs::write_file(path, &text[..len]);
+                    if path_len > 0 {
+                        let _ = fs::write_file(&path_buf[..path_len], &text[..len]);
+                    } else if len > 0 {
+                        start_path_prompt(
+                            PathPromptMode::SaveAs,
+                            &mut path_mode,
+                            &mut prompt_buf,
+                            &mut prompt_len,
+                            UNTITLED_PATH,
+                        );
+                        status = b"save path";
+                        continue;
+                    }
                     let _ = window.close();
                     exit(0);
                 }
@@ -92,7 +153,56 @@ pub fn run_editor(
                     bytes,
                     len: key_len,
                 })) => {
-                    changed |= handle_editor_key(text, &mut len, &mut cursor, &bytes, key_len);
+                    if path_mode == PathPromptMode::None {
+                        changed |= handle_editor_key(text, &mut len, &mut cursor, &bytes, key_len);
+                    } else {
+                        match handle_path_prompt_key(
+                            &mut prompt_buf,
+                            &mut prompt_len,
+                            &bytes,
+                            key_len,
+                            path_mode,
+                        ) {
+                            PathPromptResult::None => {}
+                            PathPromptResult::Cancel => {
+                                path_mode = PathPromptMode::None;
+                                status = b"ready";
+                            }
+                            PathPromptResult::Commit(mode) => {
+                                if mode == PathPromptMode::Open {
+                                    match open_prompt_path(
+                                        &prompt_buf[..prompt_len],
+                                        text,
+                                        &mut len,
+                                        &mut cursor,
+                                        &mut scroll,
+                                    ) {
+                                        Ok(()) => {
+                                            path_len =
+                                                copy_path(&mut path_buf, &prompt_buf[..prompt_len]);
+                                            path_mode = PathPromptMode::None;
+                                            status = b"loaded";
+                                        }
+                                        Err(message) => status = message,
+                                    }
+                                } else {
+                                    match save_prompt_path(
+                                        &prompt_buf[..prompt_len],
+                                        text,
+                                        len,
+                                        &mut path_buf,
+                                        &mut path_len,
+                                    ) {
+                                        Ok(()) => {
+                                            path_mode = PathPromptMode::None;
+                                            status = b"saved as";
+                                        }
+                                        Err(message) => status = message,
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 Ok(Some(gui::Event::MouseDown { button, x, y })) => {
                     if button == 4 {
@@ -100,12 +210,48 @@ pub fn run_editor(
                     } else if button == 5 {
                         let max = visual_line_count(text, len).saturating_sub(editor_rows());
                         scroll = (scroll + 3).min(max);
-                    } else if hit(x, y, 18, BUTTON_Y, 72, BUTTON_H) {
-                        match fs::write_file(path, &text[..len]) {
-                            Ok(()) => status = b"saved",
-                            Err(_) => status = b"save failed",
+                    } else if path_mode != PathPromptMode::None {
+                    } else if hit(x, y, BTN_NEW_X, BUTTON_Y, 48, BUTTON_H) {
+                        len = 0;
+                        cursor = 0;
+                        scroll = 0;
+                        path_len = 0;
+                        status = b"new document";
+                    } else if hit(x, y, BTN_OPEN_X, BUTTON_Y, 58, BUTTON_H) {
+                        start_path_prompt(
+                            PathPromptMode::Open,
+                            &mut path_mode,
+                            &mut prompt_buf,
+                            &mut prompt_len,
+                            path_or_documents(&path_buf[..path_len]),
+                        );
+                        status = b"open path";
+                    } else if hit(x, y, BTN_SAVE_X, BUTTON_Y, 58, BUTTON_H) {
+                        if path_len == 0 {
+                            start_path_prompt(
+                                PathPromptMode::SaveAs,
+                                &mut path_mode,
+                                &mut prompt_buf,
+                                &mut prompt_len,
+                                UNTITLED_PATH,
+                            );
+                            status = b"save path";
+                        } else {
+                            match fs::write_file(&path_buf[..path_len], &text[..len]) {
+                                Ok(()) => status = b"saved",
+                                Err(_) => status = b"save failed",
+                            }
                         }
-                    } else if hit(x, y, 100, BUTTON_Y, 92, BUTTON_H) {
+                    } else if hit(x, y, BTN_SAVE_AS_X, BUTTON_Y, 72, BUTTON_H) {
+                        start_path_prompt(
+                            PathPromptMode::SaveAs,
+                            &mut path_mode,
+                            &mut prompt_buf,
+                            &mut prompt_len,
+                            path_or_untitled(&path_buf[..path_len]),
+                        );
+                        status = b"save path";
+                    } else if hit(x, y, BTN_CURSOR_X, BUTTON_Y, 78, BUTTON_H) {
                         cursor = cursor_from_click(text, len, scroll, x, y);
                     }
                 }
@@ -120,13 +266,28 @@ pub fn run_editor(
         }
 
         if changed {
-            match fs::write_file(path, &text[..len]) {
-                Ok(()) => status = b"saved",
-                Err(_) => status = b"save failed",
+            if path_len == 0 {
+                status = b"edited";
+            } else {
+                match fs::write_file(&path_buf[..path_len], &text[..len]) {
+                    Ok(()) => status = b"saved",
+                    Err(_) => status = b"save failed",
+                }
             }
         }
         ensure_cursor_visible(text, len, cursor, &mut scroll);
-        draw_editor(pixels, title, path, text, len, cursor, scroll, status);
+        draw_editor(
+            pixels,
+            title,
+            &path_buf[..path_len],
+            text,
+            len,
+            cursor,
+            scroll,
+            status,
+            path_mode,
+            &prompt_buf[..prompt_len],
+        );
         let _ = window.present(pixels);
         sleep_ms(25);
     }
@@ -301,11 +462,32 @@ fn draw_editor(
     cursor: usize,
     scroll: usize,
     status: &[u8],
+    path_mode: PathPromptMode,
+    prompt: &[u8],
 ) {
     let mut canvas = gui::Canvas::new(&mut pixels[..], WIDTH, HEIGHT);
     draw_base(&mut canvas, title, path);
-    button(&mut canvas, 18, BUTTON_Y, 72, BUTTON_H, "Save", GREEN);
-    button(&mut canvas, 100, BUTTON_Y, 92, BUTTON_H, "Cursor", CYAN);
+    button(&mut canvas, BTN_NEW_X, BUTTON_Y, 48, BUTTON_H, "New", CYAN);
+    button(&mut canvas, BTN_OPEN_X, BUTTON_Y, 58, BUTTON_H, "Open", CYAN);
+    button(&mut canvas, BTN_SAVE_X, BUTTON_Y, 58, BUTTON_H, "Save", GREEN);
+    button(
+        &mut canvas,
+        BTN_SAVE_AS_X,
+        BUTTON_Y,
+        72,
+        BUTTON_H,
+        "Save As",
+        GREEN,
+    );
+    button(
+        &mut canvas,
+        BTN_CURSOR_X,
+        BUTTON_Y,
+        78,
+        BUTTON_H,
+        "Cursor",
+        CYAN,
+    );
     panel(
         &mut canvas,
         PAD,
@@ -332,6 +514,10 @@ fn draw_editor(
         let x = PAD + 6 + cursor_col.min(editor_cols()) as i32 * 8;
         let y = TEXT_Y + 8 + (cursor_row - scroll) as i32 * LINE_H;
         canvas.rect(x, y, 2, 10, YELLOW);
+    }
+
+    if path_mode != PathPromptMode::None {
+        draw_path_prompt(&mut canvas, path_mode, prompt);
     }
 
     footer(&mut canvas, status);
@@ -409,7 +595,33 @@ fn draw_base(canvas: &mut gui::Canvas<'_>, title: &str, path: &[u8]) {
     canvas.rect(0, HEADER_H - 1, WIDTH as i32, 1, BORDER);
     canvas.rect(0, FOOTER_Y - 1, WIDTH as i32, 1, BORDER);
     canvas.text(PAD, 14, title, WHITE);
-    draw_bytes(canvas, PAD, 30, path, MUTED);
+    if path.is_empty() {
+        draw_bytes(canvas, PAD, 30, b"(untitled)", MUTED);
+    } else {
+        draw_bytes(canvas, PAD, 30, path, MUTED);
+    }
+}
+
+fn draw_path_prompt(canvas: &mut gui::Canvas<'_>, mode: PathPromptMode, prompt: &[u8]) {
+    let box_x = PAD + 12;
+    let box_y = TEXT_Y + 22;
+    let box_w = WIDTH as i32 - PAD * 2 - 24;
+    panel(canvas, box_x, box_y, box_w, 58);
+    canvas.text(box_x + 10, box_y + 10, path_prompt_label(mode), YELLOW);
+    canvas.rect(box_x + 10, box_y + 30, box_w - 20, 18, PANEL_ALT);
+    canvas.border(box_x + 10, box_y + 30, box_w - 20, 18, BORDER);
+    draw_bytes(canvas, box_x + 16, box_y + 35, prompt, WHITE);
+    let max_cursor = ((box_w - 32) / 8).max(0) as usize;
+    let cursor_x = box_x + 16 + prompt.len().min(max_cursor) as i32 * 8;
+    canvas.rect(cursor_x, box_y + 34, 2, 11, CYAN);
+}
+
+fn path_prompt_label(mode: PathPromptMode) -> &'static str {
+    match mode {
+        PathPromptMode::Open => "Open document",
+        PathPromptMode::SaveAs => "Save document as",
+        PathPromptMode::None => "Document path",
+    }
 }
 
 fn button(canvas: &mut gui::Canvas<'_>, x: i32, y: i32, w: i32, h: i32, label: &str, accent: u32) {
@@ -490,6 +702,108 @@ fn handle_editor_key(
             insert_bytes(text, len, cursor, &[code as u8])
         }
         _ => false,
+    }
+}
+
+fn handle_path_prompt_key(
+    prompt: &mut [u8; MAX_PATH],
+    len: &mut usize,
+    bytes: &[u8; 4],
+    key_len: usize,
+    mode: PathPromptMode,
+) -> PathPromptResult {
+    match key_code(bytes, key_len) {
+        Some(27) => PathPromptResult::Cancel,
+        Some(8) | Some(127) => {
+            *len = len.saturating_sub(1);
+            PathPromptResult::None
+        }
+        Some(code) if code == b'\n' as u32 => PathPromptResult::Commit(mode),
+        Some(code) if (0x20..=0x7e).contains(&code) => {
+            if *len < prompt.len() {
+                prompt[*len] = code as u8;
+                *len += 1;
+            }
+            PathPromptResult::None
+        }
+        _ => PathPromptResult::None,
+    }
+}
+
+fn start_path_prompt(
+    mode: PathPromptMode,
+    active_mode: &mut PathPromptMode,
+    prompt: &mut [u8; MAX_PATH],
+    prompt_len: &mut usize,
+    seed: &[u8],
+) {
+    *active_mode = mode;
+    *prompt_len = copy_path(prompt, seed);
+}
+
+fn open_prompt_path(
+    target: &[u8],
+    text: &mut [u8; MAX_TEXT],
+    len: &mut usize,
+    cursor: &mut usize,
+    scroll: &mut usize,
+) -> core::result::Result<(), &'static [u8]> {
+    if !is_absolute_path(target) {
+        return Err(b"path must start with /");
+    }
+    match fs::read_file(target, text) {
+        Ok(next_len) => {
+            *len = next_len.min(text.len());
+            *cursor = *len;
+            *scroll = 0;
+            Ok(())
+        }
+        Err(_) => Err(b"open failed"),
+    }
+}
+
+fn save_prompt_path(
+    target: &[u8],
+    text: &[u8; MAX_TEXT],
+    len: usize,
+    path: &mut [u8; MAX_PATH],
+    path_len: &mut usize,
+) -> core::result::Result<(), &'static [u8]> {
+    if !is_absolute_path(target) {
+        return Err(b"path must start with /");
+    }
+    match fs::write_file(target, &text[..len]) {
+        Ok(()) => {
+            *path_len = copy_path(path, target);
+            Ok(())
+        }
+        Err(_) => Err(b"save failed"),
+    }
+}
+
+fn is_absolute_path(path: &[u8]) -> bool {
+    path.first() == Some(&b'/') && path.len() < MAX_PATH
+}
+
+fn copy_path(dst: &mut [u8; MAX_PATH], src: &[u8]) -> usize {
+    let len = src.len().min(dst.len());
+    dst[..len].copy_from_slice(&src[..len]);
+    len
+}
+
+fn path_or_documents(path: &[u8]) -> &[u8] {
+    if path.is_empty() {
+        b"/documents/"
+    } else {
+        path
+    }
+}
+
+fn path_or_untitled(path: &[u8]) -> &[u8] {
+    if path.is_empty() {
+        UNTITLED_PATH
+    } else {
+        path
     }
 }
 

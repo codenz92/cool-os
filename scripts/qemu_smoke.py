@@ -16,6 +16,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bios", required=True, help="Path to bios.img")
     parser.add_argument("--fsimg", required=True, help="Path to fs.img")
     parser.add_argument("--seconds", type=float, default=6.0, help="How long to let QEMU run")
+    parser.add_argument(
+        "--retries",
+        type=int,
+        default=0,
+        help="Retry the whole QEMU smoke run this many times after a failure",
+    )
+    parser.add_argument(
+        "--retry-delay",
+        type=float,
+        default=1.0,
+        help="Seconds to wait between smoke retries",
+    )
     parser.add_argument("--memory", default="512M", help="QEMU memory size, e.g. 256M")
     parser.add_argument(
         "--cpu",
@@ -78,6 +90,10 @@ def parse_args() -> argparse.Namespace:
         action="append",
         default=[],
         help="QEMU HMP monitor command to run after typed text; useful for delayed Enter submits",
+    )
+    parser.add_argument(
+        "--fw-cmd",
+        help="Terminal command exposed to the guest through QEMU fw_cfg opt/coolos/smoke",
     )
     parser.add_argument(
         "--interact-after",
@@ -150,6 +166,8 @@ def build_command(args: argparse.Namespace, monitor_socket: str | None = None) -
                 "virtio-net-pci,netdev=net0,disable-modern=on,disable-legacy=off",
             ]
         )
+    if args.fw_cmd:
+        cmd.extend(["-fw_cfg", f"name=opt/coolos/smoke,string={args.fw_cmd}"])
     return cmd
 
 
@@ -428,13 +446,15 @@ def stop_qemu(proc: subprocess.Popen[bytes], reader_thread: threading.Thread) ->
     reader_thread.join(timeout=1.0)
 
 
-def main() -> int:
-    args = parse_args()
+def run_once(args: argparse.Namespace, attempt: int) -> int:
     monitor_socket = None
     if args.artifact_dir:
         os.makedirs(args.artifact_dir, exist_ok=True)
     if args.screendump or args.hmp or args.type_text or args.post_type_hmp:
-        monitor_socket = os.path.join(tempfile.gettempdir(), f"cool-os-qemu-{os.getpid()}.sock")
+        monitor_socket = os.path.join(
+            tempfile.gettempdir(),
+            f"cool-os-qemu-{os.getpid()}-{attempt}.sock",
+        )
         try:
             os.unlink(monitor_socket)
         except FileNotFoundError:
@@ -554,6 +574,26 @@ def main() -> int:
         print(f"smoke ok after {elapsed:.1f}s", flush=True)
     write_artifacts(args, cmd, output, "ok")
     return 0
+
+
+def main() -> int:
+    args = parse_args()
+    attempts = max(1, args.retries + 1)
+    last_result = 1
+    for attempt in range(1, attempts + 1):
+        if attempts > 1:
+            print(f"smoke attempt {attempt}/{attempts}", flush=True)
+        last_result = run_once(args, attempt)
+        if last_result == 0:
+            return 0
+        if attempt < attempts:
+            print(
+                f"smoke attempt {attempt} failed with status {last_result}; retrying",
+                file=sys.stderr,
+                flush=True,
+            )
+            time.sleep(max(0.0, args.retry_delay))
+    return last_result
 
 
 if __name__ == "__main__":
