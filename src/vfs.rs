@@ -37,18 +37,18 @@ pub struct PathInfo {
 const MOUNTS: [MountInfo; 5] = [
     MountInfo {
         prefix: "/",
-        fs_type: "fat32",
-        flags: "rw,relatime,normalized-paths",
+        fs_type: "coolfs",
+        flags: "rw,native-root,normalized-paths",
     },
     MountInfo {
-        prefix: "/COOL",
-        fs_type: "coolfs",
-        flags: "rw,native-image,bitmap-inodes",
+        prefix: "/FAT",
+        fs_type: "fat32",
+        flags: "rw,legacy-container",
     },
     MountInfo {
         prefix: "/DEV",
         fs_type: "devfs",
-        flags: "ro,generated",
+        flags: "rw,generated-nodes",
     },
     MountInfo {
         prefix: "/APPS",
@@ -57,7 +57,7 @@ const MOUNTS: [MountInfo; 5] = [
     },
     MountInfo {
         prefix: "/LOGS",
-        fs_type: "fat32",
+        fs_type: "coolfs",
         flags: "rw,persistent",
     },
 ];
@@ -338,31 +338,7 @@ pub fn inspect_path(path: &str) -> PathInfo {
             size: 0,
         };
     }
-    if let Some(cool_path) = coolfs_path(&path) {
-        if crate::coolfs::list_dir(&cool_path).is_some() {
-            return PathInfo {
-                path,
-                mount,
-                kind: PathKind::Directory,
-                size: 0,
-            };
-        }
-        if let Some(bytes) = crate::coolfs::read_file(&cool_path) {
-            return PathInfo {
-                path,
-                mount,
-                kind: PathKind::File,
-                size: bytes.len() as u64,
-            };
-        }
-        return PathInfo {
-            path,
-            mount,
-            kind: PathKind::Missing,
-            size: 0,
-        };
-    }
-    if crate::fat32::list_dir(&path).is_some() {
+    if list_dir_unchecked(&path).is_some() {
         return PathInfo {
             path,
             mount,
@@ -370,7 +346,7 @@ pub fn inspect_path(path: &str) -> PathInfo {
             size: 0,
         };
     }
-    if let Some(bytes) = crate::fat32::read_file(&path) {
+    if let Some(bytes) = read_file_unchecked(&path) {
         return PathInfo {
             path,
             mount,
@@ -432,10 +408,7 @@ pub fn vfs_list_dir(path: &str) -> Option<Vec<crate::fat32::DirEntryInfo>> {
     if !crate::security::can_read_path(&path) {
         return None;
     }
-    if let Some(cool_path) = coolfs_path(&path) {
-        return crate::coolfs::list_dir(&cool_path);
-    }
-    crate::fat32::list_dir(&path)
+    list_dir_unchecked(&path)
 }
 
 pub fn vfs_read_file(path: &str) -> Option<Vec<u8>> {
@@ -443,10 +416,7 @@ pub fn vfs_read_file(path: &str) -> Option<Vec<u8>> {
     if !crate::security::can_read_path(&path) {
         return None;
     }
-    if let Some(cool_path) = coolfs_path(&path) {
-        return crate::coolfs::read_file(&cool_path);
-    }
-    crate::fat32::read_file(&path)
+    read_file_unchecked(&path)
 }
 
 pub fn vfs_create_file(path: &str) -> Result<(), crate::fat32::FsError> {
@@ -454,10 +424,7 @@ pub fn vfs_create_file(path: &str) -> Result<(), crate::fat32::FsError> {
     if !crate::security::can_write_path(&path) {
         return Err(crate::fat32::FsError::PermissionDenied);
     }
-    if let Some(cool_path) = coolfs_path(&path) {
-        return crate::coolfs::create_file(&cool_path);
-    }
-    crate::fat32::create_file(&path)
+    create_file_unchecked(&path)
 }
 
 pub fn vfs_create_dir(path: &str) -> Result<(), crate::fat32::FsError> {
@@ -465,10 +432,7 @@ pub fn vfs_create_dir(path: &str) -> Result<(), crate::fat32::FsError> {
     if !crate::security::can_write_path(&path) {
         return Err(crate::fat32::FsError::PermissionDenied);
     }
-    if let Some(cool_path) = coolfs_path(&path) {
-        return crate::coolfs::create_dir(&cool_path);
-    }
-    crate::fat32::create_dir(&path)
+    create_dir_unchecked(&path)
 }
 
 #[allow(dead_code)]
@@ -477,10 +441,7 @@ pub fn vfs_write_file(path: &str, data: &[u8]) -> Result<(), crate::fat32::FsErr
     if !crate::security::can_write_path(&path) {
         return Err(crate::fat32::FsError::PermissionDenied);
     }
-    if let Some(cool_path) = coolfs_path(&path) {
-        return crate::coolfs::write_file(&cool_path, data);
-    }
-    crate::fat32::write_file(&path, data)
+    write_file_unchecked(&path, data)
 }
 
 #[allow(dead_code)]
@@ -489,10 +450,7 @@ pub fn vfs_safe_write_file(path: &str, data: &[u8]) -> Result<(), crate::fat32::
     if !crate::security::can_write_path(&path) {
         return Err(crate::fat32::FsError::PermissionDenied);
     }
-    if let Some(cool_path) = coolfs_path(&path) {
-        return crate::coolfs::safe_write_file(&cool_path, data);
-    }
-    crate::fat32::safe_write_file(&path, data)
+    safe_write_file_unchecked(&path, data)
 }
 
 pub fn vfs_delete(path: &str) -> Result<(), crate::fat32::FsError> {
@@ -500,10 +458,7 @@ pub fn vfs_delete(path: &str) -> Result<(), crate::fat32::FsError> {
     if !crate::security::can_write_path(&path) {
         return Err(crate::fat32::FsError::PermissionDenied);
     }
-    if let Some(cool_path) = coolfs_path(&path) {
-        return crate::coolfs::delete_file(&cool_path);
-    }
-    crate::fat32::delete_file(&path)
+    delete_unchecked(&path)
 }
 
 pub fn vfs_delete_recursive(path: &str) -> Result<(), crate::fat32::FsError> {
@@ -530,10 +485,7 @@ pub fn vfs_rename(path: &str, new_name: &str) -> Result<(), crate::fat32::FsErro
     if !crate::security::can_write_path(&path) {
         return Err(crate::fat32::FsError::PermissionDenied);
     }
-    if let Some(cool_path) = coolfs_path(&path) {
-        return crate::coolfs::rename(&cool_path, new_name);
-    }
-    crate::fat32::rename(&path, new_name)
+    rename_unchecked(&path, new_name)
 }
 
 pub fn vfs_copy_file(src: &str, dst: &str) -> Result<(), crate::fat32::FsError> {
@@ -542,30 +494,136 @@ pub fn vfs_copy_file(src: &str, dst: &str) -> Result<(), crate::fat32::FsError> 
     if !crate::security::can_read_path(&src) || !crate::security::can_write_path(&dst) {
         return Err(crate::fat32::FsError::PermissionDenied);
     }
-    match (coolfs_path(&src), coolfs_path(&dst)) {
-        (Some(src), Some(dst)) => crate::coolfs::copy_file(&src, &dst),
-        (None, None) => crate::fat32::copy_file(&src, &dst),
+    copy_file_unchecked(&src, &dst)
+}
+
+pub fn vfs_kernel_list_dir(path: &str) -> Option<Vec<crate::fat32::DirEntryInfo>> {
+    let path = normalize_path(path);
+    list_dir_unchecked(&path)
+}
+
+pub fn vfs_kernel_read_file(path: &str) -> Option<Vec<u8>> {
+    let path = normalize_path(path);
+    read_file_unchecked(&path)
+}
+
+pub fn vfs_kernel_create_file(path: &str) -> Result<(), crate::fat32::FsError> {
+    let path = normalize_path(path);
+    create_file_unchecked(&path)
+}
+
+pub fn vfs_kernel_create_dir(path: &str) -> Result<(), crate::fat32::FsError> {
+    let path = normalize_path(path);
+    create_dir_unchecked(&path)
+}
+
+#[allow(dead_code)]
+pub fn vfs_kernel_write_file(path: &str, data: &[u8]) -> Result<(), crate::fat32::FsError> {
+    let path = normalize_path(path);
+    write_file_unchecked(&path, data)
+}
+
+pub fn vfs_kernel_safe_write_file(path: &str, data: &[u8]) -> Result<(), crate::fat32::FsError> {
+    let path = normalize_path(path);
+    safe_write_file_unchecked(&path, data)
+}
+
+pub fn vfs_kernel_delete(path: &str) -> Result<(), crate::fat32::FsError> {
+    let path = normalize_path(path);
+    delete_unchecked(&path)
+}
+
+#[allow(dead_code)]
+pub fn vfs_kernel_rename(path: &str, new_name: &str) -> Result<(), crate::fat32::FsError> {
+    let path = normalize_path(path);
+    rename_unchecked(&path, new_name)
+}
+
+#[allow(dead_code)]
+pub fn vfs_kernel_copy_file(src: &str, dst: &str) -> Result<(), crate::fat32::FsError> {
+    let src = normalize_path(src);
+    let dst = normalize_path(dst);
+    copy_file_unchecked(&src, &dst)
+}
+
+fn list_dir_unchecked(path: &str) -> Option<Vec<crate::fat32::DirEntryInfo>> {
+    if let Some(fat_path) = fat32_path(path) {
+        return crate::fat32::list_dir(&fat_path);
+    }
+    crate::coolfs::list_dir(path)
+}
+
+fn read_file_unchecked(path: &str) -> Option<Vec<u8>> {
+    if let Some(fat_path) = fat32_path(path) {
+        return crate::fat32::read_file(&fat_path);
+    }
+    crate::coolfs::read_file(path)
+}
+
+fn create_file_unchecked(path: &str) -> Result<(), crate::fat32::FsError> {
+    if let Some(fat_path) = fat32_path(path) {
+        return crate::fat32::create_file(&fat_path);
+    }
+    crate::coolfs::create_file(path)
+}
+
+fn create_dir_unchecked(path: &str) -> Result<(), crate::fat32::FsError> {
+    if let Some(fat_path) = fat32_path(path) {
+        return crate::fat32::create_dir(&fat_path);
+    }
+    crate::coolfs::create_dir(path)
+}
+
+fn write_file_unchecked(path: &str, data: &[u8]) -> Result<(), crate::fat32::FsError> {
+    if let Some(fat_path) = fat32_path(path) {
+        return crate::fat32::write_file(&fat_path, data);
+    }
+    crate::coolfs::write_file(path, data)
+}
+
+fn safe_write_file_unchecked(path: &str, data: &[u8]) -> Result<(), crate::fat32::FsError> {
+    if let Some(fat_path) = fat32_path(path) {
+        return crate::fat32::safe_write_file(&fat_path, data);
+    }
+    crate::coolfs::safe_write_file(path, data)
+}
+
+fn delete_unchecked(path: &str) -> Result<(), crate::fat32::FsError> {
+    if let Some(fat_path) = fat32_path(path) {
+        return crate::fat32::delete_file(&fat_path);
+    }
+    crate::coolfs::delete_file(path)
+}
+
+fn rename_unchecked(path: &str, new_name: &str) -> Result<(), crate::fat32::FsError> {
+    if let Some(fat_path) = fat32_path(path) {
+        return crate::fat32::rename(&fat_path, new_name);
+    }
+    crate::coolfs::rename(path, new_name)
+}
+
+fn copy_file_unchecked(src: &str, dst: &str) -> Result<(), crate::fat32::FsError> {
+    match (fat32_path(src), fat32_path(dst)) {
+        (Some(src), Some(dst)) => crate::fat32::copy_file(&src, &dst),
+        (None, None) => crate::coolfs::copy_file(src, dst),
         _ => {
-            let data = vfs_read_file(&src).ok_or(crate::fat32::FsError::NotFound)?;
-            vfs_create_file(&dst)?;
-            vfs_write_file(&dst, &data)
+            let data = read_file_unchecked(src).ok_or(crate::fat32::FsError::NotFound)?;
+            create_file_unchecked(dst)?;
+            write_file_unchecked(dst, &data)
         }
     }
 }
 
-fn coolfs_path(path: &str) -> Option<String> {
-    if path == crate::coolfs::MOUNT_PATH {
+fn fat32_path(path: &str) -> Option<String> {
+    if path == "/FAT" {
         return Some(String::from("/"));
     }
-    let mut prefix = String::from(crate::coolfs::MOUNT_PATH);
-    prefix.push('/');
-    if path.starts_with(&prefix) {
+    if let Some(rest) = path.strip_prefix("/FAT/") {
         let mut out = String::from("/");
-        out.push_str(&path[prefix.len()..]);
-        Some(out)
-    } else {
-        None
+        out.push_str(rest);
+        return Some(out);
     }
+    None
 }
 
 fn join_path(parent: &str, name: &str) -> String {

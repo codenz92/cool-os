@@ -11,7 +11,6 @@ static LOG_LINES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 pub fn init() {
     log("kernel log initialized");
-    let _ = flush_to_disk();
 }
 
 pub fn log(message: &str) {
@@ -43,8 +42,8 @@ pub fn flush_to_disk() -> Result<(), crate::fat32::FsError> {
     {
         return Ok(());
     }
-    let _ = crate::fat32::create_dir(LOG_DIR);
-    match crate::fat32::create_file(LOG_PATH) {
+    let _ = crate::vfs::vfs_kernel_create_dir(LOG_DIR);
+    match crate::vfs::vfs_kernel_create_file(LOG_PATH) {
         Ok(()) | Err(crate::fat32::FsError::AlreadyExists) => {}
         Err(err) => return Err(err),
     }
@@ -55,7 +54,7 @@ pub fn flush_to_disk() -> Result<(), crate::fat32::FsError> {
         out.push_str(line);
         out.push('\n');
     }
-    crate::fat32::safe_write_file(LOG_PATH, out.as_bytes())
+    crate::vfs::vfs_kernel_safe_write_file(LOG_PATH, out.as_bytes())
 }
 
 pub fn dump_to_console() {

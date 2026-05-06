@@ -93,7 +93,6 @@ pub fn load_from_disk() {
     }
 
     let Some(bytes) = crate::config_store::read(SETTINGS_PATH) else {
-        let _ = save_to_disk();
         return;
     };
     let Ok(text) = str::from_utf8(&bytes) else {

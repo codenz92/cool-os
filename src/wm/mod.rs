@@ -25,7 +25,9 @@ pub fn compose_if_needed() {
 }
 
 pub fn prepare() {
-    drop(compositor::WM.lock());
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        compositor::WM.initialize();
+    });
 }
 
 pub fn init() {
@@ -48,6 +50,19 @@ pub fn queue_startup_command(command: &str) {
     request_repaint();
 }
 
+pub fn queue_startup_command_immediate(command: &str) {
+    let command = command.trim();
+    if command.is_empty() {
+        return;
+    }
+    let mut pending = PENDING_STARTUP_COMMANDS.lock();
+    if pending.len() >= 16 {
+        pending.remove(0);
+    }
+    pending.push((String::from(command), crate::interrupts::ticks()));
+    request_repaint();
+}
+
 pub(crate) fn take_startup_command() -> Option<String> {
     let mut pending = PENDING_STARTUP_COMMANDS.lock();
     let ready = pending
@@ -55,7 +70,11 @@ pub(crate) fn take_startup_command() -> Option<String> {
         .map(|(_, ready_tick)| crate::interrupts::ticks().wrapping_sub(*ready_tick) < u64::MAX / 2)
         .unwrap_or(false);
     if ready {
-        Some(pending.remove(0).0)
+        let command = pending.remove(0).0;
+        if !pending.is_empty() {
+            request_repaint();
+        }
+        Some(command)
     } else {
         if !pending.is_empty() {
             request_repaint();

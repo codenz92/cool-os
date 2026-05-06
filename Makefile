@@ -1,4 +1,4 @@
-.PHONY: run run-net run-usb run-usb-init run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
+.PHONY: run run-net run-usb run-usb-init run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -490,7 +490,25 @@ smoke-package-app: build
 		--expect "[pkg] launched app.phase25.guidemo exec=/bin/guidemo pid=" \
 		--expect "guidemo: window opened" \
 		--expect "guidemo: presented frame" \
-		--expect "[pkg] removed app.phase25.guidemo" \
+	--expect "[pkg] removed app.phase25.guidemo" \
+	--expect "[boot] desktop ready"
+
+smoke-coolfs-root: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds 45 \
+		--retries $(SMOKE_RETRIES) \
+		--fw-cmd "vfs;;path /;;path /FAT;;path /bin/hello.txt;;df;;fsck" \
+		--expect "/ type=coolfs flags=rw,native-root,normalized-paths" \
+		--expect "/FAT type=fat32 flags=rw,legacy-container" \
+		--expect "/ kind=dir mount=coolfs size=0" \
+		--expect "/FAT kind=dir mount=fat32 size=0" \
+		--expect "/bin/hello.txt kind=file mount=coolfs size=27" \
+		--expect "coolfs root ok" \
 		--expect "[boot] desktop ready"
 
 smoke-net-api: build

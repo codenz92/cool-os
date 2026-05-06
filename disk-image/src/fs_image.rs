@@ -1,5 +1,6 @@
-/// Host-side tool: creates a FAT32 disk image and populates it with
-/// /bin/hello.txt, userspace binaries, and the CoolFS backing image.
+/// Host-side tool: creates a FAT32 disk image containing the CoolFS root image.
+/// The FAT32 layer remains a boot/container compatibility layer; `/COOLFS.IMG`
+/// is populated with the real OS tree that the kernel mounts as `/`.
 ///
 /// Usage: fs-image <output-path> [hello-elf] [exec-elf] [pipe-elf] [read-elf] [piperd-elf] [pipewr-elf] [keyecho-elf] [terminal-elf] [netdemo-elf] [wget-elf] [sdkdemo-elf] [guidemo-elf] [notes-elf] [editor-elf] [trash-elf] [screenshot-elf]
 /// Output: a 64 MiB raw FAT32 disk image ready to attach as a QEMU IDE drive.
@@ -52,6 +53,7 @@ fn main() {
         .expect("failed to open FAT32 filesystem");
 
     let root = fs.root_dir();
+    let mut coolfs = CoolFsBuilder::new();
     for dir in [
         "CONFIG",
         "LOGS",
@@ -64,40 +66,38 @@ fn main() {
         "Trash",
         "Downloads",
         "Packages",
-        "COOL",
+        "FONTS",
     ] {
         root.create_dir(dir)
             .unwrap_or_else(|e| panic!("failed to create /{}: {}", dir, e));
+        coolfs.create_dir(&format!("/{}", dir));
     }
 
     // /bin/
     root.create_dir("bin").expect("failed to create /bin");
+    coolfs.create_dir("/bin");
     let bin = root.open_dir("bin").expect("failed to open /bin");
+    populate_builtin_app_manifests(&mut coolfs);
 
     // /bin/hello.txt
     let mut hello = bin
         .create_file("hello.txt")
         .expect("failed to create hello.txt");
     hello.truncate().unwrap();
+    let hello_txt = b"Hello from /bin/hello.txt!\n";
     hello
-        .write_all(b"Hello from /bin/hello.txt!\n")
+        .write_all(hello_txt)
         .expect("failed to write hello.txt");
+    coolfs.create_file("/bin/hello.txt", hello_txt);
 
     // /bin/motd.txt — message of the day, for a second file test
     let mut motd = bin
         .create_file("motd.txt")
         .expect("failed to create motd.txt");
     motd.truncate().unwrap();
-    motd.write_all(b"coolOS Phase 11 - filesystem alive!\n")
-        .expect("failed to write motd.txt");
-
-    let mut coolfs = root
-        .create_file("COOLFS.IMG")
-        .expect("failed to create COOLFS.IMG");
-    coolfs.truncate().unwrap();
-    coolfs
-        .write_all(&create_coolfs_image())
-        .expect("failed to write COOLFS.IMG");
+    let motd_txt = b"coolOS Phase 26 - CoolFS root online!\n";
+    motd.write_all(motd_txt).expect("failed to write motd.txt");
+    coolfs.create_file("/bin/motd.txt", motd_txt);
 
     if let Some(hello_path) = hello_elf {
         let hello_bytes = std::fs::read(&hello_path)
@@ -107,6 +107,7 @@ fn main() {
         hello_bin
             .write_all(&hello_bytes)
             .expect("failed to write hello");
+        coolfs.create_file("/bin/hello", &hello_bytes);
     }
 
     if let Some(exec_path) = exec_elf {
@@ -117,6 +118,7 @@ fn main() {
         exec_bin
             .write_all(&exec_bytes)
             .expect("failed to write exec");
+        coolfs.create_file("/bin/exec", &exec_bytes);
     }
 
     if let Some(pipe_path) = pipe_elf {
@@ -127,6 +129,7 @@ fn main() {
         pipe_bin
             .write_all(&pipe_bytes)
             .expect("failed to write pipe");
+        coolfs.create_file("/bin/pipe", &pipe_bytes);
     }
 
     if let Some(read_path) = read_elf {
@@ -137,6 +140,7 @@ fn main() {
         read_bin
             .write_all(&read_bytes)
             .expect("failed to write read");
+        coolfs.create_file("/bin/read", &read_bytes);
     }
 
     if let Some(piperd_path) = piperd_elf {
@@ -147,6 +151,7 @@ fn main() {
         piperd_bin
             .write_all(&piperd_bytes)
             .expect("failed to write piperd");
+        coolfs.create_file("/bin/piperd", &piperd_bytes);
     }
 
     if let Some(pipewr_path) = pipewr_elf {
@@ -157,6 +162,7 @@ fn main() {
         pipewr_bin
             .write_all(&pipewr_bytes)
             .expect("failed to write pipewr");
+        coolfs.create_file("/bin/pipewr", &pipewr_bytes);
     }
 
     if let Some(keyecho_path) = keyecho_elf {
@@ -169,6 +175,7 @@ fn main() {
         keyecho_bin
             .write_all(&keyecho_bytes)
             .expect("failed to write keyecho");
+        coolfs.create_file("/bin/keyecho", &keyecho_bytes);
     }
 
     if let Some(terminal_path) = terminal_elf {
@@ -181,6 +188,7 @@ fn main() {
         terminal_bin
             .write_all(&terminal_bytes)
             .expect("failed to write terminal");
+        coolfs.create_file("/bin/terminal", &terminal_bytes);
     }
 
     if let Some(netdemo_path) = netdemo_elf {
@@ -193,6 +201,7 @@ fn main() {
         netdemo_bin
             .write_all(&netdemo_bytes)
             .expect("failed to write netdemo");
+        coolfs.create_file("/bin/netdemo", &netdemo_bytes);
     }
 
     if let Some(wget_path) = wget_elf {
@@ -203,6 +212,7 @@ fn main() {
         wget_bin
             .write_all(&wget_bytes)
             .expect("failed to write wget");
+        coolfs.create_file("/bin/wget", &wget_bytes);
     }
 
     if let Some(sdkdemo_path) = sdkdemo_elf {
@@ -215,6 +225,7 @@ fn main() {
         sdkdemo_bin
             .write_all(&sdkdemo_bytes)
             .expect("failed to write sdkdemo");
+        coolfs.create_file("/bin/sdkdemo", &sdkdemo_bytes);
     }
 
     if let Some(guidemo_path) = guidemo_elf {
@@ -227,6 +238,7 @@ fn main() {
         guidemo_bin
             .write_all(&guidemo_bytes)
             .expect("failed to write guidemo");
+        coolfs.create_file("/bin/guidemo", &guidemo_bytes);
     }
 
     if let Some(notes_path) = notes_elf {
@@ -237,6 +249,7 @@ fn main() {
         notes_bin
             .write_all(&notes_bytes)
             .expect("failed to write notes");
+        coolfs.create_file("/bin/notes", &notes_bytes);
     }
 
     if let Some(editor_path) = editor_elf {
@@ -247,6 +260,7 @@ fn main() {
         editor_bin
             .write_all(&editor_bytes)
             .expect("failed to write editor");
+        coolfs.create_file("/bin/editor", &editor_bytes);
     }
 
     if let Some(trash_path) = trash_elf {
@@ -257,6 +271,7 @@ fn main() {
         trash_bin
             .write_all(&trash_bytes)
             .expect("failed to write trash");
+        coolfs.create_file("/bin/trash", &trash_bytes);
     }
 
     if let Some(screenshot_path) = screenshot_elf {
@@ -269,6 +284,7 @@ fn main() {
         screenshot_bin
             .write_all(&screenshot_bytes)
             .expect("failed to write screenshot");
+        coolfs.create_file("/bin/screenshot", &screenshot_bytes);
     }
 
     let packages = root.open_dir("Packages").expect("failed to open /Packages");
@@ -279,29 +295,277 @@ fn main() {
     guidemo_pkg
         .write_all(PHASE25_GUIDEMO_PACKAGE)
         .expect("failed to write guidemo.pkg");
+    coolfs.create_file("/Packages/guidemo.pkg", PHASE25_GUIDEMO_PACKAGE);
 
-    let documents = root.open_dir("Documents").expect("failed to open /Documents");
+    let documents = root
+        .open_dir("Documents")
+        .expect("failed to open /Documents");
+    let package_demo_bytes = b"Phase 25 package association sample.\n";
     let mut package_demo = documents
         .create_file("package-demo.p25")
         .expect("failed to create package-demo.p25");
     package_demo.truncate().unwrap();
     package_demo
-        .write_all(b"Phase 25 package association sample.\n")
+        .write_all(package_demo_bytes)
         .expect("failed to write package-demo.p25");
+    coolfs.create_file("/Documents/package-demo.p25", package_demo_bytes);
+
+    let mut coolfs_img = root
+        .create_file("COOLFS.IMG")
+        .expect("failed to create COOLFS.IMG");
+    coolfs_img.truncate().unwrap();
+    coolfs_img
+        .write_all(&coolfs.into_image())
+        .expect("failed to write COOLFS.IMG");
 
     println!("{}", out_path);
 }
 
 const PHASE25_GUIDEMO_PACKAGE: &[u8] = b"id=app.phase25.guidemo\nname=Packaged GUI Demo\ncommand=pkgdemo\nversion=1.0\nicon=P5\ncategory=Development\npermission=desktop\nexec=/bin/guidemo\naliases=package,demo,phase25\nassociations=P25\n";
 
+struct BuiltinAppManifest {
+    id: &'static str,
+    name: &'static str,
+    glyph: &'static str,
+    command: &'static str,
+    category: &'static str,
+    permission: &'static str,
+    aliases: &'static [&'static str],
+    associations: &'static [&'static str],
+}
+
+const BUILTIN_APP_MANIFESTS: &[BuiltinAppManifest] = &[
+    BuiltinAppManifest {
+        id: "app.terminal",
+        name: "Terminal",
+        glyph: "T>",
+        command: "terminal",
+        category: "System",
+        permission: "shell",
+        aliases: &["shell", "console", "cmd", "command"],
+        associations: &["CMD"],
+    },
+    BuiltinAppManifest {
+        id: "app.sysmon",
+        name: "System Monitor",
+        glyph: "M#",
+        command: "sysmon",
+        category: "System",
+        permission: "diagnostics",
+        aliases: &["monitor", "tasks", "processes", "performance"],
+        associations: &[],
+    },
+    BuiltinAppManifest {
+        id: "app.diagnostics",
+        name: "Diagnostics",
+        glyph: "D!",
+        command: "diagnostics",
+        category: "System",
+        permission: "diagnostics",
+        aliases: &["diag", "health", "logs", "profiler", "debug"],
+        associations: &[],
+    },
+    BuiltinAppManifest {
+        id: "app.files",
+        name: "File Manager",
+        glyph: "FM",
+        command: "files",
+        category: "Files",
+        permission: "filesystem",
+        aliases: &["files", "folders", "explorer", "documents"],
+        associations: &["DIR"],
+    },
+    BuiltinAppManifest {
+        id: "app.viewer",
+        name: "Text Viewer",
+        glyph: "Tx",
+        command: "viewer",
+        category: "Files",
+        permission: "read-files",
+        aliases: &["text", "notes", "readme", "viewer"],
+        associations: &["TXT", "MD", "LOG", "CFG", "RS"],
+    },
+    BuiltinAppManifest {
+        id: "app.editor",
+        name: "Text Editor",
+        glyph: "ED",
+        command: "editor",
+        category: "Files",
+        permission: "filesystem",
+        aliases: &["edit", "write", "notepad", "document"],
+        associations: &[],
+    },
+    BuiltinAppManifest {
+        id: "app.notes",
+        name: "Notes",
+        glyph: "NT",
+        command: "notes",
+        category: "Tools",
+        permission: "filesystem",
+        aliases: &["note", "memo", "scratchpad", "journal"],
+        associations: &[],
+    },
+    BuiltinAppManifest {
+        id: "app.trash",
+        name: "Trash Bin",
+        glyph: "TR",
+        command: "trash",
+        category: "System",
+        permission: "filesystem",
+        aliases: &["trash", "bin", "deleted", "recycle"],
+        associations: &[],
+    },
+    BuiltinAppManifest {
+        id: "app.screenshot",
+        name: "Screenshot",
+        glyph: "SS",
+        command: "screenshot",
+        category: "Tools",
+        permission: "desktop",
+        aliases: &["screen", "capture", "snapshot", "shot"],
+        associations: &[],
+    },
+    BuiltinAppManifest {
+        id: "app.browser",
+        name: "Web Browser",
+        glyph: "WB",
+        command: "browser",
+        category: "Network",
+        permission: "network",
+        aliases: &["browser", "web", "www", "internet", "http"],
+        associations: &["HTML", "HTM", "URL"],
+    },
+    BuiltinAppManifest {
+        id: "app.colors",
+        name: "Color Picker",
+        glyph: "CP",
+        command: "colors",
+        category: "Tools",
+        permission: "desktop",
+        aliases: &["colors", "palette", "theme"],
+        associations: &[],
+    },
+    BuiltinAppManifest {
+        id: "app.display",
+        name: "Display Settings",
+        glyph: "DS",
+        command: "display",
+        category: "Settings",
+        permission: "settings",
+        aliases: &[
+            "settings",
+            "display",
+            "accessibility",
+            "network",
+            "storage",
+            "power",
+        ],
+        associations: &[],
+    },
+    BuiltinAppManifest {
+        id: "app.personalize",
+        name: "Personalize",
+        glyph: "P*",
+        command: "personalize",
+        category: "Settings",
+        permission: "settings",
+        aliases: &["wallpaper", "theme", "desktop"],
+        associations: &[],
+    },
+    BuiltinAppManifest {
+        id: "app.crash",
+        name: "Crash Viewer",
+        glyph: "CV",
+        command: "crash",
+        category: "System",
+        permission: "diagnostics",
+        aliases: &["crash", "dump", "fault", "panic"],
+        associations: &["DMP"],
+    },
+    BuiltinAppManifest {
+        id: "app.logs",
+        name: "Log Viewer",
+        glyph: "LV",
+        command: "logs",
+        category: "System",
+        permission: "diagnostics",
+        aliases: &["logs", "kernel", "services", "events"],
+        associations: &["LOG"],
+    },
+    BuiltinAppManifest {
+        id: "app.profiler",
+        name: "Boot Profiler",
+        glyph: "BP",
+        command: "profiler",
+        category: "System",
+        permission: "diagnostics",
+        aliases: &["boot", "profiler", "startup", "timing"],
+        associations: &[],
+    },
+    BuiltinAppManifest {
+        id: "app.welcome",
+        name: "Welcome",
+        glyph: "W?",
+        command: "welcome",
+        category: "System",
+        permission: "desktop",
+        aliases: &["help", "cheatsheet", "shortcuts"],
+        associations: &[],
+    },
+    BuiltinAppManifest {
+        id: "app.guidemo",
+        name: "GUI Demo",
+        glyph: "UG",
+        command: "guidemo",
+        category: "Development",
+        permission: "desktop",
+        aliases: &["gui", "userspace", "sdk", "window"],
+        associations: &[],
+    },
+];
+
+fn populate_builtin_app_manifests(coolfs: &mut CoolFsBuilder) {
+    for app in BUILTIN_APP_MANIFESTS {
+        let dir = format!("/APPS/{}", app.command);
+        coolfs.create_dir(&dir);
+        let path = format!("{}/APP.CFG", dir);
+        let manifest = builtin_manifest_text(app);
+        coolfs.create_file(&path, manifest.as_bytes());
+    }
+}
+
+fn builtin_manifest_text(app: &BuiltinAppManifest) -> String {
+    format!(
+        "id={}\nname={}\ncommand={}\nversion=builtin\nicon={}\ncategory={}\npermission={}\nexec={}\naliases={}\nassociations={}\n",
+        app.id,
+        app.name,
+        app.command,
+        app.glyph,
+        app.category,
+        app.permission,
+        builtin_exec_path(app.command),
+        app.aliases.join(","),
+        app.associations.join(",")
+    )
+}
+
+fn builtin_exec_path(command: &str) -> String {
+    match command {
+        "editor" | "notes" | "trash" | "screenshot" | "guidemo" => format!("/bin/{}", command),
+        _ => format!("internal:{}", command),
+    }
+}
+
 const CF_MAGIC: [u8; 8] = *b"COOLFS1\0";
 const CF_VERSION: u32 = 1;
-const CF_BLOCK_SIZE: usize = 512;
-const CF_TOTAL_BLOCKS: u32 = 512;
-const CF_INODE_COUNT: u32 = 128;
+const CF_BLOCK_SIZE: usize = 4096;
+const CF_TOTAL_BLOCKS: u32 = 1024;
+const CF_INODE_COUNT: u32 = 512;
 const CF_INODE_SIZE: usize = 256;
 const CF_DIRECT_BLOCKS: usize = 48;
+const CF_INDIRECT_ENTRIES: usize = CF_BLOCK_SIZE / 4;
 const CF_DIR_ENTRY_SIZE: usize = 32;
+const CF_MAX_NAME_LEN: usize = 27;
 const CF_INODE_TABLE_START: u32 = 1;
 const CF_INODE_TABLE_BLOCKS: u32 =
     ((CF_INODE_COUNT as usize * CF_INODE_SIZE + CF_BLOCK_SIZE - 1) / CF_BLOCK_SIZE) as u32;
@@ -310,73 +574,397 @@ const CF_BITMAP_BLOCKS: u32 = 1;
 const CF_DATA_START: u32 = CF_BITMAP_START + CF_BITMAP_BLOCKS;
 const CF_KIND_DIR: u8 = 2;
 const CF_KIND_FILE: u8 = 1;
+const CF_KIND_FREE: u8 = 0;
+const CF_ROOT_INODE: u32 = 0;
 
-fn create_coolfs_image() -> Vec<u8> {
-    let mut image = vec![0u8; CF_TOTAL_BLOCKS as usize * CF_BLOCK_SIZE];
-    image[0..8].copy_from_slice(&CF_MAGIC);
-    cf_write_u32(&mut image, 8, CF_VERSION);
-    cf_write_u32(&mut image, 12, CF_BLOCK_SIZE as u32);
-    cf_write_u32(&mut image, 16, CF_TOTAL_BLOCKS);
-    cf_write_u32(&mut image, 20, CF_INODE_COUNT);
-    cf_write_u32(&mut image, 24, CF_INODE_SIZE as u32);
-    cf_write_u32(&mut image, 28, CF_INODE_TABLE_START);
-    cf_write_u32(&mut image, 32, CF_INODE_TABLE_BLOCKS);
-    cf_write_u32(&mut image, 36, CF_BITMAP_START);
-    cf_write_u32(&mut image, 40, CF_BITMAP_BLOCKS);
-    cf_write_u32(&mut image, 44, CF_DATA_START);
-    cf_write_u32(&mut image, 48, 0);
-
-    for block in 0..CF_DATA_START {
-        cf_set_block_used(&mut image, block);
-    }
-
-    let root_dir_block = CF_DATA_START;
-    let readme_block = CF_DATA_START + 1;
-    cf_set_block_used(&mut image, root_dir_block);
-    cf_set_block_used(&mut image, readme_block);
-
-    cf_write_inode(
-        &mut image,
-        0,
-        CF_KIND_DIR,
-        CF_DIR_ENTRY_SIZE as u32,
-        &[root_dir_block],
-    );
-    cf_write_inode(
-        &mut image,
-        1,
-        CF_KIND_FILE,
-        COOLFS_README.len() as u32,
-        &[readme_block],
-    );
-    cf_write_dir_entry(&mut image, root_dir_block, 0, 1, "README.TXT");
-
-    let start = readme_block as usize * CF_BLOCK_SIZE;
-    image[start..start + COOLFS_README.len()].copy_from_slice(COOLFS_README);
-    image
+#[derive(Clone)]
+struct CfInode {
+    kind: u8,
+    size: u32,
+    direct: [u32; CF_DIRECT_BLOCKS],
+    indirect: u32,
 }
 
-const COOLFS_README: &[u8] = b"Welcome to CoolFS.\nThis file lives inside a native coolOS filesystem image mounted at /COOL.\n";
-
-fn cf_write_inode(image: &mut [u8], inode: u32, kind: u8, size: u32, direct: &[u32]) {
-    let off = CF_INODE_TABLE_START as usize * CF_BLOCK_SIZE + inode as usize * CF_INODE_SIZE;
-    image[off] = kind;
-    cf_write_u32(image, off + 4, size);
-    for (idx, block) in direct.iter().take(CF_DIRECT_BLOCKS).enumerate() {
-        cf_write_u32(image, off + 8 + idx * 4, *block);
+impl CfInode {
+    fn new(kind: u8) -> Self {
+        Self {
+            kind,
+            size: 0,
+            direct: [0; CF_DIRECT_BLOCKS],
+            indirect: 0,
+        }
     }
 }
 
-fn cf_write_dir_entry(image: &mut [u8], block: u32, slot: usize, inode: u32, name: &str) {
-    let off = block as usize * CF_BLOCK_SIZE + slot * CF_DIR_ENTRY_SIZE;
-    cf_write_u32(image, off, inode);
-    image[off + 4] = name.len() as u8;
-    image[off + 5..off + 5 + name.len()].copy_from_slice(name.as_bytes());
+struct CfDirEntry {
+    inode: u32,
+    name: String,
 }
 
-fn cf_set_block_used(image: &mut [u8], block: u32) {
-    let byte = CF_BITMAP_START as usize * CF_BLOCK_SIZE + block as usize / 8;
-    image[byte] |= 1u8 << (block % 8);
+struct CoolFsBuilder {
+    image: Vec<u8>,
+}
+
+impl CoolFsBuilder {
+    fn new() -> Self {
+        let mut image = vec![0u8; CF_TOTAL_BLOCKS as usize * CF_BLOCK_SIZE];
+        image[0..8].copy_from_slice(&CF_MAGIC);
+        cf_write_u32(&mut image, 8, CF_VERSION);
+        cf_write_u32(&mut image, 12, CF_BLOCK_SIZE as u32);
+        cf_write_u32(&mut image, 16, CF_TOTAL_BLOCKS);
+        cf_write_u32(&mut image, 20, CF_INODE_COUNT);
+        cf_write_u32(&mut image, 24, CF_INODE_SIZE as u32);
+        cf_write_u32(&mut image, 28, CF_INODE_TABLE_START);
+        cf_write_u32(&mut image, 32, CF_INODE_TABLE_BLOCKS);
+        cf_write_u32(&mut image, 36, CF_BITMAP_START);
+        cf_write_u32(&mut image, 40, CF_BITMAP_BLOCKS);
+        cf_write_u32(&mut image, 44, CF_DATA_START);
+        cf_write_u32(&mut image, 48, CF_ROOT_INODE);
+
+        let mut builder = Self { image };
+        for block in 0..CF_DATA_START {
+            builder.set_block_used(block, true);
+        }
+        builder.write_inode(CF_ROOT_INODE, &CfInode::new(CF_KIND_DIR));
+        builder
+    }
+
+    fn create_dir(&mut self, path: &str) {
+        if self.resolve_path(path).is_some() {
+            return;
+        }
+        let (parent, name) = split_parent_and_name(path);
+        let parent_inode = self
+            .resolve_path(&parent)
+            .unwrap_or_else(|| panic!("missing parent directory {}", parent));
+        let inode = self.alloc_inode(CF_KIND_DIR);
+        self.append_dir_entry(parent_inode, inode, &name);
+    }
+
+    fn create_file(&mut self, path: &str, data: &[u8]) {
+        if let Some(inode) = self.resolve_path(path) {
+            self.write_inode_bytes(inode, data);
+            return;
+        }
+        let (parent, name) = split_parent_and_name(path);
+        let parent_inode = self
+            .resolve_path(&parent)
+            .unwrap_or_else(|| panic!("missing parent directory {}", parent));
+        let inode = self.alloc_inode(CF_KIND_FILE);
+        self.write_inode_bytes(inode, data);
+        self.append_dir_entry(parent_inode, inode, &name);
+    }
+
+    fn into_image(self) -> Vec<u8> {
+        let len = self.persist_len();
+        self.image[..len].to_vec()
+    }
+
+    fn append_dir_entry(&mut self, parent_inode: u32, inode: u32, name: &str) {
+        validate_name(name);
+        let mut entries = self.read_dir_entries(parent_inode);
+        if entries
+            .iter()
+            .any(|entry| entry.name.eq_ignore_ascii_case(name))
+        {
+            panic!("duplicate CoolFS entry {}", name);
+        }
+        entries.push(CfDirEntry {
+            inode,
+            name: name.to_string(),
+        });
+        self.write_dir_entries(parent_inode, &entries);
+    }
+
+    fn resolve_path(&self, path: &str) -> Option<u32> {
+        let path = normalize_abs_path(path);
+        if path == "/" {
+            return Some(CF_ROOT_INODE);
+        }
+        let mut inode_idx = CF_ROOT_INODE;
+        for component in path.split('/').filter(|component| !component.is_empty()) {
+            let inode = self.read_inode(inode_idx)?;
+            if inode.kind != CF_KIND_DIR {
+                return None;
+            }
+            let entries = self.read_dir_entries(inode_idx);
+            let entry = entries
+                .iter()
+                .find(|entry| entry.name.eq_ignore_ascii_case(component))?;
+            inode_idx = entry.inode;
+        }
+        Some(inode_idx)
+    }
+
+    fn read_inode(&self, inode_idx: u32) -> Option<CfInode> {
+        if inode_idx >= CF_INODE_COUNT {
+            return None;
+        }
+        let off = self.inode_offset(inode_idx);
+        let mut inode = CfInode::new(self.image[off]);
+        inode.size = cf_read_u32(&self.image, off + 4);
+        for idx in 0..CF_DIRECT_BLOCKS {
+            inode.direct[idx] = cf_read_u32(&self.image, off + 8 + idx * 4);
+        }
+        inode.indirect = cf_read_u32(&self.image, off + 8 + CF_DIRECT_BLOCKS * 4);
+        Some(inode)
+    }
+
+    fn write_inode(&mut self, inode_idx: u32, inode: &CfInode) {
+        let off = self.inode_offset(inode_idx);
+        self.image[off] = inode.kind;
+        self.image[off + 1..off + 4].fill(0);
+        cf_write_u32(&mut self.image, off + 4, inode.size);
+        for idx in 0..CF_DIRECT_BLOCKS {
+            cf_write_u32(&mut self.image, off + 8 + idx * 4, inode.direct[idx]);
+        }
+        cf_write_u32(
+            &mut self.image,
+            off + 8 + CF_DIRECT_BLOCKS * 4,
+            inode.indirect,
+        );
+        self.image[off + 12 + CF_DIRECT_BLOCKS * 4..off + CF_INODE_SIZE].fill(0);
+    }
+
+    fn read_dir_entries(&self, inode_idx: u32) -> Vec<CfDirEntry> {
+        let inode = self
+            .read_inode(inode_idx)
+            .unwrap_or_else(|| panic!("missing inode {}", inode_idx));
+        assert_eq!(inode.kind, CF_KIND_DIR, "inode {} is not a dir", inode_idx);
+        let bytes = self.read_inode_bytes(&inode);
+        let mut entries = Vec::new();
+        for chunk in bytes.chunks(CF_DIR_ENTRY_SIZE) {
+            if chunk.len() < CF_DIR_ENTRY_SIZE {
+                break;
+            }
+            let inode = cf_read_u32(chunk, 0);
+            let name_len = chunk[4] as usize;
+            if inode == 0 || name_len == 0 {
+                continue;
+            }
+            let name = std::str::from_utf8(&chunk[5..5 + name_len])
+                .expect("CoolFS dir entry name is not UTF-8");
+            entries.push(CfDirEntry {
+                inode,
+                name: name.to_string(),
+            });
+        }
+        entries
+    }
+
+    fn write_dir_entries(&mut self, inode_idx: u32, entries: &[CfDirEntry]) {
+        let mut bytes = Vec::with_capacity(entries.len() * CF_DIR_ENTRY_SIZE);
+        for entry in entries {
+            validate_name(&entry.name);
+            let mut raw = [0u8; CF_DIR_ENTRY_SIZE];
+            cf_write_u32(&mut raw, 0, entry.inode);
+            raw[4] = entry.name.len() as u8;
+            raw[5..5 + entry.name.len()].copy_from_slice(entry.name.as_bytes());
+            bytes.extend_from_slice(&raw);
+        }
+        self.write_inode_bytes(inode_idx, &bytes);
+    }
+
+    fn read_inode_bytes(&self, inode: &CfInode) -> Vec<u8> {
+        let mut out = Vec::with_capacity(inode.size as usize);
+        let mut remaining = inode.size as usize;
+        for block in self.inode_data_blocks(inode) {
+            if remaining == 0 {
+                break;
+            }
+            let start = block as usize * CF_BLOCK_SIZE;
+            let take = remaining.min(CF_BLOCK_SIZE);
+            out.extend_from_slice(&self.image[start..start + take]);
+            remaining -= take;
+        }
+        out
+    }
+
+    fn write_inode_bytes(&mut self, inode_idx: u32, bytes: &[u8]) {
+        let max_blocks = CF_DIRECT_BLOCKS + CF_INDIRECT_ENTRIES;
+        assert!(
+            bytes.len() <= max_blocks * CF_BLOCK_SIZE,
+            "CoolFS file too large: {} bytes",
+            bytes.len()
+        );
+        let needed = (bytes.len() + CF_BLOCK_SIZE - 1) / CF_BLOCK_SIZE;
+        let mut blocks = Vec::new();
+        for _ in 0..needed {
+            blocks.push(self.alloc_block());
+        }
+        let indirect = if needed > CF_DIRECT_BLOCKS {
+            self.alloc_block()
+        } else {
+            0
+        };
+
+        for (idx, &block) in blocks.iter().enumerate() {
+            let start = block as usize * CF_BLOCK_SIZE;
+            self.image[start..start + CF_BLOCK_SIZE].fill(0);
+            let byte_start = idx * CF_BLOCK_SIZE;
+            let byte_end = (byte_start + CF_BLOCK_SIZE).min(bytes.len());
+            self.image[start..start + byte_end - byte_start]
+                .copy_from_slice(&bytes[byte_start..byte_end]);
+        }
+        if indirect != 0 {
+            let start = indirect as usize * CF_BLOCK_SIZE;
+            self.image[start..start + CF_BLOCK_SIZE].fill(0);
+            for (idx, &block) in blocks[CF_DIRECT_BLOCKS..].iter().enumerate() {
+                cf_write_u32(&mut self.image, start + idx * 4, block);
+            }
+        }
+
+        let mut inode = self
+            .read_inode(inode_idx)
+            .unwrap_or_else(|| panic!("missing inode {}", inode_idx));
+        let old_blocks = self.inode_data_blocks(&inode);
+        let old_indirect = inode.indirect;
+        inode.size = bytes.len() as u32;
+        inode.direct = [0; CF_DIRECT_BLOCKS];
+        inode.indirect = indirect;
+        for (idx, &block) in blocks.iter().enumerate().take(CF_DIRECT_BLOCKS) {
+            inode.direct[idx] = block;
+        }
+        self.write_inode(inode_idx, &inode);
+        for block in old_blocks {
+            self.set_block_used(block, false);
+        }
+        if old_indirect != 0 {
+            self.set_block_used(old_indirect, false);
+        }
+    }
+
+    fn inode_data_blocks(&self, inode: &CfInode) -> Vec<u32> {
+        let needed = (inode.size as usize + CF_BLOCK_SIZE - 1) / CF_BLOCK_SIZE;
+        let mut blocks = Vec::with_capacity(needed);
+        for &block in inode.direct.iter().take(needed.min(CF_DIRECT_BLOCKS)) {
+            if block != 0 {
+                blocks.push(block);
+            }
+        }
+        if needed > CF_DIRECT_BLOCKS && inode.indirect != 0 {
+            let start = inode.indirect as usize * CF_BLOCK_SIZE;
+            for idx in 0..needed - CF_DIRECT_BLOCKS {
+                let block = cf_read_u32(&self.image, start + idx * 4);
+                if block != 0 {
+                    blocks.push(block);
+                }
+            }
+        }
+        blocks
+    }
+
+    fn alloc_inode(&mut self, kind: u8) -> u32 {
+        for inode in 1..CF_INODE_COUNT {
+            if self.read_inode(inode).map(|item| item.kind) == Some(CF_KIND_FREE) {
+                self.write_inode(inode, &CfInode::new(kind));
+                return inode;
+            }
+        }
+        panic!("CoolFS inode table full");
+    }
+
+    fn alloc_block(&mut self) -> u32 {
+        for block in CF_DATA_START..CF_TOTAL_BLOCKS {
+            if !self.block_used(block) {
+                self.set_block_used(block, true);
+                let start = block as usize * CF_BLOCK_SIZE;
+                self.image[start..start + CF_BLOCK_SIZE].fill(0);
+                return block;
+            }
+        }
+        panic!("CoolFS image full");
+    }
+
+    fn block_used(&self, block: u32) -> bool {
+        let byte = CF_BITMAP_START as usize * CF_BLOCK_SIZE + block as usize / 8;
+        self.image[byte] & (1u8 << (block % 8)) != 0
+    }
+
+    fn set_block_used(&mut self, block: u32, used: bool) {
+        let byte = CF_BITMAP_START as usize * CF_BLOCK_SIZE + block as usize / 8;
+        let bit = 1u8 << (block % 8);
+        if used {
+            self.image[byte] |= bit;
+        } else {
+            self.image[byte] &= !bit;
+        }
+    }
+
+    fn inode_offset(&self, inode_idx: u32) -> usize {
+        CF_INODE_TABLE_START as usize * CF_BLOCK_SIZE + inode_idx as usize * CF_INODE_SIZE
+    }
+
+    fn persist_len(&self) -> usize {
+        for block in (0..CF_TOTAL_BLOCKS).rev() {
+            if self.block_used(block) {
+                return (block as usize + 1) * CF_BLOCK_SIZE;
+            }
+        }
+        CF_DATA_START as usize * CF_BLOCK_SIZE
+    }
+}
+
+fn split_parent_and_name(path: &str) -> (String, String) {
+    let path = normalize_abs_path(path);
+    assert_ne!(path, "/", "cannot split root path");
+    let slash = path.rfind('/').expect("absolute path without slash");
+    let parent = if slash == 0 {
+        String::from("/")
+    } else {
+        path[..slash].to_string()
+    };
+    let name = path[slash + 1..].to_string();
+    validate_name(&name);
+    (parent, name)
+}
+
+fn normalize_abs_path(path: &str) -> String {
+    assert!(
+        path.starts_with('/'),
+        "CoolFS path must be absolute: {}",
+        path
+    );
+    let mut parts = Vec::new();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => panic!("CoolFS image path may not contain ..: {}", path),
+            _ => parts.push(part),
+        }
+    }
+    if parts.is_empty() {
+        return String::from("/");
+    }
+    let mut out = String::new();
+    for part in parts {
+        out.push('/');
+        out.push_str(part);
+    }
+    out
+}
+
+fn validate_name(name: &str) {
+    assert!(
+        !name.is_empty() && name != "." && name != ".." && name.len() <= CF_MAX_NAME_LEN,
+        "unsupported CoolFS name {}",
+        name
+    );
+    assert!(
+        name.bytes()
+            .all(|byte| (0x20..=0x7e).contains(&byte) && byte != b'/'),
+        "non-printable CoolFS name {}",
+        name
+    );
+}
+
+fn cf_read_u32(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes([
+        bytes[offset],
+        bytes[offset + 1],
+        bytes[offset + 2],
+        bytes[offset + 3],
+    ])
 }
 
 fn cf_write_u32(bytes: &mut [u8], offset: usize, value: u32) {

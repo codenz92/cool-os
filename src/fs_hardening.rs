@@ -11,6 +11,7 @@ static JOURNAL: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static DIRTY: AtomicBool = AtomicBool::new(false);
 
 pub fn init() {
+    let _ = crate::coolfs::mount_or_format();
     for dir in [
         "/CONFIG",
         "/LOGS",
@@ -22,14 +23,12 @@ pub fn init() {
         "/Desktop",
         "/Downloads",
         "/Trash",
-        crate::coolfs::MOUNT_PATH,
     ] {
-        let _ = crate::fat32::create_dir(dir);
+        let _ = crate::vfs::vfs_kernel_create_dir(dir);
     }
-    let _ = crate::coolfs::mount_or_format();
     replay_journal();
-    journal_operation("mount", "fat32 rw,safe-write,journal-lite");
-    journal_operation("mount", "coolfs rw,native-image,bitmap-inodes");
+    journal_operation("mount", "coolfs-root rw,safe-write,journal-lite");
+    journal_operation("mount", "fat32 legacy-container /FAT");
 }
 
 pub fn journal_operation(op: &str, path: &str) {
@@ -49,8 +48,8 @@ pub fn journal_operation(op: &str, path: &str) {
 }
 
 pub fn flush_journal() -> Result<(), crate::fat32::FsError> {
-    let _ = crate::fat32::create_dir("/LOGS");
-    match crate::fat32::create_file(JOURNAL_PATH) {
+    let _ = crate::vfs::vfs_kernel_create_dir("/LOGS");
+    match crate::vfs::vfs_kernel_create_file(JOURNAL_PATH) {
         Ok(()) | Err(crate::fat32::FsError::AlreadyExists) => {}
         Err(err) => return Err(err),
     }
@@ -60,7 +59,7 @@ pub fn flush_journal() -> Result<(), crate::fat32::FsError> {
         out.push_str(line);
         out.push('\n');
     }
-    let result = crate::fat32::write_file(JOURNAL_PATH, out.as_bytes());
+    let result = crate::vfs::vfs_kernel_write_file(JOURNAL_PATH, out.as_bytes());
     if result.is_ok() {
         DIRTY.store(false, Ordering::Relaxed);
     }
@@ -69,8 +68,9 @@ pub fn flush_journal() -> Result<(), crate::fat32::FsError> {
 
 pub fn status_lines() -> Vec<String> {
     let mut lines = alloc::vec![
-        String::from("mount / type=fat32 flags=rw,safe-write,journal-lite,write-cache"),
-        String::from("fat32 writes: serialized by global metadata write lock"),
+        String::from("mount / type=coolfs flags=rw,native-root,safe-write,journal-lite"),
+        String::from("mount /FAT type=fat32 flags=rw,legacy-container"),
+        String::from("coolfs writes: serialized by native image lock"),
         format!(
             "write cache: metadata journal dirty={}",
             if DIRTY.load(Ordering::Relaxed) {
@@ -83,13 +83,18 @@ pub fn status_lines() -> Vec<String> {
             "fsck repair: directories, chain scan, orphan-cluster report, dir entry validation"
         ),
     ];
+    if let Some(stats) = crate::coolfs::stats() {
+        lines.push(format!(
+            "blocks used={} free={} bytes/block={}",
+            stats.used_blocks, stats.free_blocks, stats.block_size
+        ));
+    }
     if let Some(stats) = crate::fat32::stats() {
         lines.push(format!(
-            "clusters used={} free={} bytes/cluster={}",
+            "legacy fat clusters used={} free={} bytes/cluster={}",
             stats.used_clusters, stats.free_clusters, stats.bytes_per_cluster
         ));
     }
-    lines.extend(crate::coolfs::lines());
     lines
 }
 
@@ -106,21 +111,28 @@ pub fn repair() -> Vec<String> {
         "/Desktop",
         "/Trash",
         "/Downloads",
-        crate::coolfs::MOUNT_PATH,
     ] {
-        match crate::fat32::create_dir(dir) {
+        match crate::vfs::vfs_kernel_create_dir(dir) {
             Ok(()) => lines.push(format!("created {}", dir)),
             Err(crate::fat32::FsError::AlreadyExists) => lines.push(format!("ok {}", dir)),
             Err(err) => lines.push(format!("{}: {}", dir, err.as_str())),
         }
     }
     match crate::coolfs::mount_or_format() {
-        Ok(()) => lines.push(String::from("ok /COOL coolfs image")),
-        Err(err) => lines.push(format!("/COOL: {}", err.as_str())),
+        Ok(()) => lines.push(String::from("ok / coolfs root image")),
+        Err(err) => lines.push(format!("/: {}", err.as_str())),
+    }
+    if let Some(report) = crate::coolfs::check() {
+        lines.push(format!(
+            "coolfs ok={} root_entries={} used={}/{}",
+            report.ok, report.root_entries, report.stats.used_blocks, report.stats.total_blocks
+        ));
+    } else {
+        lines.push(String::from("coolfs check unavailable"));
     }
     if let Some(report) = crate::fat32::check() {
         lines.push(format!(
-            "fat ok={} root_entries={} used={}/{}",
+            "legacy fat ok={} root_entries={} used={}/{}",
             report.ok, report.root_entries, report.stats.used_clusters, report.stats.total_clusters
         ));
         lines.push(String::from("chain repair: no broken root chains detected"));
@@ -142,7 +154,7 @@ pub fn journal_lines() -> Vec<String> {
 }
 
 pub fn replay_journal() {
-    let Some(bytes) = crate::fat32::read_file(JOURNAL_PATH) else {
+    let Some(bytes) = crate::vfs::vfs_kernel_read_file(JOURNAL_PATH) else {
         return;
     };
     let Ok(text) = core::str::from_utf8(&bytes) else {
@@ -164,5 +176,6 @@ pub fn replay_journal() {
 }
 
 pub fn flush() -> Result<(), crate::fat32::FsError> {
-    flush_journal()
+    flush_journal()?;
+    crate::coolfs::flush()
 }

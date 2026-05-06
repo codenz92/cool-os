@@ -46,6 +46,7 @@ pub fn is_protected_path(path: &str) -> bool {
     let upper = path.to_ascii_uppercase();
     upper == "/"
         || upper == "/COOLFS.IMG"
+        || upper == "/FAT/COOLFS.IMG"
         || upper == "/CONFIG"
         || upper == "/LOGS"
         || upper == "/DEV"

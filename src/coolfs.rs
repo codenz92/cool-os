@@ -1,25 +1,28 @@
-/// CoolFS: a small native filesystem mounted at `/COOL`.
+/// CoolFS: the native coolOS root filesystem.
 ///
-/// The current block device remains FAT32 so existing boot and userspace flows
-/// keep working. CoolFS stores its own superblock, inode table, block bitmap,
-/// and directory records inside a persistent `/COOLFS.IMG` file on that disk.
+/// The current block device still carries a FAT32 compatibility container while
+/// the raw-disk backend lands. CoolFS stores its own superblock, inode table,
+/// block bitmap, and directory records inside a persistent `/COOLFS.IMG` file
+/// on that disk, and the VFS routes `/` to this filesystem.
 extern crate alloc;
 
 use alloc::{format, string::String, vec::Vec};
+use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
 use crate::fat32::{DirEntryInfo, FsError};
 
-pub const MOUNT_PATH: &str = "/COOL";
+pub const MOUNT_PATH: &str = "/";
 const BACKING_PATH: &str = "/COOLFS.IMG";
 
 const MAGIC: [u8; 8] = *b"COOLFS1\0";
 const VERSION: u32 = 1;
-const BLOCK_SIZE: usize = 512;
-const TOTAL_BLOCKS: u32 = 512;
-const INODE_COUNT: u32 = 128;
+const BLOCK_SIZE: usize = 4096;
+const TOTAL_BLOCKS: u32 = 1024;
+const INODE_COUNT: u32 = 512;
 const INODE_SIZE: usize = 256;
 const DIRECT_BLOCKS: usize = 48;
+const INDIRECT_ENTRIES: usize = BLOCK_SIZE / 4;
 const DIR_ENTRY_SIZE: usize = 32;
 const MAX_NAME_LEN: usize = 27;
 
@@ -35,7 +38,8 @@ const KIND_FREE: u8 = 0;
 const KIND_FILE: u8 = 1;
 const KIND_DIR: u8 = 2;
 
-static COOLFS_LOCK: Mutex<()> = Mutex::new(());
+static COOLFS_IMAGE: Mutex<Option<Image>> = Mutex::new(None);
+static DIRTY: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy)]
 struct Superblock {
@@ -115,6 +119,7 @@ struct Inode {
     kind: u8,
     size: u32,
     direct: [u32; DIRECT_BLOCKS],
+    indirect: u32,
 }
 
 impl Inode {
@@ -123,6 +128,7 @@ impl Inode {
             kind: KIND_FREE,
             size: 0,
             direct: [0; DIRECT_BLOCKS],
+            indirect: 0,
         }
     }
 
@@ -131,6 +137,7 @@ impl Inode {
             kind,
             size: 0,
             direct: [0; DIRECT_BLOCKS],
+            indirect: 0,
         }
     }
 
@@ -171,8 +178,22 @@ pub struct CoolFsCheckReport {
 }
 
 pub fn mount_or_format() -> Result<(), FsError> {
-    let _guard = COOLFS_LOCK.lock();
-    let _ = load_or_format()?;
+    let mut slot = COOLFS_IMAGE.lock();
+    let _ = ensure_image(&mut slot)?;
+    Ok(())
+}
+
+pub fn flush() -> Result<(), FsError> {
+    if !DIRTY.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    let slot = COOLFS_IMAGE.lock();
+    let Some(image) = slot.as_ref() else {
+        DIRTY.store(false, Ordering::Release);
+        return Ok(());
+    };
+    persist(image)?;
+    DIRTY.store(false, Ordering::Release);
     Ok(())
 }
 
@@ -180,7 +201,7 @@ pub fn lines() -> Vec<String> {
     match stats() {
         Some(stats) => alloc::vec![
             format!(
-                "mount {} type=coolfs flags=rw,native-image,bitmap-inodes",
+                "mount {} type=coolfs flags=rw,native-root,bitmap-inodes,indirect-blocks",
                 MOUNT_PATH
             ),
             format!(
@@ -194,15 +215,15 @@ pub fn lines() -> Vec<String> {
 }
 
 pub fn stats() -> Option<CoolFsStats> {
-    let _guard = COOLFS_LOCK.lock();
-    let image = load_or_format().ok()?;
+    let mut slot = COOLFS_IMAGE.lock();
+    let image = ensure_image(&mut slot).ok()?;
     Some(image.stats())
 }
 
 pub fn check() -> Option<CoolFsCheckReport> {
-    let _guard = COOLFS_LOCK.lock();
-    let image = load_or_format().ok()?;
-    let root_entries = read_dir_entries(&image, image.sb.root_inode).ok()?.len();
+    let mut slot = COOLFS_IMAGE.lock();
+    let image = ensure_image(&mut slot).ok()?;
+    let root_entries = read_dir_entries(image, image.sb.root_inode).ok()?.len();
     let root = image.read_inode(image.sb.root_inode)?;
     let stats = image.stats();
     Some(CoolFsCheckReport {
@@ -213,14 +234,14 @@ pub fn check() -> Option<CoolFsCheckReport> {
 }
 
 pub fn list_dir(path: &str) -> Option<Vec<DirEntryInfo>> {
-    let _guard = COOLFS_LOCK.lock();
-    let image = load_or_format().ok()?;
-    let inode_idx = resolve_path(&image, path).ok()?;
+    let mut slot = COOLFS_IMAGE.lock();
+    let image = ensure_image(&mut slot).ok()?;
+    let inode_idx = resolve_path(image, path).ok()?;
     let inode = image.read_inode(inode_idx)?;
     if !inode.is_dir() {
         return None;
     }
-    let entries = read_dir_entries(&image, inode_idx).ok()?;
+    let entries = read_dir_entries(image, inode_idx).ok()?;
     let mut out = Vec::new();
     for entry in entries {
         if let Some(child) = image.read_inode(entry.inode) {
@@ -235,9 +256,9 @@ pub fn list_dir(path: &str) -> Option<Vec<DirEntryInfo>> {
 }
 
 pub fn read_file(path: &str) -> Option<Vec<u8>> {
-    let _guard = COOLFS_LOCK.lock();
-    let image = load_or_format().ok()?;
-    let inode_idx = resolve_path(&image, path).ok()?;
+    let mut slot = COOLFS_IMAGE.lock();
+    let image = ensure_image(&mut slot).ok()?;
+    let inode_idx = resolve_path(image, path).ok()?;
     let inode = image.read_inode(inode_idx)?;
     if !inode.is_file() {
         return None;
@@ -254,57 +275,75 @@ pub fn create_dir(path: &str) -> Result<(), FsError> {
 }
 
 pub fn write_file(path: &str, data: &[u8]) -> Result<(), FsError> {
-    let _guard = COOLFS_LOCK.lock();
-    let mut image = load_or_format()?;
-    let inode_idx = resolve_path(&image, path)?;
+    let mut slot = COOLFS_IMAGE.lock();
+    let image = ensure_image(&mut slot)?;
+    let inode_idx = resolve_path(image, path)?;
     let inode = image.read_inode(inode_idx).ok_or(FsError::NotFound)?;
     if !inode.is_file() {
         return Err(FsError::InvalidPath);
     }
     image.write_inode_bytes(inode_idx, data)?;
-    persist(&image)?;
     record_mutation("coolfs-write", path);
     Ok(())
 }
 
 pub fn safe_write_file(path: &str, data: &[u8]) -> Result<(), FsError> {
-    write_file(path, data)
+    let (parent, name) = split_parent_and_name(path)?;
+    let mut tmp = parent.clone();
+    if !tmp.ends_with('/') {
+        tmp.push('/');
+    }
+    tmp.push_str("CWTMP.TMP");
+
+    match delete_file(&tmp) {
+        Ok(()) | Err(FsError::NotFound) => {}
+        Err(err) => return Err(err),
+    }
+    create_file(&tmp)?;
+    write_file(&tmp, data)?;
+    match delete_file(path) {
+        Ok(()) | Err(FsError::NotFound) => {}
+        Err(err) => {
+            let _ = delete_file(&tmp);
+            return Err(err);
+        }
+    }
+    rename(&tmp, &name)
 }
 
 pub fn delete_file(path: &str) -> Result<(), FsError> {
-    let _guard = COOLFS_LOCK.lock();
-    let mut image = load_or_format()?;
+    let mut slot = COOLFS_IMAGE.lock();
+    let image = ensure_image(&mut slot)?;
     let (parent_path, name) = split_parent_and_name(path)?;
-    let parent_inode = resolve_path(&image, &parent_path)?;
-    let mut entries = read_dir_entries(&image, parent_inode)?;
+    let parent_inode = resolve_path(image, &parent_path)?;
+    let mut entries = read_dir_entries(image, parent_inode)?;
     let pos = entries
         .iter()
         .position(|entry| names_equal(&entry.name, &name))
         .ok_or(FsError::NotFound)?;
     let target_inode = entries[pos].inode;
     let target = image.read_inode(target_inode).ok_or(FsError::NotFound)?;
-    if target.is_dir() && !read_dir_entries(&image, target_inode)?.is_empty() {
+    if target.is_dir() && !read_dir_entries(image, target_inode)?.is_empty() {
         return Err(FsError::NotEmpty);
     }
 
     entries.remove(pos);
-    write_dir_entries(&mut image, parent_inode, &entries)?;
+    write_dir_entries(image, parent_inode, &entries)?;
     image.free_inode(target_inode)?;
-    persist(&image)?;
     record_mutation("coolfs-delete", path);
     Ok(())
 }
 
 pub fn rename(path: &str, new_name: &str) -> Result<(), FsError> {
     validate_name(new_name)?;
-    let _guard = COOLFS_LOCK.lock();
-    let mut image = load_or_format()?;
+    let mut slot = COOLFS_IMAGE.lock();
+    let image = ensure_image(&mut slot)?;
     let (parent_path, old_name) = split_parent_and_name(path)?;
     if names_equal(&old_name, new_name) {
         return Ok(());
     }
-    let parent_inode = resolve_path(&image, &parent_path)?;
-    let mut entries = read_dir_entries(&image, parent_inode)?;
+    let parent_inode = resolve_path(image, &parent_path)?;
+    let mut entries = read_dir_entries(image, parent_inode)?;
     if entries
         .iter()
         .any(|entry| names_equal(&entry.name, new_name))
@@ -316,8 +355,7 @@ pub fn rename(path: &str, new_name: &str) -> Result<(), FsError> {
         .find(|entry| names_equal(&entry.name, &old_name))
         .ok_or(FsError::NotFound)?;
     entry.name = String::from(new_name);
-    write_dir_entries(&mut image, parent_inode, &entries)?;
-    persist(&image)?;
+    write_dir_entries(image, parent_inode, &entries)?;
     record_mutation("coolfs-rename", path);
     Ok(())
 }
@@ -329,12 +367,12 @@ pub fn copy_file(src: &str, dst: &str) -> Result<(), FsError> {
 }
 
 fn create_node(path: &str, kind: u8) -> Result<(), FsError> {
-    let _guard = COOLFS_LOCK.lock();
-    let mut image = load_or_format()?;
+    let mut slot = COOLFS_IMAGE.lock();
+    let image = ensure_image(&mut slot)?;
     let (parent_path, name) = split_parent_and_name(path)?;
     validate_name(&name)?;
-    let parent_inode = resolve_path(&image, &parent_path)?;
-    let mut entries = read_dir_entries(&image, parent_inode)?;
+    let parent_inode = resolve_path(image, &parent_path)?;
+    let mut entries = read_dir_entries(image, parent_inode)?;
     if entries.iter().any(|entry| names_equal(&entry.name, &name)) {
         return Err(FsError::AlreadyExists);
     }
@@ -344,12 +382,11 @@ fn create_node(path: &str, kind: u8) -> Result<(), FsError> {
         inode: inode_idx,
         name,
     });
-    if let Err(err) = write_dir_entries(&mut image, parent_inode, &entries) {
+    if let Err(err) = write_dir_entries(image, parent_inode, &entries) {
         let _ = image.free_inode(inode_idx);
         return Err(err);
     }
 
-    persist(&image)?;
     record_mutation(
         if kind == KIND_DIR {
             "coolfs-create-dir"
@@ -374,6 +411,7 @@ impl Image {
         for i in 0..DIRECT_BLOCKS {
             inode.direct[i] = read_u32(&self.data, off + 8 + i * 4)?;
         }
+        inode.indirect = read_u32(&self.data, off + 8 + DIRECT_BLOCKS * 4)?;
         Some(inode)
     }
 
@@ -385,7 +423,8 @@ impl Image {
         for i in 0..DIRECT_BLOCKS {
             write_u32(&mut self.data, off + 8 + i * 4, inode.direct[i]);
         }
-        self.data[off + 8 + DIRECT_BLOCKS * 4..off + INODE_SIZE].fill(0);
+        write_u32(&mut self.data, off + 8 + DIRECT_BLOCKS * 4, inode.indirect);
+        self.data[off + 12 + DIRECT_BLOCKS * 4..off + INODE_SIZE].fill(0);
         Ok(())
     }
 
@@ -475,8 +514,11 @@ impl Image {
 
     fn free_inode(&mut self, inode_idx: u32) -> Result<(), FsError> {
         let inode = self.read_inode(inode_idx).ok_or(FsError::NotFound)?;
-        for &block in inode.direct.iter().filter(|&&block| block != 0) {
+        for block in self.inode_data_blocks(&inode)? {
             self.free_block(block)?;
+        }
+        if inode.indirect != 0 {
+            self.free_block(inode.indirect)?;
         }
         self.write_inode(inode_idx, &Inode::free())
     }
@@ -484,12 +526,9 @@ impl Image {
     fn read_inode_bytes(&self, inode: &Inode) -> Result<Vec<u8>, FsError> {
         let mut out = Vec::with_capacity(inode.size as usize);
         let mut remaining = inode.size as usize;
-        for &block in &inode.direct {
+        for block in self.inode_data_blocks(inode)? {
             if remaining == 0 {
                 break;
-            }
-            if block == 0 {
-                return Err(FsError::Io);
             }
             let range = self.block_range(block).ok_or(FsError::Io)?;
             let take = remaining.min(BLOCK_SIZE);
@@ -504,7 +543,8 @@ impl Image {
     }
 
     fn write_inode_bytes(&mut self, inode_idx: u32, bytes: &[u8]) -> Result<(), FsError> {
-        if bytes.len() > DIRECT_BLOCKS * BLOCK_SIZE {
+        let max_blocks = DIRECT_BLOCKS + INDIRECT_ENTRIES;
+        if bytes.len() > max_blocks * BLOCK_SIZE || bytes.len() > u32::MAX as usize {
             return Err(FsError::NoSpace);
         }
         let needed = (bytes.len() + BLOCK_SIZE - 1) / BLOCK_SIZE;
@@ -512,6 +552,18 @@ impl Image {
         for _ in 0..needed {
             match self.alloc_block() {
                 Ok(block) => new_blocks.push(block),
+                Err(err) => {
+                    for block in new_blocks {
+                        let _ = self.free_block(block);
+                    }
+                    return Err(err);
+                }
+            }
+        }
+        let mut indirect_block = 0u32;
+        if needed > DIRECT_BLOCKS {
+            match self.alloc_block() {
+                Ok(block) => indirect_block = block,
                 Err(err) => {
                     for block in new_blocks {
                         let _ = self.free_block(block);
@@ -528,24 +580,67 @@ impl Image {
             let end = (start + BLOCK_SIZE).min(bytes.len());
             self.data[range.start..range.start + (end - start)].copy_from_slice(&bytes[start..end]);
         }
+        if indirect_block != 0 {
+            let range = self.block_range(indirect_block).ok_or(FsError::Io)?;
+            self.data[range.clone()].fill(0);
+            for (idx, &block) in new_blocks[DIRECT_BLOCKS..].iter().enumerate() {
+                write_u32(&mut self.data, range.start + idx * 4, block);
+            }
+        }
 
         let mut inode = self.read_inode(inode_idx).ok_or(FsError::NotFound)?;
-        let old_blocks: Vec<u32> = inode
-            .direct
-            .iter()
-            .copied()
-            .filter(|&block| block != 0)
-            .collect();
+        let old_blocks = self.inode_data_blocks(&inode)?;
+        let old_indirect = inode.indirect;
         inode.size = bytes.len() as u32;
         inode.direct = [0; DIRECT_BLOCKS];
+        inode.indirect = indirect_block;
         for (idx, block) in new_blocks.iter().copied().enumerate() {
-            inode.direct[idx] = block;
+            if idx < DIRECT_BLOCKS {
+                inode.direct[idx] = block;
+            }
         }
         self.write_inode(inode_idx, &inode)?;
         for block in old_blocks {
             self.free_block(block)?;
         }
+        if old_indirect != 0 {
+            self.free_block(old_indirect)?;
+        }
         Ok(())
+    }
+
+    fn inode_data_blocks(&self, inode: &Inode) -> Result<Vec<u32>, FsError> {
+        let needed = (inode.size as usize + BLOCK_SIZE - 1) / BLOCK_SIZE;
+        let mut blocks = Vec::with_capacity(needed);
+        for &block in inode.direct.iter().take(needed.min(DIRECT_BLOCKS)) {
+            if block == 0 {
+                return Err(FsError::Io);
+            }
+            blocks.push(block);
+        }
+        if needed > DIRECT_BLOCKS {
+            if inode.indirect == 0 {
+                return Err(FsError::Io);
+            }
+            let range = self.block_range(inode.indirect).ok_or(FsError::Io)?;
+            for idx in 0..needed - DIRECT_BLOCKS {
+                let block = read_u32(&self.data, range.start + idx * 4).ok_or(FsError::Io)?;
+                if block == 0 {
+                    return Err(FsError::Io);
+                }
+                blocks.push(block);
+            }
+        }
+        Ok(blocks)
+    }
+
+    fn persist_len(&self) -> usize {
+        for block in (0..self.sb.total_blocks).rev() {
+            if self.block_used(block) {
+                return (block as usize + 1) * BLOCK_SIZE;
+            }
+        }
+        self.sb.data_start as usize * BLOCK_SIZE
     }
 
     fn stats(&self) -> CoolFsStats {
@@ -577,15 +672,21 @@ impl Image {
     }
 }
 
+fn ensure_image(slot: &mut Option<Image>) -> Result<&mut Image, FsError> {
+    if slot.is_none() {
+        *slot = Some(load_or_format()?);
+    }
+    slot.as_mut().ok_or(FsError::Io)
+}
+
 fn load_or_format() -> Result<Image, FsError> {
     if let Some(bytes) = crate::fat32::read_file(BACKING_PATH) {
         if let Some(sb) = Superblock::parse(&bytes) {
             let expected = sb.total_blocks as usize * BLOCK_SIZE;
-            if bytes.len() >= expected {
-                return Ok(Image {
-                    data: bytes[..expected].to_vec(),
-                    sb,
-                });
+            if bytes.len() <= expected {
+                let mut data = alloc::vec![0u8; expected];
+                data[..bytes.len()].copy_from_slice(&bytes);
+                return Ok(Image { data, sb });
             }
         }
     }
@@ -612,7 +713,8 @@ fn persist(image: &Image) -> Result<(), FsError> {
         Ok(()) | Err(FsError::AlreadyExists) => {}
         Err(err) => return Err(err),
     }
-    crate::fat32::write_file(BACKING_PATH, &image.data)
+    let len = image.persist_len().min(image.data.len());
+    crate::fat32::write_file(BACKING_PATH, &image.data[..len])
 }
 
 fn resolve_path(image: &Image, path: &str) -> Result<u32, FsError> {
@@ -723,6 +825,7 @@ fn names_equal(left: &str, right: &str) -> bool {
 }
 
 fn record_mutation(kind: &str, path: &str) {
+    DIRTY.store(true, Ordering::Release);
     let vfs_path = mount_path_for(path);
     crate::fs_hardening::journal_operation(kind, &vfs_path);
     crate::search_index::record_change(&vfs_path);
@@ -730,12 +833,16 @@ fn record_mutation(kind: &str, path: &str) {
 }
 
 fn mount_path_for(path: &str) -> String {
-    let mut out = String::from(MOUNT_PATH);
     let normalized = crate::vfs::normalize_path(path);
-    if normalized != "/" {
-        out.push_str(&normalized);
+    if MOUNT_PATH == "/" {
+        normalized
+    } else {
+        let mut out = String::from(MOUNT_PATH);
+        if normalized != "/" {
+            out.push_str(&normalized);
+        }
+        out
     }
-    out
 }
 
 fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {

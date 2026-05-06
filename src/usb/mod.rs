@@ -45,11 +45,11 @@ pub fn reconcile_input_fallbacks() {
     if previous.map(|(prev_keyboard, _)| prev_keyboard) != Some(usb_keyboard) {
         if usb_keyboard {
             println!("[input] USB keyboard detected; PS/2 keyboard fallback disabled");
-            crate::notifications::push("USB input", "keyboard detected");
+            crate::notifications::push_transient("USB input", "keyboard detected");
             crate::keyboard::disable_ps2_fallback();
         } else if has_8042 {
             println!("[input] no USB keyboard detected; enabling PS/2 keyboard fallback");
-            crate::notifications::push("USB input", "keyboard fallback enabled");
+            crate::notifications::push_transient("USB input", "keyboard fallback enabled");
             crate::keyboard::enable_ps2_fallback();
         } else {
             println!("[input] no USB keyboard detected; no PS/2 controller reported by ACPI");
@@ -59,11 +59,11 @@ pub fn reconcile_input_fallbacks() {
     if previous.map(|(_, prev_mouse)| prev_mouse) != Some(usb_mouse) {
         if usb_mouse {
             println!("[input] USB mouse detected; PS/2 mouse fallback disabled");
-            crate::notifications::push("USB input", "mouse detected");
+            crate::notifications::push_transient("USB input", "mouse detected");
             crate::mouse::disable_ps2_fallback();
         } else if has_8042 {
             println!("[input] no USB mouse detected; enabling PS/2 mouse fallback");
-            crate::notifications::push("USB input", "mouse fallback enabled");
+            crate::notifications::push_transient("USB input", "mouse fallback enabled");
             crate::mouse::enable_ps2_fallback();
         } else {
             println!("[input] no USB mouse detected; no PS/2 controller reported by ACPI");

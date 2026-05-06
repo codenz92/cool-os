@@ -22,7 +22,7 @@ struct TaskCrashReport {
 static TASK_REPORTS: Mutex<Vec<TaskCrashReport>> = Mutex::new(Vec::new());
 
 pub fn record_panic(info: &PanicInfo) {
-    let _ = crate::fat32::create_dir("/LOGS");
+    let _ = crate::vfs::vfs_kernel_create_dir("/LOGS");
     let mut out = String::new();
     out.push_str("coolOS crash dump\n");
     out.push_str("panic=");
@@ -34,7 +34,7 @@ pub fn record_panic(info: &PanicInfo) {
         out.push_str(line);
         out.push('\n');
     }
-    let _ = crate::fat32::safe_write_file(CRASH_PATH, out.as_bytes());
+    let _ = crate::vfs::vfs_kernel_safe_write_file(CRASH_PATH, out.as_bytes());
 }
 
 pub fn record_task_report(pid: usize, reason: &str) {
@@ -86,7 +86,7 @@ pub fn lines() -> Vec<String> {
 
 pub fn detailed_lines() -> Vec<String> {
     let mut lines = Vec::new();
-    if let Some(bytes) = crate::fat32::read_file(CRASH_PATH) {
+    if let Some(bytes) = crate::vfs::vfs_kernel_read_file(CRASH_PATH) {
         if let Ok(text) = core::str::from_utf8(&bytes) {
             lines.push(String::from("== panic dump =="));
             for line in text.lines().take(12) {
@@ -136,7 +136,7 @@ pub fn detailed_lines() -> Vec<String> {
 
 fn compact_lines() -> Vec<String> {
     let mut lines = Vec::new();
-    if let Some(bytes) = crate::fat32::read_file(CRASH_PATH) {
+    if let Some(bytes) = crate::vfs::vfs_kernel_read_file(CRASH_PATH) {
         if let Ok(text) = core::str::from_utf8(&bytes) {
             for line in text.lines().take(10) {
                 lines.push(String::from(line));

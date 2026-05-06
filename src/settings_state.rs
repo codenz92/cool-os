@@ -36,7 +36,6 @@ static SETTINGS: Mutex<SystemSettings> = Mutex::new(DEFAULT_SETTINGS);
 
 pub fn init() {
     load_from_disk();
-    let _ = save_to_disk();
 }
 
 pub fn loaded() -> bool {

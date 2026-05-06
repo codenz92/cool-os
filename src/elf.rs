@@ -149,7 +149,7 @@ pub fn load_elf_image(path: &str) -> Result<LoadedImage, ExecError> {
 }
 
 pub fn load_elf_image_with_args(path: &str, args: &[&str]) -> Result<LoadedImage, ExecError> {
-    let image = crate::fat32::read_file(path).ok_or(ExecError::NotFound)?;
+    let image = crate::vfs::vfs_read_file(path).ok_or(ExecError::NotFound)?;
     let header = parse_header(&image)?;
     let pml4 = crate::vmm::new_process_pml4().ok_or(ExecError::OutOfMemory)?;
 

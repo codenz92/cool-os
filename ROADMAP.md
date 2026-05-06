@@ -4,10 +4,9 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–25 are complete. Phase 25 turns the package/app metadata foundation
-into an installable app platform: UTF-8 `.PKG` manifests install into `/APPS`,
-contribute launcher aliases and file associations, launch declared userspace
-executables, and uninstall cleanly.
+Phases 1–26 are complete. Phase 26 makes CoolFS the root filesystem exposed by
+the VFS: `/` is CoolFS, `/FAT` is the legacy FAT32 container, and `/COOLFS.IMG`
+is now the transitional backing store rather than the user-visible filesystem.
 
 ---
 
@@ -827,6 +826,32 @@ stale package entry.
 
 ---
 
+## ✅ Phase 26 — CoolFS Root Filesystem
+
+**Goal:** Make CoolFS the operating system filesystem instead of a side mount,
+while keeping the VFS as the syscall, path, fd, pipe, and device abstraction.
+
+- [x] Promote CoolFS from `/COOL` to the VFS root backend at `/`.
+- [x] Keep FAT32 available only as the compatibility/container mount at `/FAT`.
+- [x] Grow CoolFS to 4 KiB blocks, 512 inodes, a 4 MiB root image, and
+      direct-plus-indirect block addressing so userspace ELF binaries fit.
+- [x] Cache the mounted CoolFS image in memory and persist only the populated
+      image span back to `/COOLFS.IMG`.
+- [x] Teach the host `fs-image` builder to populate `/COOLFS.IMG` with `/bin`,
+      standard OS directories, package fixtures, and document fixtures.
+- [x] Route kernel storage services through VFS kernel helpers instead of direct
+      FAT32 calls, including config, logs, packages, crash dumps, device nodes,
+      notifications, ELF loading, terminal `cd`, and screenshots.
+- [x] Update `fsck`, `df`, mount reporting, boot self-tests, and status text so
+      CoolFS is reported as the root filesystem and FAT32 is reported as legacy.
+- [x] Add smoke coverage for CoolFS root routing and `/FAT` compatibility.
+
+**Current status:** complete. VFS remains in place because it owns file
+descriptors, pipes, shared memory, syscalls, and mount routing; CoolFS now owns
+the normal persistent namespace under `/`.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -867,4 +892,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v5.6 | Phase 22 complete: userspace utility suite |
 | v5.7 | Phase 23 complete: app lifecycle and file-open plumbing |
 | v5.8 | Phase 24 complete: app platform polish and file dialogs |
-| v5.9 | Current — Phase 25 complete: package platform |
+| v5.9 | Phase 25 complete: package platform |
+| v6.0 | Current — Phase 26 complete: CoolFS root filesystem |

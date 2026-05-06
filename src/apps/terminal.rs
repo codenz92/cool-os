@@ -2,6 +2,7 @@
 extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, Ordering};
 use font8x8::UnicodeFonts;
 
 use crate::wm::window::{Window, TITLE_H};
@@ -29,6 +30,12 @@ const FG_DIR: u32 = 0x00_55_DD_FF;
 const FG_WARN: u32 = 0x00_FF_CC_44;
 
 const HISTORY_MAX: usize = 32;
+
+static DEBUG_MIRROR: AtomicBool = AtomicBool::new(false);
+
+pub fn set_debug_mirror(enabled: bool) {
+    DEBUG_MIRROR.store(enabled, Ordering::Release);
+}
 
 pub struct TerminalApp {
     pub window: Window,
@@ -246,7 +253,7 @@ impl TerminalApp {
                     Some(p) => resolve_path(&self.cwd, p),
                     None => String::from("/"),
                 };
-                if crate::fat32::list_dir(&target).is_some() {
+                if crate::vfs::vfs_list_dir(&target).is_some() {
                     self.cwd = target;
                 } else {
                     self.set_fg(FG_ERROR);
@@ -1457,35 +1464,13 @@ impl TerminalApp {
     }
 
     fn cmd_fsck(&mut self) {
-        match crate::fat32::check() {
-            Some(report) => {
-                self.set_fg(if report.ok { FG_ACCENT } else { FG_WARN });
-                self.print_str(if report.ok {
-                    "filesystem ok\n"
-                } else {
-                    "filesystem warning\n"
-                });
-                self.set_fg(FG_OUTPUT);
-                self.print_str("root entries ");
-                self.print_u64(report.root_entries as u64);
-                self.print_str("  clusters ");
-                self.print_u64(report.stats.used_clusters as u64);
-                self.print_char('/');
-                self.print_u64(report.stats.total_clusters as u64);
-                self.print_char('\n');
-            }
-            None => {
-                self.set_fg(FG_ERROR);
-                self.print_str("fsck: unable to read filesystem\n");
-            }
-        }
         match crate::coolfs::check() {
             Some(report) => {
                 self.set_fg(if report.ok { FG_ACCENT } else { FG_WARN });
                 self.print_str(if report.ok {
-                    "coolfs ok\n"
+                    "coolfs root ok\n"
                 } else {
-                    "coolfs warning\n"
+                    "coolfs root warning\n"
                 });
                 self.set_fg(FG_OUTPUT);
                 self.print_str("root entries ");
@@ -1498,44 +1483,60 @@ impl TerminalApp {
             }
             None => {
                 self.set_fg(FG_ERROR);
-                self.print_str("coolfs: unable to read filesystem\n");
+                self.print_str("coolfs: unable to read root filesystem\n");
+            }
+        }
+        match crate::fat32::check() {
+            Some(report) => {
+                self.set_fg(if report.ok { FG_ACCENT } else { FG_WARN });
+                self.print_str(if report.ok {
+                    "legacy fat32 ok\n"
+                } else {
+                    "legacy fat32 warning\n"
+                });
+                self.set_fg(FG_OUTPUT);
+                self.print_str("root entries ");
+                self.print_u64(report.root_entries as u64);
+                self.print_str("  clusters ");
+                self.print_u64(report.stats.used_clusters as u64);
+                self.print_char('/');
+                self.print_u64(report.stats.total_clusters as u64);
+                self.print_char('\n');
+            }
+            None => {
+                self.set_fg(FG_WARN);
+                self.print_str("legacy fat32: unavailable\n");
             }
         }
     }
 
     fn cmd_df(&mut self) {
-        match crate::fat32::stats() {
-            Some(stats) => {
-                let free = stats.free_clusters as usize * stats.bytes_per_cluster as usize;
-                let used = stats.used_clusters as usize * stats.bytes_per_cluster as usize;
-                let total = stats.total_clusters as usize * stats.bytes_per_cluster as usize;
-                self.set_fg(FG_ACCENT);
-                self.print_str("Filesystem  Used  Free  Total\n");
-                self.set_fg(FG_OUTPUT);
-                self.print_str("fat32       ");
-                self.print_size(used);
-                self.print_str("  ");
-                self.print_size(free);
-                self.print_str("  ");
-                self.print_size(total);
-                self.print_char('\n');
-                if let Some(cool) = crate::coolfs::stats() {
-                    let cool_used = cool.used_blocks as usize * cool.block_size as usize;
-                    let cool_free = cool.free_blocks as usize * cool.block_size as usize;
-                    let cool_total = cool.total_blocks as usize * cool.block_size as usize;
-                    self.print_str("coolfs      ");
-                    self.print_size(cool_used);
-                    self.print_str("  ");
-                    self.print_size(cool_free);
-                    self.print_str("  ");
-                    self.print_size(cool_total);
-                    self.print_char('\n');
-                }
-            }
-            None => {
-                self.set_fg(FG_ERROR);
-                self.print_str("df: unable to read filesystem\n");
-            }
+        self.set_fg(FG_ACCENT);
+        self.print_str("Filesystem  Used  Free  Total\n");
+        self.set_fg(FG_OUTPUT);
+        if let Some(cool) = crate::coolfs::stats() {
+            let cool_used = cool.used_blocks as usize * cool.block_size as usize;
+            let cool_free = cool.free_blocks as usize * cool.block_size as usize;
+            let cool_total = cool.total_blocks as usize * cool.block_size as usize;
+            self.print_str("coolfs:/    ");
+            self.print_size(cool_used);
+            self.print_str("  ");
+            self.print_size(cool_free);
+            self.print_str("  ");
+            self.print_size(cool_total);
+            self.print_char('\n');
+        }
+        if let Some(stats) = crate::fat32::stats() {
+            let free = stats.free_clusters as usize * stats.bytes_per_cluster as usize;
+            let used = stats.used_clusters as usize * stats.bytes_per_cluster as usize;
+            let total = stats.total_clusters as usize * stats.bytes_per_cluster as usize;
+            self.print_str("fat32:/FAT  ");
+            self.print_size(used);
+            self.print_str("  ");
+            self.print_size(free);
+            self.print_str("  ");
+            self.print_size(total);
+            self.print_char('\n');
         }
     }
 
@@ -1615,6 +1616,7 @@ impl TerminalApp {
     // ── Rendering helpers ─────────────────────────────────────────────────────
 
     pub fn print_char(&mut self, c: char) {
+        mirror_debug_char(c);
         self.refresh_layout();
         if c == '\n' {
             self.col = 0;
@@ -1792,6 +1794,25 @@ impl TerminalApp {
             1 | 2 => TERM_BG_A,
             _ => TERM_BG_B,
         }
+    }
+}
+
+fn mirror_debug_char(c: char) {
+    if !DEBUG_MIRROR.load(Ordering::Acquire) {
+        return;
+    }
+    if c == '\n' {
+        debug_byte(b'\n');
+    } else if c.is_ascii() && !c.is_control() {
+        debug_byte(c as u8);
+    } else if !c.is_control() {
+        debug_byte(b'?');
+    }
+}
+
+fn debug_byte(byte: u8) {
+    unsafe {
+        x86_64::instructions::port::Port::<u8>::new(0xE9).write(byte);
     }
 }
 

@@ -24,16 +24,24 @@ pub struct PackageLaunch {
 static INSTALLED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 pub fn init() {
-    let _ = crate::fat32::create_dir("/APPS");
+    let _ = crate::vfs::vfs_kernel_create_dir("/APPS");
     let mut installed = Vec::new();
     for app in crate::app_metadata::APPS {
         installed.push(String::from(app.id));
         let dir = app_dir(app.command);
-        let _ = crate::fat32::create_dir(&dir);
+        let _ = crate::vfs::vfs_kernel_create_dir(&dir);
         let manifest = manifest_for(app);
         let path = app_manifest_path(app.command);
-        let _ = crate::fat32::create_file(&path);
-        let _ = crate::fat32::write_file(&path, manifest.as_bytes());
+        match crate::vfs::vfs_kernel_read_file(&path) {
+            Some(bytes) if bytes == manifest.as_bytes() => {}
+            Some(_) => {
+                let _ = crate::vfs::vfs_kernel_safe_write_file(&path, manifest.as_bytes());
+            }
+            None => {
+                let _ = crate::vfs::vfs_kernel_create_file(&path);
+                let _ = crate::vfs::vfs_kernel_write_file(&path, manifest.as_bytes());
+            }
+        }
     }
     for manifest in crate::app_metadata::installed_app_manifests() {
         if !installed
@@ -111,16 +119,17 @@ pub fn install(id_or_command: &str) -> Result<(), &'static str> {
         installed.push(String::from(app.id));
     }
     let dir = app_dir(app.command);
-    let _ = crate::fat32::create_dir(&dir);
+    let _ = crate::vfs::vfs_kernel_create_dir(&dir);
     let path = app_manifest_path(app.command);
-    let _ = crate::fat32::create_file(&path);
-    let _ = crate::fat32::write_file(&path, manifest_for(app).as_bytes());
+    let manifest = manifest_for(app);
+    let _ = crate::vfs::vfs_kernel_create_file(&path);
+    let _ = crate::vfs::vfs_kernel_safe_write_file(&path, manifest.as_bytes());
     crate::event_bus::emit("packages", "install", app.id);
     Ok(())
 }
 
 pub fn install_archive(path: &str) -> Result<(), &'static str> {
-    let bytes = crate::fat32::read_file(path).ok_or("package file not found")?;
+    let bytes = crate::vfs::vfs_kernel_read_file(path).ok_or("package file not found")?;
     let text = core::str::from_utf8(&bytes).map_err(|_| "package is not UTF-8 manifest")?;
     let id = manifest_value(text, "id").ok_or("package missing id")?;
     let name = manifest_value(text, "name").unwrap_or(id);
@@ -141,11 +150,11 @@ pub fn install_archive(path: &str) -> Result<(), &'static str> {
     if !id.starts_with("app.") || command.contains('/') || command.contains("..") {
         return Err("invalid package manifest");
     }
-    if !exec_path.starts_with('/') || crate::fat32::read_file(exec_path).is_none() {
+    if !exec_path.starts_with('/') || crate::vfs::vfs_kernel_read_file(exec_path).is_none() {
         return Err("package exec not found");
     }
     let dir = app_dir(command);
-    let _ = crate::fat32::create_dir(&dir);
+    let _ = crate::vfs::vfs_kernel_create_dir(&dir);
     let manifest_path = app_manifest_path(command);
     let mut manifest = String::new();
     manifest.push_str("id=");
@@ -170,8 +179,8 @@ pub fn install_archive(path: &str) -> Result<(), &'static str> {
     manifest.push_str(associations);
     manifest.push('\n');
     crate::app_metadata::validate_manifest_text(&manifest)?;
-    let _ = crate::fat32::create_file(&manifest_path);
-    crate::fat32::safe_write_file(&manifest_path, manifest.as_bytes())
+    let _ = crate::vfs::vfs_kernel_create_file(&manifest_path);
+    crate::vfs::vfs_kernel_safe_write_file(&manifest_path, manifest.as_bytes())
         .map_err(|_| "install write failed")?;
     let mut installed = INSTALLED.lock();
     if !installed.iter().any(|existing| existing == id) {
@@ -337,7 +346,7 @@ fn delete_app_dir(command: &str) -> Result<(), crate::fat32::FsError> {
 }
 
 fn delete_tree(path: &str) -> Result<(), crate::fat32::FsError> {
-    if let Some(entries) = crate::fat32::list_dir(path) {
+    if let Some(entries) = crate::vfs::vfs_kernel_list_dir(path) {
         for entry in entries {
             let mut child = String::from(path);
             if !child.ends_with('/') {
@@ -347,7 +356,7 @@ fn delete_tree(path: &str) -> Result<(), crate::fat32::FsError> {
             delete_tree(&child)?;
         }
     }
-    crate::fat32::delete_file(path)
+    crate::vfs::vfs_kernel_delete(path)
 }
 
 fn manifest_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {

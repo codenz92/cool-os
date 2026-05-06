@@ -130,16 +130,16 @@ fn check(name: &str, passed: bool, ok: &mut usize, fail: &mut usize) {
 }
 
 fn fat32_mutation_roundtrip() -> bool {
-    let _ = crate::fat32::create_dir("/TMP");
-    let path = "/TMP/SELFTEST.TXT";
-    match crate::fat32::create_file(path) {
+    let _ = crate::vfs::vfs_kernel_create_dir("/FAT/TMP");
+    let path = "/FAT/TMP/SELFTEST.TXT";
+    match crate::vfs::vfs_kernel_create_file(path) {
         Ok(()) | Err(crate::fat32::FsError::AlreadyExists) => {}
         Err(_) => return false,
     }
-    if crate::fat32::write_file(path, b"selftest\n").is_err() {
+    if crate::vfs::vfs_kernel_write_file(path, b"selftest\n").is_err() {
         return false;
     }
-    crate::fat32::read_file(path)
+    crate::vfs::vfs_kernel_read_file(path)
         .map(|bytes| bytes.as_slice() == b"selftest\n")
         .unwrap_or(false)
 }
@@ -148,13 +148,13 @@ fn coolfs_mutation_roundtrip() -> bool {
     if crate::coolfs::mount_or_format().is_err() {
         return false;
     }
-    let _ = crate::vfs::vfs_create_dir("/COOL/TESTS");
-    let path = "/COOL/TESTS/ROUNDTRIP.TXT";
-    match crate::vfs::vfs_create_file(path) {
+    let _ = crate::vfs::vfs_kernel_create_dir("/TMP");
+    let path = "/TMP/ROUNDTRIP.TXT";
+    match crate::vfs::vfs_kernel_create_file(path) {
         Ok(()) | Err(crate::fat32::FsError::AlreadyExists) => {}
         Err(_) => return false,
     }
-    if crate::vfs::vfs_safe_write_file(path, b"coolfs selftest\n").is_err() {
+    if crate::vfs::vfs_kernel_safe_write_file(path, b"coolfs selftest\n").is_err() {
         return false;
     }
     if !matches!(

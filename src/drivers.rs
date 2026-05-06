@@ -17,7 +17,6 @@ static BINDINGS: Mutex<Vec<DriverBinding>> = Mutex::new(Vec::new());
 
 pub fn init() {
     refresh();
-    let _ = create_device_nodes();
 }
 
 pub fn refresh() {
@@ -47,7 +46,7 @@ pub fn refresh() {
     let current = bindings.len();
     *BINDINGS.lock() = bindings;
     if current != previous {
-        crate::notifications::push("Driver registry", "PCI binding table changed");
+        crate::notifications::push_transient("Driver registry", "PCI binding table changed");
         crate::event_bus::emit("drivers", "hotplug", "binding table changed");
     }
 }
@@ -77,15 +76,16 @@ pub fn lines() -> Vec<String> {
         .collect()
 }
 
+#[allow(dead_code)]
 pub fn create_device_nodes() -> Result<(), crate::fat32::FsError> {
-    let _ = crate::fat32::create_dir("/DEV");
+    let _ = crate::vfs::vfs_kernel_create_dir("/DEV");
     for binding in BINDINGS.lock().iter() {
-        let _ = crate::fat32::create_file(&binding.node);
+        let _ = crate::vfs::vfs_kernel_create_file(&binding.node);
         let data = format!(
             "driver={}\nlocation={}\nstatus={}\nmsi={}\nmsix={}\n",
             binding.driver, binding.location, binding.status, binding.msi, binding.msix
         );
-        let _ = crate::fat32::write_file(&binding.node, data.as_bytes());
+        let _ = crate::vfs::vfs_kernel_write_file(&binding.node, data.as_bytes());
     }
     Ok(())
 }

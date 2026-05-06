@@ -87,7 +87,7 @@ pub fn clear() {
     {
         NOTIFICATIONS.lock().clear();
     }
-    let _ = crate::fat32::safe_write_file(HISTORY_PATH, b"");
+    let _ = crate::vfs::vfs_kernel_safe_write_file(HISTORY_PATH, b"");
     crate::wm::request_repaint();
 }
 
@@ -123,7 +123,7 @@ pub fn dismiss_group(title: &str) -> usize {
 }
 
 pub fn history_lines() -> Vec<String> {
-    if let Some(bytes) = crate::fat32::read_file(HISTORY_PATH) {
+    if let Some(bytes) = crate::vfs::vfs_kernel_read_file(HISTORY_PATH) {
         if let Ok(text) = core::str::from_utf8(&bytes) {
             return text.lines().map(String::from).collect();
         }
@@ -132,7 +132,7 @@ pub fn history_lines() -> Vec<String> {
 }
 
 fn flush_history_locked(notifications: &[Notification]) -> Result<(), crate::fat32::FsError> {
-    let _ = crate::fat32::create_dir("/LOGS");
+    let _ = crate::vfs::vfs_kernel_create_dir("/LOGS");
     let mut out = String::new();
     for notification in notifications.iter() {
         out.push('#');
@@ -148,7 +148,7 @@ fn flush_history_locked(notifications: &[Notification]) -> Result<(), crate::fat
         }
         out.push('\n');
     }
-    crate::fat32::safe_write_file(HISTORY_PATH, out.as_bytes())
+    crate::vfs::vfs_kernel_safe_write_file(HISTORY_PATH, out.as_bytes())
 }
 
 fn push_u64(out: &mut String, mut value: u64) {

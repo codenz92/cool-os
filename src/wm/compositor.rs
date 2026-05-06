@@ -3,10 +3,12 @@
 ///
 /// Visual theme: Retro-Futuristic CRT Phosphor Blue
 extern crate alloc;
-use alloc::{format, string::String, vec::Vec};
-use core::sync::atomic::{AtomicU64, Ordering};
-use lazy_static::lazy_static;
-use spin::Mutex;
+use alloc::{boxed::Box, format, string::String, vec::Vec};
+use core::{
+    ops::{Deref, DerefMut},
+    sync::atomic::{AtomicU64, Ordering},
+};
+use spin::{Mutex, MutexGuard};
 
 use crate::apps::{
     BrowserApp, ColorPickerApp, DisplaySettingsApp, FileManagerApp, FileManagerOpenRequest,
@@ -936,7 +938,8 @@ pub struct WindowManager {
 }
 
 impl WindowManager {
-    pub fn new() -> Self {
+    #[inline(always)]
+    pub fn new_boxed() -> Box<Self> {
         desktop_settings::load_from_disk();
         let settings = desktop_settings::snapshot();
         let w = crate::framebuffer::width();
@@ -945,20 +948,17 @@ impl WindowManager {
         let wallpaper = build_wallpaper(w, taskbar_y, settings.wallpaper, true);
         crate::boot_splash::show(
             "allocating render buffer",
-            21,
+            13,
             crate::boot_splash::BOOT_PROGRESS_TOTAL,
         );
         let shadow = alloc::vec![0u32; w * h];
-        crate::boot_splash::show(
-            "finalizing shell",
-            22,
-            crate::boot_splash::BOOT_PROGRESS_TOTAL,
-        );
-        let prev_shadow = alloc::vec![0u32; w * h];
+        crate::boot_watchdog::record("finalizing shell", 14);
+        crate::profiler::record_boot_stage("finalizing shell", 14);
+        let prev_shadow = alloc::vec![u32::MAX; w * h];
         let damage_spans = alloc::vec![(0usize, w); h];
         let reported_damage_spans = alloc::vec![(0usize, 0usize); h];
 
-        let mut wm = WindowManager {
+        let wm = Box::new(WindowManager {
             windows: Vec::new(),
             window_workspaces: Vec::new(),
             z_order: Vec::new(),
@@ -990,7 +990,7 @@ impl WindowManager {
             launcher: None,
             taskbar_menu: None,
             dialog: None,
-            session_ready: false,
+            session_ready: true,
             session_dirty: false,
             last_session_save_tick: 0,
             last_click_tick: 0,
@@ -1015,8 +1015,7 @@ impl WindowManager {
             blit_scratch: alloc::vec![0u8; w * 3],
             wallpaper,
             wallpaper_preset: settings.wallpaper,
-        };
-        wm.session_ready = true;
+        });
         wm
     }
 
@@ -2762,9 +2761,14 @@ impl WindowManager {
     pub fn compose(&mut self) {
         let frame_start_tick = crate::interrupts::ticks();
         crate::wm::drain_user_gui_owner_cleanup(self);
-        if let Some(command) = crate::wm::take_startup_command() {
+        let mut startup_drained = 0usize;
+        while let Some(command) = crate::wm::take_startup_command() {
             if !self.run_startup_exec_command(&command) {
                 self.run_terminal_command(&command);
+            }
+            startup_drained += 1;
+            if startup_drained >= 16 {
+                break;
             }
         }
 
@@ -4680,8 +4684,8 @@ impl WindowManager {
 
     fn compute_damage_spans(&mut self, sw: usize, sh: usize) {
         let total = sw.saturating_mul(sh);
-        if self.prev_shadow.len() != total {
-            self.prev_shadow.resize(total, 0);
+        let track_prev = self.prev_shadow.len() == total;
+        if !track_prev {
             self.full_damage_next = true;
         }
         if self.damage_spans.len() != sh {
@@ -4724,8 +4728,10 @@ impl WindowManager {
             if span.0 < span.1 {
                 rows += 1;
                 pixels += span.1 - span.0;
-                self.prev_shadow[start_idx..end_idx]
-                    .copy_from_slice(&self.shadow[start_idx..end_idx]);
+                if track_prev {
+                    self.prev_shadow[start_idx..end_idx]
+                        .copy_from_slice(&self.shadow[start_idx..end_idx]);
+                }
             }
         }
 
@@ -4813,12 +4819,12 @@ impl WindowManager {
             bytes.push((pixel & 0xFF) as u8);
         }
 
-        let _ = crate::fat32::create_dir("/LOGS");
-        match crate::fat32::create_file(path) {
+        let _ = crate::vfs::vfs_kernel_create_dir("/LOGS");
+        match crate::vfs::vfs_kernel_create_file(path) {
             Ok(()) | Err(crate::fat32::FsError::AlreadyExists) => {}
             Err(err) => return Err(err.as_str()),
         }
-        crate::fat32::write_file(path, &bytes).map_err(|err| err.as_str())
+        crate::vfs::vfs_kernel_write_file(path, &bytes).map_err(|err| err.as_str())
     }
 
     fn handle_dialog_click(&mut self, px: i32, py: i32, sw: i32, taskbar_y: i32) {
@@ -7287,10 +7293,10 @@ fn ctrl_number_slot(c: char) -> Option<usize> {
 
 fn start_menu_widget_status_line() -> String {
     let mut line = String::new();
-    if let Some(stats) = crate::fat32::stats() {
+    if let Some(stats) = crate::coolfs::stats() {
         line.push_str("disk ");
-        push_decimal(&mut line, stats.free_clusters as u64);
-        line.push_str(" free");
+        push_decimal(&mut line, stats.free_blocks as u64);
+        line.push_str(" blocks free");
     } else {
         line.push_str("disk ?");
     }
@@ -7343,9 +7349,55 @@ fn push_i32_decimal(out: &mut String, n: i32) {
     }
 }
 
-lazy_static! {
-    pub static ref WM: Mutex<WindowManager> = Mutex::new(WindowManager::new());
+pub struct WindowManagerCell {
+    inner: Mutex<Option<Box<WindowManager>>>,
 }
+
+pub struct WindowManagerGuard<'a>(MutexGuard<'a, Option<Box<WindowManager>>>);
+
+impl WindowManagerCell {
+    pub const fn new() -> Self {
+        Self {
+            inner: Mutex::new(None),
+        }
+    }
+
+    pub fn initialize(&self) {
+        drop(self.lock());
+    }
+
+    pub fn lock(&self) -> WindowManagerGuard<'_> {
+        let mut guard = self.inner.lock();
+        if guard.is_none() {
+            *guard = Some(WindowManager::new_boxed());
+        }
+        WindowManagerGuard(guard)
+    }
+
+    pub fn try_lock(&self) -> Option<WindowManagerGuard<'_>> {
+        let mut guard = self.inner.try_lock()?;
+        if guard.is_none() {
+            *guard = Some(WindowManager::new_boxed());
+        }
+        Some(WindowManagerGuard(guard))
+    }
+}
+
+impl Deref for WindowManagerGuard<'_> {
+    type Target = WindowManager;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_deref().expect("window manager initialized")
+    }
+}
+
+impl DerefMut for WindowManagerGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.as_deref_mut().expect("window manager initialized")
+    }
+}
+
+pub static WM: WindowManagerCell = WindowManagerCell::new();
 
 // ── Shadow-buffer helpers ─────────────────────────────────────────────────────
 

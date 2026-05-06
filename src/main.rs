@@ -76,6 +76,7 @@ use core::panic::PanicInfo;
 static BOOTLOADER_CONFIG: BootloaderConfig = {
     let mut cfg = BootloaderConfig::new_default();
     cfg.mappings.physical_memory = Some(Mapping::Dynamic);
+    cfg.kernel_stack_size = 256 * 1024;
     cfg
 };
 
@@ -162,6 +163,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     boot_splash::show("allocating heap", 7, boot_splash::BOOT_PROGRESS_TOTAL);
     klog::init();
     profiler::record_boot_stage("allocating heap", 7);
+    boot_splash::show("mounting filesystems", 8, boot_splash::BOOT_PROGRESS_TOTAL);
     fs_hardening::init();
     event_bus::emit("boot", "heap", "kernel heap online");
     security::init();
@@ -188,7 +190,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     // (the heap allocator's `next` counter tells us how many frames it used).
     let vmm_frame_allocator =
         unsafe { memory::BootInfoFrameAllocator::init_from(regions, heap_frame_allocator.next()) };
-    boot_splash::show("preparing page tables", 8, boot_splash::BOOT_PROGRESS_TOTAL);
+    boot_splash::show("preparing page tables", 9, boot_splash::BOOT_PROGRESS_TOTAL);
 
     // Initialise the VMM with the physical-memory offset and the remaining
     // frame supply.  From here on, all page-table work goes through vmm::.
@@ -196,7 +198,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     font::load_from_disk();
     boot_splash::show(
         "mapping virtual memory",
-        9,
+        10,
         boot_splash::BOOT_PROGRESS_TOTAL,
     );
 
@@ -204,44 +206,42 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     // kernel .text) can execute.  Per-process stacks are mapped separately
     // with USER_ACCESSIBLE in their private PML4.
     unsafe { memory::mark_all_user_accessible(phys_mem_offset) };
-    boot_splash::show("enabling user pages", 10, boot_splash::BOOT_PROGRESS_TOTAL);
+    boot_splash::show("enabling user pages", 11, boot_splash::BOOT_PROGRESS_TOTAL);
 
     // DMA-backed hardware probing needs heap/VMM/interrupts, but it should not
     // be gated on the scheduler or first desktop frame. Running it here keeps
     // headless device smoke tests deterministic as shell setup grows.
     net::init();
     usb::init();
-    let _ = klog::flush_to_disk();
+
+    mouse::init_cursor();
+    boot_splash::show(
+        "preparing desktop shell",
+        12,
+        boot_splash::BOOT_PROGRESS_TOTAL,
+    );
+    wm::prepare();
 
     // ── Scheduler ─────────────────────────────────────────────────────────────
-    boot_splash::show("starting scheduler", 11, boot_splash::BOOT_PROGRESS_TOTAL);
+    boot_splash::show("starting scheduler", 15, boot_splash::BOOT_PROGRESS_TOTAL);
     x86_64::instructions::interrupts::without_interrupts(|| {
         let mut sched = scheduler::SCHEDULER.lock();
         sched.add_idle();
-        // fs_test runs on its own 64 KiB kernel stack — avoids blowing the
-        // limited boot stack with the 512-byte sector buffers.
-        sched.spawn("fs-test", fs_test_task);
     });
     selftest::run_boot_tests();
+    fs_test_once();
     boot_splash::show(
         "staging filesystem checks",
-        12,
+        16,
         boot_splash::BOOT_PROGRESS_TOTAL,
     );
 
     // Spawn two isolated user processes (each gets its own PML4 + user stack).
     userspace::spawn_user_process(1);
     userspace::spawn_user_process(2);
-    boot_splash::show("launching userspace", 13, boot_splash::BOOT_PROGRESS_TOTAL);
+    boot_splash::show("launching userspace", 17, boot_splash::BOOT_PROGRESS_TOTAL);
 
     // ── Desktop ───────────────────────────────────────────────────────────────
-    mouse::init_cursor();
-    boot_splash::show(
-        "preparing desktop shell",
-        14,
-        boot_splash::BOOT_PROGRESS_TOTAL,
-    );
-    wm::prepare();
     shortcuts::load_from_disk();
     wm::init();
     boot_splash::show("drawing desktop", 23, boot_splash::BOOT_PROGRESS_TOTAL);
@@ -253,9 +253,23 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     println!("[boot] desktop ready");
     profiler::record_boot_stage("desktop ready", boot_splash::BOOT_PROGRESS_TOTAL);
     boot_watchdog::complete();
-    for command in fw_cfg::smoke_commands() {
+    let smoke_commands = fw_cfg::smoke_commands();
+    if !smoke_commands.is_empty() {
+        apps::terminal::set_debug_mirror(true);
+    }
+    let immediate_smoke = smoke_commands.iter().all(|command| {
+        matches!(
+            command.split_whitespace().next(),
+            Some("vfs" | "path" | "df" | "fsck")
+        )
+    });
+    for command in smoke_commands {
         println!("[smoke] command {}", command);
-        wm::queue_startup_command(&command);
+        if immediate_smoke {
+            wm::queue_startup_command_immediate(&command);
+        } else {
+            wm::queue_startup_command(&command);
+        }
     }
 
     loop {
@@ -272,10 +286,10 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     }
 }
 
-/// One-shot task: reads /bin/hello.txt from the FAT32 disk and prints it.
-fn fs_test_task() -> ! {
-    println!("[fs] task started");
-    match fat32::read_file("/bin/hello.txt") {
+/// One-shot boot check: reads /bin/hello.txt from the CoolFS root and prints it.
+fn fs_test_once() {
+    println!("[fs] check started");
+    match vfs::vfs_read_file("/bin/hello.txt") {
         Some(bytes) => {
             print!("[fs] /bin/hello.txt: ");
             for b in &bytes {
@@ -283,12 +297,6 @@ fn fs_test_task() -> ! {
             }
         }
         None => println!("[fs] /bin/hello.txt: NOT FOUND"),
-    }
-
-    // Mark this one-shot task complete so it leaves the run queue.
-    scheduler::exit_current(0);
-    loop {
-        x86_64::instructions::hlt();
     }
 }
 

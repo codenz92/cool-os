@@ -7,12 +7,12 @@ A 64-bit operating system kernel written in Rust. Boots bare-metal into a
 graphical desktop with draggable and resizable windows, a taskbar, a start
 menu, hardware input, kernel and userspace GUI applications, a preemptive
 scheduler, ring-3 userspace, per-process virtual memory, process isolation, a
-FAT32 filesystem with VFS/syscalls, a native CoolFS mount, an ELF loader with
+CoolFS root filesystem with VFS/syscalls, a FAT32 compatibility container, an ELF loader with
 `exec`, and IPC with pipes, shared memory, and per-task fd tables.
 
 ---
 
-# Current state — v5.9
+# Current state — v6.0
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -22,7 +22,7 @@ global keyboard shortcuts, a `Ctrl+Space` launcher/search palette, a task
 switcher overlay, edge/keyboard window snapping, taskbar previews/actions,
 session restore, File Manager drag/drop/open-with actions, a shared clipboard,
 notification center, userspace app lifecycle tracking with System Monitor
-close/kill/path controls, and desktop settings that persist to the FAT32 disk.
+close/kill/path controls, and desktop settings that persist to the CoolFS root.
 A preemptive round-robin scheduler runs five boot tasks driven by the PIT
 timer at **100 Hz**; the terminal can also spawn additional ring-3 ELF tasks
 from disk with `exec`. The shell also has a real package/app manifest path:
@@ -49,7 +49,7 @@ anonymous pipes, `ipc` allocates a fresh shared pipe and launches the
 reader/writer demo pair by inheriting one pipe end into each child, `keydemo`
 streams focused terminal keystrokes into a userspace process over an inherited
 pipe, and `exec /bin/read` exercises userspace `open/read/close` against the
-FAT32-backed VFS. With QEMU virtio networking enabled, `exec /bin/wget
+CoolFS-backed VFS. With QEMU virtio networking enabled, `exec /bin/wget
 http://example.com/` resolves DNS, opens a TCP socket, fetches the HTTP
 response, and streams it to the terminal. The native Web Browser app can open
 HTTP, HTTPS, and local HTML pages, follow redirects, decode chunked responses,
@@ -78,13 +78,13 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **Userspace** | Ring-3 code can run either as the original isolation stubs or as real ELF64 binaries loaded from `/bin`. The `libcool` SDK crate now provides no_std entry/argv setup plus process, file, pipe, mmap, shared-memory, event, DNS/HTTP, TCP socket, filesystem utility, screenshot, and userspace GUI wrappers. `sys_exec` replaces the current userspace image in-place by swapping CR3 and rewriting the saved syscall return frame. `keydemo` relays fixed-size key and click event packets into a userspace child over a pipe. Shared memory (`sys_shmem_create`/`sys_shmem_map`) maps a region of physical frames into the caller's address space at a fixed VA. |
 | **ELF loader** | Validates ELF64 headers, maps `PT_LOAD` segments into a fresh address space, allocates a private user stack, builds an initial `argc/argv/envp` stack frame, and can either spawn a new task or prepare an image for `sys_exec`. |
 | **ATA PIO driver** | Primary-bus slave device (QEMU `if=ide,index=1`). LBA28 PIO reads, BSY/DRQ polling with timeout, nIEN=1 (device interrupts disabled). Wrapped in `without_interrupts` to prevent preemption mid-transfer. |
-| **FAT32 layer** | BPB parsing, FAT chain walking, short-name and long-filename lookup, directory traversal, cluster→sector mapping, create/write/rename/delete/copy helpers, temp-write+rename safe writes, free-space stats, and a basic `fsck` consistency summary. `fat32::read_file(path)` returns `Option<Vec<u8>>`. |
-| **CoolFS layer** | Native coolOS filesystem mounted at `/COOL`, backed by `/COOLFS.IMG`. It has a CoolFS superblock, fixed inode table, block bitmap, direct data blocks, directory records, VFS read/write/create/rename/delete/copy routing, stats, and boot self-tests. |
-| **VFS** | Task-local fd tables (16 slots, fds 0–2 reserved) backed by shared file/pipe/shmem objects. `vfs_open` reads whole files into heap buffers; `vfs_pipe` allocates a 512-byte kernel ring buffer and returns per-task read/write fds; `vfs_read_blocking` blocks tasks on empty pipes and wakes them on write/EOF; `ipc` selectively inherits pipe ends into child processes; `vfs_shmem_create`/`vfs_shmem_map` manage a shared memory region pool indexed by ID. |
+| **CoolFS layer** | Native coolOS root filesystem mounted at `/`, backed by `/COOLFS.IMG` during the FAT-container transition. It has a CoolFS superblock, fixed inode table, block bitmap, 4 KiB blocks, direct plus indirect data blocks, directory records, VFS read/write/create/rename/delete/copy routing, stats, and boot self-tests. |
+| **FAT32 layer** | BPB parsing, FAT chain walking, short-name and long-filename lookup, directory traversal, cluster→sector mapping, mutation helpers, free-space stats, and `fsck` for the legacy `/FAT` container that currently stores `/COOLFS.IMG`. |
+| **VFS** | CoolFS-root path routing, `/FAT` legacy routing, task-local fd tables (16 slots, fds 0–2 reserved) backed by shared file/pipe/shmem objects. `vfs_open` reads whole files into heap buffers; `vfs_pipe` allocates a 512-byte kernel ring buffer and returns per-task read/write fds; `vfs_read_blocking` blocks tasks on empty pipes and wakes them on write/EOF; `ipc` selectively inherits pipe ends into child processes; `vfs_shmem_create`/`vfs_shmem_map` manage a shared memory region pool indexed by ID. |
 | **Networking** | Legacy PCI virtio-net driver for QEMU user networking, polling RX/TX virtqueues, Ethernet framing, ARP cache, IPv4, ICMP echo, UDP DNS queries, minimal TCP client sockets, userspace socket syscalls, HTTP/1.1, and verified TLS 1.3 HTTPS for the native browser/terminal path. |
 | **Kernel services** | Persistent kernel log buffer flushed to `/LOGS/KERNEL.TXT`, crash-screen log tail, central device registry for PCI/USB/system devices, installable package/app manifests with file associations, networking status, and ACPI power-control status foundation. |
 | **Applications** | Terminal, System Monitor, Text Viewer, Color Picker, File Manager, Web Browser, ring-3 Notes, Text Editor, Trash Bin, Screenshot, and GUI Demo. Text-file opens route into `/bin/editor <path>` with kernel viewer fallback, while File Manager exposes explicit Open With Editor/Viewer actions. |
-| **Disk image** | `disk-image/src/fs_image.rs` builds `fs.img` (64 MiB FAT32) with `/COOLFS.IMG`, `/bin/hello.txt`, `/bin/hello`, `/bin/exec`, `/bin/pipe`, `/bin/piperd`, `/bin/pipewr`, `/bin/keyecho`, `/bin/read`, `/bin/terminal`, `/bin/netdemo`, `/bin/wget`, `/bin/sdkdemo`, `/bin/guidemo`, `/bin/notes`, `/bin/editor`, `/bin/trash`, `/bin/screenshot`, and `/Packages/guidemo.pkg` as a package-platform fixture. The Makefile attaches it to QEMU as the IDE slave. |
+| **Disk image** | `disk-image/src/fs_image.rs` builds `fs.img` (64 MiB FAT32 compatibility container) with a populated `/COOLFS.IMG` CoolFS root containing `/bin`, `/CONFIG`, `/APPS`, `/Documents`, `/Pictures`, `/Desktop`, `/Downloads`, `/Trash`, `/Packages/guidemo.pkg`, and `/Documents/package-demo.p25`. The Makefile attaches it to QEMU as the IDE slave. |
 
 ### Applications
 
@@ -94,7 +94,7 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **System Monitor** | Right-click | Live CPU vendor, heap usage, uptime, scheduler counts, USB/input status, and userspace app lifecycle controls for close, kill, and app path. |
 | **Text Viewer** | Right-click | Scrollable "About" doc; `j`/`k` to scroll. |
 | **Color Picker** | Right-click | Clickable 16-colour EGA palette grid. |
-| **File Manager** | Right-click / desktop icon | Browse and mutate the FAT32 disk image with breadcrumbs, recursive search, sorting, multi-select, clipboard copy/cut/paste, Trash-backed delete, properties, inline text editing, Open With Editor/Viewer, and ELF launch routing. |
+| **File Manager** | Right-click / desktop icon | Browse and mutate the CoolFS root with breadcrumbs, recursive search, sorting, multi-select, clipboard copy/cut/paste, Trash-backed delete, properties, inline text editing, Open With Editor/Viewer, and ELF launch routing. |
 | **Web Browser** | Launcher / desktop icon | Native HTTP/HTTPS/local-file browser with address/search bar, redirects, decoded chunked responses, headings/lists/quotes/tables, direct and HTML-sourced inline PNG previews, clickable links, session history, visible TLS trust-root status, and persistent bookmarks. |
 | **Trash Bin** | Launcher / desktop icon / `exec /bin/trash` | Ring-3 GUI utility that lists deleted items staged in `/Trash` and can permanently empty them. |
 | **Screenshot** | Launcher / desktop icon / `exec /bin/screenshot` | Ring-3 GUI utility that queues a focused-window PPM capture to `/Pictures`. |
@@ -147,9 +147,9 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `https <host-or-url> [path]` | Fetch an HTTPS response through the verified kernel TLS client |
 | `power [reboot\|shutdown\|sleep]` | Print or request power-control actions |
 | `log` | Flush and print the kernel log tail |
-| `fsck` | Print FAT32 consistency and root-entry summary |
-| `coolfs` | Print CoolFS mount and inode/block usage |
-| `df` | Print FAT32 and CoolFS used/free/total space |
+| `fsck` | Print CoolFS-root consistency plus legacy FAT32 container summary |
+| `coolfs` | Print CoolFS root mount and inode/block usage |
+| `df` | Print CoolFS `/` and FAT32 `/FAT` used/free/total space |
 | `pkg [list\|install <path-or-id>\|remove <id>\|run <id> [args...]]` | Manage built-in and manifest-installed packages. |
 | `shortcuts` | Print configured global shortcuts |
 | `clip [text]` | Show clipboard summary or copy text |
@@ -197,11 +197,10 @@ release it.
 ```
 disk-image/
   src/main.rs      Host tool — wraps kernel ELF into bios.img via bootloader 0.11
-  src/fs_image.rs  Host tool — builds fs.img (64 MiB FAT32) with /bin/hello.txt,
-                    /bin/hello, /bin/exec, /bin/pipe, /bin/piperd, /bin/pipewr,
-                    /bin/keyecho, /bin/read, /bin/terminal, /bin/netdemo, /bin/wget,
-                    /bin/sdkdemo, /bin/guidemo, /bin/notes, /bin/editor,
-                    /bin/trash, and /bin/screenshot
+  src/fs_image.rs  Host tool — builds fs.img (64 MiB FAT32 container) with a
+                    populated /COOLFS.IMG root: /bin, /CONFIG, /APPS,
+                    /Documents, /Packages, /Pictures, /Desktop, /Downloads,
+                    /Trash, and /LOGS
 src/
   main.rs          Kernel entry point — framebuffer init, GDT, heap, scheduler, main loop
   gdt.rs           GDT (ring-0/ring-3 segments) + TSS (RSP0 for ring-3 IRQ entry)
@@ -218,9 +217,11 @@ src/
   scheduler.rs     Preemptive scheduler — Task (with pml4 field), Scheduler,
                    SCHEDULER global, timer_schedule, spawn_with_pml4, waitpid/reap
   ata.rs           ATA PIO driver — LBA28 read_sector, BSY/DRQ polling, nIEN disable
-  fat32.rs         FAT32 — BPB, FAT chain, LFN/short-name lookup,
-                   read/write/create/rename/delete/copy, safe_write_file, stats/check
-vfs.rs           VFS — task-local fd tables over shared file/pipe/shmem objects,
+  coolfs.rs        CoolFS — native root filesystem image, inodes, bitmap,
+                   direct/indirect blocks, directories, safe writes, stats/check
+  fat32.rs         FAT32 — legacy /FAT container and /COOLFS.IMG backing store
+  vfs.rs           VFS — CoolFS root routing, /FAT compatibility routing,
+                    task-local fd tables over shared file/pipe/shmem objects,
                     selective child-fd inheritance, vfs_open/vfs_pipe/vfs_read/vfs_write/vfs_close,
                     vfs_shmem_create/vfs_shmem_map
   klog.rs          Kernel log ring buffer + /LOGS/KERNEL.TXT flushing
@@ -326,17 +327,20 @@ and `sysretq`.
 keyboard queue) that the compositor drains into the terminal each frame —
 avoiding the deadlock that would result from locking WM from syscall context.
 
-**FAT32 + VFS (Phase 11).** A 64 MiB FAT32 disk image (`fs.img`) is built at
+**CoolFS root + VFS (Phase 26).** A 64 MiB FAT32 compatibility image (`fs.img`) is built at
 compile time by a host-side `fs-image` tool and attached to QEMU as the IDE
-primary-bus slave (`if=ide,index=1`). The ATA PIO driver targets ports
+primary-bus slave (`if=ide,index=1`). The container stores `/COOLFS.IMG`, and
+the kernel mounts that native CoolFS image as `/`; the legacy container remains
+available at `/FAT` until the raw CoolFS block backend replaces it. The ATA PIO driver targets ports
 0x1F0–0x1F7; it sets nIEN=1 in the Device Control Register (0x3F6) before
 issuing any command so the drive never fires IRQ14. Unused PIC IRQs (including
 IRQ14/15) are masked after PIC initialisation to prevent unhandled interrupt
-vectors from reaching the CPU. The FAT32 layer parses the BPB, walks the FAT
-chain, resolves short-name and long-filename absolute paths, and supports the
-shell/file-manager mutation helpers. A thin VFS layer wraps reads into a
-16-slot FD table. Syscalls 5–7 (`open`, `read`, `close`) expose the VFS to
-ring-3 code, and the kernel's `fs-test` task reads `/bin/hello.txt` on boot.
+vectors from reaching the CPU. CoolFS uses fixed inodes, a block bitmap, 4 KiB
+blocks, direct blocks, and a single indirect block for larger userspace
+binaries. The VFS routes normal absolute paths to CoolFS, routes `/FAT/*` to the
+container, and wraps reads into a 16-slot FD table. Syscalls 5–7 (`open`,
+`read`, `close`) expose the VFS to ring-3 code, and the kernel's `fs-test` task
+reads `/bin/hello.txt` from CoolFS on boot.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half

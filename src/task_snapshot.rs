@@ -22,11 +22,11 @@ pub fn lines() -> Vec<String> {
 
 pub fn persist() -> Result<(), crate::fat32::FsError> {
     let snapshot = lines();
-    let _ = crate::fat32::create_dir(LOG_DIR);
+    let _ = crate::vfs::vfs_kernel_create_dir(LOG_DIR);
     let mut out = String::new();
     for line in snapshot {
         out.push_str(&line);
         out.push('\n');
     }
-    crate::fat32::safe_write_file(SNAPSHOT_PATH, out.as_bytes())
+    crate::vfs::vfs_kernel_safe_write_file(SNAPSHOT_PATH, out.as_bytes())
 }

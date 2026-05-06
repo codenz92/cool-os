@@ -194,6 +194,7 @@ impl Scheduler {
     /// context so that the first `iretq` begins execution at `entry`, and
     /// add the task to the run queue as `Ready`.
     /// Spawn a kernel-mode task (shares the boot PML4, ring 0).
+    #[allow(dead_code)]
     pub fn spawn(&mut self, name: &'static str, entry: fn() -> !) {
         self.spawn_with_pml4(name, entry, None);
     }

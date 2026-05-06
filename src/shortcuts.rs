@@ -39,7 +39,6 @@ struct Shortcut {
 static SHORTCUTS: Mutex<Vec<Shortcut>> = Mutex::new(Vec::new());
 
 pub fn load_from_disk() {
-    ensure_default_file();
     let mut shortcuts = default_shortcuts();
     if let Some(bytes) = crate::config_store::read(CONFIG_PATH) {
         if let Ok(text) = core::str::from_utf8(&bytes) {
@@ -85,13 +84,6 @@ fn ensure_loaded() {
     if empty {
         load_from_disk();
     }
-}
-
-fn ensure_default_file() {
-    let _ = crate::config_store::write_default(
-        CONFIG_PATH,
-        b"launcher=Ctrl+Space\nnotifications=Ctrl+Alt+M\n",
-    );
 }
 
 fn default_shortcuts() -> Vec<Shortcut> {

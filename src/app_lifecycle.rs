@@ -91,7 +91,6 @@ static STATE: Mutex<LifecycleState> = Mutex::new(LifecycleState {
 pub fn init() {
     load_from_disk();
     crate::config_store::ensure_dir();
-    let _ = save_to_disk();
 }
 
 pub fn load_from_disk() {

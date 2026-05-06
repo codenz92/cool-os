@@ -39,7 +39,7 @@ pub fn load_from_disk() {
         1
     };
     DPI_SCALE.store(scale, Ordering::Relaxed);
-    let Some(bytes) = crate::fat32::read_file("/FONTS/DEFAULT.PSF") else {
+    let Some(bytes) = crate::vfs::vfs_kernel_read_file("/FONTS/DEFAULT.PSF") else {
         return;
     };
     if parse_psf2(&bytes) || parse_psf1(&bytes) {
