@@ -5,6 +5,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 use font8x8::UnicodeFonts;
 
+use crate::keyboard::{Key, KeyInput};
 use crate::wm::window::{Window, TITLE_H};
 
 pub const TERM_W: i32 = 640;
@@ -37,10 +38,19 @@ pub fn set_debug_mirror(enabled: bool) {
     DEBUG_MIRROR.store(enabled, Ordering::Release);
 }
 
+struct ForegroundJob {
+    group: usize,
+    pid: usize,
+    job_id: Option<u64>,
+    title: String,
+}
+
 pub struct TerminalApp {
     pub window: Window,
+    tty_id: u64,
     cmd_buf: String,
     pending_key_sink_fd: Option<usize>,
+    foreground_job: Option<ForegroundJob>,
     col: usize,
     row: usize,
     cols: usize,
@@ -60,11 +70,14 @@ impl TerminalApp {
         let window = Window::new(x, y, TERM_W, TERM_H, "Terminal");
         let cols = text_cols(TERM_W as usize);
         let rows = text_rows((TERM_H - TITLE_H) as usize);
+        let tty_id = crate::tty::create();
 
         let mut t = TerminalApp {
             window,
+            tty_id,
             cmd_buf: String::new(),
             pending_key_sink_fd: None,
+            foreground_job: None,
             col: 0,
             row: 0,
             cols,
@@ -88,6 +101,8 @@ impl TerminalApp {
     }
 
     pub fn update(&mut self) {
+        self.drain_tty_output();
+        self.poll_foreground_job();
         if self.window.width == self.last_width && self.window.height == self.last_height {
             return;
         }
@@ -100,7 +115,14 @@ impl TerminalApp {
         self.paint_exposed_background(old_width, old_content_h);
     }
 
+    pub fn is_busy(&self) -> bool {
+        self.foreground_job.is_some()
+    }
+
     pub fn handle_key(&mut self, c: char) {
+        if self.foreground_job.is_some() {
+            return;
+        }
         self.refresh_layout();
         match c {
             // Arrow keys (private-use Unicode set by keyboard drivers)
@@ -132,9 +154,36 @@ impl TerminalApp {
         }
     }
 
+    pub fn handle_key_input(&mut self, input: KeyInput) {
+        if input.has_ctrl() && !input.has_alt() {
+            match input.key {
+                Key::Character('c') | Key::Character('C') => {
+                    if self.signal_foreground(crate::process_model::Signal::Int, "^C\n") {
+                        return;
+                    }
+                    return;
+                }
+                Key::Character('z') | Key::Character('Z') => {
+                    if self.signal_foreground(crate::process_model::Signal::Stop, "^Z\n") {
+                        return;
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+        if let Some(c) = input.legacy_char() {
+            self.handle_key(c);
+        }
+    }
+
     pub fn execute_command(&mut self, command: &str) {
         let command = command.trim();
         if command.is_empty() {
+            return;
+        }
+        if self.foreground_job.is_some() {
+            crate::wm::queue_startup_command(command);
             return;
         }
         self.refresh_layout();
@@ -151,6 +200,77 @@ impl TerminalApp {
 
     pub fn take_pending_key_sink(&mut self) -> Option<usize> {
         self.pending_key_sink_fd.take()
+    }
+
+    pub fn drain_tty_output(&mut self) {
+        while let Some(byte) = crate::tty::pop_output_byte(self.tty_id) {
+            self.print_char(byte as char);
+        }
+    }
+
+    pub fn poll_foreground_job(&mut self) {
+        let Some(job) = self.foreground_job.as_ref() else {
+            return;
+        };
+        match crate::scheduler::process_group_status(job.group) {
+            crate::scheduler::ProcessGroupStatus::Running => {}
+            crate::scheduler::ProcessGroupStatus::Stopped => {
+                let job = self.foreground_job.take().unwrap();
+                crate::tty::set_foreground_group(self.tty_id, None);
+                self.set_fg(FG_WARN);
+                self.print_str("\n[fg stopped] ");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(&job.title);
+                self.print_str(" pgid=");
+                self.print_u64(job.group as u64);
+                if let Some(job_id) = job.job_id {
+                    self.print_str(" job #");
+                    self.print_u64(job_id);
+                }
+                self.print_char('\n');
+                self.print_prompt();
+            }
+            crate::scheduler::ProcessGroupStatus::Exited
+            | crate::scheduler::ProcessGroupStatus::Empty => {
+                let job = self.foreground_job.take().unwrap();
+                crate::tty::set_foreground_group(self.tty_id, None);
+                self.set_fg(FG_ACCENT);
+                self.print_str("\n[fg done] ");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(&job.title);
+                self.print_str(" pid=");
+                self.print_u64(job.pid as u64);
+                if let Some(code) = crate::scheduler::process_group_exit_code(job.group) {
+                    self.print_str(" exit=");
+                    self.print_u64(code);
+                }
+                if let Some(job_id) = job.job_id {
+                    self.print_str(" job #");
+                    self.print_u64(job_id);
+                }
+                self.print_char('\n');
+                self.print_prompt();
+            }
+        }
+    }
+
+    fn signal_foreground(&mut self, signal: crate::process_model::Signal, marker: &str) -> bool {
+        let Some(group) = crate::tty::foreground_group(self.tty_id) else {
+            return false;
+        };
+        self.set_fg(FG_DIM);
+        self.print_str(marker);
+        match crate::scheduler::send_signal_to_group(group, signal) {
+            Ok(_) => true,
+            Err(err) => {
+                self.set_fg(FG_ERROR);
+                self.print_str("signal: ");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(err.as_str());
+                self.print_char('\n');
+                true
+            }
+        }
     }
 
     // ── History ───────────────────────────────────────────────────────────────
@@ -612,11 +732,17 @@ impl TerminalApp {
 
             Some("pgroup") => self.cmd_pgroup(words.next(), words.next()),
 
+            Some("tty") => self.cmd_tty(),
+
             Some("events") => self.cmd_lines("EVENTS", crate::event_bus::lines(12)),
 
             Some("jobs") => self.cmd_lines("JOBS", crate::jobs::lines()),
 
             Some("job") => self.cmd_job(words.collect()),
+
+            Some("fg") => self.cmd_fg(words.next()),
+
+            Some("bg") => self.cmd_bg(words.next()),
 
             Some("services") => self.cmd_services(words.next(), words.next()),
 
@@ -706,15 +832,14 @@ impl TerminalApp {
                 Some(path) => {
                     let args: Vec<&str> = words.collect();
                     let abs = resolve_path(&self.cwd, path);
-                    match crate::elf::spawn_elf_process_with_args(&abs, &args) {
+                    match crate::elf::spawn_elf_process_suspended_with_args(&abs, &args) {
                         Ok(pid) => {
-                            self.set_fg(FG_ACCENT);
-                            self.print_str("spawned ");
-                            self.set_fg(FG_OUTPUT);
-                            self.print_str(&abs);
-                            self.print_str(" pid=");
-                            self.print_u64(pid as u64);
-                            self.print_char('\n');
+                            if self.configure_process_tty(pid, pid) {
+                                self.begin_foreground(pid, pid, None, &abs);
+                                crate::scheduler::unblock(pid);
+                            } else {
+                                let _ = crate::scheduler::kill_task(pid, 143);
+                            }
                         }
                         Err(err) => {
                             self.set_fg(FG_ERROR);
@@ -841,7 +966,9 @@ impl TerminalApp {
 
             None => {}
         }
-        self.print_prompt();
+        if self.foreground_job.is_none() {
+            self.print_prompt();
+        }
     }
 
     fn cmd_help(&mut self) {
@@ -929,9 +1056,12 @@ impl TerminalApp {
             ("zombies", "zombie cleanup policy"),
             ("signal <pid|-pgid> <sig>", "deliver signal to task/group"),
             ("pgroup <pid> [grp]", "view/set process group"),
+            ("tty", "current terminal session state"),
             ("events", "event bus tail"),
             ("jobs", "background job history"),
             ("job run|cancel|pause|resume", "manage background jobs"),
+            ("fg [id|last]", "resume job in foreground"),
+            ("bg [id|last]", "resume job in background"),
             ("services <op>", "service supervisor"),
             ("crash", "crash dump summary"),
             ("abi", "kernel/user ABI version"),
@@ -1993,16 +2123,23 @@ impl TerminalApp {
             };
             let exec_args: Vec<&str> = args.iter().skip(2).copied().collect();
             let abs = resolve_path(&self.cwd, path);
-            match crate::elf::spawn_elf_process_with_args(&abs, &exec_args) {
+            match crate::elf::spawn_elf_process_suspended_with_args(&abs, &exec_args) {
                 Ok(pid) => {
-                    let job = crate::jobs::start_process("Process", &abs, pid);
-                    self.set_fg(FG_ACCENT);
-                    self.print_str("job #");
-                    self.set_fg(FG_OUTPUT);
-                    self.print_u64(job);
-                    self.print_str(" pid=");
-                    self.print_u64(pid as u64);
-                    self.print_char('\n');
+                    if self.configure_process_tty(pid, pid) {
+                        let job = crate::jobs::start_process("Process", &abs, pid);
+                        self.set_fg(FG_ACCENT);
+                        self.print_str("job #");
+                        self.set_fg(FG_OUTPUT);
+                        self.print_u64(job);
+                        self.print_str(" pid=");
+                        self.print_u64(pid as u64);
+                        self.print_str(" tty=");
+                        self.print_u64(self.tty_id);
+                        self.print_char('\n');
+                        crate::scheduler::unblock(pid);
+                    } else {
+                        let _ = crate::scheduler::kill_task(pid, 143);
+                    }
                 }
                 Err(err) => {
                     self.set_fg(FG_ERROR);
@@ -2032,6 +2169,131 @@ impl TerminalApp {
             _ => false,
         };
         self.print_bool("job", ok);
+    }
+
+    fn configure_process_tty(&mut self, pid: usize, group: usize) -> bool {
+        if let Err(err) = crate::scheduler::set_process_group(pid, group) {
+            self.set_fg(FG_ERROR);
+            self.print_str("tty: setpgid failed: ");
+            self.set_fg(FG_OUTPUT);
+            self.print_str(err.as_str());
+            self.print_char('\n');
+            return false;
+        }
+        if let Err(err) = crate::scheduler::set_task_tty(pid, Some(self.tty_id)) {
+            self.set_fg(FG_ERROR);
+            self.print_str("tty: attach failed: ");
+            self.set_fg(FG_OUTPUT);
+            self.print_str(err.as_str());
+            self.print_char('\n');
+            return false;
+        }
+        true
+    }
+
+    fn begin_foreground(&mut self, pid: usize, group: usize, job_id: Option<u64>, title: &str) {
+        crate::tty::set_foreground_group(self.tty_id, Some(group));
+        self.foreground_job = Some(ForegroundJob {
+            group,
+            pid,
+            job_id,
+            title: String::from(title),
+        });
+        self.set_fg(FG_ACCENT);
+        self.print_str("foreground ");
+        self.set_fg(FG_OUTPUT);
+        self.print_str(title);
+        self.print_str(" pid=");
+        self.print_u64(pid as u64);
+        self.print_str(" pgid=");
+        self.print_u64(group as u64);
+        self.print_str(" tty=");
+        self.print_u64(self.tty_id);
+        self.print_char('\n');
+    }
+
+    fn cmd_tty(&mut self) {
+        self.set_fg(FG_ACCENT);
+        self.print_str("tty #");
+        self.set_fg(FG_OUTPUT);
+        self.print_u64(self.tty_id);
+        self.print_str(" foreground pgid=");
+        match crate::tty::foreground_group(self.tty_id) {
+            Some(group) => self.print_u64(group as u64),
+            None => self.print_char('-'),
+        }
+        let active = self
+            .foreground_job
+            .as_ref()
+            .map(|job| (job.pid, job.job_id));
+        if let Some((pid, job_id)) = active {
+            self.print_str(" pid=");
+            self.print_u64(pid as u64);
+            if let Some(job_id) = job_id {
+                self.print_str(" job #");
+                self.print_u64(job_id);
+            }
+        }
+        self.print_char('\n');
+        for line in crate::tty::lines() {
+            self.set_fg(FG_DIM);
+            self.print_str(&line);
+            self.print_char('\n');
+        }
+    }
+
+    fn cmd_fg(&mut self, id_text: Option<&str>) {
+        if self.foreground_job.is_some() {
+            self.set_fg(FG_ERROR);
+            self.print_str("fg: terminal already has a foreground job\n");
+            return;
+        }
+        let id_text = id_text.unwrap_or("last");
+        let Some(id) = parse_job_id(id_text) else {
+            self.set_fg(FG_ERROR);
+            self.print_str("fg: no such job\n");
+            return;
+        };
+        let Some(pid) = crate::jobs::process_id(id) else {
+            self.set_fg(FG_ERROR);
+            self.print_str("fg: job has no process\n");
+            return;
+        };
+        let group = crate::scheduler::get_process_group(pid).unwrap_or(pid);
+        if crate::scheduler::set_task_tty(pid, Some(self.tty_id)).is_err() {
+            self.set_fg(FG_ERROR);
+            self.print_str("fg: could not attach tty\n");
+            return;
+        }
+        let _ = crate::jobs::resume(id);
+        self.begin_foreground(pid, group, Some(id), "job");
+    }
+
+    fn cmd_bg(&mut self, id_text: Option<&str>) {
+        let id_text = id_text.unwrap_or("last");
+        let Some(id) = parse_job_id(id_text) else {
+            self.set_fg(FG_ERROR);
+            self.print_str("bg: no such job\n");
+            return;
+        };
+        let Some(pid) = crate::jobs::process_id(id) else {
+            self.set_fg(FG_ERROR);
+            self.print_str("bg: job has no process\n");
+            return;
+        };
+        let _ = crate::scheduler::set_task_tty(pid, Some(self.tty_id));
+        if crate::jobs::resume(id) {
+            self.set_fg(FG_ACCENT);
+            self.print_str("background job #");
+            self.set_fg(FG_OUTPUT);
+            self.print_u64(id);
+            self.print_str(" pid=");
+            self.print_u64(pid as u64);
+            self.print_char('\n');
+        } else {
+            self.set_fg(FG_ERROR);
+            self.print_str("bg: resume failed\n");
+        }
     }
 
     fn cmd_notify(&mut self, op: Option<&str>, arg: Option<&str>) {

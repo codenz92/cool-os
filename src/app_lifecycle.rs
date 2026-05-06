@@ -268,7 +268,9 @@ pub fn record_process_start(pid: usize, app: &str, path: &str) {
     }
     ensure_loaded();
     {
-        let mut state = STATE.lock();
+        let Some(mut state) = STATE.try_lock() else {
+            return;
+        };
         let existing = state
             .running_apps
             .iter()
@@ -343,7 +345,9 @@ pub fn record_process_exit(pid: usize, status: &str) {
         return;
     }
     ensure_loaded();
-    let mut state = STATE.lock();
+    let Some(mut state) = STATE.try_lock() else {
+        return;
+    };
     let Some(pos) = state
         .running_apps
         .iter()

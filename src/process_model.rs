@@ -1,6 +1,10 @@
 extern crate alloc;
 
-use alloc::{format, string::String, vec::Vec};
+use alloc::{
+    format,
+    string::{String, ToString},
+    vec::Vec,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Signal {
@@ -81,10 +85,13 @@ pub fn status_lines() -> Vec<String> {
             wake.push('-');
         }
         lines.push(format!(
-            "pid={} ppid={} pgid={} uid={} gid={} caps={} signal={} wake={} status={:?} name={}",
+            "pid={} ppid={} pgid={} tty={} uid={} gid={} caps={} signal={} wake={} status={:?} name={}",
             pid,
             parent,
             task.process_group,
+            task.controlling_tty
+                .map(|tty| tty.to_string())
+                .unwrap_or_else(|| String::from("-")),
             task.credentials.uid,
             task.credentials.gid,
             crate::security::capability_label(task.credentials.caps),

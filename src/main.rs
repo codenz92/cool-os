@@ -58,6 +58,7 @@ mod syscall;
 mod task_snapshot;
 mod tls;
 mod tls_roots;
+mod tty;
 mod usb;
 mod userspace;
 mod vfs;

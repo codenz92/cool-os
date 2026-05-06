@@ -21,5 +21,6 @@ pub fn lines() -> Vec<String> {
         String::from("syscalls: gui_open/gui_present/gui_poll_event/gui_close"),
         String::from("syscalls: fs_write_file/fs_create_dir/fs_delete_tree/fs_list_dir/screenshot"),
         String::from("syscalls: signal/setpgid/getpgid/signal_group"),
+        String::from("stdio: write(1|2) routes through the task's controlling TTY"),
     ]
 }

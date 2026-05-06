@@ -13,8 +13,14 @@ pub fn lines() -> Vec<String> {
         .enumerate()
         .map(|(pid, task)| {
             format!(
-                "pid={} parent={:?} group={} state={:?} exit={:?} name={}",
-                pid, task.parent, task.process_group, task.status, task.exit_code, task.name
+                "pid={} parent={:?} group={} tty={:?} state={:?} exit={:?} name={}",
+                pid,
+                task.parent,
+                task.process_group,
+                task.controlling_tty,
+                task.status,
+                task.exit_code,
+                task.name
             )
         })
         .collect()

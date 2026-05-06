@@ -4,10 +4,11 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–33 are complete. Phase 33 turns the existing process-control
-scaffolding into an ABI-backed model: userspace can signal tasks and process
-groups, STOP/CONT affects scheduler eligibility, terminal jobs can bind to real
-processes, and smoke coverage proves ring-3 process control plus job actions.
+Phases 1–34 are complete. Phase 34 gives Terminal sessions real TTY ownership:
+userspace writes route back to the terminal that launched the task, foreground
+process groups hold the prompt until they stop or exit, Ctrl+C/Ctrl+Z deliver
+INT/STOP to the foreground group, and smoke coverage proves foreground plus
+background job control.
 
 ---
 
@@ -1078,6 +1079,35 @@ that removes tasks from the run queue until CONT resumes them.
 
 ---
 
+## ✅ Phase 34 — TTY Sessions and Foreground Job Control
+
+**Goal:** Make Terminal-launched programs behave like session-owned foreground
+jobs instead of detached output producers. Each terminal should own a TTY,
+route stdout/stderr from its tasks back to the right window, and control the
+foreground process group with familiar shell actions.
+
+- [x] Add a kernel TTY registry with per-terminal output buffers and foreground
+      process-group tracking.
+- [x] Add a controlling TTY field to scheduler tasks, inherit it across spawn,
+      expose attach helpers, and report TTY ownership in process diagnostics.
+- [x] Route `write(1|2, ...)` to the current task's controlling TTY, with the
+      existing global syscall-output ring retained as the fallback path.
+- [x] Make `exec <path>` a foreground terminal job: the shell assigns a process
+      group, attaches the TTY before unblocking the task, and delays the prompt
+      until the group exits or stops.
+- [x] Keep `job run` as background execution while still binding the task to
+      the launching terminal's TTY.
+- [x] Add `tty`, `fg`, and `bg` terminal commands plus Ctrl+C/Ctrl+Z delivery to
+      the foreground process group.
+- [x] Add a `tty-routing` boot selftest and `make smoke-phase34-tty-jobs` with
+      foreground and background QEMU runs.
+
+**Current status:** complete. coolOS now has enough TTY/session semantics for a
+foreground shell prompt, process-bound background jobs, and keyboard-generated
+INT/STOP delivery to coexist on the desktop.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -1126,4 +1156,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v6.4 | Phase 30 complete: GUI login and lock screen |
 | v6.5 | Phase 31 complete: first-run setup and account management |
 | v6.6 | Phase 32 complete: user/kernel isolation hardening |
-| v6.7 | Current — Phase 33 complete: process control and jobs |
+| v6.7 | Phase 33 complete: process control and jobs |
+| v6.8 | Current — Phase 34 complete: TTY sessions and foreground job control |

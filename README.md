@@ -13,7 +13,7 @@ memory, and per-task fd tables.
 
 ---
 
-# Current state — v6.7
+# Current state — v6.8
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -47,7 +47,10 @@ keeps copied kernel mappings supervisor-only for ring-3 tasks, removes broad
 lazy lower-half page allocation, and turns denied user pointers into task
 faults instead of kernel crashes. Phase 33 exposes process control through ABI
 v6: userspace can signal tasks and process groups, STOP/CONT changes scheduler
-eligibility, and Terminal jobs can bind to real processes.
+eligibility, and Terminal jobs can bind to real processes. Phase 34 adds
+per-terminal TTY ownership, routes userspace stdout/stderr back to the launching
+terminal, and gives the shell foreground process groups with Ctrl+C/Ctrl+Z,
+`fg`, `bg`, and prompt blocking until foreground work stops or exits.
 
 | Context | Mode | Description |
 | :------ | :--- | :---------- |
@@ -88,11 +91,12 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **Heap** | `LockedHeap` allocator — `String`, `Vec`, `Box` all work. 32 MiB heap to accommodate large shadow and window buffers. |
 | **Paging / VMM** | 4-level `OffsetPageTable` + global `BootInfoFrameAllocator`. Per-process PML4 cloned from kernel upper half; private user-space mappings in lower half. `vmm::` module exposes `new_process_pml4`, `map_page_in`, `map_region`, `switch_to`. |
 | **IDT** | Breakpoint, Double Fault, Page Fault with user-task termination/crashdump handling for invalid ring-3 accesses, General Protection Fault, Invalid Opcode, Timer (IRQ0), Keyboard (IRQ1), Mouse (IRQ12). |
-| **Scheduler** | Preemptive round-robin at 100 Hz. Each task carries `pml4: Option<PhysFrame>` plus `uid`, `gid`, capability credentials, process group, and pending signal state; the scheduler calls `vmm::switch_to` on context switch when `Some`. 64 KiB heap-allocated kernel stack per task. Task lifecycle now distinguishes ready/running/blocked/stopped/exited/reaped states, records parents and exit codes, supports `waitpid`/reaping, supports kernel-side task termination, and backs blocking pipe reads with `block_current` / `unblock(id)`. |
+| **Scheduler** | Preemptive round-robin at 100 Hz. Each task carries `pml4: Option<PhysFrame>` plus `uid`, `gid`, capability credentials, process group, controlling TTY, and pending signal state; the scheduler calls `vmm::switch_to` on context switch when `Some`. 64 KiB heap-allocated kernel stack per task. Task lifecycle now distinguishes ready/running/blocked/stopped/exited/reaped states, records parents and exit codes, supports `waitpid`/reaping, supports kernel-side task termination, and backs blocking pipe reads with `block_current` / `unblock(id)`. |
+| **TTY sessions** | Each Terminal owns a kernel TTY with a dedicated output queue and foreground process group. Userspace stdout/stderr routes to the task's controlling TTY, `exec` blocks the prompt as a foreground job, background jobs keep their terminal output route, and Ctrl+C/Ctrl+Z signal the foreground group. |
 | **Process isolation** | Two user processes share the same user-stack virtual address (`0x7FFF_0010_0000`) but map it to different physical frames. Guard pages (kernel-only) sit below each stack. |
 | **GDT + TSS** | Four segments (kernel code/data ring 0, user code/data ring 3) + TSS with RSP0 pointing to a dedicated 64 KiB ISR stack used when an IRQ fires during ring-3 execution. |
 | **SYSCALL/SYSRET** | EFER.SCE enabled. STAR/LSTAR/SFMASK MSRs configured. Naked `syscall_entry` saves context, switches to the currently scheduled task's private kernel stack top, dispatches on rax, restores context, and executes `sysretq`. |
-| **Syscall table** | `0 exit`, `1 write`, `2 yield`, `3 getpid`, `4 mmap(addr, len, flags)`, `5 open(path, len)`, `6 read(fd, buf, len)`, `7 close(fd)`, `8 exec(path, len)`, `9 pipe(fds_ptr)`, `10 dup(fd)`, `11 shmem_create(len)`, `12 shmem_map(id)`, `13 waitpid(pid, status_ptr)`, `14 spawn(path, len)`, `15 sleep_ms(ms)`, `16 abi_version()`, `17 dns_resolve(host, len)`, `18 http_get(host, len)`, `19 socket(domain, type, proto)`, `20 connect(socket, ipv4, port)`, `21 send(socket, buf, len)`, `22 recv(socket, buf, len)`, `23 gui_open(title, len, dims)`, `24 gui_present(handle, pixels, len)`, `25 gui_poll_event(handle, packet, len)`, `26 gui_close(handle)`, `27 fs_write_file(desc)`, `28 fs_create_dir(path, len)`, `29 fs_delete_tree(path, len)`, `30 fs_list_dir(desc)`, `31 screenshot(path, len, flags)`, `32 signal(pid, signal)`, `33 setpgid(pid, pgid)`, `34 getpgid(pid)`, `35 signal_group(pgid, signal)`. `sys_write` writes to stdout/stderr through the compositor ring buffer or to pipe write-ends through the VFS fd table. |
+| **Syscall table** | `0 exit`, `1 write`, `2 yield`, `3 getpid`, `4 mmap(addr, len, flags)`, `5 open(path, len)`, `6 read(fd, buf, len)`, `7 close(fd)`, `8 exec(path, len)`, `9 pipe(fds_ptr)`, `10 dup(fd)`, `11 shmem_create(len)`, `12 shmem_map(id)`, `13 waitpid(pid, status_ptr)`, `14 spawn(path, len)`, `15 sleep_ms(ms)`, `16 abi_version()`, `17 dns_resolve(host, len)`, `18 http_get(host, len)`, `19 socket(domain, type, proto)`, `20 connect(socket, ipv4, port)`, `21 send(socket, buf, len)`, `22 recv(socket, buf, len)`, `23 gui_open(title, len, dims)`, `24 gui_present(handle, pixels, len)`, `25 gui_poll_event(handle, packet, len)`, `26 gui_close(handle)`, `27 fs_write_file(desc)`, `28 fs_create_dir(path, len)`, `29 fs_delete_tree(path, len)`, `30 fs_list_dir(desc)`, `31 screenshot(path, len, flags)`, `32 signal(pid, signal)`, `33 setpgid(pid, pgid)`, `34 getpgid(pid)`, `35 signal_group(pgid, signal)`. `sys_write` writes stdout/stderr to the current task's controlling TTY, falls back to the compositor ring for orphaned output, or writes pipe/file descriptors through the VFS fd table. |
 | **Userspace** | Ring-3 code can run either as the original isolation stubs or as real ELF64 binaries loaded from `/bin`. The `libcool` SDK crate now provides no_std entry/argv setup plus process, signal/process-group, file, pipe, mmap, shared-memory, event, DNS/HTTP, TCP socket, filesystem utility, screenshot, and userspace GUI wrappers. `sys_exec` replaces the current userspace image in-place by swapping CR3 and rewriting the saved syscall return frame. `keydemo` relays fixed-size key and click event packets into a userspace child over a pipe. Shared memory (`sys_shmem_create`/`sys_shmem_map`) maps a region of physical frames into the caller's address space at a fixed VA. |
 | **ELF loader** | Validates ELF64 headers, maps `PT_LOAD` segments into a fresh address space, allocates a private user stack, builds an initial `argc/argv/envp` stack frame, and can either spawn a new task or prepare an image for `sys_exec`. |
 | **ATA PIO driver** | Primary-bus slave device (QEMU `if=ide,index=1`). LBA28 PIO reads/writes, BSY/DRQ polling with bounded retries and software reset recovery, nIEN=1 (device interrupts disabled). Wrapped in `without_interrupts` to prevent preemption mid-transfer. |
@@ -158,7 +162,7 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `perm <path>` | Print owner, group, mode, type, and size |
 | `chmod <mode> <path>` | Change a CoolFS inode mode |
 | `chown <uid>[:gid] <path>` | Change a CoolFS inode owner/group |
-| `exec <path> [args...]` | Load a userspace ELF from disk and spawn it with argv |
+| `exec <path> [args...]` | Run a userspace ELF as the terminal's foreground job |
 | `ps` | List scheduler tasks, uid, ring, status, and exit codes |
 | `kill <pid>` | Terminate a non-idle task and mark it exited |
 | `wait <pid>` | Reap an exited task and print its exit code |
@@ -166,9 +170,12 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `proc` | Print pid/ppid/pgid, credentials, pending signal, wake tick, and task state |
 | `signal <pid\|-pgid> <term\|int\|usr1\|stop\|cont>` | Deliver a signal to one task or every controllable task in a process group |
 | `pgroup <pid> [group]` | View or change a task's process group |
+| `tty` | Print the current terminal session, foreground process group, and TTY buffers |
 | `jobs` | List background jobs, including process-bound jobs with pid/state |
 | `job run <path> [args...]` | Launch an ELF as a process-bound background job |
 | `job <cancel\|pause\|resume> <id\|last>` | Control a background job; process jobs map to TERM/STOP/CONT |
+| `fg [id\|last]` | Resume a process-bound job in the foreground |
+| `bg [id\|last]` | Resume a process-bound job in the background |
 | `ipc` | Create a shared pipe and launch the userspace reader/writer demo |
 | `keydemo` | Send fixed-size WM key and click event packets to `/bin/keyecho` over an inherited pipe until `~` closes it |
 | `term` | Launch a userspace terminal as a ring-3 process with pipe-based input (Ctrl+D to exit) |
@@ -252,7 +259,8 @@ src/
   allocator.rs     Heap allocator (linked_list_allocator, 32 MiB)
   scheduler.rs     Preemptive scheduler — Task (with pml4 field), Scheduler,
                    SCHEDULER global, timer_schedule, spawn_with_pml4, waitpid/reap,
-                   STOP/CONT, process groups, and signal delivery
+                   STOP/CONT, process groups, controlling TTYs, and signal delivery
+  tty.rs           Kernel TTY registry — per-terminal output buffers and foreground pgid
   jobs.rs          Background job registry, including process-bound jobs controlled by signals
   ata.rs           ATA PIO driver — LBA28 read/write sector, BSY/DRQ polling,
                    bounded reset retry, nIEN disable
@@ -446,6 +454,14 @@ Terminal `signal`, `pgroup`, `job run`, `job pause`, `job resume`, and
 verifies spawn, process groups, USR1, STOP/CONT, group TERM, and wait/reap from
 ring 3.
 
+**TTY sessions and foreground jobs (Phase 34).** Every Terminal window owns a
+kernel TTY with a private output queue and foreground process group. `exec`
+assigns the child a process group and controlling TTY before unblocking it,
+routes stdout/stderr back to the launching Terminal, and holds the prompt until
+that foreground group exits or stops. Background `job run` processes keep their
+TTY binding for output, while `tty`, `fg`, `bg`, Ctrl+C, and Ctrl+Z expose the
+job-control surface interactively.
+
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
 empty). `vmm::new_process_pml4` handles the clone; `vmm::map_page_in` / `vmm::map_region`
@@ -497,5 +513,6 @@ while kernel faults still panic.
 | 31 | First-run setup and account management — admin handoff, Accounts UI, account CLI, login throttling, persistence smoke | **Done** |
 | 32 | User/kernel isolation hardening — supervisor kernel mappings, checked user pointers, user-fault crashdumps | **Done** |
 | 33 | Process control and jobs — signals, process groups, STOP/CONT, process-bound jobs | **Done** |
+| 34 | TTY sessions and foreground job control — per-terminal output routing, foreground pgids, Ctrl+C/Ctrl+Z, `fg`/`bg` | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

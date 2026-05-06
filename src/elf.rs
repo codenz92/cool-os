@@ -118,6 +118,23 @@ pub fn spawn_elf_process_with_fds_and_credentials(
     inherited_fds: &[(usize, usize)],
     credentials: Option<crate::security::Credentials>,
 ) -> Result<usize, ExecError> {
+    spawn_elf_process_with_fds_and_credentials_inner(path, args, inherited_fds, credentials, false)
+}
+
+pub fn spawn_elf_process_suspended_with_args(
+    path: &str,
+    args: &[&str],
+) -> Result<usize, ExecError> {
+    spawn_elf_process_with_fds_and_credentials_inner(path, args, &[], None, true)
+}
+
+fn spawn_elf_process_with_fds_and_credentials_inner(
+    path: &str,
+    args: &[&str],
+    inherited_fds: &[(usize, usize)],
+    credentials: Option<crate::security::Credentials>,
+    leave_blocked: bool,
+) -> Result<usize, ExecError> {
     let scheduler_ready = x86_64::instructions::interrupts::without_interrupts(|| {
         crate::scheduler::SCHEDULER.try_lock().is_some()
     });
@@ -153,7 +170,9 @@ pub fn spawn_elf_process_with_fds_and_credentials(
 
     let task_id = task_id.ok_or(ExecError::FdInstallFailed)?;
     crate::app_lifecycle::record_process_start(task_id, path, path);
-    crate::scheduler::unblock(task_id);
+    if !leave_blocked {
+        crate::scheduler::unblock(task_id);
+    }
     Ok(task_id)
 }
 

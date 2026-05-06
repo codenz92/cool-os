@@ -138,6 +138,10 @@ pub fn latest_id() -> Option<u64> {
     JOBS.lock().last().map(|job| job.id)
 }
 
+pub fn process_id(id: u64) -> Option<usize> {
+    process_for_job(id)
+}
+
 #[allow(dead_code)]
 pub fn recent(limit: usize) -> Vec<Job> {
     refresh_process_jobs();

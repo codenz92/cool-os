@@ -44,9 +44,9 @@
 ///   34 getpgid(pid) → pgid on success
 ///   35 signal_group(pgid, signal) → delivered count on success
 ///
-/// Output path: sys_write pushes bytes into SYSCALL_OUTPUT (a lock-free ring
-/// buffer modelled on keyboard.rs). compositor::compose() drains it into the
-/// terminal window each frame, avoiding any lock contention with the WM.
+/// Output path: sys_write routes bytes to the current task's controlling TTY
+/// when one is assigned, then falls back to SYSCALL_OUTPUT for early boot and
+/// orphaned tasks. compositor::compose() drains those buffers into terminals.
 extern crate alloc;
 
 use alloc::{string::String, vec::Vec};
@@ -271,12 +271,7 @@ fn sys_write(fd: u64, buf: *const u8, len: u64) -> u64 {
     };
 
     if fd == 1 || fd == 2 {
-        for &b in bytes {
-            push_output_byte(b);
-            // Mirror to QEMU debugcon (port 0xE9) for headless verification.
-            unsafe { x86_64::instructions::port::Port::<u8>::new(0xE9).write(b) };
-        }
-        crate::wm::request_repaint();
+        write_output_bytes(bytes);
         return len;
     }
 
@@ -774,11 +769,24 @@ fn sys_http_get(host_ptr: *const u8, host_len: u64) -> u64 {
         Ok(request) => request,
         Err(_) => return u64::MAX,
     };
-    for byte in request.bytes() {
-        push_output_byte(byte);
+    write_output_bytes(request.as_bytes());
+    request.len() as u64
+}
+
+fn write_output_bytes(bytes: &[u8]) {
+    let routed = crate::scheduler::current_tty()
+        .map(|tty| crate::tty::write(tty, bytes) == bytes.len())
+        .unwrap_or(false);
+    if !routed {
+        for &byte in bytes {
+            push_output_byte(byte);
+        }
+    }
+    for &byte in bytes {
+        // Mirror to QEMU debugcon (port 0xE9) for headless verification.
         unsafe { x86_64::instructions::port::Port::<u8>::new(0xE9).write(byte) };
     }
-    request.len() as u64
+    crate::wm::request_repaint();
 }
 
 fn sys_exec(frame: &mut SyscallFrame, path_ptr: *const u8, path_len: u64) -> u64 {

@@ -74,6 +74,7 @@ pub struct Task {
     pub exit_code: Option<u64>,
     pub parent: Option<usize>,
     pub process_group: usize,
+    pub controlling_tty: Option<u64>,
     pub pending_signal: Option<crate::process_model::Signal>,
     pub wake_tick: Option<u64>,
     pub credentials: crate::security::Credentials,
@@ -114,6 +115,7 @@ impl Scheduler {
             exit_code: None,
             parent: None,
             process_group: 0,
+            controlling_tty: None,
             pending_signal: None,
             wake_tick: None,
             credentials: crate::security::interactive_credentials(),
@@ -178,6 +180,11 @@ impl Scheduler {
         let process_group = parent
             .and_then(|parent_id| self.tasks.get(parent_id).map(|task| task.process_group))
             .unwrap_or_else(|| self.tasks.len());
+        let controlling_tty = parent.and_then(|parent_id| {
+            self.tasks
+                .get(parent_id)
+                .and_then(|task| task.controlling_tty)
+        });
         self.tasks.push(Task {
             name,
             stack,
@@ -187,6 +194,7 @@ impl Scheduler {
             exit_code: None,
             parent,
             process_group,
+            controlling_tty,
             pending_signal: None,
             wake_tick: None,
             credentials,
@@ -432,6 +440,14 @@ impl SignalError {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessGroupStatus {
+    Empty,
+    Running,
+    Stopped,
+    Exited,
+}
+
 // ── Blocking helpers ─────────────────────────────────────────────────────────
 
 pub fn current_task_id() -> usize {
@@ -494,6 +510,84 @@ pub fn current_process_group() -> usize {
         .get(sched.current)
         .map(|task| task.process_group)
         .unwrap_or(0)
+}
+
+pub fn current_tty() -> Option<u64> {
+    let sched = SCHEDULER.lock();
+    sched
+        .tasks
+        .get(sched.current)
+        .and_then(|task| task.controlling_tty)
+}
+
+pub fn set_task_tty(task_id: usize, tty: Option<u64>) -> Result<(), SignalError> {
+    let actor = {
+        let sched = SCHEDULER.lock();
+        sched.current
+    };
+    set_task_tty_as(actor, task_id, tty)
+}
+
+pub fn set_task_tty_as(actor: usize, task_id: usize, tty: Option<u64>) -> Result<(), SignalError> {
+    if task_id == 0 {
+        return Err(SignalError::CannotSignalIdle);
+    }
+    let mut sched = SCHEDULER.lock();
+    if sched.tasks.get(task_id).is_none() {
+        return Err(SignalError::InvalidTask);
+    }
+    if !can_control_task_locked(&sched, actor, task_id) {
+        return Err(SignalError::PermissionDenied);
+    }
+    let task = sched
+        .tasks
+        .get_mut(task_id)
+        .ok_or(SignalError::InvalidTask)?;
+    if task.status == TaskStatus::Exited {
+        return Err(SignalError::AlreadyExited);
+    }
+    if task.status == TaskStatus::Reaped {
+        return Err(SignalError::AlreadyReaped);
+    }
+    task.controlling_tty = tty;
+    Ok(())
+}
+
+pub fn process_group_status(group: usize) -> ProcessGroupStatus {
+    let sched = SCHEDULER.lock();
+    let mut saw_stopped = false;
+    let mut saw_exited = false;
+    for (idx, task) in sched.tasks.iter().enumerate() {
+        if idx == 0 || task.process_group != group {
+            continue;
+        }
+        match task.status {
+            TaskStatus::Ready | TaskStatus::Running | TaskStatus::Blocked => {
+                return ProcessGroupStatus::Running;
+            }
+            TaskStatus::Stopped => saw_stopped = true,
+            TaskStatus::Exited | TaskStatus::Reaped => saw_exited = true,
+        }
+    }
+    if saw_stopped {
+        ProcessGroupStatus::Stopped
+    } else if saw_exited {
+        ProcessGroupStatus::Exited
+    } else {
+        ProcessGroupStatus::Empty
+    }
+}
+
+pub fn process_group_exit_code(group: usize) -> Option<u64> {
+    let sched = SCHEDULER.lock();
+    sched
+        .tasks
+        .iter()
+        .find(|task| {
+            task.process_group == group
+                && matches!(task.status, TaskStatus::Exited | TaskStatus::Reaped)
+        })
+        .and_then(|task| task.exit_code)
 }
 
 pub fn current_task_blocked() -> bool {

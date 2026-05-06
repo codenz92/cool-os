@@ -818,6 +818,18 @@ impl AppWindow {
         }
         self.window_mut().mark_dirty_all();
     }
+    pub fn handle_key_input(&mut self, input: KeyInput) {
+        match self {
+            AppWindow::Terminal(t) => t.handle_key_input(input),
+            _ => {
+                if let Some(c) = input.legacy_char() {
+                    self.handle_key(c);
+                    return;
+                }
+            }
+        }
+        self.window_mut().mark_dirty_all();
+    }
     pub fn handle_click(&mut self, lx: i32, ly: i32) {
         match self {
             AppWindow::SysMon(s) => s.handle_click(lx, ly),
@@ -2212,6 +2224,10 @@ impl WindowManager {
         if let Some(win_idx) = idx {
             self.focus_window(win_idx);
             if let AppWindow::Terminal(term) = &mut self.windows[win_idx] {
+                if term.is_busy() {
+                    crate::wm::queue_startup_command(command);
+                    return;
+                }
                 term.execute_command(command);
             }
         }
@@ -2834,8 +2850,20 @@ impl WindowManager {
             crate::wm::request_repaint();
             return;
         }
-        if let Some(c) = input.legacy_char() {
-            self.handle_key(c);
+        if self.key_sink_fd.is_some() {
+            if let Some(c) = input.legacy_char() {
+                self.handle_key(c);
+            }
+            return;
+        }
+        if let Some(idx) = self.focused {
+            if idx < self.windows.len() {
+                self.windows[idx].handle_key_input(input);
+                let taskbar_y = self.shadow_height as i32 - TASKBAR_H;
+                self.consume_window_open_request(idx, self.shadow_width, taskbar_y);
+                self.repair_focus_if_hidden();
+                crate::wm::request_repaint();
+            }
         }
     }
 
