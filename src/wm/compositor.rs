@@ -44,6 +44,9 @@ const TASKBAR_MENU_W: i32 = 152;
 const TASKBAR_MENU_ROW_H: i32 = 24;
 const TASKBAR_MENU_H: i32 = TASKBAR_MENU_ROW_H * 3 + 10;
 const START_MENU_SECTION_H: i32 = 11;
+const START_POWER_MENU_W: i32 = 136;
+const START_POWER_MENU_ROW_H: i32 = 24;
+const START_POWER_MENU_PAD: i32 = 4;
 const GREETER_PANEL_W: i32 = 576;
 const GREETER_PANEL_H: i32 = 430;
 const GREETER_FIELD_H: i32 = 28;
@@ -728,6 +731,14 @@ struct StartMenuQuickAction {
     accent: u32,
 }
 
+#[derive(Clone, Copy)]
+struct StartPowerAction {
+    label: &'static str,
+    glyph: &'static str,
+    action: &'static str,
+    accent: u32,
+}
+
 struct TaskbarMenu {
     window: usize,
     x: i32,
@@ -962,6 +973,7 @@ pub struct WindowManager {
     desktop_icon_drag: Option<DesktopIconDragState>,
     desktop_select_drag: Option<(i32, i32)>,
     start_menu_open: bool,
+    start_power_menu_open: bool,
     start_menu_pinned: Vec<String>,
     start_menu_entries: Vec<StartMenuEntry>,
     notification_center_open: bool,
@@ -1050,6 +1062,7 @@ impl WindowManager {
             desktop_icon_drag: None,
             desktop_select_drag: None,
             start_menu_open: false,
+            start_power_menu_open: false,
             start_menu_pinned: Vec::new(),
             start_menu_entries: Vec::new(),
             notification_center_open: false,
@@ -1207,6 +1220,7 @@ impl WindowManager {
 
     fn clear_session_chrome(&mut self) {
         self.start_menu_open = false;
+        self.start_power_menu_open = false;
         self.notification_center_open = false;
         self.launcher = None;
         self.taskbar_menu = None;
@@ -1803,6 +1817,7 @@ impl WindowManager {
         self.desktop_select_drag = None;
         self.context_menu = None;
         self.start_menu_open = false;
+        self.start_power_menu_open = false;
         self.taskbar_menu = None;
         self.notification_center_open = false;
         true
@@ -1842,6 +1857,7 @@ impl WindowManager {
                 selected: 0,
             });
             self.start_menu_open = false;
+            self.start_power_menu_open = false;
             self.context_menu = None;
             self.taskbar_menu = None;
         }
@@ -1854,6 +1870,7 @@ impl WindowManager {
             self.refresh_start_menu_cache();
             self.start_menu_open = true;
         }
+        self.start_power_menu_open = false;
         self.context_menu = None;
         self.launcher = None;
         self.taskbar_menu = None;
@@ -2060,7 +2077,7 @@ impl WindowManager {
                 Ok(()) => crate::notifications::push("Power", "shutdown requested"),
                 Err(err) => self.show_error_dialog("Shutdown unavailable", err),
             }
-        } else if action == "reboot" {
+        } else if action == "reboot" || action == "restart" {
             crate::notifications::push("Power", "reboot requested");
             crate::acpi::reboot();
         } else if let Some(url) = action.strip_prefix("browser-url:") {
@@ -2254,6 +2271,7 @@ impl WindowManager {
             crate::notifications::mark_all_read();
             self.launcher = None;
             self.start_menu_open = false;
+            self.start_power_menu_open = false;
             self.context_menu = None;
             self.taskbar_menu = None;
         }
@@ -2457,6 +2475,7 @@ impl WindowManager {
             y,
         });
         self.start_menu_open = false;
+        self.start_power_menu_open = false;
         self.context_menu = None;
         self.launcher = None;
     }
@@ -2755,6 +2774,7 @@ impl WindowManager {
         self.focused = Some(win_idx);
         self.context_menu = None;
         self.start_menu_open = false;
+        self.start_power_menu_open = false;
         self.notify_session_changed();
         true
     }
@@ -3028,6 +3048,7 @@ impl WindowManager {
                 let wy = (10 + off).min(taskbar_y - 120);
                 self.launch_file_manager_at("/", wx, wy);
                 self.start_menu_open = false;
+                self.start_power_menu_open = false;
                 true
             }
             Key::Character('n') | Key::Character('N') if input.has_ctrl() => {
@@ -3037,6 +3058,7 @@ impl WindowManager {
                 let wy = (10 + off).min(taskbar_y - 120);
                 self.launch_app("Terminal", wx, wy);
                 self.start_menu_open = false;
+                self.start_power_menu_open = false;
                 true
             }
             Key::Character(c) if input.has_ctrl() && !input.has_alt() => {
@@ -3077,6 +3099,7 @@ impl WindowManager {
                 self.focused = Some(candidate);
                 self.context_menu = None;
                 self.start_menu_open = false;
+                self.start_power_menu_open = false;
                 return;
             }
         }
@@ -3541,6 +3564,7 @@ impl WindowManager {
                             selected: 0,
                         });
                         self.start_menu_open = false;
+                        self.start_power_menu_open = false;
                         crate::wm::request_repaint();
                     } else if my_i >= items_y && my_i < items_y + item_h * limit as i32 {
                         let item_idx = ((my_i - items_y) / item_h) as usize;
@@ -3551,6 +3575,7 @@ impl WindowManager {
                             let wy = (10 + off).min(bar_y - 80);
                             self.activate_start_item(&item, wx, wy);
                             self.start_menu_open = false;
+                            self.start_power_menu_open = false;
                             crate::wm::request_repaint();
                         }
                     } else if my_i >= all_y && my_i < all_y + item_h {
@@ -3559,6 +3584,7 @@ impl WindowManager {
                             selected: 0,
                         });
                         self.start_menu_open = false;
+                        self.start_power_menu_open = false;
                         crate::wm::request_repaint();
                     }
                 } else {
@@ -3572,7 +3598,26 @@ impl WindowManager {
                     let sd_x = menu_x + left_w + (right_w - sd_w) / 2;
                     let sd_y = bar_y + 8;
                     let sd_h = 20i32;
-                    if let Some(action) =
+                    let (power_x, power_y, power_w, power_h) =
+                        start_power_menu_rect(sd_x, sd_y, sd_w, menu_x, menu_y, menu_w);
+                    if self.start_power_menu_open
+                        && mx_i >= power_x
+                        && mx_i < power_x + power_w
+                        && my_i >= power_y
+                        && my_i < power_y + power_h
+                    {
+                        if let Some(action) =
+                            start_power_action_at(mx_i, my_i, power_x, power_y, power_w)
+                        {
+                            let off = self.windows.len() as i32 * 16;
+                            let wx = (10 + off).min(sw as i32 - 200);
+                            let wy = (10 + off).min(bar_y - 80);
+                            self.run_inline_launcher_action(action, wx, wy);
+                            self.start_menu_open = false;
+                            self.start_power_menu_open = false;
+                        }
+                        crate::wm::request_repaint();
+                    } else if let Some(action) =
                         start_menu_quick_action_at(mx_i - banner_x, my_i - banner_y, banner_w)
                     {
                         let off = self.windows.len() as i32 * 16;
@@ -3580,17 +3625,14 @@ impl WindowManager {
                         let wy = (10 + off).min(bar_y - 80);
                         self.activate_start_menu_quick_action(action, wx, wy);
                         self.start_menu_open = false;
+                        self.start_power_menu_open = false;
                         crate::wm::request_repaint();
                     } else if mx_i >= sd_x
                         && mx_i < sd_x + sd_w
                         && my_i >= sd_y
                         && my_i < sd_y + sd_h
                     {
-                        let off = self.windows.len() as i32 * 16;
-                        let wx = (10 + off).min(sw as i32 - 200);
-                        let wy = (10 + off).min(bar_y - 80);
-                        self.run_inline_launcher_action("shutdown", wx, wy);
-                        self.start_menu_open = false;
+                        self.start_power_menu_open = !self.start_power_menu_open;
                         crate::wm::request_repaint();
                     } else if mx_i >= rc_x && mx_i < rc_x + rc_w && my_i >= links_y {
                         let entries = &self.start_menu_entries;
@@ -3604,8 +3646,12 @@ impl WindowManager {
                             let wy = (10 + off).min(bar_y - 80);
                             self.activate_launcher_kind(&kind, wx, wy);
                             self.start_menu_open = false;
+                            self.start_power_menu_open = false;
                             crate::wm::request_repaint();
                         }
+                    } else {
+                        self.start_power_menu_open = false;
+                        crate::wm::request_repaint();
                     }
                 }
             }
@@ -4280,7 +4326,12 @@ impl WindowManager {
                 let sd_h = 20i32;
                 let sd_hot =
                     mx_i >= sd_x && mx_i < sd_x + sd_w && my_i >= sd_y && my_i < sd_y + sd_h;
-                let sd_bg = if sd_hot { 0x00_00_22_44 } else { 0x00_00_10_28 };
+                let sd_active = sd_hot || self.start_power_menu_open;
+                let sd_bg = if sd_active {
+                    0x00_00_22_44
+                } else {
+                    0x00_00_10_28
+                };
                 s_fill(s, sw, sd_x, sd_y, sd_w, sd_h, sd_bg);
                 draw_rect_border(s, sw, sd_x, sd_y, sd_w, sd_h, 0x00_00_44_88);
                 let pw_x = sd_x + 7;
@@ -4297,11 +4348,15 @@ impl WindowManager {
                     sw,
                     pw_x + 12,
                     sd_y + 6,
-                    "Shut down",
-                    if sd_hot { WHITE } else { 0x00_88_CC_FF },
+                    "Power",
+                    if sd_active { WHITE } else { 0x00_88_CC_FF },
                     sd_bg,
-                    sd_x + sd_w - 4,
+                    sd_x + sd_w - 16,
                 );
+                let caret = if sd_active { WHITE } else { 0x00_88_CC_FF };
+                s_fill(s, sw, sd_x + sd_w - 12, sd_y + 7, 5, 1, caret);
+                s_fill(s, sw, sd_x + sd_w - 11, sd_y + 6, 3, 1, caret);
+                s_fill(s, sw, sd_x + sd_w - 10, sd_y + 5, 1, 1, caret);
 
                 let item_h = if prefs.compact { 32i32 } else { 40i32 };
                 let items_y = menu_y + left_hdr_h + 8;
@@ -4555,6 +4610,12 @@ impl WindowManager {
                         rc_x + rc_w - 4,
                     );
                     row_y += link_h;
+                }
+
+                if self.start_power_menu_open {
+                    let (power_x, power_y, power_w, power_h) =
+                        start_power_menu_rect(sd_x, sd_y, sd_w, menu_x, menu_y, menu_w);
+                    draw_start_power_menu(s, sw, power_x, power_y, power_w, power_h, mx_i, my_i);
                 }
             }
 
@@ -7394,7 +7455,10 @@ fn launcher_kind_glyph(kind: &LauncherMatchKind) -> &'static str {
         LauncherMatchKind::Inline(action) if action.starts_with("category:") => "AP",
         LauncherMatchKind::Inline(action) if action == "refresh-index" => "IX",
         LauncherMatchKind::Inline(action)
-            if action == "shutdown" || action == "reboot" || action == "sleep" =>
+            if action == "shutdown"
+                || action == "reboot"
+                || action == "restart"
+                || action == "sleep" =>
         {
             "PW"
         }
@@ -7409,7 +7473,10 @@ fn launcher_kind_accent(kind: &LauncherMatchKind) -> u32 {
         LauncherMatchKind::Command(_) => 0x00_00_FF_88,
         LauncherMatchKind::Inline(action) if action.starts_with("settings:") => 0x00_66_CC_FF,
         LauncherMatchKind::Inline(action)
-            if action == "shutdown" || action == "reboot" || action == "sleep" =>
+            if action == "shutdown"
+                || action == "reboot"
+                || action == "restart"
+                || action == "sleep" =>
         {
             0x00_FF_DD_55
         }
@@ -7891,6 +7958,35 @@ fn start_menu_quick_actions() -> &'static [StartMenuQuickAction] {
     ]
 }
 
+fn start_power_actions() -> &'static [StartPowerAction] {
+    &[
+        StartPowerAction {
+            label: "Sleep",
+            glyph: "SL",
+            action: "sleep",
+            accent: 0x00_66_CC_FF,
+        },
+        StartPowerAction {
+            label: "Lock",
+            glyph: "LK",
+            action: "lock",
+            accent: 0x00_FF_DD_55,
+        },
+        StartPowerAction {
+            label: "Shutdown",
+            glyph: "PW",
+            action: "shutdown",
+            accent: 0x00_FF_88_66,
+        },
+        StartPowerAction {
+            label: "Restart",
+            glyph: "RS",
+            action: "restart",
+            accent: 0x00_AA_DD_FF,
+        },
+    ]
+}
+
 fn start_menu_quick_action_rect(index: usize, banner_w: i32) -> (i32, i32, i32, i32) {
     let gap = 5i32;
     let cols = 2i32;
@@ -7911,6 +8007,52 @@ fn start_menu_quick_action_at(rel_x: i32, rel_y: i32, banner_w: i32) -> Option<&
         }
     }
     None
+}
+
+fn start_power_menu_height() -> i32 {
+    START_POWER_MENU_PAD * 2 + start_power_actions().len() as i32 * START_POWER_MENU_ROW_H
+}
+
+fn start_power_menu_rect(
+    button_x: i32,
+    button_y: i32,
+    button_w: i32,
+    menu_x: i32,
+    menu_y: i32,
+    menu_w: i32,
+) -> (i32, i32, i32, i32) {
+    let w = START_POWER_MENU_W.min(menu_w - 16).max(112);
+    let h = start_power_menu_height();
+    let x = (button_x + button_w - w)
+        .min(menu_x + menu_w - w - 8)
+        .max(menu_x + 8);
+    let y = (button_y - h - 6).max(menu_y + 8);
+    (x, y, w, h)
+}
+
+fn start_power_action_at(
+    px: i32,
+    py: i32,
+    menu_x: i32,
+    menu_y: i32,
+    menu_w: i32,
+) -> Option<&'static str> {
+    if px < menu_x + 3 || px >= menu_x + menu_w - 3 {
+        return None;
+    }
+    let rel_y = py - menu_y - START_POWER_MENU_PAD;
+    if rel_y < 0 {
+        return None;
+    }
+    let idx = (rel_y / START_POWER_MENU_ROW_H) as usize;
+    if idx >= start_power_actions().len() {
+        return None;
+    }
+    let row_y = menu_y + START_POWER_MENU_PAD + idx as i32 * START_POWER_MENU_ROW_H;
+    if py < row_y || py >= row_y + START_POWER_MENU_ROW_H {
+        return None;
+    }
+    Some(start_power_actions()[idx].action)
 }
 
 fn settings_action(page: &str) -> String {
@@ -8090,7 +8232,12 @@ fn start_item_detail(item: &str) -> String {
             String::from("settings page")
         }
         LauncherMatchKind::Inline(action)
-            if action == "lock" || action == "logout" || action == "shutdown" =>
+            if action == "lock"
+                || action == "logout"
+                || action == "sleep"
+                || action == "shutdown"
+                || action == "reboot"
+                || action == "restart" =>
         {
             String::from("session action")
         }
@@ -8209,6 +8356,63 @@ fn draw_start_menu_quick_actions(
             if hot { WHITE } else { 0x00_AA_DD_FF },
             bg,
             ax + w - 6,
+        );
+    }
+}
+
+fn draw_start_power_menu(
+    s: &mut [u32],
+    sw: usize,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    mx: i32,
+    my: i32,
+) {
+    let bg = 0x00_00_07_18;
+    s_fill_alpha(s, sw, x + 4, y + 4, w, h, 0x44_00_00_00);
+    s_fill(s, sw, x, y, w, h, bg);
+    s_fill(s, sw, x, y, w, 3, 0x00_FF_DD_55);
+    draw_rect_border(s, sw, x, y, w, h, 0x00_00_66_BB);
+    draw_rect_border(s, sw, x + 1, y + 1, w - 2, h - 2, 0x00_00_22_44);
+
+    for (idx, action) in start_power_actions().iter().enumerate() {
+        let row_y = y + START_POWER_MENU_PAD + idx as i32 * START_POWER_MENU_ROW_H;
+        let hot =
+            mx >= x + 3 && mx < x + w - 3 && my >= row_y && my < row_y + START_POWER_MENU_ROW_H;
+        let row_bg = if hot { 0x00_00_18_34 } else { bg };
+        if hot {
+            s_fill(s, sw, x + 3, row_y, w - 6, START_POWER_MENU_ROW_H, row_bg);
+            s_fill(
+                s,
+                sw,
+                x + 4,
+                row_y + 5,
+                2,
+                START_POWER_MENU_ROW_H - 10,
+                action.accent,
+            );
+        }
+        s_draw_str_small(
+            s,
+            sw,
+            x + 12,
+            row_y + 8,
+            action.glyph,
+            action.accent,
+            row_bg,
+            x + 30,
+        );
+        s_draw_str_small(
+            s,
+            sw,
+            x + 36,
+            row_y + 8,
+            action.label,
+            if hot { WHITE } else { 0x00_AA_DD_FF },
+            row_bg,
+            x + w - 10,
         );
     }
 }
