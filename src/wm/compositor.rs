@@ -6502,7 +6502,7 @@ fn draw_greeter_overlay(
     let panel_bg = 0x00_03_0A_18;
     let field_bg = 0x00_00_05_10;
 
-    s_fill_alpha(s, sw, 0, 0, sw_i, sh_i, 0xB0_00_00_00);
+    draw_greeter_backdrop(s, sw, sw_i, sh_i, uptime_ticks);
 
     let (time, date) = start_menu_banner_clock(uptime_ticks);
     s_draw_str_small(
@@ -6793,6 +6793,28 @@ fn draw_greeter_overlay(
         );
         row += 1;
     }
+}
+
+fn draw_greeter_backdrop(s: &mut [u32], sw: usize, w: i32, h: i32, uptime_ticks: u64) {
+    let top = 0x00_00_01_05;
+    let bottom = 0x00_00_04_12;
+    let h = h.max(1);
+    for y in 0..h {
+        let t = (y as u32).saturating_mul(255) / h as u32;
+        let row = blend_color(top, bottom, t);
+        s_fill(s, sw, 0, y, w, 1, row);
+    }
+
+    let pulse_step = (crate::interrupts::TIMER_HZ / 4).max(1) as u64;
+    let pulse = ((uptime_ticks / pulse_step) % 24) as u32;
+    let mut y = 72i32;
+    while y < h {
+        let col = blend_color(0x00_00_0B_20, 0x00_00_20_44, pulse * 3);
+        s_fill(s, sw, 0, y, w, 1, col);
+        y += 96;
+    }
+
+    s_fill(s, sw, 0, h - 2, w, 2, 0x00_00_33_66);
 }
 
 fn draw_greeter_field(
