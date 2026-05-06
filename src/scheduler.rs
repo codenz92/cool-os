@@ -473,6 +473,7 @@ pub fn exit_current(code: u64) {
     crate::profiler::record_task(task_id, name, "exited");
     crate::crashdump::record_task_report(task_id, "task exited");
     crate::notifications::push_transient("Task exited", &format!("pid {} exit {}", task_id, code));
+    crate::app_lifecycle::record_process_exit(task_id, &format!("exit {}", code));
     crate::deferred::enqueue(crate::deferred::DeferredWork::PersistTaskSnapshot);
     crate::deferred::enqueue(crate::deferred::DeferredWork::FlushKernelLog);
 
@@ -525,6 +526,7 @@ pub fn kill_task(task_id: usize, code: u64) -> Result<(), KillError> {
     crate::profiler::record_task(task_id, name, "killed");
     crate::crashdump::record_task_report(task_id, "task killed");
     crate::notifications::push_transient("Task killed", &format!("pid {} exit {}", task_id, code));
+    crate::app_lifecycle::record_process_exit(task_id, &format!("killed {}", code));
     crate::deferred::enqueue(crate::deferred::DeferredWork::PersistTaskSnapshot);
     crate::deferred::enqueue(crate::deferred::DeferredWork::FlushKernelLog);
     Ok(())
@@ -549,7 +551,10 @@ pub fn fault_current(code: u64, reason: &'static str) -> usize {
     crate::wm::close_user_gui_windows_for_owner(task_id);
     crate::profiler::record_task(task_id, name, reason);
     crate::crashdump::record_task_report(task_id, reason);
+    crate::notifications::push_transient("Task faulted", &format!("pid {} {}", task_id, reason));
+    crate::app_lifecycle::record_process_exit(task_id, &format!("fault {} {}", code, reason));
     crate::deferred::enqueue(crate::deferred::DeferredWork::PersistTaskSnapshot);
+    crate::deferred::enqueue(crate::deferred::DeferredWork::FlushKernelLog);
     task_id
 }
 

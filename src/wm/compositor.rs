@@ -37,6 +37,7 @@ const SESSION_PATH: &str = "/CONFIG/SESSION.CFG";
 const SESSION_SAVE_MS: u64 = 1200;
 const MAX_SESSION_WINDOWS: usize = 8;
 const WORKSPACE_COUNT: usize = 4;
+const USER_GUI_CLOSE_TIMEOUT_MS: u64 = 1500;
 const TASKBAR_MENU_W: i32 = 152;
 const TASKBAR_MENU_ROW_H: i32 = 24;
 const TASKBAR_MENU_H: i32 = TASKBAR_MENU_ROW_H * 3 + 10;
@@ -852,6 +853,12 @@ impl AppWindow {
             _ => true,
         }
     }
+    pub fn user_gui_close_timeout_owner(&self, now: u64, timeout_ticks: u64) -> Option<usize> {
+        match self {
+            AppWindow::UserGui(g) if g.close_timed_out(now, timeout_ticks) => Some(g.owner()),
+            _ => None,
+        }
+    }
     pub fn is_minimized(&self) -> bool {
         self.window().minimized
     }
@@ -1029,6 +1036,7 @@ impl WindowManager {
             owner, handle, x, y, width, height, title,
         )));
         crate::app_lifecycle::record_app(title);
+        crate::app_lifecycle::record_user_window(owner, title, handle);
         crate::notifications::push_transient(title, "window opened from ring 3");
         crate::wm::request_repaint();
         handle
@@ -1303,8 +1311,9 @@ impl WindowManager {
                 TextViewerApp::profiler_viewer(wx, wy),
             )),
             "Welcome" => self.add_window(AppWindow::TextViewer(TextViewerApp::welcome(wx, wy))),
-            "GUI Demo" => match crate::elf::spawn_elf_process("/bin/guidemo") {
-                Ok(()) => {
+            "GUI Demo" => match crate::elf::spawn_elf_process_with_args("/bin/guidemo", &[]) {
+                Ok(pid) => {
+                    crate::app_lifecycle::record_process_start(pid, "GUI Demo", "/bin/guidemo");
                     crate::app_lifecycle::record_app("GUI Demo");
                     crate::notifications::push_transient("GUI Demo", "spawned /bin/guidemo");
                 }
@@ -1319,8 +1328,13 @@ impl WindowManager {
     }
 
     fn spawn_user_gui_app(&mut self, name: &'static str, path: &'static str) -> bool {
-        match crate::elf::spawn_elf_process(path) {
-            Ok(()) => {
+        self.spawn_user_gui_app_with_args(name, path, &[])
+    }
+
+    fn spawn_user_gui_app_with_args(&mut self, name: &str, path: &str, args: &[&str]) -> bool {
+        match crate::elf::spawn_elf_process_with_args(path, args) {
+            Ok(pid) => {
+                crate::app_lifecycle::record_process_start(pid, name, path);
                 crate::app_lifecycle::record_app(name);
                 crate::notifications::push_transient(name, path);
                 true
@@ -1698,18 +1712,27 @@ impl WindowManager {
             }
             crate::app_metadata::Association::AppShortcut(app) => self.launch_app(app, wx, wy),
             crate::app_metadata::Association::Text | crate::app_metadata::Association::Unknown => {
-                match TextViewerApp::open_file(wx, wy, path) {
-                    Ok(viewer) => self.add_window(AppWindow::TextViewer(viewer)),
-                    Err(err) => {
-                        self.print_to_terminal("open failed: ");
-                        self.print_to_terminal(err);
-                        self.print_to_terminal("\n");
-                        self.show_error_dialog("Open failed", err);
-                    }
-                }
+                self.open_text_path_with_editor(path, wx, wy);
             }
             crate::app_metadata::Association::Directory => {
                 self.launch_file_manager_at(path, wx, wy)
+            }
+        }
+    }
+
+    fn open_text_path_with_editor(&mut self, path: &str, wx: i32, wy: i32) {
+        crate::app_lifecycle::record_file(path);
+        if self.spawn_user_gui_app_with_args("Text Editor", "/bin/editor", &[path]) {
+            crate::notifications::push_transient("Opening in Text Editor", path);
+            return;
+        }
+        match TextViewerApp::open_file(wx, wy, path) {
+            Ok(viewer) => self.add_window(AppWindow::TextViewer(viewer)),
+            Err(err) => {
+                self.print_to_terminal("open failed: ");
+                self.print_to_terminal(err);
+                self.print_to_terminal("\n");
+                self.show_error_dialog("Open failed", err);
             }
         }
     }
@@ -1799,24 +1822,10 @@ impl WindowManager {
                 self.launch_file_manager_at(&path, wx, wy);
             }
             FileManagerOpenRequest::File(path) => {
-                crate::app_lifecycle::record_file(&path);
                 let off = self.windows.len() as i32 * 16;
                 let wx = (20 + off).min(sw as i32 - 220);
                 let wy = (20 + off).min(taskbar_y - 120);
-                match TextViewerApp::open_file(wx, wy, &path) {
-                    Ok(viewer) => self.add_window(AppWindow::TextViewer(viewer)),
-                    Err(err) => {
-                        if let Some(term) = self.windows.iter_mut().find_map(|w| match w {
-                            AppWindow::Terminal(t) => Some(t),
-                            _ => None,
-                        }) {
-                            term.print_str("open failed: ");
-                            term.print_str(err);
-                            term.print_char('\n');
-                        }
-                        self.show_error_dialog("Open failed", err);
-                    }
-                }
+                self.open_text_path_with_editor(&path, wx, wy);
             }
             FileManagerOpenRequest::Exec(path) => {
                 crate::app_lifecycle::record_file(&path);
@@ -2594,6 +2603,23 @@ impl WindowManager {
         self.notify_session_changed();
     }
 
+    fn reap_unresponsive_user_gui_closes(&mut self, now: u64) {
+        let timeout_ticks = crate::interrupts::ticks_for_millis(USER_GUI_CLOSE_TIMEOUT_MS);
+        let owners: Vec<usize> = self
+            .windows
+            .iter()
+            .filter_map(|window| window.user_gui_close_timeout_owner(now, timeout_ticks))
+            .collect();
+        for owner in owners {
+            if crate::scheduler::kill_task(owner, 143).is_ok() {
+                crate::notifications::push_transient(
+                    "App close timeout",
+                    &format!("pid {} did not acknowledge close", owner),
+                );
+            }
+        }
+    }
+
     fn request_or_close_window(&mut self, win_idx: usize) {
         if win_idx >= self.windows.len() {
             return;
@@ -3176,6 +3202,7 @@ impl WindowManager {
         for w in self.windows.iter_mut() {
             w.update();
         }
+        self.reap_unresponsive_user_gui_closes(uptime_ticks);
         self.collect_app_dirty_spans(sw, sh);
 
         // Blit wallpaper before taking the exclusive &mut shadow borrow,

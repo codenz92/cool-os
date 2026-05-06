@@ -1,4 +1,4 @@
-.PHONY: run run-net run-usb run-usb-init run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
+.PHONY: run run-net run-usb run-usb-init run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -29,6 +29,7 @@ SMOKE_SECONDS ?= 18
 SMOKE_FRAMEBUFFER_SECONDS ?= 30
 SMOKE_INTERACTIVE_SECONDS ?= $(SMOKE_FRAMEBUFFER_SECONDS)
 SMOKE_PRE_TYPE_DELAY ?= 0.8
+SMOKE_TYPE_KEY_DELAY ?= 0.15
 SMOKE_USB_SECONDS ?= 18
 SMOKE_BOOT_BUDGET_SECONDS ?= 8
 SMOKE_VGA_SECONDS ?= 24
@@ -416,10 +417,11 @@ smoke-userspace-utils: build
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--usb \
-		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
+		--seconds 60 \
 		--hmp "sendkey ctrl-n" \
 		--pre-type-delay $(SMOKE_PRE_TYPE_DELAY) \
-		--type-text "exec /bin/notes s\n" \
+		--type-key-delay $(SMOKE_TYPE_KEY_DELAY) \
+		--type-text "exec /bin/notes /documents/notes.txt smoke\n" \
 		--post-hmp-delay 2.0 \
 		--expect "notes: window opened" \
 		--expect "notes: saved" \
@@ -430,10 +432,11 @@ smoke-userspace-utils: build
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--usb \
-		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
+		--seconds 60 \
 		--hmp "sendkey ctrl-n" \
 		--pre-type-delay $(SMOKE_PRE_TYPE_DELAY) \
-		--type-text "exec /bin/editor s\n" \
+		--type-key-delay $(SMOKE_TYPE_KEY_DELAY) \
+		--type-text "exec /bin/editor /documents/editor.txt smoke\n" \
 		--post-hmp-delay 2.0 \
 		--expect "editor: window opened" \
 		--expect "editor: saved" \
@@ -444,10 +447,11 @@ smoke-userspace-utils: build
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--usb \
-		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
+		--seconds 45 \
 		--hmp "sendkey ctrl-n" \
 		--pre-type-delay $(SMOKE_PRE_TYPE_DELAY) \
-		--type-text "exec /bin/trash s\n" \
+		--type-key-delay $(SMOKE_TYPE_KEY_DELAY) \
+		--type-text "exec /bin/trash smoke\n" \
 		--post-hmp-delay 2.0 \
 		--expect "trash: window opened" \
 		--expect "trash: listed" \
@@ -459,13 +463,31 @@ smoke-userspace-utils: build
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--usb \
-		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
+		--seconds 45 \
 		--hmp "sendkey ctrl-n" \
 		--pre-type-delay $(SMOKE_PRE_TYPE_DELAY) \
-		--type-text "exec /bin/screenshot s\n" \
+		--type-key-delay $(SMOKE_TYPE_KEY_DELAY) \
+		--type-text "exec /bin/screenshot smoke\n" \
 		--post-hmp-delay 2.0 \
 		--expect "screenshot: window opened" \
 		--expect "screenshot: queued /Pictures/SMOKE.PPM" \
+		--expect "[boot] desktop ready"
+
+smoke-userspace-file-open: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds 45 \
+		--hmp "sendkey ctrl-n" \
+		--pre-type-delay $(SMOKE_PRE_TYPE_DELAY) \
+		--type-key-delay $(SMOKE_TYPE_KEY_DELAY) \
+		--type-text "exec /bin/editor /documents/phase23.txt smoke\n" \
+		--post-hmp-delay 2.0 \
+		--expect "editor: window opened" \
+		--expect "editor: saved /documents/phase23.txt" \
 		--expect "[boot] desktop ready"
 
 smoke-net-api: build

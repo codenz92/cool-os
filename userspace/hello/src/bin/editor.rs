@@ -19,7 +19,7 @@ fn main(args: Args) -> ! {
         pixels,
         text,
         "Text Editor",
-        b"/Documents/EDITOR.TXT",
+        b"/documents/editor.txt",
         b"editor",
         b"Phase 22 editor smoke\n",
     )

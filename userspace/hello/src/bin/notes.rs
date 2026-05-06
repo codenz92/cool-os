@@ -19,7 +19,7 @@ fn main(args: Args) -> ! {
         pixels,
         text,
         "Notes",
-        b"/Documents/NOTES.TXT",
+        b"/documents/notes.txt",
         b"notes",
         b"Phase 22 notes smoke\n",
     )

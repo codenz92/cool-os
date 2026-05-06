@@ -668,11 +668,13 @@ fn sys_exec(frame: &mut SyscallFrame, path_ptr: *const u8, path_len: u64) -> u64
         Err(_) => return u64::MAX,
     };
 
-    {
+    let cur = {
         let mut sched = crate::scheduler::SCHEDULER.lock();
         let cur = sched.current;
         sched.tasks[cur].pml4 = Some(image.pml4);
-    }
+        cur
+    };
+    crate::app_lifecycle::record_process_start(cur, path, path);
 
     unsafe { crate::vmm::switch_to(image.pml4) };
 

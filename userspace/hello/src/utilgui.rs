@@ -36,12 +36,13 @@ pub fn run_editor(
     pixels: &mut [u32; PIXELS],
     text: &mut [u8; MAX_TEXT],
     title: &'static str,
-    path: &'static [u8],
+    default_path: &'static [u8],
     label: &'static [u8],
     seed: &'static [u8],
 ) -> ! {
     set_smoke_mode(args);
-    let _ = fs::create_dir(b"/Documents");
+    let path = editor_path_arg(args, default_path);
+    let _ = fs::create_dir(b"/documents");
 
     let mut len = fs::read_file(path, text).unwrap_or(0).min(text.len());
     let mut cursor = len;
@@ -63,8 +64,8 @@ pub fn run_editor(
             status = b"smoke text inserted";
         }
         match fs::write_file(path, &text[..len]) {
-            Ok(()) => log(label, b"saved"),
-            Err(_) => log(label, b"save failed"),
+            Ok(()) => log_path(label, b"saved", path),
+            Err(_) => log_path(label, b"save failed", path),
         }
         ensure_cursor_visible(text, len, cursor, &mut scroll);
         draw_editor(pixels, title, path, text, len, cursor, scroll, status);
@@ -707,13 +708,46 @@ fn arg_is(args: Args, index: usize, expected: &[u8]) -> bool {
     matches!(args.get(index), Some(arg) if arg == expected)
 }
 
+fn arg_any(args: Args, expected: &[u8]) -> bool {
+    let mut idx = 1usize;
+    while idx < args.len() {
+        if arg_is(args, idx, expected) {
+            return true;
+        }
+        idx += 1;
+    }
+    false
+}
+
 fn smoke_arg(args: Args) -> bool {
-    arg_is(args, 1, b"smoke") || arg_is(args, 1, b"s")
+    arg_any(args, b"smoke") || arg_any(args, b"s")
+}
+
+fn editor_path_arg(args: Args, default_path: &[u8]) -> &[u8] {
+    let mut idx = 1usize;
+    while idx < args.len() {
+        if let Some(arg) = args.get(idx) {
+            if arg.first() == Some(&b'/') {
+                return arg;
+            }
+        }
+        idx += 1;
+    }
+    default_path
 }
 
 fn log(label: &[u8], message: &[u8]) {
     io::write_stdout(label);
     io::write_stdout(b": ");
     io::write_stdout(message);
+    io::write_stdout(b"\n");
+}
+
+fn log_path(label: &[u8], message: &[u8], path: &[u8]) {
+    io::write_stdout(label);
+    io::write_stdout(b": ");
+    io::write_stdout(message);
+    io::write_stdout(b" ");
+    io::write_stdout(path);
     io::write_stdout(b"\n");
 }

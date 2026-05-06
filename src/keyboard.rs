@@ -215,7 +215,7 @@ fn raw_key_to_special(code: KeyCode) -> Option<Key> {
         KeyCode::PageDown => Some(Key::PageDown),
         KeyCode::Delete => Some(Key::Delete),
         KeyCode::Backspace => Some(Key::Backspace),
-        KeyCode::Enter => Some(Key::Enter),
+        KeyCode::Enter | KeyCode::NumpadEnter => Some(Key::Enter),
         KeyCode::Escape => Some(Key::Escape),
         KeyCode::Tab => Some(Key::Tab),
         KeyCode::Spacebar => Some(Key::Space),

@@ -113,7 +113,9 @@ pub fn spawn_elf_process_with_fds(
         }
     });
 
-    task_id.ok_or(ExecError::FdInstallFailed)
+    let task_id = task_id.ok_or(ExecError::FdInstallFailed)?;
+    crate::app_lifecycle::record_process_start(task_id, path, path);
+    Ok(task_id)
 }
 
 pub fn spawn_elf_process_with_stdin(

@@ -68,6 +68,18 @@ def parse_args() -> argparse.Namespace:
         help="Text to inject through QEMU HMP sendkey before screendump; may include \\n",
     )
     parser.add_argument(
+        "--type-key-delay",
+        type=float,
+        default=0.0,
+        help="Extra delay after each injected key; useful for long command lines",
+    )
+    parser.add_argument(
+        "--post-type-hmp",
+        action="append",
+        default=[],
+        help="QEMU HMP monitor command to run after typed text; useful for delayed Enter submits",
+    )
+    parser.add_argument(
         "--interact-after",
         default="[boot] desktop ready",
         help="Output substring to wait for before HMP/input/screendump actions; empty disables the pre-interaction wait",
@@ -147,14 +159,14 @@ def run_monitor_command(monitor_socket: str, command: str) -> None:
     while time.time() < deadline:
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-                sock.settimeout(1.0)
+                sock.settimeout(0.1)
                 sock.connect(monitor_socket)
                 try:
                     sock.recv(4096)
                 except TimeoutError:
                     pass
                 sock.sendall(f"{command}\n".encode())
-                time.sleep(0.2)
+                time.sleep(0.1)
                 return
         except OSError as exc:
             last_error = exc
@@ -190,12 +202,14 @@ def hmp_key_for_char(ch: str) -> str | None:
     return None
 
 
-def type_text(monitor_socket: str, text: str) -> None:
+def type_text(monitor_socket: str, text: str, key_delay: float = 0.0) -> None:
     for ch in text:
         key = hmp_key_for_char(ch)
         if key is None:
             raise RuntimeError(f"unsupported HMP text character: {ch!r}")
         run_monitor_command(monitor_socket, f"sendkey {key}")
+        if key_delay > 0.0:
+            time.sleep(key_delay)
 
 
 def read_ppm(path: str) -> tuple[int, int, bytes]:
@@ -419,7 +433,7 @@ def main() -> int:
     monitor_socket = None
     if args.artifact_dir:
         os.makedirs(args.artifact_dir, exist_ok=True)
-    if args.screendump or args.hmp or args.type_text:
+    if args.screendump or args.hmp or args.type_text or args.post_type_hmp:
         monitor_socket = os.path.join(tempfile.gettempdir(), f"cool-os-qemu-{os.getpid()}.sock")
         try:
             os.unlink(monitor_socket)
@@ -440,7 +454,7 @@ def main() -> int:
     started_at = time.time()
 
     try:
-        needs_interaction = bool(args.hmp or args.type_text or args.screendump)
+        needs_interaction = bool(args.hmp or args.type_text or args.post_type_hmp or args.screendump)
         if needs_interaction and args.interact_after:
             if not wait_for_patterns(proc, get_output, [args.interact_after], deadline):
                 stop_qemu(proc, reader_thread)
@@ -462,7 +476,9 @@ def main() -> int:
             if args.type_text:
                 time.sleep(max(0.0, args.pre_type_delay))
             for text in args.type_text:
-                type_text(monitor_socket, text.replace("\\n", "\n"))
+                type_text(monitor_socket, text.replace("\\n", "\n"), max(0.0, args.type_key_delay))
+            for command in args.post_type_hmp:
+                run_monitor_command(monitor_socket, command)
             time.sleep(max(0.0, args.post_hmp_delay))
             if args.screendump:
                 request_screendump(monitor_socket, args.screendump)

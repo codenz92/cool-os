@@ -18,6 +18,7 @@ pub struct UserGuiApp {
     events: Vec<[u8; EVENT_PACKET_SIZE]>,
     last_content_w: u16,
     last_content_h: u16,
+    close_requested_at: Option<u64>,
 }
 
 impl UserGuiApp {
@@ -40,6 +41,7 @@ impl UserGuiApp {
             events: Vec::new(),
             last_content_w: width,
             last_content_h: height,
+            close_requested_at: None,
         };
         app.clear_placeholder();
         app
@@ -82,7 +84,16 @@ impl UserGuiApp {
     }
 
     pub fn request_close(&mut self) {
-        self.push_event(close_packet());
+        if self.close_requested_at.is_none() {
+            self.close_requested_at = Some(crate::interrupts::ticks());
+            self.push_event(close_packet());
+        }
+    }
+
+    pub fn close_timed_out(&self, now: u64, timeout_ticks: u64) -> bool {
+        self.close_requested_at
+            .map(|requested| now.wrapping_sub(requested) >= timeout_ticks)
+            .unwrap_or(false)
     }
 
     pub fn handle_key(&mut self, c: char) {

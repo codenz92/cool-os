@@ -7,6 +7,7 @@ use spin::Mutex;
 const STATE_PATH: &str = "/CONFIG/APPS.CFG";
 const MAX_RECENT: usize = 12;
 const MAX_PINNED: usize = 10;
+const MAX_FINISHED: usize = 12;
 const DEFAULT_PINNED: &[&str] = &[
     "Terminal",
     "File Manager",
@@ -43,6 +44,23 @@ pub struct AppGeometry {
 }
 
 #[derive(Clone)]
+pub struct RunningApp {
+    pub pid: usize,
+    pub app: String,
+    pub path: String,
+    pub window_title: Option<String>,
+    pub window_handle: Option<u64>,
+}
+
+#[derive(Clone)]
+pub struct FinishedApp {
+    pub pid: usize,
+    pub app: String,
+    pub path: String,
+    pub status: String,
+}
+
+#[derive(Clone)]
 struct LifecycleState {
     pinned_apps: Vec<String>,
     startup_apps: Vec<String>,
@@ -52,6 +70,8 @@ struct LifecycleState {
     recent_searches: Vec<String>,
     geometries: Vec<AppGeometry>,
     start_menu: StartMenuPrefs,
+    running_apps: Vec<RunningApp>,
+    finished_apps: Vec<FinishedApp>,
 }
 
 static LOADED: AtomicBool = AtomicBool::new(false);
@@ -64,6 +84,8 @@ static STATE: Mutex<LifecycleState> = Mutex::new(LifecycleState {
     recent_searches: Vec::new(),
     geometries: Vec::new(),
     start_menu: DEFAULT_START_MENU_PREFS,
+    running_apps: Vec::new(),
+    finished_apps: Vec::new(),
 });
 
 pub fn init() {
@@ -88,6 +110,8 @@ pub fn load_from_disk() {
         recent_searches: Vec::new(),
         geometries: Vec::new(),
         start_menu: DEFAULT_START_MENU_PREFS,
+        running_apps: Vec::new(),
+        finished_apps: Vec::new(),
     };
     if let Some(bytes) = crate::config_store::read(STATE_PATH) {
         if let Ok(text) = core::str::from_utf8(&bytes) {
@@ -223,6 +247,123 @@ pub fn record_search(query: &str) {
     push_recent_locked(|state| &mut state.recent_searches, query);
 }
 
+pub fn record_process_start(pid: usize, app: &str, path: &str) {
+    if pid == 0 {
+        return;
+    }
+    let app = app.trim();
+    let path = path.trim();
+    if app.is_empty() && path.is_empty() {
+        return;
+    }
+    ensure_loaded();
+    {
+        let mut state = STATE.lock();
+        let existing = state
+            .running_apps
+            .iter()
+            .find(|running| running.pid == pid)
+            .cloned();
+        state.running_apps.retain(|running| running.pid != pid);
+        state.running_apps.insert(
+            0,
+            RunningApp {
+                pid,
+                app: if app.is_empty() {
+                    String::from(path)
+                } else {
+                    String::from(app)
+                },
+                path: if path.is_empty() {
+                    existing
+                        .as_ref()
+                        .map(|running| running.path.clone())
+                        .unwrap_or_default()
+                } else {
+                    String::from(path)
+                },
+                window_title: existing
+                    .as_ref()
+                    .and_then(|running| running.window_title.clone()),
+                window_handle: existing.and_then(|running| running.window_handle),
+            },
+        );
+        push_unique(
+            &mut state.recent_apps,
+            if app.is_empty() { path } else { app },
+        );
+        if state.recent_apps.len() > MAX_RECENT {
+            state.recent_apps.truncate(MAX_RECENT);
+        }
+    }
+    let _ = save_to_disk();
+}
+
+pub fn record_user_window(pid: usize, title: &str, handle: u64) {
+    if pid == 0 {
+        return;
+    }
+    let title = title.trim();
+    if title.is_empty() {
+        return;
+    }
+    ensure_loaded();
+    let mut state = STATE.lock();
+    if let Some(running) = state
+        .running_apps
+        .iter_mut()
+        .find(|running| running.pid == pid)
+    {
+        if running.app.is_empty()
+            || running.app.starts_with('/')
+            || running.app.eq_ignore_ascii_case(&running.path)
+        {
+            running.app = String::from(title);
+        }
+        running.window_title = Some(String::from(title));
+        running.window_handle = Some(handle);
+    } else {
+        state.running_apps.insert(
+            0,
+            RunningApp {
+                pid,
+                app: String::from(title),
+                path: String::new(),
+                window_title: Some(String::from(title)),
+                window_handle: Some(handle),
+            },
+        );
+    }
+}
+
+pub fn record_process_exit(pid: usize, status: &str) {
+    if pid == 0 {
+        return;
+    }
+    ensure_loaded();
+    let mut state = STATE.lock();
+    let Some(pos) = state
+        .running_apps
+        .iter()
+        .position(|running| running.pid == pid)
+    else {
+        return;
+    };
+    let running = state.running_apps.remove(pos);
+    state.finished_apps.insert(
+        0,
+        FinishedApp {
+            pid,
+            app: running.app,
+            path: running.path,
+            status: String::from(status.trim()),
+        },
+    );
+    if state.finished_apps.len() > MAX_FINISHED {
+        state.finished_apps.truncate(MAX_FINISHED);
+    }
+}
+
 pub fn pin_item(item: &str) {
     let item = item.trim();
     if item.is_empty() {
@@ -326,6 +467,20 @@ pub fn lines() -> Vec<String> {
     lines.push(join_label("recent files", &state.recent_files));
     lines.push(join_label("recent commands", &state.recent_commands));
     lines.push(join_label("recent searches", &state.recent_searches));
+    if state.running_apps.is_empty() {
+        lines.push(String::from("running apps: (none)"));
+    } else {
+        for running in state.running_apps.iter() {
+            lines.push(format_running_app(running));
+        }
+    }
+    if state.finished_apps.is_empty() {
+        lines.push(String::from("finished apps: (none)"));
+    } else {
+        for finished in state.finished_apps.iter() {
+            lines.push(format_finished_app(finished));
+        }
+    }
     lines.push(format!(
         "start menu: {}x{} compact={} recent={} widgets={}",
         state.start_menu.width,
@@ -490,6 +645,42 @@ fn join_label(label: &str, values: &[String]) -> String {
         push_joined(&mut out, values);
     }
     out
+}
+
+fn format_running_app(running: &RunningApp) -> String {
+    let mut out = format!(
+        "running app: pid={} app={} path={}",
+        running.pid,
+        running.app,
+        if running.path.is_empty() {
+            "(unknown)"
+        } else {
+            running.path.as_str()
+        }
+    );
+    if let Some(title) = running.window_title.as_ref() {
+        out.push_str(" window=");
+        out.push_str(title);
+    }
+    if let Some(handle) = running.window_handle {
+        out.push('#');
+        push_u64(&mut out, handle);
+    }
+    out
+}
+
+fn format_finished_app(finished: &FinishedApp) -> String {
+    format!(
+        "finished app: pid={} app={} status={} path={}",
+        finished.pid,
+        finished.app,
+        finished.status,
+        if finished.path.is_empty() {
+            "(unknown)"
+        } else {
+            finished.path.as_str()
+        }
+    )
 }
 
 fn push_joined(out: &mut String, values: &[String]) {

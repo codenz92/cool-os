@@ -4,9 +4,10 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–22 are complete. Phase 22 moves the core utility-app workflow into
-ring-3 programs: Notes, Text Editor, Trash, and Screenshot now run as real
-userspace GUI apps backed by ABI 5 filesystem and capture syscalls.
+Phases 1–23 are complete. Phase 23 wires userspace GUI apps into a real
+desktop lifecycle: the shell tracks process/window ownership, cleans up exited
+apps, routes text-file opens into `/bin/editor <path>`, and records close/crash
+status for inspection.
 
 ---
 
@@ -714,9 +715,9 @@ for notes, text editing, Trash management, and screenshots.
 - [x] Add `libcool::fs` wrappers for file reads/writes, directory listing,
       recursive delete, directory creation, and screenshot requests.
 - [x] Add `/bin/notes`, a ring-3 GUI scratchpad backed by
-      `/Documents/NOTES.TXT`.
+      `/documents/notes.txt`.
 - [x] Add `/bin/editor`, a ring-3 GUI text editor backed by
-      `/Documents/EDITOR.TXT`.
+      `/documents/editor.txt`.
 - [x] Add `/bin/trash`, a ring-3 GUI Trash utility that lists `/Trash` and can
       permanently empty entries through recursive delete.
 - [x] Add `/bin/screenshot`, a ring-3 GUI capture utility that queues a PPM
@@ -731,6 +732,35 @@ suite as userspace GUI apps (`exec /bin/notes`, `exec /bin/editor`,
 `exec /bin/trash`, and `exec /bin/screenshot`). The new smoke target runs each
 utility in deterministic smoke mode and verifies file write, directory listing,
 recursive delete, and screenshot queue behavior.
+
+---
+
+## ✅ Phase 23 — App Lifecycle + File Open Plumbing
+
+**Goal:** Treat userspace GUI utilities as managed desktop apps instead of
+anonymous ELF tasks. File Manager and launcher opens should know which process
+owns which window, close requests should cleanly reach the app and fall back to
+termination, and ordinary text files should open in the userspace editor.
+
+- [x] Add runtime app lifecycle records with PID, app name, executable path,
+      window title/handle, and recent exit status.
+- [x] Hook lifecycle start into ELF spawns and `sys_exec`, then refine display
+      names when launcher-owned GUI apps open their compositor windows.
+- [x] Hook normal exits, kills, and userspace faults into lifecycle completion,
+      crash reports, notifications, and user-GUI window cleanup.
+- [x] Keep the existing clean close event for userspace GUI windows and add a
+      timeout path that terminates apps that ignore close requests.
+- [x] Route File Manager text/unknown opens through `/bin/editor <path>` with a
+      kernel Text Viewer fallback if the userspace editor cannot spawn.
+- [x] Teach `/bin/editor` to accept an absolute path argv while keeping
+      `/documents/editor.txt` as the default document.
+- [x] Add `make smoke-userspace-file-open` to verify editor argv routing and
+      deterministic save behavior for a non-default path.
+
+**Current status:** complete. `apps` and Diagnostics now include running and
+recently finished userspace app records, shell close actions send GUI close
+events before terminating unresponsive apps, and text-file open requests launch
+the ring-3 editor against the selected path.
 
 ---
 
@@ -771,4 +801,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v5.3 | Phase 19 complete: browser rendering and trust hardening |
 | v5.4 | Phase 20 complete: userspace SDK foundation |
 | v5.5 | Phase 21 complete: userspace GUI runtime |
-| v5.6 | Current — Phase 22 complete: userspace utility suite |
+| v5.6 | Phase 22 complete: userspace utility suite |
+| v5.7 | Current — Phase 23 complete: app lifecycle and file-open plumbing |
