@@ -473,7 +473,7 @@ impl FileManagerApp {
             return;
         }
         if let Some(app) = self.desktop_app_for_idx(sel) {
-            self.pending_open = Some(FileManagerOpenRequest::App(app));
+            self.pending_open = Some(FileManagerOpenRequest::App(String::from(app)));
             return;
         }
         let abs = self.make_abs(sel);

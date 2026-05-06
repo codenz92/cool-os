@@ -313,7 +313,7 @@ pub enum FileManagerOpenRequest {
     File(String),
     ViewFile(String),
     Exec(String),
-    App(&'static str),
+    App(String),
 }
 
 pub struct FileManagerApp {

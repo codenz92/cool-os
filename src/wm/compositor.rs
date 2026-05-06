@@ -1269,13 +1269,20 @@ impl WindowManager {
 
     fn launch_app(&mut self, name: &str, wx: i32, wy: i32) {
         let before = self.windows.len();
-        if let Some(permission) = crate::security::app_permission_for(canonical_app_title(name)) {
+        let title = canonical_app_title(name);
+        if let Some(meta) = crate::app_metadata::app_by_name(title) {
+            if !crate::packages::is_installed(meta.id) {
+                self.show_error_dialog("App unavailable", "package is not installed");
+                return;
+            }
+        }
+        if let Some(permission) = crate::security::app_permission_for(title) {
             crate::notifications::push(
                 "App permissions",
-                &format!("{} requests {}", canonical_app_title(name), permission),
+                &format!("{} requests {}", title, permission),
             );
         }
-        match canonical_app_title(name) {
+        match title {
             "Terminal" => self.add_window(AppWindow::Terminal(TerminalApp::new(wx, wy))),
             "System Monitor" => self.add_window(AppWindow::SysMon(SysMonApp::new(wx, wy))),
             "Diagnostics" => self.add_window(AppWindow::TextViewer(
@@ -1327,11 +1334,26 @@ impl WindowManager {
                 }
                 Err(err) => self.show_error_dialog("GUI Demo failed", err.as_str()),
             },
-            _ => {}
+            _ => self.launch_manifest_app(title),
         }
         if self.windows.len() > before {
-            crate::app_lifecycle::record_app(canonical_app_title(name));
+            crate::app_lifecycle::record_app(title);
             self.apply_remembered_geometry(self.windows.len() - 1);
+        }
+    }
+
+    fn launch_manifest_app(&mut self, name: &str) {
+        let Some(manifest) = crate::app_metadata::installed_manifest_by_id_or_command(name) else {
+            return;
+        };
+        if crate::app_metadata::is_builtin_id(&manifest.id) {
+            return;
+        }
+        match crate::packages::launch(&manifest.id, &[]) {
+            Ok(launch) => {
+                crate::notifications::push_transient(&launch.name, &launch.exec_path);
+            }
+            Err(err) => self.show_error_dialog("Package launch failed", err),
         }
     }
 
@@ -1625,6 +1647,12 @@ impl WindowManager {
                     let mut path = String::from("/APPS/");
                     path.push_str(meta.command);
                     self.launch_file_manager_at(&path, wx, wy);
+                } else if let Some(manifest) =
+                    crate::app_metadata::installed_manifest_by_id_or_command(app)
+                {
+                    let mut path = String::from("/APPS/");
+                    path.push_str(&manifest.command);
+                    self.launch_file_manager_at(&path, wx, wy);
                 } else {
                     self.launch_file_manager_at("/APPS", wx, wy);
                 }
@@ -1728,7 +1756,7 @@ impl WindowManager {
                     self.show_crash_dialog("App launch failed", body, Some(path));
                 }
             }
-            crate::app_metadata::Association::AppShortcut(app) => self.launch_app(app, wx, wy),
+            crate::app_metadata::Association::AppShortcut(app) => self.launch_app(&app, wx, wy),
             crate::app_metadata::Association::Text | crate::app_metadata::Association::Unknown => {
                 self.open_text_path_with_editor(path, wx, wy);
             }
@@ -1901,7 +1929,7 @@ impl WindowManager {
                     let off = self.windows.len() as i32 * 16;
                     let wx = (10 + off).min(sw as i32 - 220);
                     let wy = (10 + off).min(taskbar_y - 120);
-                    self.launch_app(app, wx, wy);
+                    self.launch_app(&app, wx, wy);
                 }
             }
         }
@@ -6610,6 +6638,9 @@ fn launcher_matches(query: &str) -> Vec<LauncherMatch> {
     let search_query = if category_filter.is_some() { "" } else { query };
 
     for app in crate::app_metadata::APPS {
+        if !crate::packages::is_installed(app.id) {
+            continue;
+        }
         let category_match = category_filter
             .map(|category| app.category.label().eq_ignore_ascii_case(category))
             .unwrap_or(false);
@@ -6645,18 +6676,31 @@ fn launcher_matches(query: &str) -> Vec<LauncherMatch> {
     }
 
     for manifest in crate::app_metadata::installed_app_manifests() {
+        if crate::app_metadata::is_builtin_id(&manifest.id)
+            || !crate::packages::is_installed(&manifest.id)
+        {
+            continue;
+        }
         let detail = manifest_launcher_detail(&manifest);
         let category_match = category_filter
             .map(|category| manifest.category.eq_ignore_ascii_case(category))
             .unwrap_or(false);
-        if category_match || launcher_score(&manifest.name, &detail, search_query).is_some() {
-            let score = if category_match {
-                70
-            } else {
-                launcher_score(&manifest.name, &detail, search_query).unwrap_or(1)
-            };
+        let mut score = if category_match { Some(70) } else { None };
+        if let Some(name_score) = launcher_score(&manifest.name, &detail, search_query) {
+            score = Some(score.unwrap_or(0).max(name_score));
+        }
+        for alias in &manifest.aliases {
+            if let Some(alias_score) = launcher_score(alias, &detail, search_query) {
+                score = Some(score.unwrap_or(0).max(alias_score.saturating_sub(1)));
+            }
+        }
+        if let Some(score) = score {
             let exact_boost = if manifest.command.eq_ignore_ascii_case(search_query)
                 || manifest.name.eq_ignore_ascii_case(search_query)
+                || manifest
+                    .aliases
+                    .iter()
+                    .any(|alias| alias.eq_ignore_ascii_case(search_query))
             {
                 20
             } else {
@@ -6677,6 +6721,13 @@ fn launcher_matches(query: &str) -> Vec<LauncherMatch> {
     }
 
     for &entry in crate::app_metadata::LAUNCHER_ENTRIES.iter() {
+        if let crate::app_metadata::LauncherKind::App(app) = entry.kind {
+            if let Some(meta) = crate::app_metadata::app_by_name(app) {
+                if !crate::packages::is_installed(meta.id) {
+                    continue;
+                }
+            }
+        }
         if let Some(score) = launcher_score(entry.label, entry.detail, search_query) {
             matches.push(LauncherMatch {
                 label: String::from(entry.label),
@@ -6962,10 +7013,14 @@ fn manifest_launcher_detail(manifest: &crate::app_metadata::AppManifest) -> Stri
     detail.push_str(&manifest.icon);
     detail.push(' ');
     detail.push_str(&manifest.category);
+    detail.push_str(", version ");
+    detail.push_str(&manifest.version);
     detail.push_str(", permission ");
     detail.push_str(&manifest.permission);
     detail.push_str(", command ");
     detail.push_str(&manifest.command);
+    detail.push_str(", exec ");
+    detail.push_str(&manifest.exec_path);
     detail.push_str(", id ");
     detail.push_str(&manifest.id);
     if !manifest.associations.is_empty() {

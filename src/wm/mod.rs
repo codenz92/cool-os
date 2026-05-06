@@ -12,7 +12,7 @@ use spin::Mutex;
 static REPAINT: AtomicBool = AtomicBool::new(false);
 static SCREENSHOT_REQUEST: Mutex<Option<String>> = Mutex::new(None);
 static PENDING_USER_GUI_OWNER_CLEANUP: Mutex<Vec<usize>> = Mutex::new(Vec::new());
-static PENDING_STARTUP_COMMAND: Mutex<Option<(String, u64)>> = Mutex::new(None);
+static PENDING_STARTUP_COMMANDS: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new());
 
 pub fn request_repaint() {
     REPAINT.store(true, Ordering::Relaxed);
@@ -37,22 +37,27 @@ pub fn queue_startup_command(command: &str) {
     if command.is_empty() {
         return;
     }
+    let mut pending = PENDING_STARTUP_COMMANDS.lock();
+    if pending.len() >= 16 {
+        pending.remove(0);
+    }
+    let delay_ms = 250 + pending.len() as u64 * 250;
     let ready_tick =
-        crate::interrupts::ticks().wrapping_add(crate::interrupts::ticks_for_millis(250));
-    *PENDING_STARTUP_COMMAND.lock() = Some((String::from(command), ready_tick));
+        crate::interrupts::ticks().wrapping_add(crate::interrupts::ticks_for_millis(delay_ms));
+    pending.push((String::from(command), ready_tick));
     request_repaint();
 }
 
 pub(crate) fn take_startup_command() -> Option<String> {
-    let mut pending = PENDING_STARTUP_COMMAND.lock();
+    let mut pending = PENDING_STARTUP_COMMANDS.lock();
     let ready = pending
-        .as_ref()
+        .first()
         .map(|(_, ready_tick)| crate::interrupts::ticks().wrapping_sub(*ready_tick) < u64::MAX / 2)
         .unwrap_or(false);
     if ready {
-        pending.take().map(|(command, _)| command)
+        Some(pending.remove(0).0)
     } else {
-        if pending.is_some() {
+        if !pending.is_empty() {
             request_repaint();
         }
         None

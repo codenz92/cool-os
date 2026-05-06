@@ -1,4 +1,4 @@
-.PHONY: run run-net run-usb run-usb-init run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
+.PHONY: run run-net run-usb run-usb-init run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -474,6 +474,23 @@ smoke-userspace-file-open: build
 		--fw-cmd "exec /bin/editor /documents/phase23.txt smoke" \
 		--expect "editor: window opened" \
 		--expect "editor: saved /documents/phase23.txt" \
+		--expect "[boot] desktop ready"
+
+smoke-package-app: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds 45 \
+		--retries $(SMOKE_RETRIES) \
+		--fw-cmd "pkg install /Packages/guidemo.pkg;;pkg run pkgdemo;;pkg remove pkgdemo" \
+		--expect "[pkg] installed app.phase25.guidemo name=Packaged GUI Demo exec=/bin/guidemo" \
+		--expect "[pkg] launched app.phase25.guidemo exec=/bin/guidemo pid=" \
+		--expect "guidemo: window opened" \
+		--expect "guidemo: presented frame" \
+		--expect "[pkg] removed app.phase25.guidemo" \
 		--expect "[boot] desktop ready"
 
 smoke-net-api: build

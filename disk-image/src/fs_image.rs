@@ -63,6 +63,7 @@ fn main() {
         "Desktop",
         "Trash",
         "Downloads",
+        "Packages",
         "COOL",
     ] {
         root.create_dir(dir)
@@ -270,8 +271,28 @@ fn main() {
             .expect("failed to write screenshot");
     }
 
+    let packages = root.open_dir("Packages").expect("failed to open /Packages");
+    let mut guidemo_pkg = packages
+        .create_file("guidemo.pkg")
+        .expect("failed to create guidemo.pkg");
+    guidemo_pkg.truncate().unwrap();
+    guidemo_pkg
+        .write_all(PHASE25_GUIDEMO_PACKAGE)
+        .expect("failed to write guidemo.pkg");
+
+    let documents = root.open_dir("Documents").expect("failed to open /Documents");
+    let mut package_demo = documents
+        .create_file("package-demo.p25")
+        .expect("failed to create package-demo.p25");
+    package_demo.truncate().unwrap();
+    package_demo
+        .write_all(b"Phase 25 package association sample.\n")
+        .expect("failed to write package-demo.p25");
+
     println!("{}", out_path);
 }
+
+const PHASE25_GUIDEMO_PACKAGE: &[u8] = b"id=app.phase25.guidemo\nname=Packaged GUI Demo\ncommand=pkgdemo\nversion=1.0\nicon=P5\ncategory=Development\npermission=desktop\nexec=/bin/guidemo\naliases=package,demo,phase25\nassociations=P25\n";
 
 const CF_MAGIC: [u8; 8] = *b"COOLFS1\0";
 const CF_VERSION: u32 = 1;

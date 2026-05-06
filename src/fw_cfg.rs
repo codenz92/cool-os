@@ -26,6 +26,22 @@ pub fn smoke_command() -> Option<String> {
     }
 }
 
+pub fn smoke_commands() -> Vec<String> {
+    let Some(command) = smoke_command() else {
+        return Vec::new();
+    };
+    let mut commands = Vec::new();
+    for chunk in command.split(";;") {
+        for line in chunk.lines() {
+            let line = line.trim();
+            if !line.is_empty() {
+                commands.push(String::from(line));
+            }
+        }
+    }
+    commands
+}
+
 fn read_named_file(name: &[u8]) -> Option<Vec<u8>> {
     select(FW_CFG_FILE_DIR);
     let count = read_be_u32().min(64);

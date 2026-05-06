@@ -253,7 +253,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     println!("[boot] desktop ready");
     profiler::record_boot_stage("desktop ready", boot_splash::BOOT_PROGRESS_TOTAL);
     boot_watchdog::complete();
-    if let Some(command) = fw_cfg::smoke_command() {
+    for command in fw_cfg::smoke_commands() {
         println!("[smoke] command {}", command);
         wm::queue_startup_command(&command);
     }

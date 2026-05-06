@@ -4,10 +4,10 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–23 are complete. Phase 23 wires userspace GUI apps into a real
-desktop lifecycle: the shell tracks process/window ownership, cleans up exited
-apps, routes text-file opens into `/bin/editor <path>`, and records close/crash
-status for inspection.
+Phases 1–25 are complete. Phase 25 turns the package/app metadata foundation
+into an installable app platform: UTF-8 `.PKG` manifests install into `/APPS`,
+contribute launcher aliases and file associations, launch declared userspace
+executables, and uninstall cleanly.
 
 ---
 
@@ -793,6 +793,40 @@ target now launches commands through deterministic QEMU `fw_cfg` injection.
 
 ---
 
+## ✅ Phase 25 — Package Platform
+
+**Goal:** Make `/APPS` more than a mirror of built-in metadata. Apps installed
+from package manifests should participate in search, launch, file associations,
+permissions, and removal just like built-in apps.
+
+- [x] Add a manifest contract with `id`, `name`, `command`, `version`, `icon`,
+      `category`, `permission`, `exec`, `aliases`, and `associations`.
+- [x] Teach `pkg install <path.pkg>` to validate UTF-8 package manifests,
+      reject built-in collisions, require an existing userspace executable, and
+      persist the normalized manifest to `/APPS/<command>/APP.CFG`.
+- [x] Load persisted `/APPS` manifests into the package database at boot so
+      installed package apps survive across non-snapshot disks.
+- [x] Add dynamic launcher entries for manifest-installed apps, including alias
+      scoring, category filtering, permissions text, and Open Location routing.
+- [x] Let installed package manifests contribute file associations; opening a
+      matching file routes through the package app instead of falling back to
+      the editor.
+- [x] Add `pkg run <id-or-command> [args...]` so package apps can be launched
+      directly from Terminal as well as through the shell.
+- [x] Make uninstall remove dynamic package manifests and hide removed built-in
+      packages from launcher/search/open-with paths.
+- [x] Add a deterministic `make smoke-package-app` target using QEMU `fw_cfg`
+      command queuing to install `/Packages/guidemo.pkg`, launch it, and remove
+      it while verifying the userspace GUI still opens.
+
+**Current status:** complete. The generated disk image includes
+`/Packages/guidemo.pkg` and `/Documents/package-demo.p25` as Phase 25 fixtures.
+The package app installs into `/APPS/pkgdemo/APP.CFG`, exposes aliases and a
+`.P25` association, launches `/bin/guidemo`, and uninstalls without leaving a
+stale package entry.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -832,4 +866,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v5.5 | Phase 21 complete: userspace GUI runtime |
 | v5.6 | Phase 22 complete: userspace utility suite |
 | v5.7 | Phase 23 complete: app lifecycle and file-open plumbing |
-| v5.8 | Current — Phase 24 complete: app platform polish and file dialogs |
+| v5.8 | Phase 24 complete: app platform polish and file dialogs |
+| v5.9 | Current — Phase 25 complete: package platform |

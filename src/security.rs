@@ -65,7 +65,7 @@ pub fn can_read_path(_path: &str) -> bool {
 }
 
 pub fn app_permission_lines() -> Vec<String> {
-    crate::app_metadata::APPS
+    let mut lines: Vec<String> = crate::app_metadata::APPS
         .iter()
         .map(|app| {
             format!(
@@ -73,11 +73,25 @@ pub fn app_permission_lines() -> Vec<String> {
                 app.name, app.id, app.permission, app.command
             )
         })
-        .collect()
+        .collect();
+    for manifest in crate::app_metadata::installed_app_manifests() {
+        if crate::app_metadata::is_builtin_id(&manifest.id) {
+            continue;
+        }
+        lines.push(format!(
+            "{} id={} permission={} command={} exec={}",
+            manifest.name, manifest.id, manifest.permission, manifest.command, manifest.exec_path
+        ));
+    }
+    lines
 }
 
-pub fn app_permission_for(name: &str) -> Option<&'static str> {
-    crate::app_metadata::app_by_name(name).map(|app| app.permission)
+pub fn app_permission_for(name: &str) -> Option<String> {
+    if let Some(app) = crate::app_metadata::app_by_name(name) {
+        return Some(String::from(app.permission));
+    }
+    crate::app_metadata::installed_manifest_by_id_or_command(name)
+        .map(|manifest| manifest.permission)
 }
 
 pub fn lines() -> Vec<String> {

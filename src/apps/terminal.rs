@@ -501,7 +501,12 @@ impl TerminalApp {
 
             Some("security") => self.cmd_lines("SECURITY", crate::security::lines()),
 
-            Some("pkg") => self.cmd_pkg(words.next(), words.next()),
+            Some("pkg") => {
+                let op = words.next();
+                let arg = words.next();
+                let rest: Vec<&str> = words.collect();
+                self.cmd_pkg(op, arg, rest);
+            }
 
             Some("proc") => self.cmd_lines("PROCESS MODEL", crate::process_model::status_lines()),
 
@@ -809,7 +814,7 @@ impl TerminalApp {
             ("search <query>", "search indexed files"),
             ("index", "rebuild desktop search index"),
             ("users", "user/security status"),
-            ("pkg <op>", "package list/install/remove"),
+            ("pkg <op>", "package list/install/remove/run"),
             ("proc", "process groups and signals"),
             ("zombies", "zombie cleanup policy"),
             ("signal <pid> <sig>", "queue signal to task"),
@@ -1246,16 +1251,36 @@ impl TerminalApp {
         self.print_str("startup apps updated\n");
     }
 
-    fn cmd_pkg(&mut self, op: Option<&str>, arg: Option<&str>) {
+    fn cmd_pkg(&mut self, op: Option<&str>, arg: Option<&str>, args: Vec<&str>) {
         match (op, arg) {
             (None, _) | (Some("list"), _) => self.cmd_lines("PACKAGES", crate::packages::lines()),
             (Some("install"), Some(id)) => self.print_result("pkg", crate::packages::install(id)),
             (Some("remove"), Some(id)) | (Some("uninstall"), Some(id)) => {
                 self.print_result("pkg", crate::packages::uninstall(id))
             }
+            (Some("run"), Some(id)) | (Some("launch"), Some(id)) => {
+                match crate::packages::launch(id, &args) {
+                    Ok(launch) => {
+                        self.set_fg(FG_ACCENT);
+                        self.print_str("pkg: spawned ");
+                        self.set_fg(FG_OUTPUT);
+                        self.print_str(&launch.exec_path);
+                        self.print_str(" pid=");
+                        self.print_u64(launch.pid as u64);
+                        self.print_char('\n');
+                    }
+                    Err(err) => {
+                        self.set_fg(FG_ERROR);
+                        self.print_str("pkg: ");
+                        self.set_fg(FG_OUTPUT);
+                        self.print_str(err);
+                        self.print_char('\n');
+                    }
+                }
+            }
             _ => {
                 self.set_fg(FG_ERROR);
-                self.print_str("usage: pkg [list|install <id>|remove <id>]\n");
+                self.print_str("usage: pkg [list|install <id>|remove <id>|run <id> [args...]]\n");
             }
         }
     }

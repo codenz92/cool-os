@@ -12,7 +12,7 @@ FAT32 filesystem with VFS/syscalls, a native CoolFS mount, an ELF loader with
 
 ---
 
-# Current state — v5.8
+# Current state — v5.9
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -25,7 +25,11 @@ notification center, userspace app lifecycle tracking with System Monitor
 close/kill/path controls, and desktop settings that persist to the FAT32 disk.
 A preemptive round-robin scheduler runs five boot tasks driven by the PIT
 timer at **100 Hz**; the terminal can also spawn additional ring-3 ELF tasks
-from disk with `exec`:
+from disk with `exec`. The shell also has a real package/app manifest path:
+UTF-8 `.PKG` manifests can install apps into `/APPS/<command>/APP.CFG`,
+contribute launcher aliases and file associations, launch a declared userspace
+executable through `exec=`, and be removed without leaving stale launcher
+entries:
 
 | Task | Ring | Description |
 | :--- | :--- | :---------- |
@@ -78,9 +82,9 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **CoolFS layer** | Native coolOS filesystem mounted at `/COOL`, backed by `/COOLFS.IMG`. It has a CoolFS superblock, fixed inode table, block bitmap, direct data blocks, directory records, VFS read/write/create/rename/delete/copy routing, stats, and boot self-tests. |
 | **VFS** | Task-local fd tables (16 slots, fds 0–2 reserved) backed by shared file/pipe/shmem objects. `vfs_open` reads whole files into heap buffers; `vfs_pipe` allocates a 512-byte kernel ring buffer and returns per-task read/write fds; `vfs_read_blocking` blocks tasks on empty pipes and wakes them on write/EOF; `ipc` selectively inherits pipe ends into child processes; `vfs_shmem_create`/`vfs_shmem_map` manage a shared memory region pool indexed by ID. |
 | **Networking** | Legacy PCI virtio-net driver for QEMU user networking, polling RX/TX virtqueues, Ethernet framing, ARP cache, IPv4, ICMP echo, UDP DNS queries, minimal TCP client sockets, userspace socket syscalls, HTTP/1.1, and verified TLS 1.3 HTTPS for the native browser/terminal path. |
-| **Kernel services** | Persistent kernel log buffer flushed to `/LOGS/KERNEL.TXT`, crash-screen log tail, central device registry for PCI/USB/system devices, package/app metadata and file associations, networking status, and ACPI power-control status foundation. |
+| **Kernel services** | Persistent kernel log buffer flushed to `/LOGS/KERNEL.TXT`, crash-screen log tail, central device registry for PCI/USB/system devices, installable package/app manifests with file associations, networking status, and ACPI power-control status foundation. |
 | **Applications** | Terminal, System Monitor, Text Viewer, Color Picker, File Manager, Web Browser, ring-3 Notes, Text Editor, Trash Bin, Screenshot, and GUI Demo. Text-file opens route into `/bin/editor <path>` with kernel viewer fallback, while File Manager exposes explicit Open With Editor/Viewer actions. |
-| **Disk image** | `disk-image/src/fs_image.rs` builds `fs.img` (64 MiB FAT32) with `/COOLFS.IMG`, `/bin/hello.txt`, `/bin/hello`, `/bin/exec`, `/bin/pipe`, `/bin/piperd`, `/bin/pipewr`, `/bin/keyecho`, `/bin/read`, `/bin/terminal`, `/bin/netdemo`, `/bin/wget`, `/bin/sdkdemo`, `/bin/guidemo`, `/bin/notes`, `/bin/editor`, `/bin/trash`, and `/bin/screenshot`. The Makefile attaches it to QEMU as the IDE slave. |
+| **Disk image** | `disk-image/src/fs_image.rs` builds `fs.img` (64 MiB FAT32) with `/COOLFS.IMG`, `/bin/hello.txt`, `/bin/hello`, `/bin/exec`, `/bin/pipe`, `/bin/piperd`, `/bin/pipewr`, `/bin/keyecho`, `/bin/read`, `/bin/terminal`, `/bin/netdemo`, `/bin/wget`, `/bin/sdkdemo`, `/bin/guidemo`, `/bin/notes`, `/bin/editor`, `/bin/trash`, `/bin/screenshot`, and `/Packages/guidemo.pkg` as a package-platform fixture. The Makefile attaches it to QEMU as the IDE slave. |
 
 ### Applications
 
@@ -146,6 +150,7 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `fsck` | Print FAT32 consistency and root-entry summary |
 | `coolfs` | Print CoolFS mount and inode/block usage |
 | `df` | Print FAT32 and CoolFS used/free/total space |
+| `pkg [list\|install <path-or-id>\|remove <id>\|run <id> [args...]]` | Manage built-in and manifest-installed packages. |
 | `shortcuts` | Print configured global shortcuts |
 | `clip [text]` | Show clipboard summary or copy text |
 | `paste` | Paste shared clipboard text |
@@ -375,5 +380,6 @@ faults still panic.
 | 22 | Userspace utility suite — Notes, Editor, Trash, Screenshot as ring-3 apps | **Done** |
 | 23 | App lifecycle + file-open plumbing — process/window ownership, close cleanup, editor argv routing | **Done** |
 | 24 | App platform polish — editor document flow, File Manager Open With, System Monitor lifecycle controls, deterministic utility smokes | **Done** |
+| 25 | Package platform — installable app manifests, dynamic launcher entries, package associations, package launch/remove smoke | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

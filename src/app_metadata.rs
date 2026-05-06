@@ -40,12 +40,12 @@ impl AppCategory {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum Association {
     Directory,
     Executable,
     Text,
-    AppShortcut(&'static str),
+    AppShortcut(String),
     Unknown,
 }
 
@@ -68,9 +68,12 @@ pub struct AppManifest {
     pub id: String,
     pub name: String,
     pub command: String,
+    pub version: String,
     pub icon: String,
     pub category: String,
     pub permission: String,
+    pub exec_path: String,
+    pub aliases: Vec<String>,
     pub associations: Vec<String>,
 }
 
@@ -448,9 +451,16 @@ pub fn installed_app_manifests() -> Vec<AppManifest> {
         let id = manifest_value(text, "id").unwrap_or("app.unknown");
         let name = manifest_value(text, "name").unwrap_or(&dir.name);
         let command = manifest_value(text, "command").unwrap_or(&dir.name);
+        let version = manifest_value(text, "version").unwrap_or("builtin");
         let icon = manifest_value(text, "icon").unwrap_or("[]");
         let category = manifest_value(text, "category").unwrap_or("Tools");
         let permission = manifest_value(text, "permission").unwrap_or("user");
+        let exec_path = manifest_value(text, "exec")
+            .map(String::from)
+            .unwrap_or_else(|| default_exec_for_command(command));
+        let aliases = manifest_value(text, "aliases")
+            .map(parse_manifest_list)
+            .unwrap_or_default();
         let associations = manifest_value(text, "associations")
             .map(parse_manifest_list)
             .unwrap_or_default();
@@ -458,13 +468,28 @@ pub fn installed_app_manifests() -> Vec<AppManifest> {
             id: String::from(id),
             name: String::from(name),
             command: String::from(command),
+            version: String::from(version),
             icon: String::from(icon),
             category: String::from(category),
             permission: String::from(permission),
+            exec_path,
+            aliases,
             associations,
         });
     }
     manifests
+}
+
+pub fn installed_manifest_by_id_or_command(value: &str) -> Option<AppManifest> {
+    installed_app_manifests().into_iter().find(|manifest| {
+        manifest.id.eq_ignore_ascii_case(value)
+            || manifest.command.eq_ignore_ascii_case(value)
+            || manifest.name.eq_ignore_ascii_case(value)
+    })
+}
+
+pub fn is_builtin_id(id: &str) -> bool {
+    APPS.iter().any(|app| app.id.eq_ignore_ascii_case(id))
 }
 
 pub fn validate_installed_manifests() -> Result<usize, &'static str> {
@@ -500,6 +525,7 @@ pub fn validate_manifest_text(text: &str) -> Result<(), &'static str> {
     let icon = manifest_value(text, "icon").ok_or("missing icon")?;
     let category = manifest_value(text, "category").ok_or("missing category")?;
     let permission = manifest_value(text, "permission").ok_or("missing permission")?;
+    let exec_path = manifest_value(text, "exec").ok_or("missing exec")?;
 
     if !id.starts_with("app.") || !safe_manifest_token(id, true) {
         return Err("invalid id");
@@ -521,6 +547,21 @@ pub fn validate_manifest_text(text: &str) -> Result<(), &'static str> {
     }
     if permission.len() > 32 || !safe_manifest_token(permission, false) {
         return Err("invalid permission");
+    }
+    if !safe_exec_path(exec_path) {
+        return Err("invalid exec");
+    }
+    if let Some(version) = manifest_value(text, "version") {
+        if version.len() > 16 || !safe_manifest_token(version, true) {
+            return Err("invalid version");
+        }
+    }
+    if let Some(aliases) = manifest_value(text, "aliases") {
+        for alias in aliases.split(',').map(str::trim) {
+            if !alias.is_empty() && (alias.len() > 24 || !safe_manifest_label(alias)) {
+                return Err("invalid alias");
+            }
+        }
     }
     if let Some(associations) = manifest_value(text, "associations") {
         for assoc in associations.split(',').map(str::trim) {
@@ -561,8 +602,11 @@ pub fn association_for(path: &str, is_dir: bool) -> Association {
     }
     let name = path.rsplit('/').next().unwrap_or(path);
     for app in APPS {
+        if !crate::packages::is_installed(app.id) {
+            continue;
+        }
         if name.eq_ignore_ascii_case(app.name) || name.eq_ignore_ascii_case(app.command) {
-            return Association::AppShortcut(app.name);
+            return Association::AppShortcut(String::from(app.name));
         }
     }
     let ext = file_ext(name);
@@ -573,8 +617,20 @@ pub fn association_for(path: &str, is_dir: bool) -> Association {
         return Association::Text;
     }
     for app in APPS {
-        if matches_ignore_ascii(ext, app.associations) {
-            return Association::AppShortcut(app.name);
+        if crate::packages::is_installed(app.id) && matches_ignore_ascii(ext, app.associations) {
+            return Association::AppShortcut(String::from(app.name));
+        }
+    }
+    for manifest in installed_app_manifests() {
+        if is_builtin_id(&manifest.id) || !crate::packages::is_installed(&manifest.id) {
+            continue;
+        }
+        if manifest
+            .associations
+            .iter()
+            .any(|assoc| ext.eq_ignore_ascii_case(assoc))
+        {
+            return Association::AppShortcut(manifest.name);
         }
     }
     Association::Unknown
@@ -613,7 +669,20 @@ fn safe_manifest_token(value: &str, allow_dot: bool) -> bool {
         })
 }
 
-fn manifest_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+fn safe_exec_path(value: &str) -> bool {
+    if value.len() > 96 || value.contains("..") {
+        return false;
+    }
+    if let Some(internal) = value.strip_prefix("internal:") {
+        return safe_manifest_token(internal, false);
+    }
+    value.starts_with('/')
+        && value.bytes().all(|byte| {
+            (0x21..=0x7e).contains(&byte) && byte != b'\\' && byte != b'"' && byte != b'\''
+        })
+}
+
+pub fn manifest_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
     for line in text.lines() {
         let Some((k, v)) = line.split_once('=') else {
             continue;
@@ -635,4 +704,19 @@ fn parse_manifest_list(value: &str) -> Vec<String> {
         .filter(|item| !item.is_empty())
         .map(String::from)
         .collect()
+}
+
+fn default_exec_for_command(command: &str) -> String {
+    match command {
+        "editor" | "notes" | "trash" | "screenshot" | "guidemo" => {
+            let mut path = String::from("/bin/");
+            path.push_str(command);
+            path
+        }
+        _ => {
+            let mut path = String::from("internal:");
+            path.push_str(command);
+            path
+        }
+    }
 }
