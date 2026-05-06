@@ -488,6 +488,39 @@ impl TerminalApp {
                 }
             },
 
+            Some("perm") => match words.next() {
+                Some(path) => {
+                    let path = resolve_path(&self.cwd, path);
+                    self.cmd_perm(&path);
+                }
+                None => {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("usage: perm <path>\n");
+                }
+            },
+
+            Some("chmod") => match (words.next(), words.next()) {
+                (Some(mode), Some(path)) => {
+                    let path = resolve_path(&self.cwd, path);
+                    self.cmd_chmod(mode, &path);
+                }
+                _ => {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("usage: chmod <mode> <path>\n");
+                }
+            },
+
+            Some("chown") => match (words.next(), words.next()) {
+                (Some(owner), Some(path)) => {
+                    let path = resolve_path(&self.cwd, path);
+                    self.cmd_chown(owner, &path);
+                }
+                _ => {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("usage: chown <uid>[:gid] <path>\n");
+                }
+            },
+
             Some("journal") => self.cmd_lines("FS JOURNAL", crate::fs_hardening::journal_lines()),
 
             Some("flush") => self.print_result(
@@ -537,6 +570,8 @@ impl TerminalApp {
                 crate::drivers::refresh();
                 self.cmd_lines("DRIVERS", crate::drivers::lines());
             }
+
+            Some("whoami") => self.cmd_whoami(),
 
             Some("users") => self.cmd_lines("USERS", crate::security::lines()),
 
@@ -842,6 +877,9 @@ impl TerminalApp {
             ("mounts", "mount/cache/journal status"),
             ("vfs", "mount table and fd tables"),
             ("path <path>", "inspect normalized VFS path"),
+            ("perm <path>", "show owner and mode"),
+            ("chmod <mode> <path>", "change CoolFS mode"),
+            ("chown <uid>[:gid] <path>", "change CoolFS owner"),
             ("journal", "filesystem journal tail"),
             ("flush", "flush filesystem journal"),
             ("df", "filesystem free space"),
@@ -857,6 +895,7 @@ impl TerminalApp {
             ("startup [apps...]", "view/set startup apps"),
             ("search <query>", "search indexed files"),
             ("index", "rebuild desktop search index"),
+            ("whoami", "current user and task grants"),
             ("users", "user/security status"),
             ("pkg <op>", "package list/install/remove/run"),
             ("proc", "process groups and signals"),
@@ -979,12 +1018,79 @@ impl TerminalApp {
         }
     }
 
-    fn cmd_write_file(&mut self, path: &str, text: &str) {
-        if !crate::security::can_write_path(path) {
-            self.set_fg(FG_ERROR);
-            self.print_str("write: permission denied\n");
-            return;
+    fn cmd_perm(&mut self, path: &str) {
+        match crate::vfs::vfs_metadata(path) {
+            Some(meta) => {
+                self.set_fg(FG_OUTPUT);
+                self.print_str(path);
+                self.print_str(" ");
+                self.print_str(if meta.is_dir { "dir" } else { "file" });
+                self.print_str(" uid=");
+                self.print_u64(meta.uid as u64);
+                self.print_str(" gid=");
+                self.print_u64(meta.gid as u64);
+                self.print_str(" mode=");
+                self.print_str(&crate::security::format_mode(meta.mode));
+                self.print_str(" size=");
+                self.print_u64(meta.size);
+                self.print_char('\n');
+            }
+            None => {
+                self.set_fg(FG_ERROR);
+                self.print_str("perm: not found or denied\n");
+            }
         }
+    }
+
+    fn cmd_chmod(&mut self, mode: &str, path: &str) {
+        let Some(mode) = crate::security::parse_mode(mode) else {
+            self.set_fg(FG_ERROR);
+            self.print_str("chmod: invalid mode\n");
+            return;
+        };
+        match crate::vfs::vfs_chmod(path, mode) {
+            Ok(()) => {
+                self.set_fg(FG_ACCENT);
+                self.print_str("chmod ");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(path);
+                self.print_char('\n');
+            }
+            Err(err) => {
+                self.set_fg(FG_ERROR);
+                self.print_str("chmod: ");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(err.as_str());
+                self.print_char('\n');
+            }
+        }
+    }
+
+    fn cmd_chown(&mut self, owner: &str, path: &str) {
+        let Some((uid, gid)) = parse_owner(owner) else {
+            self.set_fg(FG_ERROR);
+            self.print_str("chown: invalid owner\n");
+            return;
+        };
+        match crate::vfs::vfs_chown(path, uid, gid) {
+            Ok(()) => {
+                self.set_fg(FG_ACCENT);
+                self.print_str("chown ");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(path);
+                self.print_char('\n');
+            }
+            Err(err) => {
+                self.set_fg(FG_ERROR);
+                self.print_str("chown: ");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(err.as_str());
+                self.print_char('\n');
+            }
+        }
+    }
+
+    fn cmd_write_file(&mut self, path: &str, text: &str) {
         match crate::vfs::vfs_create_file(path) {
             Ok(()) | Err(crate::fat32::FsError::AlreadyExists) => {}
             Err(err) => {
@@ -1015,11 +1121,6 @@ impl TerminalApp {
     }
 
     fn cmd_rm(&mut self, path: &str) {
-        if !crate::security::can_write_path(path) {
-            self.set_fg(FG_ERROR);
-            self.print_str("rm: permission denied\n");
-            return;
-        }
         match crate::vfs::vfs_delete(path) {
             Ok(()) => {
                 self.set_fg(FG_ACCENT);
@@ -1039,11 +1140,6 @@ impl TerminalApp {
     }
 
     fn cmd_touch(&mut self, path: &str) {
-        if !crate::security::can_write_path(path) {
-            self.set_fg(FG_ERROR);
-            self.print_str("touch: permission denied\n");
-            return;
-        }
         match crate::vfs::vfs_create_file(path) {
             Ok(()) => {
                 self.set_fg(FG_ACCENT);
@@ -1063,11 +1159,6 @@ impl TerminalApp {
     }
 
     fn cmd_mkdir(&mut self, path: &str) {
-        if !crate::security::can_write_path(path) {
-            self.set_fg(FG_ERROR);
-            self.print_str("mkdir: permission denied\n");
-            return;
-        }
         match crate::vfs::vfs_create_dir(path) {
             Ok(()) => {
                 self.set_fg(FG_ACCENT);
@@ -1096,6 +1187,7 @@ impl TerminalApp {
             bool,
             Option<u64>,
             Option<usize>,
+            u32,
         )> = {
             let sched = crate::scheduler::SCHEDULER.lock();
             let cur = sched.current;
@@ -1112,16 +1204,17 @@ impl TerminalApp {
                         t.pml4.is_some(),
                         t.exit_code,
                         t.parent,
+                        t.credentials.uid,
                     )
                 })
                 .collect()
         };
 
         self.set_fg(FG_ACCENT);
-        self.print_str("PID  PPID  RING  STATUS   EXIT  NAME\n");
+        self.print_str("PID  PPID  UID   RING  STATUS   EXIT  NAME\n");
         self.set_fg(FG_DIM);
-        self.print_str("---  ----  ----  -------  ----  ----\n");
-        for (id, name, status, is_cur, is_user, exit_code, parent) in tasks {
+        self.print_str("---  ----  ----  ----  -------  ----  ----\n");
+        for (id, name, status, is_cur, is_user, exit_code, parent, uid) in tasks {
             self.set_fg(if is_cur { FG_PROMPT } else { FG_OUTPUT });
             self.print_u64(id as u64);
             self.print_str("    ");
@@ -1132,6 +1225,9 @@ impl TerminalApp {
                 self.print_char('-');
             }
             self.print_str("     ");
+            self.set_fg(FG_DIM);
+            self.print_u64(uid as u64);
+            self.print_str("  ");
             self.set_fg(FG_DIM);
             let ring = if is_user { "u" } else { "k" };
             self.print_str(ring);
@@ -1233,6 +1329,20 @@ impl TerminalApp {
             self.print_str(&line);
             self.print_char('\n');
         }
+    }
+
+    fn cmd_whoami(&mut self) {
+        let user = crate::security::current_user();
+        let creds = crate::security::current_credentials();
+        self.set_fg(FG_OUTPUT);
+        self.print_str(user.name);
+        self.print_str(" uid=");
+        self.print_u64(creds.uid as u64);
+        self.print_str(" gid=");
+        self.print_u64(creds.gid as u64);
+        self.print_str(" caps=");
+        self.print_str(&crate::security::capability_label(creds.caps));
+        self.print_char('\n');
     }
 
     fn cmd_http(&mut self, scheme: &str, host: &str, path: &str) {
@@ -1971,6 +2081,20 @@ fn parse_usize(input: &str) -> Option<usize> {
     Some(out)
 }
 
+fn parse_u32(input: &str) -> Option<u32> {
+    if input.is_empty() {
+        return None;
+    }
+    let mut out = 0u32;
+    for b in input.bytes() {
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        out = out.checked_mul(10)?.checked_add((b - b'0') as u32)?;
+    }
+    Some(out)
+}
+
 fn parse_u64(input: &str) -> Option<u64> {
     if input.is_empty() {
         return None;
@@ -1983,6 +2107,14 @@ fn parse_u64(input: &str) -> Option<u64> {
         out = out.checked_mul(10)?.checked_add((b - b'0') as u64)?;
     }
     Some(out)
+}
+
+fn parse_owner(input: &str) -> Option<(u32, u32)> {
+    if let Some((uid, gid)) = input.split_once(':') {
+        return Some((parse_u32(uid)?, parse_u32(gid)?));
+    }
+    let uid = parse_u32(input)?;
+    Some((uid, uid))
 }
 
 fn parse_bool_word(input: &str) -> Option<bool> {

@@ -57,6 +57,18 @@ pub fn run_boot_tests() {
         &mut fail,
     );
     check(
+        "coolfs-permissions",
+        coolfs_permission_roundtrip(),
+        &mut ok,
+        &mut fail,
+    );
+    check(
+        "package-grants",
+        package_grants_roundtrip(),
+        &mut ok,
+        &mut fail,
+    );
+    check(
         "app-manifest-validation",
         crate::app_metadata::validate_installed_manifests().is_ok(),
         &mut ok,
@@ -212,6 +224,60 @@ fn vfs_write_enforcement() -> bool {
     crate::vfs::vfs_read_file(path)
         .map(|bytes| bytes.as_slice() == b"vfs-ok\n")
         .unwrap_or(false)
+}
+
+fn coolfs_permission_roundtrip() -> bool {
+    let Some(bin) = crate::vfs::vfs_metadata("/bin/hello") else {
+        return false;
+    };
+    if bin.uid != crate::security::ROOT_UID || bin.mode & 0o111 == 0 {
+        return false;
+    }
+    let Some(tmp) = crate::vfs::vfs_metadata("/TMP") else {
+        return false;
+    };
+    if tmp.uid != crate::security::USER_UID || tmp.mode & 0o200 == 0 {
+        return false;
+    }
+    if !crate::vfs::vfs_can_execute("/bin/hello") || crate::vfs::vfs_can_execute("/bin/motd.txt") {
+        return false;
+    }
+
+    let path = "/TMP/PERMTEST.TXT";
+    match crate::vfs::vfs_create_file(path) {
+        Ok(()) | Err(crate::fat32::FsError::AlreadyExists) => {}
+        Err(_) => return false,
+    }
+    if crate::vfs::vfs_write_file(path, b"allowed\n").is_err() {
+        return false;
+    }
+    if crate::vfs::vfs_chmod(path, 0o400).is_err() {
+        return false;
+    }
+    if !matches!(
+        crate::vfs::vfs_write_file(path, b"denied\n"),
+        Err(crate::fat32::FsError::PermissionDenied)
+    ) {
+        return false;
+    }
+    if crate::vfs::vfs_chmod(path, 0o600).is_err() {
+        return false;
+    }
+    if crate::vfs::vfs_chown(path, crate::security::USER_UID, crate::security::USER_GID).is_err() {
+        return false;
+    }
+    crate::vfs::vfs_write_file(path, b"allowed-again\n").is_ok()
+}
+
+fn package_grants_roundtrip() -> bool {
+    let desktop = crate::security::package_credentials("desktop");
+    let network = crate::security::package_credentials("network");
+    let files = crate::security::package_credentials("filesystem");
+    crate::security::can_desktop(desktop)
+        && !crate::security::can_network(desktop)
+        && crate::security::can_network(network)
+        && crate::security::can_write_files(files)
+        && crate::security::can_execute_files(desktop)
 }
 
 fn png_decode_roundtrip() -> bool {

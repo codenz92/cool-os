@@ -58,6 +58,7 @@ struct Elf64ProgramHeader {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ExecError {
     NotFound,
+    PermissionDenied,
     InvalidElf(&'static str),
     OutOfMemory,
     MapFailed(&'static str),
@@ -69,6 +70,7 @@ impl ExecError {
     pub fn as_str(&self) -> &'static str {
         match self {
             ExecError::NotFound => "file not found",
+            ExecError::PermissionDenied => "permission denied",
             ExecError::InvalidElf(msg) => msg,
             ExecError::OutOfMemory => "out of memory",
             ExecError::MapFailed(msg) => msg,
@@ -98,6 +100,23 @@ pub fn spawn_elf_process_with_fds(
     args: &[&str],
     inherited_fds: &[(usize, usize)],
 ) -> Result<usize, ExecError> {
+    spawn_elf_process_with_fds_and_credentials(path, args, inherited_fds, None)
+}
+
+pub fn spawn_elf_process_with_credentials(
+    path: &str,
+    args: &[&str],
+    credentials: crate::security::Credentials,
+) -> Result<usize, ExecError> {
+    spawn_elf_process_with_fds_and_credentials(path, args, &[], Some(credentials))
+}
+
+pub fn spawn_elf_process_with_fds_and_credentials(
+    path: &str,
+    args: &[&str],
+    inherited_fds: &[(usize, usize)],
+    credentials: Option<crate::security::Credentials>,
+) -> Result<usize, ExecError> {
     let scheduler_ready = x86_64::instructions::interrupts::without_interrupts(|| {
         crate::scheduler::SCHEDULER.try_lock().is_some()
     });
@@ -113,12 +132,13 @@ pub fn spawn_elf_process_with_fds(
         };
         let before = sched.tasks.len();
         Ok(
-            if sched.spawn_user_with_fds(
+            if sched.spawn_user_with_fds_and_credentials(
                 "user-elf",
                 image.entry,
                 image.user_rsp,
                 image.pml4,
                 inherited_fds,
+                credentials,
             ) {
                 if let Some(task) = sched.tasks.get_mut(before) {
                     task.status = crate::scheduler::TaskStatus::Blocked;
@@ -149,6 +169,11 @@ pub fn load_elf_image(path: &str) -> Result<LoadedImage, ExecError> {
 }
 
 pub fn load_elf_image_with_args(path: &str, args: &[&str]) -> Result<LoadedImage, ExecError> {
+    crate::vfs::vfs_check_execute(path).map_err(|err| match err {
+        crate::fat32::FsError::NotFound => ExecError::NotFound,
+        crate::fat32::FsError::PermissionDenied => ExecError::PermissionDenied,
+        _ => ExecError::InvalidElf("cannot execute path"),
+    })?;
     let image = crate::vfs::vfs_read_file(path).ok_or(ExecError::NotFound)?;
     let header = parse_header(&image)?;
     let pml4 = crate::vmm::new_process_pml4().ok_or(ExecError::OutOfMemory)?;

@@ -545,8 +545,13 @@ pub fn validate_manifest_text(text: &str) -> Result<(), &'static str> {
     {
         return Err("invalid category");
     }
-    if permission.len() > 32 || !safe_manifest_token(permission, false) {
+    if permission.len() > 48 {
         return Err("invalid permission");
+    }
+    for grant in permission.split(',').map(str::trim) {
+        if grant.is_empty() || grant.len() > 24 || !safe_manifest_token(grant, false) {
+            return Err("invalid permission");
+        }
     }
     if !safe_exec_path(exec_path) {
         return Err("invalid exec");

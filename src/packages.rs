@@ -218,8 +218,10 @@ pub fn launch(id_or_command: &str, args: &[&str]) -> Result<PackageLaunch, &'sta
     if !manifest.exec_path.starts_with('/') {
         return Err("package has no userspace executable");
     }
-    let pid = crate::elf::spawn_elf_process_with_args(&manifest.exec_path, args)
-        .map_err(|err| err.as_str())?;
+    let credentials = crate::security::package_credentials(&manifest.permission);
+    let pid =
+        crate::elf::spawn_elf_process_with_credentials(&manifest.exec_path, args, credentials)
+            .map_err(|err| err.as_str())?;
     crate::app_lifecycle::record_process_start(pid, &manifest.name, &manifest.exec_path);
     crate::app_lifecycle::record_app(&manifest.name);
     crate::println!(

@@ -39,6 +39,10 @@ const KIND_FREE: u8 = 0;
 const KIND_FILE: u8 = 1;
 const KIND_DIR: u8 = 2;
 const CACHE_SLOTS: usize = 64;
+const INODE_UID_OFFSET: usize = 12 + DIRECT_BLOCKS * 4;
+const INODE_GID_OFFSET: usize = INODE_UID_OFFSET + 4;
+const INODE_MODE_OFFSET: usize = INODE_GID_OFFSET + 4;
+const INODE_USED_BYTES: usize = INODE_MODE_OFFSET + 4;
 
 static COOLFS_IMAGE: Mutex<Option<Image>> = Mutex::new(None);
 static DIRTY: AtomicBool = AtomicBool::new(false);
@@ -122,6 +126,9 @@ struct Inode {
     size: u32,
     direct: [u32; DIRECT_BLOCKS],
     indirect: u32,
+    uid: u32,
+    gid: u32,
+    mode: u16,
 }
 
 impl Inode {
@@ -131,15 +138,38 @@ impl Inode {
             size: 0,
             direct: [0; DIRECT_BLOCKS],
             indirect: 0,
+            uid: 0,
+            gid: 0,
+            mode: 0,
         }
     }
 
     fn new(kind: u8) -> Self {
+        let mode = match kind {
+            KIND_DIR => crate::security::DEFAULT_DIR_MODE,
+            KIND_FILE => crate::security::DEFAULT_FILE_MODE,
+            _ => 0,
+        };
         Self {
             kind,
             size: 0,
             direct: [0; DIRECT_BLOCKS],
             indirect: 0,
+            uid: crate::security::ROOT_UID,
+            gid: crate::security::ROOT_GID,
+            mode,
+        }
+    }
+
+    fn new_with_metadata(kind: u8, uid: u32, gid: u32, mode: u16) -> Self {
+        Self {
+            kind,
+            size: 0,
+            direct: [0; DIRECT_BLOCKS],
+            indirect: 0,
+            uid,
+            gid,
+            mode: mode & 0o777,
         }
     }
 
@@ -150,6 +180,16 @@ impl Inode {
     fn is_file(&self) -> bool {
         self.kind == KIND_FILE
     }
+}
+
+#[derive(Clone, Copy)]
+pub struct Metadata {
+    pub uid: u32,
+    pub gid: u32,
+    pub mode: u16,
+    pub size: u32,
+    pub is_dir: bool,
+    pub is_file: bool,
 }
 
 struct DirectoryEntry {
@@ -217,7 +257,7 @@ pub fn lines() -> Vec<String> {
     match stats() {
         Some(stats) => alloc::vec![
             format!(
-                "mount {} type=coolfs flags=rw,native-root,bitmap-inodes,indirect-blocks",
+                "mount {} type=coolfs flags=rw,native-root,bitmap-inodes,indirect-blocks,uid-gid-mode",
                 MOUNT_PATH
             ),
             format!(
@@ -286,12 +326,75 @@ pub fn read_file(path: &str) -> Option<Vec<u8>> {
     image.read_inode_bytes(&inode).ok()
 }
 
-pub fn create_file(path: &str) -> Result<(), FsError> {
-    create_node(path, KIND_FILE)
+pub fn metadata(path: &str) -> Option<Metadata> {
+    let mut slot = COOLFS_IMAGE.lock();
+    let image = ensure_image(&mut slot).ok()?;
+    let inode_idx = resolve_path(image, path).ok()?;
+    let inode = image.read_inode(inode_idx)?;
+    Some(Metadata {
+        uid: inode.uid,
+        gid: inode.gid,
+        mode: inode.mode,
+        size: inode.size,
+        is_dir: inode.is_dir(),
+        is_file: inode.is_file(),
+    })
 }
 
+pub fn chmod(path: &str, mode: u16) -> Result<(), FsError> {
+    let mut slot = COOLFS_IMAGE.lock();
+    let image = ensure_image(&mut slot)?;
+    let inode_idx = resolve_path(image, path)?;
+    let mut inode = image.read_inode(inode_idx).ok_or(FsError::NotFound)?;
+    if inode.kind == KIND_FREE {
+        return Err(FsError::NotFound);
+    }
+    inode.mode = mode & 0o777;
+    image.write_inode(inode_idx, &inode)?;
+    record_mutation("coolfs-chmod", path);
+    Ok(())
+}
+
+pub fn chown(path: &str, uid: u32, gid: u32) -> Result<(), FsError> {
+    let mut slot = COOLFS_IMAGE.lock();
+    let image = ensure_image(&mut slot)?;
+    let inode_idx = resolve_path(image, path)?;
+    let mut inode = image.read_inode(inode_idx).ok_or(FsError::NotFound)?;
+    if inode.kind == KIND_FREE {
+        return Err(FsError::NotFound);
+    }
+    inode.uid = uid;
+    inode.gid = gid;
+    image.write_inode(inode_idx, &inode)?;
+    record_mutation("coolfs-chown", path);
+    Ok(())
+}
+
+pub fn create_file(path: &str) -> Result<(), FsError> {
+    create_file_with_metadata(
+        path,
+        crate::security::current_credentials().uid,
+        crate::security::current_credentials().gid,
+        crate::security::DEFAULT_FILE_MODE,
+    )
+}
+
+pub fn create_file_with_metadata(path: &str, uid: u32, gid: u32, mode: u16) -> Result<(), FsError> {
+    create_node(path, KIND_FILE, uid, gid, mode)
+}
+
+#[allow(dead_code)]
 pub fn create_dir(path: &str) -> Result<(), FsError> {
-    create_node(path, KIND_DIR)
+    create_dir_with_metadata(
+        path,
+        crate::security::current_credentials().uid,
+        crate::security::current_credentials().gid,
+        crate::security::DEFAULT_DIR_MODE,
+    )
+}
+
+pub fn create_dir_with_metadata(path: &str, uid: u32, gid: u32, mode: u16) -> Result<(), FsError> {
+    create_node(path, KIND_DIR, uid, gid, mode)
 }
 
 pub fn write_file(path: &str, data: &[u8]) -> Result<(), FsError> {
@@ -307,7 +410,25 @@ pub fn write_file(path: &str, data: &[u8]) -> Result<(), FsError> {
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn safe_write_file(path: &str, data: &[u8]) -> Result<(), FsError> {
+    let creds = crate::security::current_credentials();
+    safe_write_file_with_metadata(
+        path,
+        data,
+        creds.uid,
+        creds.gid,
+        crate::security::DEFAULT_FILE_MODE,
+    )
+}
+
+pub fn safe_write_file_with_metadata(
+    path: &str,
+    data: &[u8],
+    uid: u32,
+    gid: u32,
+    mode: u16,
+) -> Result<(), FsError> {
     let (parent, name) = split_parent_and_name(path)?;
     let mut tmp = parent.clone();
     if !tmp.ends_with('/') {
@@ -319,7 +440,7 @@ pub fn safe_write_file(path: &str, data: &[u8]) -> Result<(), FsError> {
         Ok(()) | Err(FsError::NotFound) => {}
         Err(err) => return Err(err),
     }
-    create_file(&tmp)?;
+    create_file_with_metadata(&tmp, uid, gid, mode)?;
     write_file(&tmp, data)?;
     match delete_file(path) {
         Ok(()) | Err(FsError::NotFound) => {}
@@ -386,7 +507,7 @@ pub fn copy_file(src: &str, dst: &str) -> Result<(), FsError> {
     write_file(dst, &data)
 }
 
-fn create_node(path: &str, kind: u8) -> Result<(), FsError> {
+fn create_node(path: &str, kind: u8, uid: u32, gid: u32, mode: u16) -> Result<(), FsError> {
     let mut slot = COOLFS_IMAGE.lock();
     let image = ensure_image(&mut slot)?;
     let (parent_path, name) = split_parent_and_name(path)?;
@@ -397,7 +518,7 @@ fn create_node(path: &str, kind: u8) -> Result<(), FsError> {
         return Err(FsError::AlreadyExists);
     }
 
-    let inode_idx = image.alloc_inode(kind)?;
+    let inode_idx = image.alloc_inode_with_metadata(kind, uid, gid, mode)?;
     entries.push(DirectoryEntry {
         inode: inode_idx,
         name,
@@ -522,6 +643,19 @@ impl Image {
             inode.direct[i] = self.read_u32_at(off + 8 + i * 4)?;
         }
         inode.indirect = self.read_u32_at(off + 8 + DIRECT_BLOCKS * 4)?;
+        inode.uid = self.read_u32_at(off + INODE_UID_OFFSET).unwrap_or(0);
+        inode.gid = self.read_u32_at(off + INODE_GID_OFFSET).unwrap_or(0);
+        inode.mode = self
+            .read_u32_at(off + INODE_MODE_OFFSET)
+            .map(|mode| (mode as u16) & 0o777)
+            .unwrap_or(0);
+        if inode.kind != KIND_FREE && inode.mode == 0 {
+            inode.mode = if inode.kind == KIND_DIR {
+                crate::security::DEFAULT_DIR_MODE
+            } else {
+                crate::security::DEFAULT_FILE_MODE
+            };
+        }
         Some(inode)
     }
 
@@ -534,11 +668,10 @@ impl Image {
             self.write_u32_at(off + 8 + i * 4, inode.direct[i])?;
         }
         self.write_u32_at(off + 8 + DIRECT_BLOCKS * 4, inode.indirect)?;
-        self.fill_at(
-            off + 12 + DIRECT_BLOCKS * 4,
-            INODE_SIZE - (12 + DIRECT_BLOCKS * 4),
-            0,
-        )?;
+        self.write_u32_at(off + INODE_UID_OFFSET, inode.uid)?;
+        self.write_u32_at(off + INODE_GID_OFFSET, inode.gid)?;
+        self.write_u32_at(off + INODE_MODE_OFFSET, (inode.mode & 0o777) as u32)?;
+        self.fill_at(off + INODE_USED_BYTES, INODE_SIZE - INODE_USED_BYTES, 0)?;
         Ok(())
     }
 
@@ -706,14 +839,34 @@ impl Image {
         self.set_block_used(block, false)
     }
 
+    #[allow(dead_code)]
     fn alloc_inode(&mut self, kind: u8) -> Result<u32, FsError> {
+        self.alloc_inode_with_metadata(
+            kind,
+            crate::security::ROOT_UID,
+            crate::security::ROOT_GID,
+            if kind == KIND_DIR {
+                crate::security::DEFAULT_DIR_MODE
+            } else {
+                crate::security::DEFAULT_FILE_MODE
+            },
+        )
+    }
+
+    fn alloc_inode_with_metadata(
+        &mut self,
+        kind: u8,
+        uid: u32,
+        gid: u32,
+        mode: u16,
+    ) -> Result<u32, FsError> {
         for inode_idx in 1..self.sb.inode_count {
             if self
                 .read_inode(inode_idx)
                 .map(|inode| inode.kind == KIND_FREE)
                 .unwrap_or(false)
             {
-                self.write_inode(inode_idx, &Inode::new(kind))?;
+                self.write_inode(inode_idx, &Inode::new_with_metadata(kind, uid, gid, mode))?;
                 return Ok(inode_idx);
             }
         }

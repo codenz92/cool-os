@@ -1325,14 +1325,16 @@ impl WindowManager {
                 TextViewerApp::profiler_viewer(wx, wy),
             )),
             "Welcome" => self.add_window(AppWindow::TextViewer(TextViewerApp::welcome(wx, wy))),
-            "GUI Demo" => match crate::elf::spawn_elf_process_with_args("/bin/guidemo", &[]) {
-                Ok(pid) => {
-                    crate::app_lifecycle::record_process_start(pid, "GUI Demo", "/bin/guidemo");
-                    crate::app_lifecycle::record_app("GUI Demo");
-                    crate::notifications::push_transient("GUI Demo", "spawned /bin/guidemo");
+            "GUI Demo" => {
+                match self.spawn_user_gui_app_with_args_result("GUI Demo", "/bin/guidemo", &[]) {
+                    Ok(pid) => {
+                        crate::app_lifecycle::record_process_start(pid, "GUI Demo", "/bin/guidemo");
+                        crate::app_lifecycle::record_app("GUI Demo");
+                        crate::notifications::push_transient("GUI Demo", "spawned /bin/guidemo");
+                    }
+                    Err(err) => self.show_error_dialog("GUI Demo failed", err.as_str()),
                 }
-                Err(err) => self.show_error_dialog("GUI Demo failed", err.as_str()),
-            },
+            }
             _ => self.launch_manifest_app(title),
         }
         if self.windows.len() > before {
@@ -1371,7 +1373,14 @@ impl WindowManager {
         path: &str,
         args: &[&str],
     ) -> Result<usize, crate::elf::ExecError> {
-        match crate::elf::spawn_elf_process_with_args(path, args) {
+        let permission = crate::security::app_permission_for(name);
+        let result = if let Some(permission) = permission {
+            let credentials = crate::security::package_credentials(&permission);
+            crate::elf::spawn_elf_process_with_credentials(path, args, credentials)
+        } else {
+            crate::elf::spawn_elf_process_with_args(path, args)
+        };
+        match result {
             Ok(pid) => {
                 crate::notifications::push_transient(name, path);
                 Ok(pid)

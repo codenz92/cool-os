@@ -106,7 +106,7 @@ fn main() {
         .create_file("motd.txt")
         .expect("failed to create motd.txt");
     motd.truncate().unwrap();
-    let motd_txt = b"coolOS Phase 27 - native CoolFS disk online!\n";
+    let motd_txt = b"coolOS Phase 28 - CoolFS permissions online!\n";
     motd.write_all(motd_txt).expect("failed to write motd.txt");
     coolfs.create_file("/bin/motd.txt", motd_txt);
 
@@ -658,6 +658,17 @@ const CF_KIND_DIR: u8 = 2;
 const CF_KIND_FILE: u8 = 1;
 const CF_KIND_FREE: u8 = 0;
 const CF_ROOT_INODE: u32 = 0;
+const CF_ROOT_UID: u32 = 0;
+const CF_ROOT_GID: u32 = 0;
+const CF_USER_UID: u32 = 1000;
+const CF_USER_GID: u32 = 1000;
+const CF_DEFAULT_DIR_MODE: u16 = 0o755;
+const CF_DEFAULT_FILE_MODE: u16 = 0o644;
+const CF_DEFAULT_EXEC_MODE: u16 = 0o755;
+const CF_INODE_UID_OFFSET: usize = 12 + CF_DIRECT_BLOCKS * 4;
+const CF_INODE_GID_OFFSET: usize = CF_INODE_UID_OFFSET + 4;
+const CF_INODE_MODE_OFFSET: usize = CF_INODE_GID_OFFSET + 4;
+const CF_INODE_USED_BYTES: usize = CF_INODE_MODE_OFFSET + 4;
 
 #[derive(Clone)]
 struct CfInode {
@@ -665,15 +676,34 @@ struct CfInode {
     size: u32,
     direct: [u32; CF_DIRECT_BLOCKS],
     indirect: u32,
+    uid: u32,
+    gid: u32,
+    mode: u16,
 }
 
 impl CfInode {
     fn new(kind: u8) -> Self {
+        Self::with_metadata(
+            kind,
+            CF_ROOT_UID,
+            CF_ROOT_GID,
+            match kind {
+                CF_KIND_DIR => CF_DEFAULT_DIR_MODE,
+                CF_KIND_FILE => CF_DEFAULT_FILE_MODE,
+                _ => 0,
+            },
+        )
+    }
+
+    fn with_metadata(kind: u8, uid: u32, gid: u32, mode: u16) -> Self {
         Self {
             kind,
             size: 0,
             direct: [0; CF_DIRECT_BLOCKS],
             indirect: 0,
+            uid,
+            gid,
+            mode: mode & 0o777,
         }
     }
 }
@@ -712,6 +742,11 @@ impl CoolFsBuilder {
     }
 
     fn create_dir(&mut self, path: &str) {
+        let (uid, gid, mode) = default_metadata_for_path(path, true);
+        self.create_dir_with_metadata(path, uid, gid, mode);
+    }
+
+    fn create_dir_with_metadata(&mut self, path: &str, uid: u32, gid: u32, mode: u16) {
         if self.resolve_path(path).is_some() {
             return;
         }
@@ -719,11 +754,23 @@ impl CoolFsBuilder {
         let parent_inode = self
             .resolve_path(&parent)
             .unwrap_or_else(|| panic!("missing parent directory {}", parent));
-        let inode = self.alloc_inode(CF_KIND_DIR);
+        let inode = self.alloc_inode_with_metadata(CF_KIND_DIR, uid, gid, mode);
         self.append_dir_entry(parent_inode, inode, &name);
     }
 
     fn create_file(&mut self, path: &str, data: &[u8]) {
+        let (uid, gid, mode) = default_metadata_for_path(path, false);
+        self.create_file_with_metadata(path, data, uid, gid, mode);
+    }
+
+    fn create_file_with_metadata(
+        &mut self,
+        path: &str,
+        data: &[u8],
+        uid: u32,
+        gid: u32,
+        mode: u16,
+    ) {
         if let Some(inode) = self.resolve_path(path) {
             self.write_inode_bytes(inode, data);
             return;
@@ -732,7 +779,7 @@ impl CoolFsBuilder {
         let parent_inode = self
             .resolve_path(&parent)
             .unwrap_or_else(|| panic!("missing parent directory {}", parent));
-        let inode = self.alloc_inode(CF_KIND_FILE);
+        let inode = self.alloc_inode_with_metadata(CF_KIND_FILE, uid, gid, mode);
         self.write_inode_bytes(inode, data);
         self.append_dir_entry(parent_inode, inode, &name);
     }
@@ -789,6 +836,9 @@ impl CoolFsBuilder {
             inode.direct[idx] = cf_read_u32(&self.image, off + 8 + idx * 4);
         }
         inode.indirect = cf_read_u32(&self.image, off + 8 + CF_DIRECT_BLOCKS * 4);
+        inode.uid = cf_read_u32(&self.image, off + CF_INODE_UID_OFFSET);
+        inode.gid = cf_read_u32(&self.image, off + CF_INODE_GID_OFFSET);
+        inode.mode = (cf_read_u32(&self.image, off + CF_INODE_MODE_OFFSET) as u16) & 0o777;
         Some(inode)
     }
 
@@ -805,7 +855,14 @@ impl CoolFsBuilder {
             off + 8 + CF_DIRECT_BLOCKS * 4,
             inode.indirect,
         );
-        self.image[off + 12 + CF_DIRECT_BLOCKS * 4..off + CF_INODE_SIZE].fill(0);
+        cf_write_u32(&mut self.image, off + CF_INODE_UID_OFFSET, inode.uid);
+        cf_write_u32(&mut self.image, off + CF_INODE_GID_OFFSET, inode.gid);
+        cf_write_u32(
+            &mut self.image,
+            off + CF_INODE_MODE_OFFSET,
+            (inode.mode & 0o777) as u32,
+        );
+        self.image[off + CF_INODE_USED_BYTES..off + CF_INODE_SIZE].fill(0);
     }
 
     fn read_dir_entries(&self, inode_idx: u32) -> Vec<CfDirEntry> {
@@ -936,10 +993,10 @@ impl CoolFsBuilder {
         blocks
     }
 
-    fn alloc_inode(&mut self, kind: u8) -> u32 {
+    fn alloc_inode_with_metadata(&mut self, kind: u8, uid: u32, gid: u32, mode: u16) -> u32 {
         for inode in 1..CF_INODE_COUNT {
             if self.read_inode(inode).map(|item| item.kind) == Some(CF_KIND_FREE) {
-                self.write_inode(inode, &CfInode::new(kind));
+                self.write_inode(inode, &CfInode::with_metadata(kind, uid, gid, mode));
                 return inode;
             }
         }
@@ -999,6 +1056,37 @@ fn split_parent_and_name(path: &str) -> (String, String) {
     let name = path[slash + 1..].to_string();
     validate_name(&name);
     (parent, name)
+}
+
+fn default_metadata_for_path(path: &str, is_dir: bool) -> (u32, u32, u16) {
+    let normalized = normalize_abs_path(path);
+    let user_owned = normalized == "/TMP"
+        || normalized.starts_with("/TMP/")
+        || normalized == "/Documents"
+        || normalized.starts_with("/Documents/")
+        || normalized == "/Pictures"
+        || normalized.starts_with("/Pictures/")
+        || normalized == "/Desktop"
+        || normalized.starts_with("/Desktop/")
+        || normalized == "/Trash"
+        || normalized.starts_with("/Trash/")
+        || normalized == "/Downloads"
+        || normalized.starts_with("/Downloads/")
+        || normalized == "/Packages"
+        || normalized.starts_with("/Packages/");
+    let executable = !is_dir && normalized.starts_with("/bin/") && !normalized.ends_with(".txt");
+    let mode = if is_dir {
+        CF_DEFAULT_DIR_MODE
+    } else if executable {
+        CF_DEFAULT_EXEC_MODE
+    } else {
+        CF_DEFAULT_FILE_MODE
+    };
+    if user_owned {
+        (CF_USER_UID, CF_USER_GID, mode)
+    } else {
+        (CF_ROOT_UID, CF_ROOT_GID, mode)
+    }
 }
 
 fn normalize_abs_path(path: &str) -> String {

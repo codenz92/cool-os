@@ -34,11 +34,21 @@ pub struct PathInfo {
     pub size: u64,
 }
 
+#[derive(Clone, Copy)]
+pub struct FileMetadata {
+    pub uid: u32,
+    pub gid: u32,
+    pub mode: u16,
+    pub size: u64,
+    pub is_dir: bool,
+    pub is_file: bool,
+}
+
 const MOUNTS: [MountInfo; 5] = [
     MountInfo {
         prefix: "/",
         fs_type: "coolfs",
-        flags: "rw,native-root,normalized-paths",
+        flags: "rw,native-root,normalized-paths,uid-gid-mode",
     },
     MountInfo {
         prefix: "/FAT",
@@ -330,7 +340,16 @@ pub fn mount_lines() -> Vec<String> {
 pub fn inspect_path(path: &str) -> PathInfo {
     let path = normalize_path(path);
     let mount = resolve_mount(&path);
-    if !crate::security::can_read_path(&path) {
+    let creds = crate::security::current_credentials();
+    let Some(meta) = metadata_unchecked(&path) else {
+        return PathInfo {
+            path,
+            mount,
+            kind: PathKind::Missing,
+            size: 0,
+        };
+    };
+    if !can_read_metadata(creds, meta) {
         return PathInfo {
             path,
             mount,
@@ -338,27 +357,15 @@ pub fn inspect_path(path: &str) -> PathInfo {
             size: 0,
         };
     }
-    if list_dir_unchecked(&path).is_some() {
-        return PathInfo {
-            path,
-            mount,
-            kind: PathKind::Directory,
-            size: 0,
-        };
-    }
-    if let Some(bytes) = read_file_unchecked(&path) {
-        return PathInfo {
-            path,
-            mount,
-            kind: PathKind::File,
-            size: bytes.len() as u64,
-        };
-    }
     PathInfo {
         path,
         mount,
-        kind: PathKind::Missing,
-        size: 0,
+        kind: if meta.is_dir {
+            PathKind::Directory
+        } else {
+            PathKind::File
+        },
+        size: meta.size,
     }
 }
 
@@ -405,7 +412,9 @@ pub fn resolve_mount(path: &str) -> MountInfo {
 
 pub fn vfs_list_dir(path: &str) -> Option<Vec<crate::fat32::DirEntryInfo>> {
     let path = normalize_path(path);
-    if !crate::security::can_read_path(&path) {
+    let creds = crate::security::current_credentials();
+    let meta = metadata_unchecked(&path)?;
+    if !meta.is_dir || !can_read_metadata(creds, meta) || !can_execute_metadata(creds, meta) {
         return None;
     }
     list_dir_unchecked(&path)
@@ -413,51 +422,87 @@ pub fn vfs_list_dir(path: &str) -> Option<Vec<crate::fat32::DirEntryInfo>> {
 
 pub fn vfs_read_file(path: &str) -> Option<Vec<u8>> {
     let path = normalize_path(path);
-    if !crate::security::can_read_path(&path) {
+    let creds = crate::security::current_credentials();
+    let meta = metadata_unchecked(&path)?;
+    if !meta.is_file || !can_read_metadata(creds, meta) {
         return None;
     }
     read_file_unchecked(&path)
 }
 
+pub fn vfs_metadata(path: &str) -> Option<FileMetadata> {
+    let path = normalize_path(path);
+    let creds = crate::security::current_credentials();
+    let meta = metadata_unchecked(&path)?;
+    if !can_read_metadata(creds, meta) {
+        return None;
+    }
+    Some(meta)
+}
+
+pub fn vfs_can_execute(path: &str) -> bool {
+    vfs_check_execute(path).is_ok()
+}
+
+pub fn vfs_check_execute(path: &str) -> Result<(), crate::fat32::FsError> {
+    let path = normalize_path(path);
+    let creds = crate::security::current_credentials();
+    let meta = metadata_unchecked(&path).ok_or(crate::fat32::FsError::NotFound)?;
+    if meta.is_file && can_execute_metadata(creds, meta) {
+        Ok(())
+    } else {
+        Err(crate::fat32::FsError::PermissionDenied)
+    }
+}
+
 pub fn vfs_create_file(path: &str) -> Result<(), crate::fat32::FsError> {
     let path = normalize_path(path);
-    if !crate::security::can_write_path(&path) {
-        return Err(crate::fat32::FsError::PermissionDenied);
-    }
-    create_file_unchecked(&path)
+    check_create_access(&path)?;
+    let creds = crate::security::current_credentials();
+    create_file_for(
+        &path,
+        creds.uid,
+        creds.gid,
+        crate::security::DEFAULT_FILE_MODE,
+    )
 }
 
 pub fn vfs_create_dir(path: &str) -> Result<(), crate::fat32::FsError> {
     let path = normalize_path(path);
-    if !crate::security::can_write_path(&path) {
-        return Err(crate::fat32::FsError::PermissionDenied);
-    }
-    create_dir_unchecked(&path)
+    check_create_access(&path)?;
+    let creds = crate::security::current_credentials();
+    create_dir_for(
+        &path,
+        creds.uid,
+        creds.gid,
+        crate::security::DEFAULT_DIR_MODE,
+    )
 }
 
 #[allow(dead_code)]
 pub fn vfs_write_file(path: &str, data: &[u8]) -> Result<(), crate::fat32::FsError> {
     let path = normalize_path(path);
-    if !crate::security::can_write_path(&path) {
-        return Err(crate::fat32::FsError::PermissionDenied);
-    }
+    check_write_access(&path)?;
     write_file_unchecked(&path, data)
 }
 
 #[allow(dead_code)]
 pub fn vfs_safe_write_file(path: &str, data: &[u8]) -> Result<(), crate::fat32::FsError> {
     let path = normalize_path(path);
-    if !crate::security::can_write_path(&path) {
-        return Err(crate::fat32::FsError::PermissionDenied);
-    }
-    safe_write_file_unchecked(&path, data)
+    check_safe_write_access(&path)?;
+    let creds = crate::security::current_credentials();
+    let meta = metadata_unchecked(&path);
+    let (uid, gid, mode) = meta.map(|meta| (meta.uid, meta.gid, meta.mode)).unwrap_or((
+        creds.uid,
+        creds.gid,
+        crate::security::DEFAULT_FILE_MODE,
+    ));
+    safe_write_file_for(&path, data, uid, gid, mode)
 }
 
 pub fn vfs_delete(path: &str) -> Result<(), crate::fat32::FsError> {
     let path = normalize_path(path);
-    if !crate::security::can_write_path(&path) {
-        return Err(crate::fat32::FsError::PermissionDenied);
-    }
+    check_delete_access(&path)?;
     delete_unchecked(&path)
 }
 
@@ -466,9 +511,7 @@ pub fn vfs_delete_recursive(path: &str) -> Result<(), crate::fat32::FsError> {
     if path == "/" || path.eq_ignore_ascii_case("/Trash") {
         return Err(crate::fat32::FsError::InvalidPath);
     }
-    if crate::security::is_protected_path(&path) || !crate::security::can_write_path(&path) {
-        return Err(crate::fat32::FsError::PermissionDenied);
-    }
+    check_delete_access(&path)?;
 
     if let Some(children) = vfs_list_dir(&path) {
         for child in children {
@@ -482,19 +525,45 @@ pub fn vfs_delete_recursive(path: &str) -> Result<(), crate::fat32::FsError> {
 #[allow(dead_code)]
 pub fn vfs_rename(path: &str, new_name: &str) -> Result<(), crate::fat32::FsError> {
     let path = normalize_path(path);
-    if !crate::security::can_write_path(&path) {
-        return Err(crate::fat32::FsError::PermissionDenied);
-    }
+    check_delete_access(&path)?;
     rename_unchecked(&path, new_name)
 }
 
 pub fn vfs_copy_file(src: &str, dst: &str) -> Result<(), crate::fat32::FsError> {
     let src = normalize_path(src);
     let dst = normalize_path(dst);
-    if !crate::security::can_read_path(&src) || !crate::security::can_write_path(&dst) {
+    let creds = crate::security::current_credentials();
+    let src_meta = metadata_unchecked(&src).ok_or(crate::fat32::FsError::NotFound)?;
+    if !src_meta.is_file || !can_read_metadata(creds, src_meta) {
         return Err(crate::fat32::FsError::PermissionDenied);
     }
-    copy_file_unchecked(&src, &dst)
+    check_create_access(&dst)?;
+    let creds = crate::security::current_credentials();
+    copy_file_for(
+        &src,
+        &dst,
+        creds.uid,
+        creds.gid,
+        crate::security::DEFAULT_FILE_MODE,
+    )
+}
+
+pub fn vfs_chmod(path: &str, mode: u16) -> Result<(), crate::fat32::FsError> {
+    let path = normalize_path(path);
+    let creds = crate::security::current_credentials();
+    let meta = metadata_unchecked(&path).ok_or(crate::fat32::FsError::NotFound)?;
+    if !crate::security::can_admin(creds) && creds.uid != meta.uid {
+        return Err(crate::fat32::FsError::PermissionDenied);
+    }
+    chmod_unchecked(&path, mode)
+}
+
+pub fn vfs_chown(path: &str, uid: u32, gid: u32) -> Result<(), crate::fat32::FsError> {
+    let path = normalize_path(path);
+    if !crate::security::can_admin(crate::security::current_credentials()) {
+        return Err(crate::fat32::FsError::PermissionDenied);
+    }
+    chown_unchecked(&path, uid, gid)
 }
 
 pub fn vfs_kernel_list_dir(path: &str) -> Option<Vec<crate::fat32::DirEntryInfo>> {
@@ -509,12 +578,14 @@ pub fn vfs_kernel_read_file(path: &str) -> Option<Vec<u8>> {
 
 pub fn vfs_kernel_create_file(path: &str) -> Result<(), crate::fat32::FsError> {
     let path = normalize_path(path);
-    create_file_unchecked(&path)
+    let (uid, gid) = default_owner_for_path(&path);
+    create_file_for(&path, uid, gid, default_mode_for_path(&path, false))
 }
 
 pub fn vfs_kernel_create_dir(path: &str) -> Result<(), crate::fat32::FsError> {
     let path = normalize_path(path);
-    create_dir_unchecked(&path)
+    let (uid, gid) = default_owner_for_path(&path);
+    create_dir_for(&path, uid, gid, default_mode_for_path(&path, true))
 }
 
 #[allow(dead_code)]
@@ -525,7 +596,14 @@ pub fn vfs_kernel_write_file(path: &str, data: &[u8]) -> Result<(), crate::fat32
 
 pub fn vfs_kernel_safe_write_file(path: &str, data: &[u8]) -> Result<(), crate::fat32::FsError> {
     let path = normalize_path(path);
-    safe_write_file_unchecked(&path, data)
+    let meta = metadata_unchecked(&path);
+    let (default_uid, default_gid) = default_owner_for_path(&path);
+    let (uid, gid, mode) = meta.map(|meta| (meta.uid, meta.gid, meta.mode)).unwrap_or((
+        default_uid,
+        default_gid,
+        default_mode_for_path(&path, false),
+    ));
+    safe_write_file_for(&path, data, uid, gid, mode)
 }
 
 pub fn vfs_kernel_delete(path: &str) -> Result<(), crate::fat32::FsError> {
@@ -553,6 +631,52 @@ fn list_dir_unchecked(path: &str) -> Option<Vec<crate::fat32::DirEntryInfo>> {
     crate::coolfs::list_dir(path)
 }
 
+fn metadata_unchecked(path: &str) -> Option<FileMetadata> {
+    if let Some(fat_path) = fat32_path(path) {
+        if crate::fat32::list_dir(&fat_path).is_some() {
+            return Some(FileMetadata {
+                uid: crate::security::ROOT_UID,
+                gid: crate::security::ROOT_GID,
+                mode: crate::security::DEFAULT_DIR_MODE,
+                size: 0,
+                is_dir: true,
+                is_file: false,
+            });
+        }
+        if let Some(bytes) = crate::fat32::read_file(&fat_path) {
+            return Some(FileMetadata {
+                uid: crate::security::ROOT_UID,
+                gid: crate::security::ROOT_GID,
+                mode: crate::security::DEFAULT_FILE_MODE,
+                size: bytes.len() as u64,
+                is_dir: false,
+                is_file: true,
+            });
+        }
+        return None;
+    }
+    crate::coolfs::metadata(path).map(|meta| FileMetadata {
+        uid: meta.uid,
+        gid: meta.gid,
+        mode: meta.mode,
+        size: meta.size as u64,
+        is_dir: meta.is_dir,
+        is_file: meta.is_file,
+    })
+}
+
+fn can_read_metadata(creds: crate::security::Credentials, meta: FileMetadata) -> bool {
+    crate::security::can_read_metadata(creds, meta.uid, meta.gid, meta.mode)
+}
+
+fn can_write_metadata(creds: crate::security::Credentials, meta: FileMetadata) -> bool {
+    crate::security::can_write_metadata(creds, meta.uid, meta.gid, meta.mode)
+}
+
+fn can_execute_metadata(creds: crate::security::Credentials, meta: FileMetadata) -> bool {
+    crate::security::can_execute_metadata(creds, meta.uid, meta.gid, meta.mode)
+}
+
 fn read_file_unchecked(path: &str) -> Option<Vec<u8>> {
     if let Some(fat_path) = fat32_path(path) {
         return crate::fat32::read_file(&fat_path);
@@ -561,17 +685,28 @@ fn read_file_unchecked(path: &str) -> Option<Vec<u8>> {
 }
 
 fn create_file_unchecked(path: &str) -> Result<(), crate::fat32::FsError> {
+    let (uid, gid) = default_owner_for_path(path);
+    create_file_for(path, uid, gid, default_mode_for_path(path, false))
+}
+
+fn create_file_for(path: &str, uid: u32, gid: u32, mode: u16) -> Result<(), crate::fat32::FsError> {
     if let Some(fat_path) = fat32_path(path) {
         return crate::fat32::create_file(&fat_path);
     }
-    crate::coolfs::create_file(path)
+    crate::coolfs::create_file_with_metadata(path, uid, gid, mode)
 }
 
+#[allow(dead_code)]
 fn create_dir_unchecked(path: &str) -> Result<(), crate::fat32::FsError> {
+    let (uid, gid) = default_owner_for_path(path);
+    create_dir_for(path, uid, gid, default_mode_for_path(path, true))
+}
+
+fn create_dir_for(path: &str, uid: u32, gid: u32, mode: u16) -> Result<(), crate::fat32::FsError> {
     if let Some(fat_path) = fat32_path(path) {
         return crate::fat32::create_dir(&fat_path);
     }
-    crate::coolfs::create_dir(path)
+    crate::coolfs::create_dir_with_metadata(path, uid, gid, mode)
 }
 
 fn write_file_unchecked(path: &str, data: &[u8]) -> Result<(), crate::fat32::FsError> {
@@ -581,11 +716,23 @@ fn write_file_unchecked(path: &str, data: &[u8]) -> Result<(), crate::fat32::FsE
     crate::coolfs::write_file(path, data)
 }
 
+#[allow(dead_code)]
 fn safe_write_file_unchecked(path: &str, data: &[u8]) -> Result<(), crate::fat32::FsError> {
+    let (uid, gid) = default_owner_for_path(path);
+    safe_write_file_for(path, data, uid, gid, default_mode_for_path(path, false))
+}
+
+fn safe_write_file_for(
+    path: &str,
+    data: &[u8],
+    uid: u32,
+    gid: u32,
+    mode: u16,
+) -> Result<(), crate::fat32::FsError> {
     if let Some(fat_path) = fat32_path(path) {
         return crate::fat32::safe_write_file(&fat_path, data);
     }
-    crate::coolfs::safe_write_file(path, data)
+    crate::coolfs::safe_write_file_with_metadata(path, data, uid, gid, mode)
 }
 
 fn delete_unchecked(path: &str) -> Result<(), crate::fat32::FsError> {
@@ -611,6 +758,155 @@ fn copy_file_unchecked(src: &str, dst: &str) -> Result<(), crate::fat32::FsError
             create_file_unchecked(dst)?;
             write_file_unchecked(dst, &data)
         }
+    }
+}
+
+fn copy_file_for(
+    src: &str,
+    dst: &str,
+    uid: u32,
+    gid: u32,
+    mode: u16,
+) -> Result<(), crate::fat32::FsError> {
+    let data = read_file_unchecked(src).ok_or(crate::fat32::FsError::NotFound)?;
+    create_file_for(dst, uid, gid, mode)?;
+    write_file_unchecked(dst, &data)
+}
+
+fn chmod_unchecked(path: &str, mode: u16) -> Result<(), crate::fat32::FsError> {
+    if fat32_path(path).is_some() {
+        return Err(crate::fat32::FsError::UnsupportedName);
+    }
+    crate::coolfs::chmod(path, mode)
+}
+
+fn chown_unchecked(path: &str, uid: u32, gid: u32) -> Result<(), crate::fat32::FsError> {
+    if fat32_path(path).is_some() {
+        return Err(crate::fat32::FsError::UnsupportedName);
+    }
+    crate::coolfs::chown(path, uid, gid)
+}
+
+fn check_create_access(path: &str) -> Result<(), crate::fat32::FsError> {
+    if path == "/" {
+        return Err(crate::fat32::FsError::InvalidPath);
+    }
+    let creds = crate::security::current_credentials();
+    if !crate::security::can_write_files(creds) {
+        return Err(crate::fat32::FsError::PermissionDenied);
+    }
+    if fat32_path(path).is_some() {
+        return Ok(());
+    }
+    let parent = parent_path(path)?;
+    let parent_meta = metadata_unchecked(&parent).ok_or(crate::fat32::FsError::NotFound)?;
+    if parent_meta.is_dir
+        && can_write_metadata(creds, parent_meta)
+        && can_execute_metadata(creds, parent_meta)
+    {
+        Ok(())
+    } else {
+        Err(crate::fat32::FsError::PermissionDenied)
+    }
+}
+
+fn check_write_access(path: &str) -> Result<(), crate::fat32::FsError> {
+    let creds = crate::security::current_credentials();
+    if !crate::security::can_write_files(creds) {
+        return Err(crate::fat32::FsError::PermissionDenied);
+    }
+    if fat32_path(path).is_some() {
+        return Ok(());
+    }
+    let meta = metadata_unchecked(path).ok_or(crate::fat32::FsError::NotFound)?;
+    if meta.is_file && can_write_metadata(creds, meta) {
+        Ok(())
+    } else {
+        Err(crate::fat32::FsError::PermissionDenied)
+    }
+}
+
+fn check_safe_write_access(path: &str) -> Result<(), crate::fat32::FsError> {
+    match metadata_unchecked(path) {
+        Some(_) => {
+            check_write_access(path)?;
+            check_create_access(path)
+        }
+        None => check_create_access(path),
+    }
+}
+
+fn check_delete_access(path: &str) -> Result<(), crate::fat32::FsError> {
+    if path == "/" {
+        return Err(crate::fat32::FsError::InvalidPath);
+    }
+    let creds = crate::security::current_credentials();
+    if !crate::security::can_write_files(creds) {
+        return Err(crate::fat32::FsError::PermissionDenied);
+    }
+    if fat32_path(path).is_some() {
+        return Ok(());
+    }
+    if metadata_unchecked(path).is_none() {
+        return Err(crate::fat32::FsError::NotFound);
+    }
+    let parent = parent_path(path)?;
+    let parent_meta = metadata_unchecked(&parent).ok_or(crate::fat32::FsError::NotFound)?;
+    if parent_meta.is_dir
+        && can_write_metadata(creds, parent_meta)
+        && can_execute_metadata(creds, parent_meta)
+    {
+        Ok(())
+    } else {
+        Err(crate::fat32::FsError::PermissionDenied)
+    }
+}
+
+fn parent_path(path: &str) -> Result<String, crate::fat32::FsError> {
+    let path = normalize_path(path);
+    if path == "/" {
+        return Err(crate::fat32::FsError::InvalidPath);
+    }
+    let Some(slash) = path.rfind('/') else {
+        return Err(crate::fat32::FsError::InvalidPath);
+    };
+    if slash == 0 {
+        Ok(String::from("/"))
+    } else {
+        Ok(String::from(&path[..slash]))
+    }
+}
+
+fn default_mode_for_path(path: &str, is_dir: bool) -> u16 {
+    if is_dir {
+        return crate::security::DEFAULT_DIR_MODE;
+    }
+    if path.starts_with("/bin/") || path.eq_ignore_ascii_case("/bin") {
+        crate::security::DEFAULT_EXEC_MODE
+    } else {
+        crate::security::DEFAULT_FILE_MODE
+    }
+}
+
+fn default_owner_for_path(path: &str) -> (u32, u32) {
+    let user_owned = path == "/TMP"
+        || path.starts_with("/TMP/")
+        || path == "/Documents"
+        || path.starts_with("/Documents/")
+        || path == "/Pictures"
+        || path.starts_with("/Pictures/")
+        || path == "/Desktop"
+        || path.starts_with("/Desktop/")
+        || path == "/Trash"
+        || path.starts_with("/Trash/")
+        || path == "/Downloads"
+        || path.starts_with("/Downloads/")
+        || path == "/Packages"
+        || path.starts_with("/Packages/");
+    if user_owned {
+        (crate::security::USER_UID, crate::security::USER_GID)
+    } else {
+        (crate::security::ROOT_UID, crate::security::ROOT_GID)
     }
 }
 
@@ -702,9 +998,6 @@ pub fn inherit_fds(parent_task: usize, child_task: usize, mappings: &[(usize, us
 
 pub fn vfs_open(path: &str) -> usize {
     let path = normalize_path(path);
-    if !crate::security::can_read_path(&path) {
-        return usize::MAX;
-    }
     let data = match vfs_read_file(&path) {
         Some(data) => data,
         None => return usize::MAX,

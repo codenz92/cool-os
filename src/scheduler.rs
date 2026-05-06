@@ -75,6 +75,7 @@ pub struct Task {
     pub process_group: usize,
     pub pending_signal: Option<crate::process_model::Signal>,
     pub wake_tick: Option<u64>,
+    pub credentials: crate::security::Credentials,
     /// Per-process PML4 frame.  None = kernel task, shares the boot PML4.
     pub pml4: Option<PhysFrame>,
 }
@@ -114,6 +115,7 @@ impl Scheduler {
             process_group: 0,
             pending_signal: None,
             wake_tick: None,
+            credentials: crate::security::interactive_credentials(),
             pml4: None,
         });
         crate::vfs::init_task(0);
@@ -169,6 +171,9 @@ impl Scheduler {
         } else {
             Some(self.current)
         };
+        let credentials = parent
+            .and_then(|parent_id| self.tasks.get(parent_id).map(|task| task.credentials))
+            .unwrap_or_else(crate::security::interactive_credentials);
         let process_group = parent
             .and_then(|parent_id| self.tasks.get(parent_id).map(|task| task.process_group))
             .unwrap_or_else(|| self.tasks.len());
@@ -183,6 +188,7 @@ impl Scheduler {
             process_group,
             pending_signal: None,
             wake_tick: None,
+            credentials,
             pml4,
         });
         let task_id = self.tasks.len() - 1;
@@ -234,10 +240,27 @@ impl Scheduler {
         pml4: PhysFrame,
         inherited_fds: &[(usize, usize)],
     ) -> bool {
+        self.spawn_user_with_fds_and_credentials(name, entry, user_rsp, pml4, inherited_fds, None)
+    }
+
+    pub fn spawn_user_with_fds_and_credentials(
+        &mut self,
+        name: &'static str,
+        entry: u64,
+        user_rsp: u64,
+        pml4: PhysFrame,
+        inherited_fds: &[(usize, usize)],
+        credentials: Option<crate::security::Credentials>,
+    ) -> bool {
         let user_cs = crate::gdt::user_code_selector().0 as u64;
         let user_ss = crate::gdt::user_data_selector().0 as u64;
         let parent = self.current;
         let task_id = self.spawn_context(name, entry, user_cs, Some(user_rsp), user_ss, Some(pml4));
+        if let Some(credentials) = credentials {
+            if let Some(task) = self.tasks.get_mut(task_id) {
+                task.credentials = credentials;
+            }
+        }
         if crate::vfs::inherit_fds(parent, task_id, inherited_fds) {
             true
         } else {
@@ -403,6 +426,20 @@ impl SignalError {
 
 pub fn current_task_id() -> usize {
     SCHEDULER.lock().current
+}
+
+pub fn current_credentials() -> Option<crate::security::Credentials> {
+    let sched = SCHEDULER.lock();
+    sched.tasks.get(sched.current).map(|task| task.credentials)
+}
+
+#[allow(dead_code)]
+pub fn task_credentials(task_id: usize) -> Option<crate::security::Credentials> {
+    SCHEDULER
+        .lock()
+        .tasks
+        .get(task_id)
+        .map(|task| task.credentials)
 }
 
 pub fn task_name(task_id: usize) -> Option<&'static str> {

@@ -46,10 +46,13 @@ pub fn status_lines() -> Vec<String> {
             wake.push('-');
         }
         lines.push(format!(
-            "pid={} ppid={} pgid={} signal={} wake={} status={:?} name={}",
+            "pid={} ppid={} pgid={} uid={} gid={} caps={} signal={} wake={} status={:?} name={}",
             pid,
             parent,
             task.process_group,
+            task.credentials.uid,
+            task.credentials.gid,
+            crate::security::capability_label(task.credentials.caps),
             task.pending_signal
                 .map(|signal| signal.label())
                 .unwrap_or("-"),

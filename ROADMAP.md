@@ -4,9 +4,9 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–27 are complete. Phase 27 makes CoolFS a native disk filesystem:
-`/` is CoolFS mounted directly from LBA 0, `/FAT` is only an optional legacy
-import region, and `/COOLFS.IMG` is no longer part of the boot path.
+Phases 1–28 are complete. Phase 28 adds real users, CoolFS ownership/modes,
+per-task credentials, and package launch grants enforced by the VFS and
+userspace syscall paths.
 
 ---
 
@@ -881,6 +881,39 @@ but the native root path is independent.
 
 ---
 
+## ✅ Phase 28 — Users, Permissions, and App Sandboxing
+
+**Goal:** Stop treating filesystem access and package permissions as descriptive
+metadata. CoolFS files should have durable ownership and modes, tasks should
+carry credentials, and user-facing syscalls should enforce those permissions.
+
+- [x] Store `uid`, `gid`, and Unix-style `rwx` mode bits in the reserved area of
+      each CoolFS inode without increasing the inode-table footprint.
+- [x] Populate the host-built CoolFS image with root-owned system paths, user-owned
+      writable paths (`/TMP`, `/Documents`, `/Pictures`, `/Desktop`, `/Trash`,
+      `/Downloads`, `/Packages`), and executable mode bits for `/bin` ELF files.
+- [x] Add per-task credentials to the scheduler and include `uid`, `gid`, and
+      capability summaries in process status output.
+- [x] Enforce CoolFS read/write/execute checks in the VFS path used by terminal,
+      GUI apps, and ring-3 filesystem syscalls, while retaining explicit kernel
+      VFS helpers for trusted kernel services.
+- [x] Enforce execute permission before loading ELF images.
+- [x] Convert package manifest permission labels (`desktop`, `filesystem`,
+      `network`, `settings`, `diagnostics`, `shell`, etc.) into launch-time task
+      capabilities.
+- [x] Gate userspace network syscalls behind the `network` capability and GUI /
+      screenshot syscalls behind the `desktop` capability.
+- [x] Add Terminal `whoami`, `perm`, `chmod`, and `chown` commands.
+- [x] Add boot selftests for CoolFS mode enforcement and package grant mapping.
+- [x] Add `make smoke-phase28-permissions` for interactive permission inspection,
+      chmod denial, restore, hash, and non-executable launch denial.
+
+**Current status:** complete. CoolFS is now the persistent authority for file
+ownership and mode bits; VFS/syscalls enforce those bits for user-facing access;
+packages launch with bounded capabilities derived from their manifests.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -923,4 +956,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v5.8 | Phase 24 complete: app platform polish and file dialogs |
 | v5.9 | Phase 25 complete: package platform |
 | v6.0 | Phase 26 complete: CoolFS root filesystem |
-| v6.1 | Current — Phase 27 complete: native CoolFS disk backend |
+| v6.1 | Phase 27 complete: native CoolFS disk backend |
+| v6.2 | Current — Phase 28 complete: users, permissions, and app sandboxing |

@@ -376,11 +376,17 @@ fn sys_close(fd: u64) {
 }
 
 fn sys_socket(domain: u64, socket_type: u64, protocol: u64) -> u64 {
+    if !crate::security::can_network(crate::security::current_credentials()) {
+        return u64::MAX;
+    }
     let owner = crate::scheduler::current_task_id();
     crate::net::socket_open(owner, domain, socket_type, protocol).unwrap_or(u64::MAX)
 }
 
 fn sys_connect(socket: u64, ipv4_be: u64, port: u64) -> u64 {
+    if !crate::security::can_network(crate::security::current_credentials()) {
+        return u64::MAX;
+    }
     if ipv4_be > u32::MAX as u64 || port > u16::MAX as u64 {
         return u64::MAX;
     }
@@ -392,6 +398,9 @@ fn sys_connect(socket: u64, ipv4_be: u64, port: u64) -> u64 {
 }
 
 fn sys_send(socket: u64, buf: *const u8, len: u64) -> u64 {
+    if !crate::security::can_network(crate::security::current_credentials()) {
+        return u64::MAX;
+    }
     if len == 0 {
         return 0;
     }
@@ -409,6 +418,9 @@ fn sys_send(socket: u64, buf: *const u8, len: u64) -> u64 {
 }
 
 fn sys_recv(socket: u64, buf: *mut u8, len: u64) -> u64 {
+    if !crate::security::can_network(crate::security::current_credentials()) {
+        return u64::MAX;
+    }
     if len == 0 {
         return 0;
     }
@@ -426,6 +438,9 @@ fn sys_recv(socket: u64, buf: *mut u8, len: u64) -> u64 {
 }
 
 fn sys_gui_open(title_ptr: *const u8, title_len: u64, dims: u64) -> u64 {
+    if !crate::security::can_desktop(crate::security::current_credentials()) {
+        return u64::MAX;
+    }
     let Some(title_bytes) = user_slice(title_ptr, title_len, MAX_USER_STRING) else {
         return u64::MAX;
     };
@@ -443,6 +458,9 @@ fn sys_gui_open(title_ptr: *const u8, title_len: u64, dims: u64) -> u64 {
 }
 
 fn sys_gui_present(handle: u64, pixels_ptr: *const u8, len: u64) -> u64 {
+    if !crate::security::can_desktop(crate::security::current_credentials()) {
+        return u64::MAX;
+    }
     if handle == 0 || len == 0 || len % 4 != 0 {
         return u64::MAX;
     }
@@ -458,6 +476,9 @@ fn sys_gui_present(handle: u64, pixels_ptr: *const u8, len: u64) -> u64 {
 }
 
 fn sys_gui_poll_event(handle: u64, packet_ptr: *mut u8, len: u64) -> u64 {
+    if !crate::security::can_desktop(crate::security::current_credentials()) {
+        return u64::MAX;
+    }
     if handle == 0 || len == 0 {
         return u64::MAX;
     }
@@ -471,6 +492,9 @@ fn sys_gui_poll_event(handle: u64, packet_ptr: *mut u8, len: u64) -> u64 {
 }
 
 fn sys_gui_close(handle: u64) -> u64 {
+    if !crate::security::can_desktop(crate::security::current_credentials()) {
+        return u64::MAX;
+    }
     if handle == 0 {
         return u64::MAX;
     }
@@ -568,6 +592,9 @@ fn sys_fs_list_dir(desc_ptr: *const u8) -> u64 {
 }
 
 fn sys_screenshot(path_ptr: *const u8, path_len: u64, _flags: u64) -> u64 {
+    if !crate::security::can_desktop(crate::security::current_credentials()) {
+        return u64::MAX;
+    }
     let Some(path) = user_path(path_ptr, path_len) else {
         return u64::MAX;
     };
@@ -623,6 +650,9 @@ fn sys_sleep_ms(ms: u64) {
 }
 
 fn sys_dns_resolve(host_ptr: *const u8, host_len: u64) -> u64 {
+    if !crate::security::can_network(crate::security::current_credentials()) {
+        return u64::MAX;
+    }
     let Some(bytes) = user_slice(host_ptr, host_len, MAX_USER_STRING) else {
         return u64::MAX;
     };
@@ -636,6 +666,9 @@ fn sys_dns_resolve(host_ptr: *const u8, host_len: u64) -> u64 {
 }
 
 fn sys_http_get(host_ptr: *const u8, host_len: u64) -> u64 {
+    if !crate::security::can_network(crate::security::current_credentials()) {
+        return u64::MAX;
+    }
     let Some(bytes) = user_slice(host_ptr, host_len, MAX_USER_STRING) else {
         return u64::MAX;
     };

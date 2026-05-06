@@ -27,7 +27,10 @@ pub fn init() {
         let _ = crate::vfs::vfs_kernel_create_dir(dir);
     }
     replay_journal();
-    journal_operation("mount", "coolfs-root rw,safe-write,journal-lite");
+    journal_operation(
+        "mount",
+        "coolfs-root rw,safe-write,journal-lite,uid-gid-mode",
+    );
     journal_operation("mount", "fat32 legacy-import optional /FAT");
 }
 
@@ -68,7 +71,9 @@ pub fn flush_journal() -> Result<(), crate::fat32::FsError> {
 
 pub fn status_lines() -> Vec<String> {
     let mut lines = alloc::vec![
-        String::from("mount / type=coolfs flags=rw,native-root,safe-write,journal-lite"),
+        String::from(
+            "mount / type=coolfs flags=rw,native-root,safe-write,journal-lite,uid-gid-mode",
+        ),
         String::from("mount /FAT type=fat32 flags=rw,legacy-import,optional"),
         String::from("coolfs writes: native block cache with dirty 4K writeback"),
         format!(

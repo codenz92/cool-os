@@ -1,4 +1,4 @@
-.PHONY: run run-net run-usb run-usb-init run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
+.PHONY: run run-net run-usb run-usb-init run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -276,7 +276,7 @@ smoke-browser-png: build
 		--post-hmp-delay 2.0 \
 		--screendump "$(SMOKE_ARTIFACT_DIR)/browser-png-smoke.ppm" \
 		--expect-framebuffer-window \
-		--expect "[selftest] kernel unit checks ok=17 fail=0" \
+		--expect "[selftest] kernel unit checks ok=19 fail=0" \
 		--expect "[boot] desktop ready"
 
 smoke-browser-html: build
@@ -293,7 +293,7 @@ smoke-browser-html: build
 		--post-hmp-delay 2.0 \
 		--screendump "$(SMOKE_ARTIFACT_DIR)/browser-html-smoke.ppm" \
 		--expect-framebuffer-window \
-		--expect "[selftest] kernel unit checks ok=17 fail=0" \
+		--expect "[selftest] kernel unit checks ok=19 fail=0" \
 		--expect "[boot] desktop ready"
 
 smoke-ui-goldens: build
@@ -503,12 +503,33 @@ smoke-coolfs-root: build
 		--seconds 45 \
 		--retries $(SMOKE_RETRIES) \
 		--fw-cmd "vfs;;path /;;path /FAT;;path /bin/hello.txt;;df;;fsck" \
-		--expect "/ type=coolfs flags=rw,native-root,normalized-paths" \
+		--expect "/ type=coolfs flags=rw,native-root,normalized-paths,uid-gid-mode" \
 		--expect "/FAT type=fat32 flags=rw,legacy-import,optional" \
-		--expect "/ kind=dir mount=coolfs size=0" \
+		--expect "/ kind=dir mount=coolfs size=416" \
 		--expect "/FAT kind=dir mount=fat32 size=0" \
 		--expect "/bin/hello.txt kind=file mount=coolfs size=27" \
 		--expect "coolfs root ok" \
+		--expect "[boot] desktop ready"
+
+smoke-phase28-permissions: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds 45 \
+		--retries $(SMOKE_RETRIES) \
+		--fw-cmd "whoami;;perm /bin/hello;;perm /TMP;;write /TMP/P28 ok;;chmod 400 /TMP/P28;;write /TMP/P28 no;;chmod 600 /TMP/P28;;write /TMP/P28 yes;;hash /TMP/P28;;perm /TMP/P28;;exec /TMP/P28" \
+		--expect "jamie uid=1000 gid=1000 caps=all" \
+		--expect "/bin/hello file uid=0 gid=0 mode=755" \
+		--expect "/TMP dir uid=1000 gid=1000 mode=755" \
+		--expect "wrote /TMP/P28" \
+		--expect "chmod /TMP/P28" \
+		--expect "write: permission denied" \
+		--expect "hash /TMP/P28 len=3 sum=337" \
+		--expect "/TMP/P28 file uid=1000 gid=1000 mode=600" \
+		--expect "exec: permission denied" \
 		--expect "[boot] desktop ready"
 
 smoke-coolfs-native: build
@@ -694,7 +715,7 @@ smoke-kernel-units: build
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--seconds $(SMOKE_SECONDS) \
-		--expect "[selftest] kernel unit checks ok=17 fail=0" \
+		--expect "[selftest] kernel unit checks ok=19 fail=0" \
 		--expect "[boot] desktop ready"
 
 smoke-boot-budget: build
