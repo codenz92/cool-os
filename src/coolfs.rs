@@ -233,24 +233,40 @@ pub struct CoolFsCheckReport {
     pub stats: CoolFsStats,
 }
 
+fn with_image_result<R>(f: impl FnOnce(&mut Image) -> Result<R, FsError>) -> Result<R, FsError> {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut slot = COOLFS_IMAGE.lock();
+        let image = ensure_image(&mut slot)?;
+        f(image)
+    })
+}
+
+fn with_image_option<R>(f: impl FnOnce(&mut Image) -> Option<R>) -> Option<R> {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut slot = COOLFS_IMAGE.lock();
+        let image = ensure_image(&mut slot).ok()?;
+        f(image)
+    })
+}
+
 pub fn mount_or_format() -> Result<(), FsError> {
-    let mut slot = COOLFS_IMAGE.lock();
-    let _ = ensure_image(&mut slot)?;
-    Ok(())
+    with_image_result(|_| Ok(()))
 }
 
 pub fn flush() -> Result<(), FsError> {
     if !DIRTY.load(Ordering::Acquire) {
         return Ok(());
     }
-    let mut slot = COOLFS_IMAGE.lock();
-    let Some(image) = slot.as_mut() else {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut slot = COOLFS_IMAGE.lock();
+        let Some(image) = slot.as_mut() else {
+            DIRTY.store(false, Ordering::Release);
+            return Ok(());
+        };
+        image.flush()?;
         DIRTY.store(false, Ordering::Release);
-        return Ok(());
-    };
-    image.flush()?;
-    DIRTY.store(false, Ordering::Release);
-    Ok(())
+        Ok(())
+    })
 }
 
 pub fn lines() -> Vec<String> {
@@ -275,97 +291,95 @@ pub fn lines() -> Vec<String> {
 }
 
 pub fn stats() -> Option<CoolFsStats> {
-    let mut slot = COOLFS_IMAGE.lock();
-    let image = ensure_image(&mut slot).ok()?;
-    Some(image.stats())
+    with_image_option(|image| Some(image.stats()))
 }
 
 pub fn check() -> Option<CoolFsCheckReport> {
-    let mut slot = COOLFS_IMAGE.lock();
-    let image = ensure_image(&mut slot).ok()?;
-    let root_entries = read_dir_entries(image, image.sb.root_inode).ok()?.len();
-    let root = image.read_inode(image.sb.root_inode)?;
-    let stats = image.stats();
-    Some(CoolFsCheckReport {
-        ok: root.is_dir() && stats.used_blocks <= stats.total_blocks,
-        root_entries,
-        stats,
+    with_image_option(|image| {
+        let root_entries = read_dir_entries(image, image.sb.root_inode).ok()?.len();
+        let root = image.read_inode(image.sb.root_inode)?;
+        let stats = image.stats();
+        Some(CoolFsCheckReport {
+            ok: root.is_dir() && stats.used_blocks <= stats.total_blocks,
+            root_entries,
+            stats,
+        })
     })
 }
 
 pub fn list_dir(path: &str) -> Option<Vec<DirEntryInfo>> {
-    let mut slot = COOLFS_IMAGE.lock();
-    let image = ensure_image(&mut slot).ok()?;
-    let inode_idx = resolve_path(image, path).ok()?;
-    let inode = image.read_inode(inode_idx)?;
-    if !inode.is_dir() {
-        return None;
-    }
-    let entries = read_dir_entries(image, inode_idx).ok()?;
-    let mut out = Vec::new();
-    for entry in entries {
-        if let Some(child) = image.read_inode(entry.inode) {
-            out.push(DirEntryInfo {
-                name: entry.name,
-                is_dir: child.is_dir(),
-                size: child.size,
-            });
+    with_image_option(|image| {
+        let inode_idx = resolve_path(image, path).ok()?;
+        let inode = image.read_inode(inode_idx)?;
+        if !inode.is_dir() {
+            return None;
         }
-    }
-    Some(out)
+        let entries = read_dir_entries(image, inode_idx).ok()?;
+        let mut out = Vec::new();
+        for entry in entries {
+            if let Some(child) = image.read_inode(entry.inode) {
+                out.push(DirEntryInfo {
+                    name: entry.name,
+                    is_dir: child.is_dir(),
+                    size: child.size,
+                });
+            }
+        }
+        Some(out)
+    })
 }
 
 pub fn read_file(path: &str) -> Option<Vec<u8>> {
-    let mut slot = COOLFS_IMAGE.lock();
-    let image = ensure_image(&mut slot).ok()?;
-    let inode_idx = resolve_path(image, path).ok()?;
-    let inode = image.read_inode(inode_idx)?;
-    if !inode.is_file() {
-        return None;
-    }
-    image.read_inode_bytes(&inode).ok()
+    with_image_option(|image| {
+        let inode_idx = resolve_path(image, path).ok()?;
+        let inode = image.read_inode(inode_idx)?;
+        if !inode.is_file() {
+            return None;
+        }
+        image.read_inode_bytes(&inode).ok()
+    })
 }
 
 pub fn metadata(path: &str) -> Option<Metadata> {
-    let mut slot = COOLFS_IMAGE.lock();
-    let image = ensure_image(&mut slot).ok()?;
-    let inode_idx = resolve_path(image, path).ok()?;
-    let inode = image.read_inode(inode_idx)?;
-    Some(Metadata {
-        uid: inode.uid,
-        gid: inode.gid,
-        mode: inode.mode,
-        size: inode.size,
-        is_dir: inode.is_dir(),
-        is_file: inode.is_file(),
+    with_image_option(|image| {
+        let inode_idx = resolve_path(image, path).ok()?;
+        let inode = image.read_inode(inode_idx)?;
+        Some(Metadata {
+            uid: inode.uid,
+            gid: inode.gid,
+            mode: inode.mode,
+            size: inode.size,
+            is_dir: inode.is_dir(),
+            is_file: inode.is_file(),
+        })
     })
 }
 
 pub fn chmod(path: &str, mode: u16) -> Result<(), FsError> {
-    let mut slot = COOLFS_IMAGE.lock();
-    let image = ensure_image(&mut slot)?;
-    let inode_idx = resolve_path(image, path)?;
-    let mut inode = image.read_inode(inode_idx).ok_or(FsError::NotFound)?;
-    if inode.kind == KIND_FREE {
-        return Err(FsError::NotFound);
-    }
-    inode.mode = mode & 0o777;
-    image.write_inode(inode_idx, &inode)?;
+    with_image_result(|image| {
+        let inode_idx = resolve_path(image, path)?;
+        let mut inode = image.read_inode(inode_idx).ok_or(FsError::NotFound)?;
+        if inode.kind == KIND_FREE {
+            return Err(FsError::NotFound);
+        }
+        inode.mode = mode & 0o777;
+        image.write_inode(inode_idx, &inode)
+    })?;
     record_mutation("coolfs-chmod", path);
     Ok(())
 }
 
 pub fn chown(path: &str, uid: u32, gid: u32) -> Result<(), FsError> {
-    let mut slot = COOLFS_IMAGE.lock();
-    let image = ensure_image(&mut slot)?;
-    let inode_idx = resolve_path(image, path)?;
-    let mut inode = image.read_inode(inode_idx).ok_or(FsError::NotFound)?;
-    if inode.kind == KIND_FREE {
-        return Err(FsError::NotFound);
-    }
-    inode.uid = uid;
-    inode.gid = gid;
-    image.write_inode(inode_idx, &inode)?;
+    with_image_result(|image| {
+        let inode_idx = resolve_path(image, path)?;
+        let mut inode = image.read_inode(inode_idx).ok_or(FsError::NotFound)?;
+        if inode.kind == KIND_FREE {
+            return Err(FsError::NotFound);
+        }
+        inode.uid = uid;
+        inode.gid = gid;
+        image.write_inode(inode_idx, &inode)
+    })?;
     record_mutation("coolfs-chown", path);
     Ok(())
 }
@@ -398,14 +412,14 @@ pub fn create_dir_with_metadata(path: &str, uid: u32, gid: u32, mode: u16) -> Re
 }
 
 pub fn write_file(path: &str, data: &[u8]) -> Result<(), FsError> {
-    let mut slot = COOLFS_IMAGE.lock();
-    let image = ensure_image(&mut slot)?;
-    let inode_idx = resolve_path(image, path)?;
-    let inode = image.read_inode(inode_idx).ok_or(FsError::NotFound)?;
-    if !inode.is_file() {
-        return Err(FsError::InvalidPath);
-    }
-    image.write_inode_bytes(inode_idx, data)?;
+    with_image_result(|image| {
+        let inode_idx = resolve_path(image, path)?;
+        let inode = image.read_inode(inode_idx).ok_or(FsError::NotFound)?;
+        if !inode.is_file() {
+            return Err(FsError::InvalidPath);
+        }
+        image.write_inode_bytes(inode_idx, data)
+    })?;
     record_mutation("coolfs-write", path);
     Ok(())
 }
@@ -453,51 +467,54 @@ pub fn safe_write_file_with_metadata(
 }
 
 pub fn delete_file(path: &str) -> Result<(), FsError> {
-    let mut slot = COOLFS_IMAGE.lock();
-    let image = ensure_image(&mut slot)?;
-    let (parent_path, name) = split_parent_and_name(path)?;
-    let parent_inode = resolve_path(image, &parent_path)?;
-    let mut entries = read_dir_entries(image, parent_inode)?;
-    let pos = entries
-        .iter()
-        .position(|entry| names_equal(&entry.name, &name))
-        .ok_or(FsError::NotFound)?;
-    let target_inode = entries[pos].inode;
-    let target = image.read_inode(target_inode).ok_or(FsError::NotFound)?;
-    if target.is_dir() && !read_dir_entries(image, target_inode)?.is_empty() {
-        return Err(FsError::NotEmpty);
-    }
+    with_image_result(|image| {
+        let (parent_path, name) = split_parent_and_name(path)?;
+        let parent_inode = resolve_path(image, &parent_path)?;
+        let mut entries = read_dir_entries(image, parent_inode)?;
+        let pos = entries
+            .iter()
+            .position(|entry| names_equal(&entry.name, &name))
+            .ok_or(FsError::NotFound)?;
+        let target_inode = entries[pos].inode;
+        let target = image.read_inode(target_inode).ok_or(FsError::NotFound)?;
+        if target.is_dir() && !read_dir_entries(image, target_inode)?.is_empty() {
+            return Err(FsError::NotEmpty);
+        }
 
-    entries.remove(pos);
-    write_dir_entries(image, parent_inode, &entries)?;
-    image.free_inode(target_inode)?;
+        entries.remove(pos);
+        write_dir_entries(image, parent_inode, &entries)?;
+        image.free_inode(target_inode)
+    })?;
     record_mutation("coolfs-delete", path);
     Ok(())
 }
 
 pub fn rename(path: &str, new_name: &str) -> Result<(), FsError> {
     validate_name(new_name)?;
-    let mut slot = COOLFS_IMAGE.lock();
-    let image = ensure_image(&mut slot)?;
-    let (parent_path, old_name) = split_parent_and_name(path)?;
-    if names_equal(&old_name, new_name) {
-        return Ok(());
+    let mutated = with_image_result(|image| {
+        let (parent_path, old_name) = split_parent_and_name(path)?;
+        if names_equal(&old_name, new_name) {
+            return Ok(false);
+        }
+        let parent_inode = resolve_path(image, &parent_path)?;
+        let mut entries = read_dir_entries(image, parent_inode)?;
+        if entries
+            .iter()
+            .any(|entry| names_equal(&entry.name, new_name))
+        {
+            return Err(FsError::AlreadyExists);
+        }
+        let entry = entries
+            .iter_mut()
+            .find(|entry| names_equal(&entry.name, &old_name))
+            .ok_or(FsError::NotFound)?;
+        entry.name = String::from(new_name);
+        write_dir_entries(image, parent_inode, &entries)?;
+        Ok(true)
+    })?;
+    if mutated {
+        record_mutation("coolfs-rename", path);
     }
-    let parent_inode = resolve_path(image, &parent_path)?;
-    let mut entries = read_dir_entries(image, parent_inode)?;
-    if entries
-        .iter()
-        .any(|entry| names_equal(&entry.name, new_name))
-    {
-        return Err(FsError::AlreadyExists);
-    }
-    let entry = entries
-        .iter_mut()
-        .find(|entry| names_equal(&entry.name, &old_name))
-        .ok_or(FsError::NotFound)?;
-    entry.name = String::from(new_name);
-    write_dir_entries(image, parent_inode, &entries)?;
-    record_mutation("coolfs-rename", path);
     Ok(())
 }
 
@@ -508,26 +525,27 @@ pub fn copy_file(src: &str, dst: &str) -> Result<(), FsError> {
 }
 
 fn create_node(path: &str, kind: u8, uid: u32, gid: u32, mode: u16) -> Result<(), FsError> {
-    let mut slot = COOLFS_IMAGE.lock();
-    let image = ensure_image(&mut slot)?;
-    let (parent_path, name) = split_parent_and_name(path)?;
-    validate_name(&name)?;
-    let parent_inode = resolve_path(image, &parent_path)?;
-    let mut entries = read_dir_entries(image, parent_inode)?;
-    if entries.iter().any(|entry| names_equal(&entry.name, &name)) {
-        return Err(FsError::AlreadyExists);
-    }
+    with_image_result(|image| {
+        let (parent_path, name) = split_parent_and_name(path)?;
+        validate_name(&name)?;
+        let parent_inode = resolve_path(image, &parent_path)?;
+        let mut entries = read_dir_entries(image, parent_inode)?;
+        if entries.iter().any(|entry| names_equal(&entry.name, &name)) {
+            return Err(FsError::AlreadyExists);
+        }
 
-    let inode_idx = image.alloc_inode_with_metadata(kind, uid, gid, mode)?;
-    entries.push(DirectoryEntry {
-        inode: inode_idx,
-        name,
-    });
-    if let Err(err) = write_dir_entries(image, parent_inode, &entries) {
-        let _ = image.free_inode(inode_idx);
-        return Err(err);
-    }
+        let inode_idx = image.alloc_inode_with_metadata(kind, uid, gid, mode)?;
+        entries.push(DirectoryEntry {
+            inode: inode_idx,
+            name,
+        });
+        if let Err(err) = write_dir_entries(image, parent_inode, &entries) {
+            let _ = image.free_inode(inode_idx);
+            return Err(err);
+        }
 
+        Ok(())
+    })?;
     record_mutation(
         if kind == KIND_DIR {
             "coolfs-create-dir"

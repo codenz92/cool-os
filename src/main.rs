@@ -195,6 +195,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     // Initialise the VMM with the physical-memory offset and the remaining
     // frame supply.  From here on, all page-table work goes through vmm::.
     vmm::init(phys_mem_offset, vmm_frame_allocator);
+    vmm::harden_boot_mappings();
     font::load_from_disk();
     boot_splash::show(
         "mapping virtual memory",
@@ -202,11 +203,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         boot_splash::BOOT_PROGRESS_TOTAL,
     );
 
-    // Mark all present pages user-accessible so ring-3 code (living in the
-    // kernel .text) can execute.  Per-process stacks are mapped separately
-    // with USER_ACCESSIBLE in their private PML4.
-    unsafe { memory::mark_all_user_accessible(phys_mem_offset) };
-    boot_splash::show("enabling user pages", 11, boot_splash::BOOT_PROGRESS_TOTAL);
+    boot_splash::show(
+        "isolating kernel mappings",
+        11,
+        boot_splash::BOOT_PROGRESS_TOTAL,
+    );
 
     // DMA-backed hardware probing needs heap/VMM/interrupts, but it should not
     // be gated on the scheduler or first desktop frame. Running it here keeps
@@ -236,9 +237,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         boot_splash::BOOT_PROGRESS_TOTAL,
     );
 
-    // Spawn two isolated user processes (each gets its own PML4 + user stack).
-    userspace::spawn_user_process(1);
-    userspace::spawn_user_process(2);
+    // Spawn both boot sentinels before either can run. The ELF loader touches
+    // VFS and VMM locks; letting the first sentinel exit while the boot task is
+    // still loading the second can deadlock on those locks.
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        userspace::spawn_user_process(1);
+        userspace::spawn_user_process(2);
+    });
     boot_splash::show("launching userspace", 17, boot_splash::BOOT_PROGRESS_TOTAL);
 
     // ── Desktop ───────────────────────────────────────────────────────────────

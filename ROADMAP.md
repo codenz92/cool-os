@@ -4,9 +4,10 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–31 are complete. Phase 31 adds first-run setup, account management,
-login throttling, and persistence coverage on top of the GUI login and session
-model from Phases 29 and 30.
+Phases 1–32 are complete. Phase 32 hardens the user/kernel boundary: kernel
+mappings remain present for ring-0 execution but are supervisor-only, boot
+sentinels now run as normal ELF programs, and smoke coverage probes denied
+kernel pointers, mmap requests, exec paths, and direct ring-3 kernel reads.
 
 ---
 
@@ -1016,6 +1017,37 @@ and verifies account lifecycle plus first-run persistence in QEMU smoke tests.
 
 ---
 
+## ✅ Phase 32 — User/Kernel Isolation Hardening
+
+**Goal:** Close the biggest remaining userspace isolation hole. Ring-3 code
+should run from user-owned ELF mappings, kernel pages should stay supervisor-only,
+and malicious userspace pointers should fail without crashing the kernel.
+
+- [x] Stop marking the boot page table user-accessible; recursively clear U/S on
+      boot mappings before userspace starts.
+- [x] Build process PML4s with kernel mappings present but supervisor-only, while
+      reserving explicit user roots for ELF/stack/mmap and shared memory.
+- [x] Replace kernel-text boot sentinels with `/bin/sentinel`, a normal userspace
+      ELF that preserves the existing `sentinel ok` smoke output.
+- [x] Remove broad lazy lower-half page-fault allocation. User faults now terminate
+      the task and produce crashdump context instead of mapping arbitrary pages.
+- [x] Restrict `mmap` to a dedicated userspace arena and mark stacks, mmap pages,
+      shared memory, and non-executable ELF segments NX.
+- [x] Track process-owned page-table and leaf frames, reclaim them on `waitpid`,
+      zombie reap, and successful `exec`, and release shared-memory references
+      when tasks exit or exec.
+- [x] Add `/bin/badptr`, `/bin/badwrite`, `/bin/badmmap`, `/bin/badexec`, and
+      `/bin/baduserread` probes plus `make smoke-phase32-isolation`.
+- [x] Add boot selftests proving boot and process PML4s do not expose kernel text
+      or heap as user-accessible pages.
+
+**Current status:** complete. coolOS still has a lower-half kernel, but ring-3
+tasks can no longer execute or dereference kernel mappings through the copied
+process page tables, and QEMU smoke coverage now exercises both denied syscalls
+and a real user page fault.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -1062,4 +1094,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v6.2 | Phase 28 complete: users, permissions, and app sandboxing |
 | v6.3 | Phase 29 complete: login, sessions, and service supervision |
 | v6.4 | Phase 30 complete: GUI login and lock screen |
-| v6.5 | Current — Phase 31 complete: first-run setup and account management |
+| v6.5 | Phase 31 complete: first-run setup and account management |
+| v6.6 | Current — Phase 32 complete: user/kernel isolation hardening |

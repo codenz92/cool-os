@@ -132,33 +132,14 @@ extern "x86-interrupt" fn page_fault_handler(
     sf: InterruptStackFrame,
     err: x86_64::structures::idt::PageFaultErrorCode,
 ) {
-    use x86_64::{registers::control::Cr2, structures::paging::PageTableFlags};
+    use x86_64::registers::control::Cr2;
 
     let fault_addr = Cr2::read();
-
-    // Only attempt lazy allocation for user-mode faults on unmapped pages.
-    // Conditions: not a protection violation (P bit clear in error), user-mode
-    // access (U bit set), fault address is in the lower canonical half.
-    let is_not_present =
-        !err.contains(x86_64::structures::idt::PageFaultErrorCode::PROTECTION_VIOLATION);
     let is_user = err.contains(x86_64::structures::idt::PageFaultErrorCode::USER_MODE);
-    let is_lower_half = fault_addr.as_u64() < 0x0000_8000_0000_0000;
-
-    if is_not_present && is_user && is_lower_half {
-        // Allocate and map the missing page with user-accessible writable flags.
-        let flags =
-            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
-        let pml4 = crate::vmm::current_pml4();
-        if let Some(frame) = crate::vmm::alloc_zeroed_frame() {
-            if crate::vmm::map_page_in(pml4, fault_addr.align_down(4096u64), frame, flags).is_ok() {
-                return; // resume the faulting instruction
-            }
-        }
-    }
 
     if is_user {
         let mut extra = alloc::format!("fault_addr={:#x} err={:?}", fault_addr.as_u64(), err);
-        extra.push_str(" lazy_alloc_failed");
+        extra.push_str(" user_fault_denied");
         stop_faulting_user_task("user page fault", 139, &sf, &extra);
     }
 

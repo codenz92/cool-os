@@ -1,14 +1,19 @@
-/// Virtual Memory Manager (Phase 10).
+/// Virtual Memory Manager (Phase 10/32).
 ///
 /// Provides a globally-accessible frame allocator and helpers for building and
 /// switching per-process PML4 page tables.
 ///
 /// Address-space layout:
-///   L4 indices 0x00–0xFF (lower canonical half) — per-process user space
-///   L4 indices 0x100–0x1FF (upper canonical half) — shared kernel mappings
+///   L4 index 0x80             — per-process shared-memory windows
+///   L4 index 0xFF             — per-process ELF image, mmap arena, user stack
+///   all other present entries — shared kernel mappings, supervisor-only
 ///
-/// Per-process user stacks are placed at USER_STACK_TOP (L4 index 0xFF),
-/// chosen to sit in a canonical lower-half slot that the kernel never uses.
+/// coolOS still runs a lower-half kernel, so process PML4s keep kernel entries
+/// present for syscall/interrupt execution. Phase 32 makes those entries
+/// supervisor-only instead of user-accessible.
+extern crate alloc;
+
+use alloc::vec::Vec;
 use spin::Mutex;
 use x86_64::{
     registers::control::Cr3,
@@ -26,6 +31,18 @@ use crate::memory::BootInfoFrameAllocator;
 static PHYS_OFFSET: Mutex<u64> = Mutex::new(0);
 static FRAME_ALLOC: Mutex<Option<BootInfoFrameAllocator>> = Mutex::new(None);
 static BOOT_PML4: Mutex<u64> = Mutex::new(0);
+static ADDRESS_SPACES: Mutex<Vec<AddressSpaceFrames>> = Mutex::new(Vec::new());
+
+struct AddressSpaceFrames {
+    pml4: PhysFrame,
+    table_frames: Vec<PhysFrame>,
+    leaf_frames: Vec<PhysFrame>,
+}
+
+struct TrackingFrameAllocator<'a> {
+    inner: &'a mut BootInfoFrameAllocator,
+    allocated: Vec<PhysFrame>,
+}
 
 /// Per-process user stack: 64 KiB ending at this virtual address.
 pub const USER_STACK_TOP: u64 = 0x0000_7fff_0010_0000;
@@ -33,6 +50,21 @@ pub const USER_STACK_TOP: u64 = 0x0000_7fff_0010_0000;
 pub const USER_STACK_SIZE: u64 = 64 * 1024;
 /// Bottom of the user stack (guard page sits just below this).
 pub const USER_STACK_BOTTOM: u64 = USER_STACK_TOP - USER_STACK_SIZE;
+/// Exclusive upper bound for canonical user addresses.
+pub const USER_TOP: u64 = 0x0000_8000_0000_0000;
+/// Base of the userspace ELF/linker region.
+pub const USER_IMAGE_BASE: u64 = 0x0000_7fff_0000_0000;
+/// Explicit mmap arena. User processes may not mmap arbitrary lower-half pages.
+pub const USER_MMAP_BASE: u64 = 0x0000_7fff_1000_0000;
+/// Exclusive top of the explicit mmap arena.
+pub const USER_MMAP_TOP: u64 = 0x0000_7fff_7000_0000;
+/// Shared-memory windows start in their own PML4 root.
+pub const USER_SHMEM_BASE: u64 = 0x0000_4000_0000_0000;
+/// Per-shmem-id virtual slot size.
+pub const USER_SHMEM_SLOT_SIZE: u64 = 64 * 1024 * 1024;
+
+const USER_IMAGE_PML4_INDEX: usize = pml4_index(USER_IMAGE_BASE);
+const USER_SHMEM_PML4_INDEX: usize = pml4_index(USER_SHMEM_BASE);
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 
@@ -75,6 +107,15 @@ pub fn alloc_zeroed_frame() -> Option<PhysFrame> {
     Some(frame)
 }
 
+/// Return a frame to the VMM allocator. The caller must guarantee the frame is
+/// no longer mapped anywhere that can be reached.
+pub fn free_unmapped_frame(frame: PhysFrame) {
+    if let Some(alloc) = FRAME_ALLOC.lock().as_mut() {
+        alloc.deallocate_frame(frame);
+        crate::slab::record_free("frames", 4096);
+    }
+}
+
 /// Allocate a physically contiguous run of zeroed frames.
 ///
 /// Legacy virtio queues are handed to the device as one physical page-frame
@@ -95,12 +136,47 @@ pub fn alloc_contiguous_zeroed_frames(count: usize) -> Option<PhysFrame> {
     Some(first)
 }
 
+impl<'a> TrackingFrameAllocator<'a> {
+    fn new(inner: &'a mut BootInfoFrameAllocator) -> Self {
+        Self {
+            inner,
+            allocated: Vec::new(),
+        }
+    }
+
+    fn into_allocated(self) -> Vec<PhysFrame> {
+        self.allocated
+    }
+}
+
+unsafe impl<'a> FrameAllocator<Size4KiB> for TrackingFrameAllocator<'a> {
+    fn allocate_frame(&mut self) -> Option<PhysFrame> {
+        let frame = self.inner.allocate_frame()?;
+        let ptr = phys_to_virt(frame.start_address()).as_mut_ptr::<u8>();
+        unsafe { core::ptr::write_bytes(ptr, 0, 4096) };
+        crate::slab::record_alloc("frames", 4096);
+        self.allocated.push(frame);
+        Some(frame)
+    }
+}
+
 // ── Public VMM API ────────────────────────────────────────────────────────────
 
-/// Allocate a new PML4, copying all kernel-half entries (L4 indices 256–511)
-/// from the active PML4 so kernel code, heap, framebuffer, and physical-memory
-/// map are reachable from the new address space.  Lower-half entries (0–255)
-/// are left empty — user mappings live there.
+/// Harden the boot PML4 by clearing U/S on every present boot mapping.
+///
+/// This is called before any userspace is spawned. Per-process userspace
+/// mappings are created later under fresh PML4 roots and keep U/S set there.
+pub fn harden_boot_mappings() {
+    let boot_phys = PhysAddr::new(*BOOT_PML4.lock());
+    let boot_l4_frame: PhysFrame = PhysFrame::containing_address(boot_phys);
+    let l4 = unsafe { table_at(boot_l4_frame.start_address()) };
+    clear_user_accessible_recursive(l4, 4);
+    x86_64::instructions::tlb::flush_all();
+}
+
+/// Allocate a new PML4. Kernel mappings are copied in as supervisor-only so
+/// ring 0 can continue to handle syscalls/IRQs after CR3 switches. The explicit
+/// user roots are left empty and populated by the ELF loader, mmap, and shmem.
 pub fn new_process_pml4() -> Option<PhysFrame> {
     let frame = alloc_zeroed_frame()?;
 
@@ -109,17 +185,22 @@ pub fn new_process_pml4() -> Option<PhysFrame> {
     let src = unsafe { table_at(boot_l4_frame.start_address()) };
     let dst = unsafe { table_at(frame.start_address()) };
 
-    // Copy all 512 L4 entries so the new PML4 has the same kernel mappings
-    // (upper half: kernel .text, phys map) AND kernel lower-half allocations
-    // (heap, scheduler stacks at L4 index 135, etc.).
-    //
-    // The user stack VA lives at L4 index 255, which is EMPTY in the boot
-    // PML4.  Each process gets a fresh PDPT allocated under that entry by
-    // map_region, so user stacks remain physically isolated despite all other
-    // lower-half entries being shared by reference.
     for i in 0..512 {
-        dst[i] = src[i].clone();
+        if i == USER_IMAGE_PML4_INDEX || i == USER_SHMEM_PML4_INDEX {
+            continue;
+        }
+        let mut entry = src[i].clone();
+        if !entry.is_unused() {
+            entry.set_flags(entry.flags() & !PageTableFlags::USER_ACCESSIBLE);
+        }
+        dst[i] = entry;
     }
+
+    ADDRESS_SPACES.lock().push(AddressSpaceFrames {
+        pml4: frame,
+        table_frames: Vec::new(),
+        leaf_frames: Vec::new(),
+    });
 
     Some(frame)
 }
@@ -139,15 +220,34 @@ pub fn map_page_in(
 
     let page: Page<Size4KiB> = Page::containing_address(virt);
 
-    let mut guard = FRAME_ALLOC.lock();
-    let alloc = guard.as_mut().ok_or("frame allocator not initialized")?;
+    let table_frames = {
+        let mut guard = FRAME_ALLOC.lock();
+        let alloc = guard.as_mut().ok_or("frame allocator not initialized")?;
+        let mut tracking_alloc = TrackingFrameAllocator::new(alloc);
 
-    unsafe {
-        mapper
-            .map_to(page, phys_frame, flags, alloc)
-            .map_err(|_| "map_to failed")?
-            .flush();
-    }
+        unsafe {
+            mapper
+                .map_to(page, phys_frame, flags, &mut tracking_alloc)
+                .map_err(|_| "map_to failed")?
+                .flush();
+        }
+        tracking_alloc.into_allocated()
+    };
+
+    record_table_frames(pml4_frame, table_frames);
+    Ok(())
+}
+
+/// Map a leaf frame owned by `pml4_frame`. Owned leaf frames are reclaimed when
+/// the address space is reaped or replaced by exec.
+pub fn map_owned_frame_in(
+    pml4_frame: PhysFrame,
+    virt: VirtAddr,
+    phys_frame: PhysFrame,
+    flags: PageTableFlags,
+) -> Result<(), &'static str> {
+    map_page_in(pml4_frame, virt, phys_frame, flags)?;
+    record_leaf_frame(pml4_frame, phys_frame);
     Ok(())
 }
 
@@ -162,10 +262,36 @@ pub fn map_region(
     let mut offset = 0u64;
     while offset < len {
         let frame = alloc_zeroed_frame().ok_or("out of frames")?;
-        map_page_in(pml4_frame, virt + offset, frame, flags)?;
+        if let Err(err) = map_owned_frame_in(pml4_frame, virt + offset, frame, flags) {
+            free_unmapped_frame(frame);
+            return Err(err);
+        }
         offset += 4096;
     }
     Ok(())
+}
+
+/// Free all frames owned by a non-current user address space.
+pub fn free_address_space(pml4_frame: PhysFrame) {
+    if pml4_frame == current_pml4() {
+        return;
+    }
+
+    let space = {
+        let mut spaces = ADDRESS_SPACES.lock();
+        let Some(idx) = spaces.iter().position(|space| space.pml4 == pml4_frame) else {
+            return;
+        };
+        spaces.swap_remove(idx)
+    };
+
+    for frame in space.leaf_frames {
+        free_unmapped_frame(frame);
+    }
+    for frame in space.table_frames {
+        free_unmapped_frame(frame);
+    }
+    free_unmapped_frame(space.pml4);
 }
 
 /// Load `pml4_frame` into CR3, switching to that address space.
@@ -197,15 +323,22 @@ pub fn current_pml4() -> PhysFrame {
 }
 
 pub fn user_range_accessible(ptr: u64, len: u64, writable: bool) -> bool {
+    user_range_accessible_in(current_pml4(), ptr, len, writable)
+}
+
+pub fn user_range_accessible_in(pml4_frame: PhysFrame, ptr: u64, len: u64, writable: bool) -> bool {
     if ptr == 0 || len == 0 {
         return false;
     }
     let Some(last) = ptr.checked_add(len - 1) else {
         return false;
     };
+    if last >= USER_TOP {
+        return false;
+    }
     let mut page_addr = ptr & !0xfffu64;
     loop {
-        if !user_page_accessible(VirtAddr::new(page_addr), writable) {
+        if !user_page_accessible_in(pml4_frame, VirtAddr::new(page_addr), writable) {
             return false;
         }
         if page_addr >= (last & !0xfffu64) {
@@ -216,9 +349,19 @@ pub fn user_range_accessible(ptr: u64, len: u64, writable: bool) -> bool {
     true
 }
 
-fn user_page_accessible(virt: VirtAddr, writable: bool) -> bool {
+pub fn valid_user_mmap_range(addr: u64, len_aligned: u64) -> bool {
+    if addr & 0xfff != 0 || len_aligned == 0 || len_aligned & 0xfff != 0 {
+        return false;
+    }
+    let Some(end) = addr.checked_add(len_aligned) else {
+        return false;
+    };
+    addr >= USER_MMAP_BASE && end <= USER_MMAP_TOP
+}
+
+fn user_page_accessible_in(pml4_frame: PhysFrame, virt: VirtAddr, writable: bool) -> bool {
     let page: Page<Size4KiB> = Page::containing_address(virt);
-    let pml4 = unsafe { table_at(current_pml4().start_address()) };
+    let pml4 = unsafe { table_at(pml4_frame.start_address()) };
     let l4 = &pml4[page.p4_index()];
     if !entry_allows(l4.flags(), writable) {
         return false;
@@ -248,4 +391,42 @@ fn entry_allows(flags: PageTableFlags, writable: bool) -> bool {
     flags.contains(PageTableFlags::PRESENT)
         && flags.contains(PageTableFlags::USER_ACCESSIBLE)
         && (!writable || flags.contains(PageTableFlags::WRITABLE))
+}
+
+fn record_table_frames(pml4_frame: PhysFrame, mut frames: Vec<PhysFrame>) {
+    if frames.is_empty() {
+        return;
+    }
+    let mut spaces = ADDRESS_SPACES.lock();
+    if let Some(space) = spaces.iter_mut().find(|space| space.pml4 == pml4_frame) {
+        space.table_frames.append(&mut frames);
+    }
+}
+
+fn record_leaf_frame(pml4_frame: PhysFrame, frame: PhysFrame) {
+    let mut spaces = ADDRESS_SPACES.lock();
+    if let Some(space) = spaces.iter_mut().find(|space| space.pml4 == pml4_frame) {
+        space.leaf_frames.push(frame);
+    }
+}
+
+fn clear_user_accessible_recursive(table: &mut PageTable, level: u8) {
+    for entry in table.iter_mut() {
+        if entry.is_unused() || !entry.flags().contains(PageTableFlags::PRESENT) {
+            continue;
+        }
+
+        let flags = entry.flags();
+        entry.set_flags(flags & !PageTableFlags::USER_ACCESSIBLE);
+        if level <= 1 || flags.contains(PageTableFlags::HUGE_PAGE) {
+            continue;
+        }
+
+        let next = unsafe { table_at(entry.addr()) };
+        clear_user_accessible_recursive(next, level - 1);
+    }
+}
+
+const fn pml4_index(addr: u64) -> usize {
+    ((addr >> 39) & 0x1ff) as usize
 }

@@ -19,6 +19,7 @@ const EV_CURRENT: u32 = 1;
 const ET_EXEC: u16 = 2;
 const EM_X86_64: u16 = 62;
 const PT_LOAD: u32 = 1;
+const PF_X: u32 = 1 << 0;
 const PF_W: u32 = 1 << 1;
 const PAGE_SIZE: u64 = 4096;
 const USER_CANONICAL_LIMIT: u64 = 0x0000_8000_0000_0000;
@@ -178,14 +179,22 @@ pub fn load_elf_image_with_args(path: &str, args: &[&str]) -> Result<LoadedImage
     let header = parse_header(&image)?;
     let pml4 = crate::vmm::new_process_pml4().ok_or(ExecError::OutOfMemory)?;
 
-    let user_rsp = map_user_stack(pml4, path, args)?;
-    load_segments(&image, &header, pml4)?;
+    let loaded = (|| {
+        let user_rsp = map_user_stack(pml4, path, args)?;
+        load_segments(&image, &header, pml4)?;
 
-    Ok(LoadedImage {
-        pml4,
-        entry: header.e_entry,
-        user_rsp,
-    })
+        Ok(LoadedImage {
+            pml4,
+            entry: header.e_entry,
+            user_rsp,
+        })
+    })();
+
+    if loaded.is_err() {
+        crate::vmm::free_address_space(pml4);
+    }
+
+    loaded
 }
 
 fn parse_header(image: &[u8]) -> Result<Elf64Header, ExecError> {
@@ -229,14 +238,19 @@ fn parse_header(image: &[u8]) -> Result<Elf64Header, ExecError> {
 }
 
 fn map_user_stack(pml4: PhysFrame, argv0: &str, args: &[&str]) -> Result<u64, ExecError> {
-    let stack_flags =
-        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+    let stack_flags = PageTableFlags::PRESENT
+        | PageTableFlags::WRITABLE
+        | PageTableFlags::USER_ACCESSIBLE
+        | PageTableFlags::NO_EXECUTE;
     let mut top_frame = None;
     let mut offset = 0u64;
     while offset < crate::vmm::USER_STACK_SIZE {
         let frame = crate::vmm::alloc_zeroed_frame().ok_or(ExecError::OutOfMemory)?;
         let virt = VirtAddr::new(crate::vmm::USER_STACK_BOTTOM + offset);
-        crate::vmm::map_page_in(pml4, virt, frame, stack_flags).map_err(ExecError::MapFailed)?;
+        if let Err(err) = crate::vmm::map_owned_frame_in(pml4, virt, frame, stack_flags) {
+            crate::vmm::free_unmapped_frame(frame);
+            return Err(ExecError::MapFailed(err));
+        }
         if offset + PAGE_SIZE == crate::vmm::USER_STACK_SIZE {
             top_frame = Some(frame);
         }
@@ -245,8 +259,15 @@ fn map_user_stack(pml4: PhysFrame, argv0: &str, args: &[&str]) -> Result<u64, Ex
 
     let guard_addr = VirtAddr::new(crate::vmm::USER_STACK_BOTTOM - PAGE_SIZE);
     let guard_frame = crate::vmm::alloc_zeroed_frame().ok_or(ExecError::OutOfMemory)?;
-    crate::vmm::map_page_in(pml4, guard_addr, guard_frame, PageTableFlags::PRESENT)
-        .map_err(ExecError::MapFailed)?;
+    if let Err(err) = crate::vmm::map_owned_frame_in(
+        pml4,
+        guard_addr,
+        guard_frame,
+        PageTableFlags::PRESENT | PageTableFlags::NO_EXECUTE,
+    ) {
+        crate::vmm::free_unmapped_frame(guard_frame);
+        return Err(ExecError::MapFailed(err));
+    }
 
     let top_frame = top_frame.ok_or(ExecError::OutOfMemory)?;
     build_initial_stack(top_frame, argv0, args)
@@ -299,6 +320,7 @@ fn build_initial_stack(top_frame: PhysFrame, argv0: &str, args: &[&str]) -> Resu
 
 fn load_segments(image: &[u8], header: &Elf64Header, pml4: PhysFrame) -> Result<(), ExecError> {
     let mut saw_load = false;
+    let mut ranges: Vec<(u64, u64)> = Vec::new();
 
     for i in 0..header.e_phnum {
         let off = header.e_phoff as usize + i as usize * header.e_phentsize as usize;
@@ -309,6 +331,27 @@ fn load_segments(image: &[u8], header: &Elf64Header, pml4: PhysFrame) -> Result<
         }
         saw_load = true;
         validate_load_segment(&ph, image.len())?;
+        let start = align_down(ph.p_vaddr, PAGE_SIZE);
+        let end = align_up(
+            ph.p_vaddr
+                .checked_add(ph.p_memsz)
+                .ok_or(ExecError::InvalidElf("segment end overflow"))?,
+            PAGE_SIZE,
+        );
+        if ranges.iter().any(|&(existing_start, existing_end)| {
+            ranges_overlap(start, end, existing_start, existing_end)
+        }) {
+            return Err(ExecError::InvalidElf("overlapping PT_LOAD segments"));
+        }
+        if ranges_overlap(
+            start,
+            end,
+            crate::vmm::USER_STACK_BOTTOM - PAGE_SIZE,
+            crate::vmm::USER_STACK_TOP,
+        ) {
+            return Err(ExecError::InvalidElf("PT_LOAD overlaps user stack"));
+        }
+        ranges.push((start, end));
         map_load_segment(image, &ph, pml4)?;
     }
 
@@ -322,6 +365,13 @@ fn load_segments(image: &[u8], header: &Elf64Header, pml4: PhysFrame) -> Result<
 fn validate_load_segment(ph: &Elf64ProgramHeader, image_len: usize) -> Result<(), ExecError> {
     if ph.p_filesz > ph.p_memsz {
         return Err(ExecError::InvalidElf("PT_LOAD filesz exceeds memsz"));
+    }
+    if ph.p_align > 1 && !ph.p_align.is_power_of_two() {
+        return Err(ExecError::InvalidElf("PT_LOAD align is not a power of two"));
+    }
+    if ph.p_align >= PAGE_SIZE && (ph.p_vaddr & (PAGE_SIZE - 1)) != (ph.p_offset & (PAGE_SIZE - 1))
+    {
+        return Err(ExecError::InvalidElf("PT_LOAD offset/address misaligned"));
     }
     if ph.p_vaddr >= USER_CANONICAL_LIMIT {
         return Err(ExecError::InvalidElf(
@@ -341,6 +391,9 @@ fn validate_load_segment(ph: &Elf64ProgramHeader, image_len: usize) -> Result<()
         .ok_or(ExecError::InvalidElf("PT_LOAD memory range overflow"))?;
     if mem_end >= USER_CANONICAL_LIMIT {
         return Err(ExecError::InvalidElf("PT_LOAD extends outside user space"));
+    }
+    if mem_end <= ph.p_vaddr {
+        return Err(ExecError::InvalidElf("PT_LOAD empty memory range"));
     }
     Ok(())
 }
@@ -363,8 +416,10 @@ fn map_load_segment(
     while page < seg_end {
         let frame = crate::vmm::alloc_zeroed_frame().ok_or(ExecError::OutOfMemory)?;
         copy_page_data(image, ph, page, frame);
-        crate::vmm::map_page_in(pml4, VirtAddr::new(page), frame, flags)
-            .map_err(ExecError::MapFailed)?;
+        if let Err(err) = crate::vmm::map_owned_frame_in(pml4, VirtAddr::new(page), frame, flags) {
+            crate::vmm::free_unmapped_frame(frame);
+            return Err(ExecError::MapFailed(err));
+        }
         page += PAGE_SIZE;
     }
 
@@ -399,6 +454,9 @@ fn load_flags(ph: &Elf64ProgramHeader) -> PageTableFlags {
     let mut flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
     if ph.p_flags & PF_W != 0 {
         flags |= PageTableFlags::WRITABLE;
+    }
+    if ph.p_flags & PF_X == 0 {
+        flags |= PageTableFlags::NO_EXECUTE;
     }
     flags
 }
@@ -438,4 +496,8 @@ fn align_down(value: u64, align: u64) -> u64 {
 
 fn align_up(value: u64, align: u64) -> u64 {
     (value + align - 1) & !(align - 1)
+}
+
+fn ranges_overlap(a_start: u64, a_end: u64, b_start: u64, b_end: u64) -> bool {
+    a_start < b_end && b_start < a_end
 }

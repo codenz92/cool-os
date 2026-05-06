@@ -2,7 +2,7 @@
 /// CoolFS starts at LBA 0 and is the root filesystem. A FAT32 compatibility
 /// region is still formatted at 8 MiB for the optional `/FAT` import mount.
 ///
-/// Usage: fs-image <output-path> [hello-elf] [exec-elf] [pipe-elf] [read-elf] [piperd-elf] [pipewr-elf] [keyecho-elf] [terminal-elf] [netdemo-elf] [wget-elf] [sdkdemo-elf] [guidemo-elf] [notes-elf] [editor-elf] [trash-elf] [screenshot-elf]
+/// Usage: fs-image <output-path> [hello-elf] [exec-elf] [pipe-elf] [read-elf] [piperd-elf] [pipewr-elf] [keyecho-elf] [terminal-elf] [netdemo-elf] [wget-elf] [sdkdemo-elf] [guidemo-elf] [notes-elf] [editor-elf] [trash-elf] [screenshot-elf] [sentinel-elf] [badptr-elf] [badwrite-elf] [badmmap-elf] [badexec-elf] [baduserread-elf]
 /// Output: a 64 MiB raw OS disk image ready to attach as a QEMU IDE drive.
 use std::io::{Read, Seek, SeekFrom, Write};
 
@@ -29,6 +29,12 @@ fn main() {
     let editor_elf = args.next();
     let trash_elf = args.next();
     let screenshot_elf = args.next();
+    let sentinel_elf = args.next();
+    let badptr_elf = args.next();
+    let badwrite_elf = args.next();
+    let badmmap_elf = args.next();
+    let badexec_elf = args.next();
+    let baduserread_elf = args.next();
 
     // Create or truncate the file, set it to the desired size.
     let mut file = std::fs::OpenOptions::new()
@@ -302,6 +308,82 @@ fn main() {
             .write_all(&screenshot_bytes)
             .expect("failed to write screenshot");
         coolfs.create_file("/bin/screenshot", &screenshot_bytes);
+    }
+
+    if let Some(sentinel_path) = sentinel_elf {
+        let sentinel_bytes = std::fs::read(&sentinel_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {}", sentinel_path, e));
+        let mut sentinel_bin = bin
+            .create_file("sentinel")
+            .expect("failed to create sentinel");
+        sentinel_bin.truncate().unwrap();
+        sentinel_bin
+            .write_all(&sentinel_bytes)
+            .expect("failed to write sentinel");
+        coolfs.create_file("/bin/sentinel", &sentinel_bytes);
+    }
+
+    if let Some(badptr_path) = badptr_elf {
+        let badptr_bytes = std::fs::read(&badptr_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {}", badptr_path, e));
+        let mut badptr_bin = bin.create_file("badptr").expect("failed to create badptr");
+        badptr_bin.truncate().unwrap();
+        badptr_bin
+            .write_all(&badptr_bytes)
+            .expect("failed to write badptr");
+        coolfs.create_file("/bin/badptr", &badptr_bytes);
+    }
+
+    if let Some(badwrite_path) = badwrite_elf {
+        let badwrite_bytes = std::fs::read(&badwrite_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {}", badwrite_path, e));
+        let mut badwrite_bin = bin
+            .create_file("badwrite")
+            .expect("failed to create badwrite");
+        badwrite_bin.truncate().unwrap();
+        badwrite_bin
+            .write_all(&badwrite_bytes)
+            .expect("failed to write badwrite");
+        coolfs.create_file("/bin/badwrite", &badwrite_bytes);
+    }
+
+    if let Some(badmmap_path) = badmmap_elf {
+        let badmmap_bytes = std::fs::read(&badmmap_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {}", badmmap_path, e));
+        let mut badmmap_bin = bin
+            .create_file("badmmap")
+            .expect("failed to create badmmap");
+        badmmap_bin.truncate().unwrap();
+        badmmap_bin
+            .write_all(&badmmap_bytes)
+            .expect("failed to write badmmap");
+        coolfs.create_file("/bin/badmmap", &badmmap_bytes);
+    }
+
+    if let Some(badexec_path) = badexec_elf {
+        let badexec_bytes = std::fs::read(&badexec_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {}", badexec_path, e));
+        let mut badexec_bin = bin
+            .create_file("badexec")
+            .expect("failed to create badexec");
+        badexec_bin.truncate().unwrap();
+        badexec_bin
+            .write_all(&badexec_bytes)
+            .expect("failed to write badexec");
+        coolfs.create_file("/bin/badexec", &badexec_bytes);
+    }
+
+    if let Some(baduserread_path) = baduserread_elf {
+        let baduserread_bytes = std::fs::read(&baduserread_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {}", baduserread_path, e));
+        let mut baduserread_bin = bin
+            .create_file("baduserread")
+            .expect("failed to create baduserread");
+        baduserread_bin.truncate().unwrap();
+        baduserread_bin
+            .write_all(&baduserread_bytes)
+            .expect("failed to write baduserread");
+        coolfs.create_file("/bin/baduserread", &baduserread_bytes);
     }
 
     let packages = root.open_dir("Packages").expect("failed to open /Packages");

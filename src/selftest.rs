@@ -137,6 +137,18 @@ pub fn run_boot_tests() {
         &mut ok,
         &mut fail,
     );
+    check(
+        "boot-kernel-supervisor",
+        boot_kernel_supervisor_only(),
+        &mut ok,
+        &mut fail,
+    );
+    check(
+        "process-kernel-supervisor",
+        process_kernel_supervisor_only(),
+        &mut ok,
+        &mut fail,
+    );
     crate::println!("[selftest] kernel unit checks ok={} fail={}", ok, fail);
     crate::klog::log_owned(format!("selftest: ok={} fail={}", ok, fail));
 }
@@ -244,6 +256,57 @@ fn vfs_write_enforcement() -> bool {
     crate::vfs::vfs_read_file(path)
         .map(|bytes| bytes.as_slice() == b"vfs-ok\n")
         .unwrap_or(false)
+}
+
+fn boot_kernel_supervisor_only() -> bool {
+    let boot_pml4 = crate::vmm::current_pml4();
+    !crate::vmm::user_range_accessible_in(boot_pml4, 0x100000, 16, false)
+        && !crate::vmm::user_range_accessible_in(
+            boot_pml4,
+            crate::allocator::HEAP_START as u64,
+            16,
+            true,
+        )
+}
+
+fn process_kernel_supervisor_only() -> bool {
+    let Some(pml4) = crate::vmm::new_process_pml4() else {
+        return false;
+    };
+
+    let kernel_blocked = !crate::vmm::user_range_accessible_in(pml4, 0x100000, 16, false)
+        && !crate::vmm::user_range_accessible_in(
+            pml4,
+            crate::allocator::HEAP_START as u64,
+            16,
+            true,
+        );
+
+    let user_page_ok = if let Some(frame) = crate::vmm::alloc_zeroed_frame() {
+        let flags = x86_64::structures::paging::PageTableFlags::PRESENT
+            | x86_64::structures::paging::PageTableFlags::WRITABLE
+            | x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE
+            | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
+        match crate::vmm::map_owned_frame_in(
+            pml4,
+            x86_64::VirtAddr::new(crate::vmm::USER_MMAP_BASE),
+            frame,
+            flags,
+        ) {
+            Ok(()) => {
+                crate::vmm::user_range_accessible_in(pml4, crate::vmm::USER_MMAP_BASE, 8, true)
+            }
+            Err(_) => {
+                crate::vmm::free_unmapped_frame(frame);
+                false
+            }
+        }
+    } else {
+        false
+    };
+
+    crate::vmm::free_address_space(pml4);
+    kernel_blocked && user_page_ok
 }
 
 fn coolfs_permission_roundtrip() -> bool {

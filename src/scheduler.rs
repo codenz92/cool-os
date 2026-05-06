@@ -266,6 +266,7 @@ impl Scheduler {
         } else {
             crate::vfs::drop_task(task_id);
             self.tasks.pop();
+            crate::vmm::free_address_space(pml4);
             false
         }
     }
@@ -643,6 +644,7 @@ pub fn waitpid(parent: usize, task_id: usize) -> Result<u64, WaitError> {
     if task_id == 0 {
         return Err(WaitError::InvalidTask);
     }
+    let mut pml4_to_free = None;
     let result = {
         let mut sched = SCHEDULER.lock();
         let task = sched.tasks.get_mut(task_id).ok_or(WaitError::InvalidTask)?;
@@ -657,7 +659,7 @@ pub fn waitpid(parent: usize, task_id: usize) -> Result<u64, WaitError> {
                 crate::slab::record_free("task-stack", STACK_SIZE);
                 task.stack_ptr = 0;
                 task.syscall_stack_top = 0;
-                task.pml4 = None;
+                pml4_to_free = task.pml4.take();
                 Ok(code)
             }
             TaskStatus::Reaped => Err(WaitError::AlreadyReaped),
@@ -665,12 +667,16 @@ pub fn waitpid(parent: usize, task_id: usize) -> Result<u64, WaitError> {
         }
     };
     if result.is_ok() {
+        if let Some(pml4) = pml4_to_free {
+            crate::vmm::free_address_space(pml4);
+        }
         crate::deferred::enqueue(crate::deferred::DeferredWork::PersistTaskSnapshot);
     }
     result
 }
 
 pub fn reap_all_exited(parent: usize) -> usize {
+    let mut pml4s_to_free = Vec::new();
     let count = {
         let mut sched = SCHEDULER.lock();
         let mut count = 0usize;
@@ -686,12 +692,17 @@ pub fn reap_all_exited(parent: usize) -> usize {
             crate::slab::record_free("task-stack", STACK_SIZE);
             task.stack_ptr = 0;
             task.syscall_stack_top = 0;
-            task.pml4 = None;
+            if let Some(pml4) = task.pml4.take() {
+                pml4s_to_free.push(pml4);
+            }
             count += 1;
         }
         count
     };
     if count > 0 {
+        for pml4 in pml4s_to_free {
+            crate::vmm::free_address_space(pml4);
+        }
         crate::deferred::enqueue(crate::deferred::DeferredWork::PersistTaskSnapshot);
     }
     count

@@ -5,7 +5,7 @@
 /// to the same underlying file/pipe state instead of a single global fd slot.
 extern crate alloc;
 use alloc::{format, string::String, vec::Vec};
-use core::arch::asm;
+use core::{arch::asm, mem};
 use spin::Mutex;
 use x86_64::structures::paging::PhysFrame;
 
@@ -204,6 +204,7 @@ impl TaskFdTable {
 struct VfsState {
     objects: Vec<Option<SharedObject>>,
     task_fds: Vec<TaskFdTable>,
+    task_shmem_refs: Vec<Vec<usize>>,
 }
 
 impl VfsState {
@@ -211,12 +212,16 @@ impl VfsState {
         Self {
             objects: Vec::new(),
             task_fds: Vec::new(),
+            task_shmem_refs: Vec::new(),
         }
     }
 
     fn ensure_task(&mut self, task_id: usize) {
         while self.task_fds.len() <= task_id {
             self.task_fds.push(TaskFdTable::new());
+        }
+        while self.task_shmem_refs.len() <= task_id {
+            self.task_shmem_refs.push(Vec::new());
         }
     }
 
@@ -941,31 +946,51 @@ pub fn init_task(task_id: usize) {
     let mut vfs = VFS.lock();
     vfs.ensure_task(task_id);
     vfs.task_fds[task_id] = TaskFdTable::new();
+    vfs.task_shmem_refs[task_id].clear();
 }
 
 pub fn drop_task(task_id: usize) {
-    let wake_tasks = {
+    let (wake_tasks, shmem_refs) = {
         let mut vfs = VFS.lock();
         if task_id >= vfs.task_fds.len() {
-            return;
-        }
-
-        let mut wake_tasks = Vec::new();
-        for fd in 3..MAX_FDS {
-            let entry = vfs.task_fds[task_id].entries[fd].take();
-            if let Some(entry) = entry {
-                if let Some(task) = vfs.release_fd(entry) {
-                    wake_tasks.push(task);
+            (Vec::new(), Vec::new())
+        } else {
+            let mut wake_tasks = Vec::new();
+            for fd in 3..MAX_FDS {
+                let entry = vfs.task_fds[task_id].entries[fd].take();
+                if let Some(entry) = entry {
+                    if let Some(task) = vfs.release_fd(entry) {
+                        wake_tasks.push(task);
+                    }
                 }
             }
+            let shmem_refs = if task_id < vfs.task_shmem_refs.len() {
+                mem::take(&mut vfs.task_shmem_refs[task_id])
+            } else {
+                Vec::new()
+            };
+            (wake_tasks, shmem_refs)
         }
-        wake_tasks
     };
+
+    release_shmem_refs(shmem_refs);
 
     for task_id in wake_tasks {
         crate::wait_queue::wake("pipe-read", task_id);
         crate::scheduler::unblock(task_id);
     }
+}
+
+pub fn drop_task_shmem_refs(task_id: usize) {
+    let refs = {
+        let mut vfs = VFS.lock();
+        if task_id < vfs.task_shmem_refs.len() {
+            mem::take(&mut vfs.task_shmem_refs[task_id])
+        } else {
+            Vec::new()
+        }
+    };
+    release_shmem_refs(refs);
 }
 
 pub fn inherit_fds(parent_task: usize, child_task: usize, mappings: &[(usize, usize)]) -> bool {
@@ -1245,7 +1270,12 @@ pub fn vfs_shmem_create(len: usize) -> usize {
     for _ in 0..pages {
         let frame = match crate::vmm::alloc_zeroed_frame() {
             Some(f) => f,
-            None => return usize::MAX,
+            None => {
+                for frame in frames {
+                    crate::vmm::free_unmapped_frame(frame);
+                }
+                return usize::MAX;
+            }
         };
         frames.push(frame);
     }
@@ -1257,45 +1287,95 @@ pub fn vfs_shmem_create(len: usize) -> usize {
         id
     };
 
-    let mut regions = SHMEM_REGIONS.lock();
-    while regions.len() <= id {
-        regions.push(None);
+    {
+        let mut regions = SHMEM_REGIONS.lock();
+        while regions.len() <= id {
+            regions.push(None);
+        }
+        regions[id] = Some(SharedMemRegion::new(frames));
     }
-    regions[id] = Some(SharedMemRegion::new(frames));
 
+    retain_task_shmem_ref(crate::scheduler::current_task_id(), id);
     id
 }
 
 pub fn vfs_shmem_map(id: usize, pml4: PhysFrame) -> u64 {
-    let addr = {
+    let Some(slot_offset) = (id as u64)
+        .checked_sub(1)
+        .and_then(|slot| slot.checked_mul(crate::vmm::USER_SHMEM_SLOT_SIZE))
+    else {
+        return u64::MAX;
+    };
+    let Some(addr) = crate::vmm::USER_SHMEM_BASE.checked_add(slot_offset) else {
+        return u64::MAX;
+    };
+
+    let frames = {
+        let regions = SHMEM_REGIONS.lock();
+        let Some(Some(region)) = regions.get(id) else {
+            return u64::MAX;
+        };
+        region.frames.clone()
+    };
+
+    let flags = x86_64::structures::paging::PageTableFlags::PRESENT
+        | x86_64::structures::paging::PageTableFlags::WRITABLE
+        | x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE
+        | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
+
+    let mut virt_addr = addr;
+    for frame in &frames {
+        let virt = x86_64::VirtAddr::new(virt_addr);
+        if crate::vmm::map_page_in(pml4, virt, *frame, flags).is_err()
+            && !crate::vmm::user_range_accessible_in(pml4, virt_addr, 1, true)
+        {
+            return u64::MAX;
+        }
+        virt_addr += 4096;
+    }
+
+    {
         let mut regions = SHMEM_REGIONS.lock();
         let Some(Some(region)) = regions.get_mut(id) else {
             return u64::MAX;
         };
-
-        let already_mapped = region.refcount > 1;
         region.refcount += 1;
-
-        let base_addr: u64 = 0x0000_4000_0000_0000;
-        let offset = (id as u64 - 1) * (64 * 1024 * 1024);
-
-        if already_mapped {
-            return base_addr + offset;
-        }
-
-        let flags = x86_64::structures::paging::PageTableFlags::PRESENT
-            | x86_64::structures::paging::PageTableFlags::WRITABLE
-            | x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE;
-
-        let mut virt_addr = base_addr + offset;
-        for frame in &region.frames {
-            let virt = x86_64::VirtAddr::new(virt_addr);
-            let _ = crate::vmm::map_page_in(pml4, virt, *frame, flags);
-            virt_addr += 4096;
-        }
-
-        base_addr + offset
-    };
+    }
+    retain_task_shmem_ref(crate::scheduler::current_task_id(), id);
 
     addr
+}
+
+fn retain_task_shmem_ref(task_id: usize, id: usize) {
+    let mut vfs = VFS.lock();
+    vfs.ensure_task(task_id);
+    vfs.task_shmem_refs[task_id].push(id);
+}
+
+fn release_shmem_refs(ids: Vec<usize>) {
+    if ids.is_empty() {
+        return;
+    }
+
+    let mut frames_to_free = Vec::new();
+    {
+        let mut regions = SHMEM_REGIONS.lock();
+        for id in ids {
+            let Some(slot) = regions.get_mut(id) else {
+                continue;
+            };
+            let Some(region) = slot.as_mut() else {
+                continue;
+            };
+            region.refcount = region.refcount.saturating_sub(1);
+            if region.refcount == 0 {
+                frames_to_free.append(&mut region.frames);
+                *slot = None;
+            }
+        }
+    }
+
+    for frame in frames_to_free {
+        crate::vmm::free_unmapped_frame(frame);
+    }
 }

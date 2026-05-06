@@ -43,12 +43,14 @@
 /// Output path: sys_write pushes bytes into SYSCALL_OUTPUT (a lock-free ring
 /// buffer modelled on keyboard.rs). compositor::compose() drains it into the
 /// terminal window each frame, avoiding any lock contention with the WM.
+extern crate alloc;
+
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
 // ── Syscall output ring buffer ────────────────────────────────────────────────
 
 const OUTPUT_SIZE: usize = 1024;
-const USER_TOP: u64 = 0x0000_8000_0000_0000;
 const MAX_USER_STRING: u64 = 4096;
 const MAX_USER_BUFFER: u64 = 1024 * 1024;
 const MAX_GUI_SURFACE_BYTES: u64 = 2 * 1024 * 1024;
@@ -100,7 +102,7 @@ pub fn init() {
         );
 
         let mut efer = x86_64::registers::model_specific::Msr::new(0xC000_0080);
-        efer.write(efer.read() | 1); // SCE = bit 0
+        efer.write(efer.read() | 1 | (1 << 11)); // SCE = bit 0, NXE = bit 11
 
         // STAR bits[47:32] = kernel CS (0x08), bits[63:48] = SYSRET base (0x10).
         let mut star = x86_64::registers::model_specific::Msr::new(0xC000_0081);
@@ -304,17 +306,25 @@ fn sys_getpid() -> u64 {
 fn sys_mmap(addr: u64, len: u64, flags: u64) -> u64 {
     use x86_64::{structures::paging::PageTableFlags, VirtAddr};
 
-    if addr == 0 || len == 0 || !valid_user_address_range(addr, len, MAX_USER_BUFFER * 64) {
+    if addr == 0 || len == 0 {
         return u64::MAX;
     }
 
     // Round length up to page boundary.
-    let len_aligned = (len + 4095) & !4095;
+    let Some(len_aligned) = len.checked_add(4095).map(|value| value & !4095) else {
+        return u64::MAX;
+    };
+    if !valid_user_address_range(addr, len_aligned, MAX_USER_BUFFER * 64)
+        || !crate::vmm::valid_user_mmap_range(addr, len_aligned)
+    {
+        return u64::MAX;
+    }
 
     let mut pte_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
     if flags & 1 != 0 {
         pte_flags |= PageTableFlags::WRITABLE;
     }
+    pte_flags |= PageTableFlags::NO_EXECUTE;
 
     // Determine the current process's PML4.
     let pml4 = crate::vmm::current_pml4();
@@ -357,13 +367,23 @@ fn sys_read(fd: u64, buf_ptr: *mut u8, len: u64) -> u64 {
     if len == 0 {
         return 0;
     }
-    let Some(buf) = user_slice_mut(buf_ptr, len, MAX_USER_BUFFER) else {
+    if !validate_user_range(buf_ptr as u64, len, MAX_USER_BUFFER, true) {
         return u64::MAX;
-    };
-    let n = crate::vfs::vfs_read_blocking(fd as usize, buf, len as usize);
+    }
+
+    let mut kernel_buf = Vec::new();
+    if kernel_buf.try_reserve_exact(len as usize).is_err() {
+        return u64::MAX;
+    }
+    kernel_buf.resize(len as usize, 0);
+
+    let n = crate::vfs::vfs_read_blocking(fd as usize, &mut kernel_buf, len as usize);
     if n == usize::MAX {
         u64::MAX
     } else {
+        unsafe {
+            core::ptr::copy_nonoverlapping(kernel_buf.as_ptr(), buf_ptr, n);
+        }
         n as u64
     }
 }
@@ -701,15 +721,19 @@ fn sys_exec(frame: &mut SyscallFrame, path_ptr: *const u8, path_len: u64) -> u64
         Err(_) => return u64::MAX,
     };
 
-    let cur = {
+    let (cur, old_pml4) = {
         let mut sched = crate::scheduler::SCHEDULER.lock();
         let cur = sched.current;
-        sched.tasks[cur].pml4 = Some(image.pml4);
-        cur
+        let old = sched.tasks[cur].pml4.replace(image.pml4);
+        (cur, old)
     };
     crate::app_lifecycle::record_process_start(cur, path, path);
 
     unsafe { crate::vmm::switch_to(image.pml4) };
+    crate::vfs::drop_task_shmem_refs(cur);
+    if let Some(old_pml4) = old_pml4 {
+        crate::vmm::free_address_space(old_pml4);
+    }
 
     // Replace the return frame so sysretq enters the new program instead of
     // resuming the old one.
@@ -816,7 +840,7 @@ fn valid_user_address_range(ptr: u64, len: u64, max_len: u64) -> bool {
     let Some(end) = ptr.checked_add(len) else {
         return false;
     };
-    end <= USER_TOP && ptr < USER_TOP
+    end <= crate::vmm::USER_TOP && ptr < crate::vmm::USER_TOP
 }
 
 fn validate_user_range(ptr: u64, len: u64, max_len: u64, writable: bool) -> bool {
@@ -849,6 +873,7 @@ fn user_slice_mut(ptr: *mut u8, len: u64, max_len: u64) -> Option<&'static mut [
 ///
 /// `entry`    — virtual address of the first ring-3 instruction.
 /// `user_rsp` — initial ring-3 stack pointer (must be 16-byte aligned).
+#[allow(dead_code)]
 pub unsafe fn jump_to_userspace(entry: u64, user_rsp: u64) -> ! {
     let user_cs = crate::gdt::user_code_selector().0 as u64;
     let user_ss = crate::gdt::user_data_selector().0 as u64;
