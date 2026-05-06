@@ -7,12 +7,12 @@ A 64-bit operating system kernel written in Rust. Boots bare-metal into a
 graphical desktop with draggable and resizable windows, a taskbar, a start
 menu, hardware input, kernel and userspace GUI applications, a preemptive
 scheduler, ring-3 userspace, per-process virtual memory, process isolation, a
-CoolFS root filesystem with VFS/syscalls, a FAT32 compatibility container, an ELF loader with
+CoolFS root filesystem with VFS/syscalls, a FAT32 legacy import mount, an ELF loader with
 `exec`, and IPC with pipes, shared memory, and per-task fd tables.
 
 ---
 
-# Current state — v6.0
+# Current state — v6.1
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -80,13 +80,13 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **Userspace** | Ring-3 code can run either as the original isolation stubs or as real ELF64 binaries loaded from `/bin`. The `libcool` SDK crate now provides no_std entry/argv setup plus process, file, pipe, mmap, shared-memory, event, DNS/HTTP, TCP socket, filesystem utility, screenshot, and userspace GUI wrappers. `sys_exec` replaces the current userspace image in-place by swapping CR3 and rewriting the saved syscall return frame. `keydemo` relays fixed-size key and click event packets into a userspace child over a pipe. Shared memory (`sys_shmem_create`/`sys_shmem_map`) maps a region of physical frames into the caller's address space at a fixed VA. |
 | **ELF loader** | Validates ELF64 headers, maps `PT_LOAD` segments into a fresh address space, allocates a private user stack, builds an initial `argc/argv/envp` stack frame, and can either spawn a new task or prepare an image for `sys_exec`. |
 | **ATA PIO driver** | Primary-bus slave device (QEMU `if=ide,index=1`). LBA28 PIO reads, BSY/DRQ polling with timeout, nIEN=1 (device interrupts disabled). Wrapped in `without_interrupts` to prevent preemption mid-transfer. |
-| **CoolFS layer** | Native coolOS root filesystem mounted at `/`, backed by `/COOLFS.IMG` during the FAT-container transition. It has a CoolFS superblock, fixed inode table, block bitmap, 4 KiB blocks, direct plus indirect data blocks, directory records, VFS read/write/create/rename/delete/copy routing, stats, and boot self-tests. |
-| **FAT32 layer** | BPB parsing, FAT chain walking, short-name and long-filename lookup, directory traversal, cluster→sector mapping, mutation helpers, free-space stats, and `fsck` for the legacy `/FAT` container that currently stores `/COOLFS.IMG`. |
+| **CoolFS layer** | Native coolOS root filesystem mounted at `/`, stored directly at LBA 0 of the attached OS disk. It has a CoolFS superblock, fixed inode table, block bitmap, 4 KiB blocks, direct plus indirect data blocks, directory records, a 64-slot block cache with dirty 4 KiB writeback, VFS read/write/create/rename/delete/copy routing, stats, and boot self-tests. |
+| **FAT32 layer** | Optional legacy import mount at `/FAT`, formatted in a separate 8 MiB-offset disk region. BPB parsing, FAT chain walking, short-name and long-filename lookup, directory traversal, cluster→sector mapping, mutation helpers, free-space stats, and `fsck` remain available without being required for CoolFS boot. |
 | **VFS** | CoolFS-root path routing, `/FAT` legacy routing, task-local fd tables (16 slots, fds 0–2 reserved) backed by shared file/pipe/shmem objects. `vfs_open` reads whole files into heap buffers; `vfs_pipe` allocates a 512-byte kernel ring buffer and returns per-task read/write fds; `vfs_read_blocking` blocks tasks on empty pipes and wakes them on write/EOF; `ipc` selectively inherits pipe ends into child processes; `vfs_shmem_create`/`vfs_shmem_map` manage a shared memory region pool indexed by ID. |
 | **Networking** | Legacy PCI virtio-net driver for QEMU user networking, polling RX/TX virtqueues, Ethernet framing, ARP cache, IPv4, ICMP echo, UDP DNS queries, minimal TCP client sockets, userspace socket syscalls, HTTP/1.1, and verified TLS 1.3 HTTPS for the native browser/terminal path. |
 | **Kernel services** | Persistent kernel log buffer flushed to `/LOGS/KERNEL.TXT`, crash-screen log tail, central device registry for PCI/USB/system devices, installable package/app manifests with file associations, networking status, and ACPI power-control status foundation. |
 | **Applications** | Terminal, System Monitor, Text Viewer, Color Picker, File Manager, Web Browser, ring-3 Notes, Text Editor, Trash Bin, Screenshot, and GUI Demo. Text-file opens route into `/bin/editor <path>` with kernel viewer fallback, while File Manager exposes explicit Open With Editor/Viewer actions. |
-| **Disk image** | `disk-image/src/fs_image.rs` builds `fs.img` (64 MiB FAT32 compatibility container) with a populated `/COOLFS.IMG` CoolFS root containing `/bin`, `/CONFIG`, `/APPS`, `/Documents`, `/Pictures`, `/Desktop`, `/Downloads`, `/Trash`, `/Packages/guidemo.pkg`, and `/Documents/package-demo.p25`. The Makefile attaches it to QEMU as the IDE slave. |
+| **Disk image** | `disk-image/src/fs_image.rs` builds `fs.img` as a 64 MiB raw OS disk: native CoolFS starts at LBA 0 with `/bin`, `/CONFIG`, `/APPS`, `/Documents`, `/Pictures`, `/Desktop`, `/Downloads`, `/Trash`, `/Packages/guidemo.pkg`, and `/Documents/package-demo.p25`; an optional FAT32 `/FAT` import region starts at 8 MiB. The Makefile attaches it to QEMU as the IDE slave. |
 
 ### Applications
 
@@ -131,6 +131,9 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | :------ | :---------- |
 | `help` | List available commands |
 | `echo <text>` | Print text |
+| `write <path> <text>` | Create or overwrite a text file |
+| `rm <path>` | Remove a file or empty folder |
+| `hash <path>` | Print file length and byte-sum for storage checks |
 | `exec <path> [args...]` | Load a userspace ELF from disk and spawn it with argv |
 | `ps` | List scheduler tasks, ring, status, and exit codes |
 | `kill <pid>` | Terminate a non-idle task and mark it exited |
@@ -149,9 +152,9 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `https <host-or-url> [path]` | Fetch an HTTPS response through the verified kernel TLS client |
 | `power [reboot\|shutdown\|sleep]` | Print or request power-control actions |
 | `log` | Flush and print the kernel log tail |
-| `fsck` | Print CoolFS-root consistency plus legacy FAT32 container summary |
+| `fsck` | Print CoolFS-root consistency plus optional legacy FAT32 import summary |
 | `coolfs` | Print CoolFS root mount and inode/block usage |
-| `df` | Print CoolFS `/` and FAT32 `/FAT` used/free/total space |
+| `df` | Print CoolFS `/` and optional FAT32 `/FAT` used/free/total space |
 | `pkg [list\|install <path-or-id>\|remove <id>\|run <id> [args...]]` | Manage built-in and manifest-installed packages. |
 | `shortcuts` | Print configured global shortcuts |
 | `clip [text]` | Show clipboard summary or copy text |
@@ -187,7 +190,7 @@ make run-net
 
 The build process compiles the kernel ELF, compiles the userspace ELF binaries
 in `userspace/hello/`, wraps the kernel into a BIOS-bootable `bios.img`, and
-builds `fs.img` with the userspace binaries embedded into `/bin`.
+builds `fs.img` with the userspace binaries embedded into the native CoolFS `/bin`.
 
 Click inside the QEMU window to capture mouse input. Press **Ctrl+Alt+G** to
 release it.
@@ -199,10 +202,10 @@ release it.
 ```
 disk-image/
   src/main.rs      Host tool — wraps kernel ELF into bios.img via bootloader 0.11
-  src/fs_image.rs  Host tool — builds fs.img (64 MiB FAT32 container) with a
-                    populated /COOLFS.IMG root: /bin, /CONFIG, /APPS,
-                    /Documents, /Packages, /Pictures, /Desktop, /Downloads,
-                    /Trash, and /LOGS
+  src/fs_image.rs  Host tool — builds fs.img (64 MiB raw OS disk) with native
+                    CoolFS at LBA 0 plus an optional /FAT import region:
+                    /bin, /CONFIG, /APPS, /Documents, /Packages, /Pictures,
+                    /Desktop, /Downloads, /Trash, and /LOGS
 src/
   main.rs          Kernel entry point — framebuffer init, GDT, heap, scheduler, main loop
   gdt.rs           GDT (ring-0/ring-3 segments) + TSS (RSP0 for ring-3 IRQ entry)
@@ -219,9 +222,9 @@ src/
   scheduler.rs     Preemptive scheduler — Task (with pml4 field), Scheduler,
                    SCHEDULER global, timer_schedule, spawn_with_pml4, waitpid/reap
   ata.rs           ATA PIO driver — LBA28 read_sector, BSY/DRQ polling, nIEN disable
-  coolfs.rs        CoolFS — native root filesystem image, inodes, bitmap,
-                   direct/indirect blocks, directories, safe writes, stats/check
-  fat32.rs         FAT32 — legacy /FAT container and /COOLFS.IMG backing store
+  coolfs.rs        CoolFS — native root filesystem, raw ATA block backend,
+                   inodes, bitmap, direct/indirect blocks, directories, safe writes, stats/check
+  fat32.rs         FAT32 — optional legacy /FAT import mount at the 8 MiB region
   vfs.rs           VFS — CoolFS root routing, /FAT compatibility routing,
                     task-local fd tables over shared file/pipe/shmem objects,
                     selective child-fd inheritance, vfs_open/vfs_pipe/vfs_read/vfs_write/vfs_close,
@@ -329,18 +332,19 @@ and `sysretq`.
 keyboard queue) that the compositor drains into the terminal each frame —
 avoiding the deadlock that would result from locking WM from syscall context.
 
-**CoolFS root + VFS (Phase 26).** A 64 MiB FAT32 compatibility image (`fs.img`) is built at
-compile time by a host-side `fs-image` tool and attached to QEMU as the IDE
-primary-bus slave (`if=ide,index=1`). The container stores `/COOLFS.IMG`, and
-the kernel mounts that native CoolFS image as `/`; the legacy container remains
-available at `/FAT` until the raw CoolFS block backend replaces it. The ATA PIO driver targets ports
+**Native CoolFS root + VFS (Phase 27).** A 64 MiB raw OS disk (`fs.img`) is built
+at compile time by a host-side `fs-image` tool and attached to QEMU as the IDE
+primary-bus slave (`if=ide,index=1`). CoolFS starts directly at LBA 0 and owns
+the `/` namespace; the legacy FAT32 import region starts at 8 MiB and remains
+available at `/FAT` without being part of the boot path. The ATA PIO driver targets ports
 0x1F0–0x1F7; it sets nIEN=1 in the Device Control Register (0x3F6) before
 issuing any command so the drive never fires IRQ14. Unused PIC IRQs (including
 IRQ14/15) are masked after PIC initialisation to prevent unhandled interrupt
 vectors from reaching the CPU. CoolFS uses fixed inodes, a block bitmap, 4 KiB
 blocks, direct blocks, and a single indirect block for larger userspace
-binaries. The VFS routes normal absolute paths to CoolFS, routes `/FAT/*` to the
-container, and wraps reads into a 16-slot FD table. Syscalls 5–7 (`open`,
+binaries. A 64-slot block cache writes dirty 4 KiB blocks back to the native
+disk backend. The VFS routes normal absolute paths to CoolFS, routes `/FAT/*` to
+the optional import mount, and wraps reads into a 16-slot FD table. Syscalls 5–7 (`open`,
 `read`, `close`) expose the VFS to ring-3 code, and the synchronous boot
 filesystem check reads `/bin/hello.txt` from CoolFS.
 
@@ -387,5 +391,7 @@ faults still panic.
 | 23 | App lifecycle + file-open plumbing — process/window ownership, close cleanup, editor argv routing | **Done** |
 | 24 | App platform polish — editor document flow, File Manager Open With, System Monitor lifecycle controls, deterministic utility smokes | **Done** |
 | 25 | Package platform — installable app manifests, dynamic launcher entries, package associations, package launch/remove smoke | **Done** |
+| 26 | CoolFS root filesystem — `/` backed by CoolFS with `/FAT` compatibility | **Done** |
+| 27 | Native CoolFS disk backend — CoolFS at LBA 0, optional `/FAT` import region, remount persistence smoke | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

@@ -15,6 +15,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run coolOS under headless QEMU for a short smoke test.")
     parser.add_argument("--bios", required=True, help="Path to bios.img")
     parser.add_argument("--fsimg", required=True, help="Path to fs.img")
+    parser.add_argument(
+        "--fs-writable",
+        action="store_true",
+        help="Attach fs.img without QEMU snapshot mode so guest writes persist",
+    )
     parser.add_argument("--seconds", type=float, default=6.0, help="How long to let QEMU run")
     parser.add_argument(
         "--retries",
@@ -123,12 +128,13 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_command(args: argparse.Namespace, monitor_socket: str | None = None) -> list[str]:
+    fs_snapshot = "" if args.fs_writable else ",snapshot=on"
     cmd = [
         "qemu-system-x86_64",
         f"-drive",
         f"format=raw,file={args.bios},snapshot=on",
         f"-drive",
-        f"file={args.fsimg},if=ide,format=raw,index=1,snapshot=on",
+        f"file={args.fsimg},if=ide,format=raw,index=1{fs_snapshot}",
         "-m",
         args.memory,
         "-cpu",

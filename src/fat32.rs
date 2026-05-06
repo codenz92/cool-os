@@ -10,6 +10,7 @@ use spin::Mutex;
 
 const SECTOR_SIZE: usize = 512;
 const DIR_ENTRY_SIZE: usize = 32;
+const LEGACY_FAT_BASE_LBA: u32 = 16_384; // 8 MiB into the native OS disk
 const ATTR_DIRECTORY: u8 = 0x10;
 const ATTR_ARCHIVE: u8 = 0x20;
 const ATTR_LFN: u8 = 0x0F;
@@ -54,6 +55,7 @@ impl FsError {
 /// Parsed FAT32 BPB fields we need for navigation.
 #[derive(Debug, Clone, Copy)]
 pub struct Bpb {
+    pub base_lba: u32,
     pub bytes_per_sector: u16,
     pub sectors_per_cluster: u8,
     pub reserved_sectors: u16,
@@ -64,19 +66,25 @@ pub struct Bpb {
 
 impl Bpb {
     pub fn load() -> Option<Self> {
+        Self::load_at(LEGACY_FAT_BASE_LBA).or_else(|| Self::load_at(0))
+    }
+
+    fn load_at(base_lba: u32) -> Option<Self> {
         let mut sec = [0u8; SECTOR_SIZE];
-        if !crate::ata::read_sector(0, &mut sec) {
+        if !crate::ata::read_sector(base_lba, &mut sec) {
             crate::println!("[fat32] BPB read_sector failed");
             return None;
         }
 
         if sec[510] != 0x55 || sec[511] != 0xAA {
-            crate::println!(
+            if base_lba == 0 {
+                crate::println!(
                 "[fat32] bad BPB sig: {:02x} {:02x}; first16={:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
                 sec[510], sec[511],
                 sec[0], sec[1], sec[2], sec[3], sec[4], sec[5], sec[6], sec[7],
                 sec[8], sec[9], sec[10], sec[11], sec[12], sec[13], sec[14], sec[15],
-            );
+                );
+            }
             return None;
         }
 
@@ -91,8 +99,18 @@ impl Bpb {
             u32::from_le_bytes([sec[36], sec[37], sec[38], sec[39]])
         };
         let root_cluster = u32::from_le_bytes([sec[44], sec[45], sec[46], sec[47]]);
+        if bytes_per_sector as usize != SECTOR_SIZE
+            || sectors_per_cluster == 0
+            || reserved_sectors == 0
+            || num_fats == 0
+            || sectors_per_fat == 0
+            || root_cluster < 2
+        {
+            return None;
+        }
 
         Some(Bpb {
+            base_lba,
             bytes_per_sector,
             sectors_per_cluster,
             reserved_sectors,
@@ -103,7 +121,7 @@ impl Bpb {
     }
 
     pub fn fat_start_lba(&self) -> u32 {
-        self.reserved_sectors as u32
+        self.base_lba + self.reserved_sectors as u32
     }
 
     pub fn data_start_lba(&self) -> u32 {

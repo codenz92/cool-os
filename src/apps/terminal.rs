@@ -303,6 +303,40 @@ impl TerminalApp {
                 }
             },
 
+            Some("hash") => match words.next() {
+                Some(p) => {
+                    let path = resolve_path(&self.cwd, p);
+                    self.cmd_hash(&path);
+                }
+                None => {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("usage: hash <path>\n");
+                }
+            },
+
+            Some("write") => match words.next() {
+                Some(p) => {
+                    let path = resolve_path(&self.cwd, p);
+                    let text = collect_words(words);
+                    self.cmd_write_file(&path, &text);
+                }
+                None => {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("usage: write <path> <text>\n");
+                }
+            },
+
+            Some("rm") => match words.next() {
+                Some(p) => {
+                    let path = resolve_path(&self.cwd, p);
+                    self.cmd_rm(&path);
+                }
+                None => {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("usage: rm <path>\n");
+                }
+            },
+
             Some("ps") => self.cmd_ps(),
 
             Some("kill") => match words.next().and_then(parse_usize) {
@@ -768,6 +802,9 @@ impl TerminalApp {
             ("touch <path>", "create empty file"),
             ("mkdir <path>", "create folder"),
             ("cat <path>", "print file to terminal"),
+            ("hash <path>", "print file length and byte sum"),
+            ("write <path> <text>", "write text file"),
+            ("rm <path>", "remove file or empty folder"),
             ("ps", "list running processes"),
             ("kill <pid>", "terminate a task"),
             ("wait <pid>", "reap an exited child"),
@@ -916,6 +953,87 @@ impl TerminalApp {
             None => {
                 self.set_fg(FG_ERROR);
                 self.print_str("cat: file not found\n");
+            }
+        }
+    }
+
+    fn cmd_hash(&mut self, path: &str) {
+        match crate::vfs::vfs_read_file(path) {
+            Some(bytes) => {
+                let sum = bytes
+                    .iter()
+                    .fold(0u64, |acc, byte| acc.wrapping_add(*byte as u64));
+                self.set_fg(FG_OUTPUT);
+                self.print_str("hash ");
+                self.print_str(path);
+                self.print_str(" len=");
+                self.print_u64(bytes.len() as u64);
+                self.print_str(" sum=");
+                self.print_u64(sum);
+                self.print_char('\n');
+            }
+            None => {
+                self.set_fg(FG_ERROR);
+                self.print_str("hash: file not found\n");
+            }
+        }
+    }
+
+    fn cmd_write_file(&mut self, path: &str, text: &str) {
+        if !crate::security::can_write_path(path) {
+            self.set_fg(FG_ERROR);
+            self.print_str("write: permission denied\n");
+            return;
+        }
+        match crate::vfs::vfs_create_file(path) {
+            Ok(()) | Err(crate::fat32::FsError::AlreadyExists) => {}
+            Err(err) => {
+                self.set_fg(FG_ERROR);
+                self.print_str("write: ");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(err.as_str());
+                self.print_char('\n');
+                return;
+            }
+        }
+        match crate::vfs::vfs_write_file(path, text.as_bytes()) {
+            Ok(()) => {
+                self.set_fg(FG_ACCENT);
+                self.print_str("wrote ");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(path);
+                self.print_char('\n');
+            }
+            Err(err) => {
+                self.set_fg(FG_ERROR);
+                self.print_str("write: ");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(err.as_str());
+                self.print_char('\n');
+            }
+        }
+    }
+
+    fn cmd_rm(&mut self, path: &str) {
+        if !crate::security::can_write_path(path) {
+            self.set_fg(FG_ERROR);
+            self.print_str("rm: permission denied\n");
+            return;
+        }
+        match crate::vfs::vfs_delete(path) {
+            Ok(()) => {
+                self.set_fg(FG_ACCENT);
+                self.print_str("removed ");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(path);
+                self.print_char('\n');
+            }
+            Err(err) => {
+                self.set_fg(FG_ERROR);
+                self.print_str("rm: ");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(err.as_str());
+                self.print_char('\n');
             }
         }
     }

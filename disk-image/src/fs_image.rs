@@ -1,12 +1,14 @@
-/// Host-side tool: creates a FAT32 disk image containing the CoolFS root image.
-/// The FAT32 layer remains a boot/container compatibility layer; `/COOLFS.IMG`
-/// is populated with the real OS tree that the kernel mounts as `/`.
+/// Host-side tool: creates a native CoolFS OS disk image.
+/// CoolFS starts at LBA 0 and is the root filesystem. A FAT32 compatibility
+/// region is still formatted at 8 MiB for the optional `/FAT` import mount.
 ///
 /// Usage: fs-image <output-path> [hello-elf] [exec-elf] [pipe-elf] [read-elf] [piperd-elf] [pipewr-elf] [keyecho-elf] [terminal-elf] [netdemo-elf] [wget-elf] [sdkdemo-elf] [guidemo-elf] [notes-elf] [editor-elf] [trash-elf] [screenshot-elf]
-/// Output: a 64 MiB raw FAT32 disk image ready to attach as a QEMU IDE drive.
-use std::io::Write;
+/// Output: a 64 MiB raw OS disk image ready to attach as a QEMU IDE drive.
+use std::io::{Read, Seek, SeekFrom, Write};
 
 const IMAGE_SIZE: u64 = 64 * 1024 * 1024; // 64 MiB
+const LEGACY_FAT_OFFSET: u64 = 8 * 1024 * 1024; // 8 MiB
+const LEGACY_FAT_SIZE: u64 = IMAGE_SIZE - LEGACY_FAT_OFFSET;
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -29,7 +31,7 @@ fn main() {
     let screenshot_elf = args.next();
 
     // Create or truncate the file, set it to the desired size.
-    let file = std::fs::OpenOptions::new()
+    let mut file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
@@ -39,17 +41,26 @@ fn main() {
 
     file.set_len(IMAGE_SIZE).expect("failed to set image size");
 
-    // Format as FAT32.
+    let mut legacy_fat = RegionFile::new(
+        file.try_clone().expect("failed to clone output file"),
+        LEGACY_FAT_OFFSET,
+        LEGACY_FAT_SIZE,
+    );
+
+    // Format the optional FAT32 import area.
     fatfs::format_volume(
-        &file,
+        &mut legacy_fat,
         fatfs::FormatVolumeOptions::new()
             .fat_type(fatfs::FatType::Fat32)
             .volume_label(*b"COOLOS     "), // 11 ASCII bytes
     )
     .expect("FAT32 format failed");
+    legacy_fat
+        .seek(SeekFrom::Start(0))
+        .expect("failed to rewind legacy FAT region");
 
-    // Populate the filesystem.
-    let fs = fatfs::FileSystem::new(&file, fatfs::FsOptions::new())
+    // Populate the compatibility filesystem and the native CoolFS root in parallel.
+    let fs = fatfs::FileSystem::new(&mut legacy_fat, fatfs::FsOptions::new())
         .expect("failed to open FAT32 filesystem");
 
     let root = fs.root_dir();
@@ -95,7 +106,7 @@ fn main() {
         .create_file("motd.txt")
         .expect("failed to create motd.txt");
     motd.truncate().unwrap();
-    let motd_txt = b"coolOS Phase 26 - CoolFS root online!\n";
+    let motd_txt = b"coolOS Phase 27 - native CoolFS disk online!\n";
     motd.write_all(motd_txt).expect("failed to write motd.txt");
     coolfs.create_file("/bin/motd.txt", motd_txt);
 
@@ -310,15 +321,86 @@ fn main() {
         .expect("failed to write package-demo.p25");
     coolfs.create_file("/Documents/package-demo.p25", package_demo_bytes);
 
-    let mut coolfs_img = root
-        .create_file("COOLFS.IMG")
-        .expect("failed to create COOLFS.IMG");
-    coolfs_img.truncate().unwrap();
-    coolfs_img
-        .write_all(&coolfs.into_image())
-        .expect("failed to write COOLFS.IMG");
+    let coolfs_image = coolfs.into_image();
+    file.seek(SeekFrom::Start(0))
+        .expect("failed to seek to CoolFS start");
+    file.write_all(&coolfs_image)
+        .expect("failed to write native CoolFS image");
+    file.sync_all().expect("failed to sync disk image");
 
     println!("{}", out_path);
+}
+
+struct RegionFile {
+    file: std::fs::File,
+    base: u64,
+    len: u64,
+    pos: u64,
+}
+
+impl RegionFile {
+    fn new(file: std::fs::File, base: u64, len: u64) -> Self {
+        Self {
+            file,
+            base,
+            len,
+            pos: 0,
+        }
+    }
+}
+
+impl Read for RegionFile {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.pos >= self.len || buf.is_empty() {
+            return Ok(0);
+        }
+        let max_len = (self.len - self.pos).min(buf.len() as u64) as usize;
+        self.file.seek(SeekFrom::Start(self.base + self.pos))?;
+        let read = self.file.read(&mut buf[..max_len])?;
+        self.pos += read as u64;
+        Ok(read)
+    }
+}
+
+impl Write for RegionFile {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        if self.pos >= self.len {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                "region write past end",
+            ));
+        }
+        let max_len = (self.len - self.pos).min(buf.len() as u64) as usize;
+        self.file.seek(SeekFrom::Start(self.base + self.pos))?;
+        let written = self.file.write(&buf[..max_len])?;
+        self.pos += written as u64;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
+}
+
+impl Seek for RegionFile {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        let next = match pos {
+            SeekFrom::Start(offset) => offset as i128,
+            SeekFrom::End(offset) => self.len as i128 + offset as i128,
+            SeekFrom::Current(offset) => self.pos as i128 + offset as i128,
+        };
+        if next < 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "negative region seek",
+            ));
+        }
+        self.pos = next as u64;
+        Ok(self.pos)
+    }
 }
 
 const PHASE25_GUIDEMO_PACKAGE: &[u8] = b"id=app.phase25.guidemo\nname=Packaged GUI Demo\ncommand=pkgdemo\nversion=1.0\nicon=P5\ncategory=Development\npermission=desktop\nexec=/bin/guidemo\naliases=package,demo,phase25\nassociations=P25\n";

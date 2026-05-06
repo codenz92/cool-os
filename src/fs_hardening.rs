@@ -28,7 +28,7 @@ pub fn init() {
     }
     replay_journal();
     journal_operation("mount", "coolfs-root rw,safe-write,journal-lite");
-    journal_operation("mount", "fat32 legacy-container /FAT");
+    journal_operation("mount", "fat32 legacy-import optional /FAT");
 }
 
 pub fn journal_operation(op: &str, path: &str) {
@@ -69,8 +69,8 @@ pub fn flush_journal() -> Result<(), crate::fat32::FsError> {
 pub fn status_lines() -> Vec<String> {
     let mut lines = alloc::vec![
         String::from("mount / type=coolfs flags=rw,native-root,safe-write,journal-lite"),
-        String::from("mount /FAT type=fat32 flags=rw,legacy-container"),
-        String::from("coolfs writes: serialized by native image lock"),
+        String::from("mount /FAT type=fat32 flags=rw,legacy-import,optional"),
+        String::from("coolfs writes: native block cache with dirty 4K writeback"),
         format!(
             "write cache: metadata journal dirty={}",
             if DIRTY.load(Ordering::Relaxed) {
@@ -119,7 +119,7 @@ pub fn repair() -> Vec<String> {
         }
     }
     match crate::coolfs::mount_or_format() {
-        Ok(()) => lines.push(String::from("ok / coolfs root image")),
+        Ok(()) => lines.push(String::from("ok / coolfs native root")),
         Err(err) => lines.push(format!("/: {}", err.as_str())),
     }
     if let Some(report) = crate::coolfs::check() {

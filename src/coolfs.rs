@@ -1,9 +1,8 @@
 /// CoolFS: the native coolOS root filesystem.
 ///
-/// The current block device still carries a FAT32 compatibility container while
-/// the raw-disk backend lands. CoolFS stores its own superblock, inode table,
-/// block bitmap, and directory records inside a persistent `/COOLFS.IMG` file
-/// on that disk, and the VFS routes `/` to this filesystem.
+/// CoolFS owns the first region of the attached OS disk directly. The legacy
+/// FAT32 area, when present, is an import/compatibility mount at `/FAT`; it is
+/// no longer required to mount `/`.
 extern crate alloc;
 
 use alloc::{format, string::String, vec::Vec};
@@ -13,10 +12,12 @@ use spin::Mutex;
 use crate::fat32::{DirEntryInfo, FsError};
 
 pub const MOUNT_PATH: &str = "/";
-const BACKING_PATH: &str = "/COOLFS.IMG";
+const DEVICE_LABEL: &str = "ata:primary-slave:lba0";
 
 const MAGIC: [u8; 8] = *b"COOLFS1\0";
 const VERSION: u32 = 1;
+const SECTOR_SIZE: usize = 512;
+const SECTORS_PER_BLOCK: u32 = 8;
 const BLOCK_SIZE: usize = 4096;
 const TOTAL_BLOCKS: u32 = 1024;
 const INODE_COUNT: u32 = 512;
@@ -37,6 +38,7 @@ const ROOT_INODE: u32 = 0;
 const KIND_FREE: u8 = 0;
 const KIND_FILE: u8 = 1;
 const KIND_DIR: u8 = 2;
+const CACHE_SLOTS: usize = 64;
 
 static COOLFS_IMAGE: Mutex<Option<Image>> = Mutex::new(None);
 static DIRTY: AtomicBool = AtomicBool::new(false);
@@ -155,9 +157,21 @@ struct DirectoryEntry {
     name: String,
 }
 
+struct CacheEntry {
+    block: u32,
+    data: [u8; BLOCK_SIZE],
+    dirty: bool,
+    age: u64,
+}
+
+struct BlockCache {
+    entries: Vec<CacheEntry>,
+    clock: u64,
+}
+
 struct Image {
-    data: Vec<u8>,
     sb: Superblock,
+    cache: BlockCache,
 }
 
 #[derive(Clone, Copy)]
@@ -168,6 +182,8 @@ pub struct CoolFsStats {
     pub block_size: u32,
     pub files: u32,
     pub dirs: u32,
+    pub cached_blocks: u32,
+    pub dirty_blocks: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -187,12 +203,12 @@ pub fn flush() -> Result<(), FsError> {
     if !DIRTY.load(Ordering::Acquire) {
         return Ok(());
     }
-    let slot = COOLFS_IMAGE.lock();
-    let Some(image) = slot.as_ref() else {
+    let mut slot = COOLFS_IMAGE.lock();
+    let Some(image) = slot.as_mut() else {
         DIRTY.store(false, Ordering::Release);
         return Ok(());
     };
-    persist(image)?;
+    image.flush()?;
     DIRTY.store(false, Ordering::Release);
     Ok(())
 }
@@ -205,8 +221,12 @@ pub fn lines() -> Vec<String> {
                 MOUNT_PATH
             ),
             format!(
-                "image={} blocks used={} free={} bytes/block={}",
-                BACKING_PATH, stats.used_blocks, stats.free_blocks, stats.block_size
+                "device={} blocks used={} free={} bytes/block={}",
+                DEVICE_LABEL, stats.used_blocks, stats.free_blocks, stats.block_size
+            ),
+            format!(
+                "cache slots={} cached={} dirty={}",
+                CACHE_SLOTS, stats.cached_blocks, stats.dirty_blocks
             ),
             format!("inodes files={} dirs={}", stats.files, stats.dirs),
         ],
@@ -398,57 +418,251 @@ fn create_node(path: &str, kind: u8) -> Result<(), FsError> {
     Ok(())
 }
 
+impl BlockCache {
+    fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            clock: 0,
+        }
+    }
+
+    fn with_clean_block(block: u32, data: [u8; BLOCK_SIZE]) -> Self {
+        let mut cache = Self::new();
+        cache.entries.push(CacheEntry {
+            block,
+            data,
+            dirty: false,
+            age: 1,
+        });
+        cache.clock = 1;
+        cache
+    }
+
+    fn cached_blocks(&self) -> u32 {
+        self.entries.len() as u32
+    }
+
+    fn dirty_blocks(&self) -> u32 {
+        self.entries.iter().filter(|entry| entry.dirty).count() as u32
+    }
+
+    fn get(&mut self, block: u32) -> Result<&[u8; BLOCK_SIZE], FsError> {
+        let idx = self.cache_index(block)?;
+        Ok(&self.entries[idx].data)
+    }
+
+    fn get_mut(&mut self, block: u32) -> Result<&mut [u8; BLOCK_SIZE], FsError> {
+        let idx = self.cache_index(block)?;
+        self.entries[idx].dirty = true;
+        Ok(&mut self.entries[idx].data)
+    }
+
+    fn cache_index(&mut self, block: u32) -> Result<usize, FsError> {
+        if block >= TOTAL_BLOCKS {
+            return Err(FsError::Io);
+        }
+        self.clock = self.clock.wrapping_add(1).max(1);
+        if let Some(idx) = self.entries.iter().position(|entry| entry.block == block) {
+            self.entries[idx].age = self.clock;
+            return Ok(idx);
+        }
+
+        let data = read_disk_block(block)?;
+        if self.entries.len() < CACHE_SLOTS {
+            self.entries.push(CacheEntry {
+                block,
+                data,
+                dirty: false,
+                age: self.clock,
+            });
+            return Ok(self.entries.len() - 1);
+        }
+
+        let evict_idx = self
+            .entries
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, entry)| entry.age)
+            .map(|(idx, _)| idx)
+            .ok_or(FsError::Io)?;
+        if self.entries[evict_idx].dirty {
+            write_disk_block(self.entries[evict_idx].block, &self.entries[evict_idx].data)?;
+        }
+        self.entries[evict_idx] = CacheEntry {
+            block,
+            data,
+            dirty: false,
+            age: self.clock,
+        };
+        Ok(evict_idx)
+    }
+
+    fn flush(&mut self) -> Result<(), FsError> {
+        for entry in self.entries.iter_mut() {
+            if entry.dirty {
+                write_disk_block(entry.block, &entry.data)?;
+                entry.dirty = false;
+            }
+        }
+        Ok(())
+    }
+}
+
 impl Image {
-    fn read_inode(&self, inode_idx: u32) -> Option<Inode> {
+    fn read_inode(&mut self, inode_idx: u32) -> Option<Inode> {
         if inode_idx >= self.sb.inode_count {
             return None;
         }
         let off = self.inode_offset(inode_idx)?;
-        let kind = *self.data.get(off)?;
-        let size = read_u32(&self.data, off + 4)?;
+        let kind = self.read_u8(off)?;
+        let size = self.read_u32_at(off + 4)?;
         let mut inode = Inode::new(kind);
         inode.size = size;
         for i in 0..DIRECT_BLOCKS {
-            inode.direct[i] = read_u32(&self.data, off + 8 + i * 4)?;
+            inode.direct[i] = self.read_u32_at(off + 8 + i * 4)?;
         }
-        inode.indirect = read_u32(&self.data, off + 8 + DIRECT_BLOCKS * 4)?;
+        inode.indirect = self.read_u32_at(off + 8 + DIRECT_BLOCKS * 4)?;
         Some(inode)
     }
 
     fn write_inode(&mut self, inode_idx: u32, inode: &Inode) -> Result<(), FsError> {
         let off = self.inode_offset(inode_idx).ok_or(FsError::Io)?;
-        self.data[off] = inode.kind;
-        self.data[off + 1..off + 4].fill(0);
-        write_u32(&mut self.data, off + 4, inode.size);
+        self.write_u8(off, inode.kind)?;
+        self.fill_at(off + 1, 3, 0)?;
+        self.write_u32_at(off + 4, inode.size)?;
         for i in 0..DIRECT_BLOCKS {
-            write_u32(&mut self.data, off + 8 + i * 4, inode.direct[i]);
+            self.write_u32_at(off + 8 + i * 4, inode.direct[i])?;
         }
-        write_u32(&mut self.data, off + 8 + DIRECT_BLOCKS * 4, inode.indirect);
-        self.data[off + 12 + DIRECT_BLOCKS * 4..off + INODE_SIZE].fill(0);
+        self.write_u32_at(off + 8 + DIRECT_BLOCKS * 4, inode.indirect)?;
+        self.fill_at(
+            off + 12 + DIRECT_BLOCKS * 4,
+            INODE_SIZE - (12 + DIRECT_BLOCKS * 4),
+            0,
+        )?;
         Ok(())
     }
 
     fn inode_offset(&self, inode_idx: u32) -> Option<usize> {
         let base = self.sb.inode_table_start as usize * BLOCK_SIZE;
         let off = base.checked_add(inode_idx as usize * INODE_SIZE)?;
-        if off + INODE_SIZE <= self.data.len() {
+        if off + INODE_SIZE <= self.fs_len() {
             Some(off)
         } else {
             None
         }
     }
 
-    fn block_range(&self, block: u32) -> Option<core::ops::Range<usize>> {
+    fn fs_len(&self) -> usize {
+        self.sb.total_blocks as usize * BLOCK_SIZE
+    }
+
+    fn block_offset(&self, block: u32) -> Result<usize, FsError> {
         if block >= self.sb.total_blocks {
+            return Err(FsError::Io);
+        }
+        Ok(block as usize * BLOCK_SIZE)
+    }
+
+    fn abs_parts(&self, offset: usize) -> Option<(u32, usize)> {
+        if offset >= self.fs_len() {
             return None;
         }
-        let start = block as usize * BLOCK_SIZE;
-        let end = start + BLOCK_SIZE;
-        if end <= self.data.len() {
-            Some(start..end)
-        } else {
-            None
+        Some(((offset / BLOCK_SIZE) as u32, offset % BLOCK_SIZE))
+    }
+
+    fn read_u8(&mut self, offset: usize) -> Option<u8> {
+        let (block, in_block) = self.abs_parts(offset)?;
+        Some(self.cache.get(block).ok()?[in_block])
+    }
+
+    fn write_u8(&mut self, offset: usize, value: u8) -> Result<(), FsError> {
+        let (block, in_block) = self.abs_parts(offset).ok_or(FsError::Io)?;
+        self.cache.get_mut(block)?[in_block] = value;
+        Ok(())
+    }
+
+    fn read_u32_at(&mut self, offset: usize) -> Option<u32> {
+        let mut bytes = [0u8; 4];
+        self.read_into(offset, &mut bytes).ok()?;
+        Some(u32::from_le_bytes(bytes))
+    }
+
+    fn write_u32_at(&mut self, offset: usize, value: u32) -> Result<(), FsError> {
+        self.write_at(offset, &value.to_le_bytes())
+    }
+
+    fn read_into(&mut self, mut offset: usize, out: &mut [u8]) -> Result<(), FsError> {
+        if offset.checked_add(out.len()).ok_or(FsError::Io)? > self.fs_len() {
+            return Err(FsError::Io);
         }
+        let mut done = 0usize;
+        while done < out.len() {
+            let (block, in_block) = self.abs_parts(offset).ok_or(FsError::Io)?;
+            let take = (out.len() - done).min(BLOCK_SIZE - in_block);
+            let data = self.cache.get(block)?;
+            out[done..done + take].copy_from_slice(&data[in_block..in_block + take]);
+            done += take;
+            offset += take;
+        }
+        Ok(())
+    }
+
+    fn read_vec(&mut self, mut offset: usize, len: usize) -> Result<Vec<u8>, FsError> {
+        if offset.checked_add(len).ok_or(FsError::Io)? > self.fs_len() {
+            return Err(FsError::Io);
+        }
+        let mut out = Vec::with_capacity(len);
+        let mut remaining = len;
+        while remaining > 0 {
+            let (block, in_block) = self.abs_parts(offset).ok_or(FsError::Io)?;
+            let take = remaining.min(BLOCK_SIZE - in_block);
+            let data = self.cache.get(block)?;
+            out.extend_from_slice(&data[in_block..in_block + take]);
+            offset += take;
+            remaining -= take;
+        }
+        Ok(out)
+    }
+
+    fn write_at(&mut self, mut offset: usize, input: &[u8]) -> Result<(), FsError> {
+        if offset.checked_add(input.len()).ok_or(FsError::Io)? > self.fs_len() {
+            return Err(FsError::Io);
+        }
+        let mut done = 0usize;
+        while done < input.len() {
+            let (block, in_block) = self.abs_parts(offset).ok_or(FsError::Io)?;
+            let take = (input.len() - done).min(BLOCK_SIZE - in_block);
+            let data = self.cache.get_mut(block)?;
+            data[in_block..in_block + take].copy_from_slice(&input[done..done + take]);
+            done += take;
+            offset += take;
+        }
+        Ok(())
+    }
+
+    fn fill_at(&mut self, mut offset: usize, mut len: usize, value: u8) -> Result<(), FsError> {
+        if offset.checked_add(len).ok_or(FsError::Io)? > self.fs_len() {
+            return Err(FsError::Io);
+        }
+        while len > 0 {
+            let (block, in_block) = self.abs_parts(offset).ok_or(FsError::Io)?;
+            let take = len.min(BLOCK_SIZE - in_block);
+            self.cache.get_mut(block)?[in_block..in_block + take].fill(value);
+            offset += take;
+            len -= take;
+        }
+        Ok(())
+    }
+
+    fn zero_block(&mut self, block: u32) -> Result<(), FsError> {
+        self.cache.get_mut(block)?.fill(0);
+        Ok(())
+    }
+
+    fn block_used(&mut self, block: u32) -> bool {
+        self.bitmap_byte_bit(block)
+            .and_then(|(byte, bit)| self.read_u8(byte).map(|value| value & bit != 0))
+            .unwrap_or(true)
     }
 
     fn bitmap_byte_bit(&self, block: u32) -> Option<(usize, u8)> {
@@ -457,34 +671,28 @@ impl Image {
         }
         let bitmap_start = self.sb.bitmap_start as usize * BLOCK_SIZE;
         let byte = bitmap_start + block as usize / 8;
-        if byte >= self.data.len() {
+        if byte >= self.fs_len() {
             return None;
         }
         Some((byte, 1u8 << (block % 8)))
     }
 
-    fn block_used(&self, block: u32) -> bool {
-        self.bitmap_byte_bit(block)
-            .map(|(byte, bit)| self.data[byte] & bit != 0)
-            .unwrap_or(true)
-    }
-
     fn set_block_used(&mut self, block: u32, used: bool) -> Result<(), FsError> {
         let (byte, bit) = self.bitmap_byte_bit(block).ok_or(FsError::Io)?;
+        let mut value = self.read_u8(byte).ok_or(FsError::Io)?;
         if used {
-            self.data[byte] |= bit;
+            value |= bit;
         } else {
-            self.data[byte] &= !bit;
+            value &= !bit;
         }
-        Ok(())
+        self.write_u8(byte, value)
     }
 
     fn alloc_block(&mut self) -> Result<u32, FsError> {
         for block in self.sb.data_start..self.sb.total_blocks {
             if !self.block_used(block) {
                 self.set_block_used(block, true)?;
-                let range = self.block_range(block).ok_or(FsError::Io)?;
-                self.data[range].fill(0);
+                self.zero_block(block)?;
                 return Ok(block);
             }
         }
@@ -523,16 +731,16 @@ impl Image {
         self.write_inode(inode_idx, &Inode::free())
     }
 
-    fn read_inode_bytes(&self, inode: &Inode) -> Result<Vec<u8>, FsError> {
+    fn read_inode_bytes(&mut self, inode: &Inode) -> Result<Vec<u8>, FsError> {
         let mut out = Vec::with_capacity(inode.size as usize);
         let mut remaining = inode.size as usize;
         for block in self.inode_data_blocks(inode)? {
             if remaining == 0 {
                 break;
             }
-            let range = self.block_range(block).ok_or(FsError::Io)?;
+            let start = self.block_offset(block)?;
             let take = remaining.min(BLOCK_SIZE);
-            out.extend_from_slice(&self.data[range.start..range.start + take]);
+            out.extend_from_slice(&self.read_vec(start, take)?);
             remaining -= take;
         }
         if remaining == 0 {
@@ -574,17 +782,16 @@ impl Image {
         }
 
         for (idx, &block) in new_blocks.iter().enumerate() {
-            let range = self.block_range(block).ok_or(FsError::Io)?;
-            self.data[range.clone()].fill(0);
+            self.zero_block(block)?;
             let start = idx * BLOCK_SIZE;
             let end = (start + BLOCK_SIZE).min(bytes.len());
-            self.data[range.start..range.start + (end - start)].copy_from_slice(&bytes[start..end]);
+            self.write_at(self.block_offset(block)?, &bytes[start..end])?;
         }
         if indirect_block != 0 {
-            let range = self.block_range(indirect_block).ok_or(FsError::Io)?;
-            self.data[range.clone()].fill(0);
+            self.zero_block(indirect_block)?;
+            let indirect_start = self.block_offset(indirect_block)?;
             for (idx, &block) in new_blocks[DIRECT_BLOCKS..].iter().enumerate() {
-                write_u32(&mut self.data, range.start + idx * 4, block);
+                self.write_u32_at(indirect_start + idx * 4, block)?;
             }
         }
 
@@ -609,7 +816,7 @@ impl Image {
         Ok(())
     }
 
-    fn inode_data_blocks(&self, inode: &Inode) -> Result<Vec<u32>, FsError> {
+    fn inode_data_blocks(&mut self, inode: &Inode) -> Result<Vec<u32>, FsError> {
         let needed = (inode.size as usize + BLOCK_SIZE - 1) / BLOCK_SIZE;
         let mut blocks = Vec::with_capacity(needed);
         for &block in inode.direct.iter().take(needed.min(DIRECT_BLOCKS)) {
@@ -622,9 +829,9 @@ impl Image {
             if inode.indirect == 0 {
                 return Err(FsError::Io);
             }
-            let range = self.block_range(inode.indirect).ok_or(FsError::Io)?;
+            let start = self.block_offset(inode.indirect)?;
             for idx in 0..needed - DIRECT_BLOCKS {
-                let block = read_u32(&self.data, range.start + idx * 4).ok_or(FsError::Io)?;
+                let block = self.read_u32_at(start + idx * 4).ok_or(FsError::Io)?;
                 if block == 0 {
                     return Err(FsError::Io);
                 }
@@ -634,16 +841,11 @@ impl Image {
         Ok(blocks)
     }
 
-    fn persist_len(&self) -> usize {
-        for block in (0..self.sb.total_blocks).rev() {
-            if self.block_used(block) {
-                return (block as usize + 1) * BLOCK_SIZE;
-            }
-        }
-        self.sb.data_start as usize * BLOCK_SIZE
+    fn flush(&mut self) -> Result<(), FsError> {
+        self.cache.flush()
     }
 
-    fn stats(&self) -> CoolFsStats {
+    fn stats(&mut self) -> CoolFsStats {
         let mut used_blocks = 0u32;
         for block in 0..self.sb.total_blocks {
             if self.block_used(block) {
@@ -668,6 +870,8 @@ impl Image {
             block_size: BLOCK_SIZE as u32,
             files,
             dirs,
+            cached_blocks: self.cache.cached_blocks(),
+            dirty_blocks: self.cache.dirty_blocks(),
         }
     }
 }
@@ -680,44 +884,43 @@ fn ensure_image(slot: &mut Option<Image>) -> Result<&mut Image, FsError> {
 }
 
 fn load_or_format() -> Result<Image, FsError> {
-    if let Some(bytes) = crate::fat32::read_file(BACKING_PATH) {
-        if let Some(sb) = Superblock::parse(&bytes) {
-            let expected = sb.total_blocks as usize * BLOCK_SIZE;
-            if bytes.len() <= expected {
-                let mut data = alloc::vec![0u8; expected];
-                data[..bytes.len()].copy_from_slice(&bytes);
-                return Ok(Image { data, sb });
-            }
+    let first = read_disk_block(0)?;
+    if let Some(sb) = Superblock::parse(&first) {
+        if sb.total_blocks == TOTAL_BLOCKS {
+            return Ok(Image {
+                sb,
+                cache: BlockCache::with_clean_block(0, first),
+            });
         }
     }
 
-    let image = format_image();
-    persist(&image)?;
+    let mut image = format_image()?;
+    image.flush()?;
     Ok(image)
 }
 
-fn format_image() -> Image {
+fn format_image() -> Result<Image, FsError> {
     let sb = Superblock::new();
-    let mut data = alloc::vec![0u8; sb.total_blocks as usize * BLOCK_SIZE];
-    sb.write(&mut data);
-    let mut image = Image { data, sb };
+    let mut image = Image {
+        sb,
+        cache: BlockCache::new(),
+    };
     for block in 0..sb.data_start {
-        let _ = image.set_block_used(block, true);
+        image.zero_block(block)?;
     }
-    let _ = image.write_inode(sb.root_inode, &Inode::new(KIND_DIR));
-    image
+    {
+        let block0 = image.cache.get_mut(0)?;
+        block0.fill(0);
+        sb.write(block0);
+    }
+    for block in 0..sb.data_start {
+        image.set_block_used(block, true)?;
+    }
+    image.write_inode(sb.root_inode, &Inode::new(KIND_DIR))?;
+    Ok(image)
 }
 
-fn persist(image: &Image) -> Result<(), FsError> {
-    match crate::fat32::create_file(BACKING_PATH) {
-        Ok(()) | Err(FsError::AlreadyExists) => {}
-        Err(err) => return Err(err),
-    }
-    let len = image.persist_len().min(image.data.len());
-    crate::fat32::write_file(BACKING_PATH, &image.data[..len])
-}
-
-fn resolve_path(image: &Image, path: &str) -> Result<u32, FsError> {
+fn resolve_path(image: &mut Image, path: &str) -> Result<u32, FsError> {
     let path = trim_abs_path(path)?;
     if path == "/" {
         return Ok(image.sb.root_inode);
@@ -738,7 +941,7 @@ fn resolve_path(image: &Image, path: &str) -> Result<u32, FsError> {
     Ok(inode_idx)
 }
 
-fn read_dir_entries(image: &Image, inode_idx: u32) -> Result<Vec<DirectoryEntry>, FsError> {
+fn read_dir_entries(image: &mut Image, inode_idx: u32) -> Result<Vec<DirectoryEntry>, FsError> {
     let inode = image.read_inode(inode_idx).ok_or(FsError::NotFound)?;
     if !inode.is_dir() {
         return Err(FsError::NotDirectory);
@@ -843,6 +1046,39 @@ fn mount_path_for(path: &str) -> String {
         }
         out
     }
+}
+
+fn read_disk_block(block: u32) -> Result<[u8; BLOCK_SIZE], FsError> {
+    if block >= TOTAL_BLOCKS {
+        return Err(FsError::Io);
+    }
+    let mut out = [0u8; BLOCK_SIZE];
+    let base_lba = block.checked_mul(SECTORS_PER_BLOCK).ok_or(FsError::Io)?;
+    for sector in 0..SECTORS_PER_BLOCK {
+        let mut sec = [0u8; SECTOR_SIZE];
+        if !crate::ata::read_sector(base_lba + sector, &mut sec) {
+            return Err(FsError::Io);
+        }
+        let start = sector as usize * SECTOR_SIZE;
+        out[start..start + SECTOR_SIZE].copy_from_slice(&sec);
+    }
+    Ok(out)
+}
+
+fn write_disk_block(block: u32, data: &[u8; BLOCK_SIZE]) -> Result<(), FsError> {
+    if block >= TOTAL_BLOCKS {
+        return Err(FsError::Io);
+    }
+    let base_lba = block.checked_mul(SECTORS_PER_BLOCK).ok_or(FsError::Io)?;
+    for sector in 0..SECTORS_PER_BLOCK {
+        let mut sec = [0u8; SECTOR_SIZE];
+        let start = sector as usize * SECTOR_SIZE;
+        sec.copy_from_slice(&data[start..start + SECTOR_SIZE]);
+        if !crate::ata::write_sector(base_lba + sector, &sec) {
+            return Err(FsError::Io);
+        }
+    }
+    Ok(())
 }
 
 fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {

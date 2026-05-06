@@ -18,7 +18,10 @@ static INDEX: Mutex<Vec<SearchEntry>> = Mutex::new(Vec::new());
 static DIRTY_PATHS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 pub fn refresh() {
-    let job = crate::jobs::start("Search index", "scanning FAT32 filenames and text snippets");
+    let job = crate::jobs::start(
+        "Search index",
+        "scanning CoolFS filenames and text snippets",
+    );
     let mut entries = Vec::new();
     scan_dir("/", 0, &mut entries);
     let count = entries.len();

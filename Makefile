@@ -1,4 +1,4 @@
-.PHONY: run run-net run-usb run-usb-init run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
+.PHONY: run run-net run-usb run-usb-init run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -504,10 +504,59 @@ smoke-coolfs-root: build
 		--retries $(SMOKE_RETRIES) \
 		--fw-cmd "vfs;;path /;;path /FAT;;path /bin/hello.txt;;df;;fsck" \
 		--expect "/ type=coolfs flags=rw,native-root,normalized-paths" \
-		--expect "/FAT type=fat32 flags=rw,legacy-container" \
+		--expect "/FAT type=fat32 flags=rw,legacy-import,optional" \
 		--expect "/ kind=dir mount=coolfs size=0" \
 		--expect "/FAT kind=dir mount=fat32 size=0" \
 		--expect "/bin/hello.txt kind=file mount=coolfs size=27" \
+		--expect "coolfs root ok" \
+		--expect "[boot] desktop ready"
+
+smoke-coolfs-native: build
+	mkdir -p "$(SMOKE_ARTIFACT_DIR)"
+	rm -f "$(SMOKE_ARTIFACT_DIR)/coolfs-native.img"
+	cp "$(FSIMG)" "$(SMOKE_ARTIFACT_DIR)/coolfs-native.img"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-write" \
+		--bios "$(BIOS)" \
+		--fsimg "$(SMOKE_ARTIFACT_DIR)/coolfs-native.img" \
+		--fs-writable \
+		--usb \
+		--seconds 45 \
+		--retries $(SMOKE_RETRIES) \
+		--fw-cmd "write /TMP/PHASE27.TXT native coolfs persists;;flush;;path /TMP/PHASE27.TXT;;hash /TMP/PHASE27.TXT" \
+		--expect "wrote /TMP/PHASE27.TXT" \
+		--expect "flush: ok" \
+		--expect "/TMP/PHASE27.TXT kind=file mount=coolfs size=22" \
+		--expect "hash /TMP/PHASE27.TXT len=22 sum=2250" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-delete" \
+		--bios "$(BIOS)" \
+		--fsimg "$(SMOKE_ARTIFACT_DIR)/coolfs-native.img" \
+		--fs-writable \
+		--usb \
+		--seconds 45 \
+		--retries $(SMOKE_RETRIES) \
+		--fw-cmd "path /TMP/PHASE27.TXT;;hash /TMP/PHASE27.TXT;;rm /TMP/PHASE27.TXT;;flush;;path /TMP/PHASE27.TXT" \
+		--expect "/TMP/PHASE27.TXT kind=file mount=coolfs size=22" \
+		--expect "hash /TMP/PHASE27.TXT len=22 sum=2250" \
+		--expect "removed /TMP/PHASE27.TXT" \
+		--expect "flush: ok" \
+		--expect "/TMP/PHASE27.TXT kind=missing mount=coolfs size=0" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-remount" \
+		--bios "$(BIOS)" \
+		--fsimg "$(SMOKE_ARTIFACT_DIR)/coolfs-native.img" \
+		--fs-writable \
+		--usb \
+		--seconds 45 \
+		--retries $(SMOKE_RETRIES) \
+		--fw-cmd "path /TMP/PHASE27.TXT;;fsck" \
+		--expect "/TMP/PHASE27.TXT kind=missing mount=coolfs size=0" \
 		--expect "coolfs root ok" \
 		--expect "[boot] desktop ready"
 

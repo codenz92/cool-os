@@ -4,9 +4,9 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–26 are complete. Phase 26 makes CoolFS the root filesystem exposed by
-the VFS: `/` is CoolFS, `/FAT` is the legacy FAT32 container, and `/COOLFS.IMG`
-is now the transitional backing store rather than the user-visible filesystem.
+Phases 1–27 are complete. Phase 27 makes CoolFS a native disk filesystem:
+`/` is CoolFS mounted directly from LBA 0, `/FAT` is only an optional legacy
+import region, and `/COOLFS.IMG` is no longer part of the boot path.
 
 ---
 
@@ -851,7 +851,33 @@ while keeping the VFS as the syscall, path, fd, pipe, and device abstraction.
 
 **Current status:** complete. VFS remains in place because it owns file
 descriptors, pipes, shared memory, syscalls, and mount routing; CoolFS now owns
-the normal persistent namespace under `/`.
+the normal persistent namespace under `/`. Phase 27 later moved the backing
+store from `/COOLFS.IMG` to the native disk region at LBA 0.
+
+---
+
+## ✅ Phase 27 — Native CoolFS Disk Backend
+
+**Goal:** Remove the FAT-backed `/COOLFS.IMG` transition and make CoolFS the
+filesystem stored directly on the OS disk.
+
+- [x] Emit a native CoolFS image at LBA 0 from the host `fs-image` builder.
+- [x] Keep a separate FAT32 region at 8 MiB only for optional `/FAT` import and
+      compatibility testing.
+- [x] Teach the kernel CoolFS mount path to read the superblock, inode table,
+      bitmap, and data blocks directly from ATA sectors.
+- [x] Replace whole-file `/COOLFS.IMG` persistence with a 64-slot native block
+      cache and dirty 4 KiB block writeback.
+- [x] Update FAT32 BPB handling so the legacy mount can live at a nonzero disk
+      offset while still falling back to older sector-0 FAT images.
+- [x] Add Terminal `write` and `rm` commands for deterministic filesystem smoke
+      mutation.
+- [x] Add `make smoke-coolfs-native` to prove a CoolFS file write survives a
+      writable QEMU remount, then prove deletion survives another remount.
+
+**Current status:** complete. CoolFS no longer depends on FAT32 to boot or
+persist root filesystem changes. FAT32 remains useful for `/FAT` import coverage,
+but the native root path is independent.
 
 ---
 
@@ -896,4 +922,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v5.7 | Phase 23 complete: app lifecycle and file-open plumbing |
 | v5.8 | Phase 24 complete: app platform polish and file dialogs |
 | v5.9 | Phase 25 complete: package platform |
-| v6.0 | Current — Phase 26 complete: CoolFS root filesystem |
+| v6.0 | Phase 26 complete: CoolFS root filesystem |
+| v6.1 | Current — Phase 27 complete: native CoolFS disk backend |

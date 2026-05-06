@@ -53,7 +53,7 @@ const ABOUT: &[&str] = &[
     " Drag title bar: move",
     " x button: close win",
     " Right-click: new app",
-    " File Manager: browse FAT32 + create files/folders",
+    " File Manager: browse CoolFS + create files/folders",
     "",
     " github.com/codenz92",
     "   /cool-os",

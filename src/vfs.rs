@@ -43,7 +43,7 @@ const MOUNTS: [MountInfo; 5] = [
     MountInfo {
         prefix: "/FAT",
         fs_type: "fat32",
-        flags: "rw,legacy-container",
+        flags: "rw,legacy-import,optional",
     },
     MountInfo {
         prefix: "/DEV",

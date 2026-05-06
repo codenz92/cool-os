@@ -4,7 +4,7 @@
 /// The filesystem disk image is attached to QEMU as `-drive if=ide,index=1`
 /// which maps to primary-bus slave.
 ///
-/// Only LBA28 PIO transfers are implemented — the FAT32 image is 64 MiB, well
+/// Only LBA28 PIO transfers are implemented — the OS disk image is 64 MiB, well
 /// within the 128 GiB addressing limit.
 use x86_64::instructions::port::Port;
 
