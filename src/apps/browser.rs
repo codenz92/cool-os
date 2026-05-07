@@ -20,9 +20,13 @@ const SEARCH_BUTTON_W: i32 = 72;
 const BOOKMARKS_PATH: &str = "/CONFIG/BROWSER.CFG";
 const DOWNLOADS_DIR: &str = "/Downloads";
 const SESSION_INTERNAL_URL: &str = "browser://session";
+const CACHE_INTERNAL_URL: &str = "browser://cache";
 const MAX_BOOKMARKS: usize = 32;
 const MAX_INLINE_PNG_PIXELS: usize = 1_048_576;
 const MAX_HTML_INLINE_IMAGES: usize = 4;
+const MAX_STYLESHEET_SUBRESOURCES: usize = 8;
+const MAX_BROWSER_CACHE_ENTRIES: usize = 16;
+const MAX_BROWSER_RESOURCE_BYTES: usize = 512 * 1024;
 const INLINE_IMAGE_MAX_H: usize = 168;
 const INLINE_IMAGE_RESERVED_ROWS: usize = 14;
 const CONTROL_H: usize = 24;
@@ -432,6 +436,148 @@ struct CachedPage {
     content_type: Option<String>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BrowserResourceKind {
+    Stylesheet,
+    Image,
+}
+
+impl BrowserResourceKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Stylesheet => "css",
+            Self::Image => "image",
+        }
+    }
+}
+
+#[derive(Clone)]
+struct BrowserCachedResource {
+    requested_url: String,
+    final_url: String,
+    kind: BrowserResourceKind,
+    content_type: Option<String>,
+    bytes: Vec<u8>,
+    created_tick: u64,
+    last_used_tick: u64,
+    hits: usize,
+}
+
+#[derive(Clone)]
+struct BrowserFetchedResource {
+    final_url: String,
+    content_type: Option<String>,
+    bytes: Vec<u8>,
+    cache_hit: bool,
+}
+
+#[derive(Default, Clone)]
+struct BrowserSubresourceCache {
+    entries: Vec<BrowserCachedResource>,
+}
+
+#[derive(Default, Clone, Copy)]
+struct BrowserSubresourceStats {
+    stylesheets_loaded: usize,
+    stylesheets_failed: usize,
+    images_loaded: usize,
+    image_placeholders: usize,
+    images_failed: usize,
+    cache_hits: usize,
+    cache_misses: usize,
+}
+
+impl BrowserSubresourceCache {
+    fn lookup(
+        &mut self,
+        requested_url: &str,
+        kind: BrowserResourceKind,
+    ) -> Option<BrowserFetchedResource> {
+        let now = crate::interrupts::ticks();
+        let entry = self.entries.iter_mut().find(|entry| {
+            entry.kind == kind
+                && (entry.requested_url == requested_url || entry.final_url == requested_url)
+        })?;
+        entry.hits = entry.hits.saturating_add(1);
+        entry.last_used_tick = now;
+        Some(BrowserFetchedResource {
+            final_url: entry.final_url.clone(),
+            content_type: entry.content_type.clone(),
+            bytes: entry.bytes.clone(),
+            cache_hit: true,
+        })
+    }
+
+    fn remember(
+        &mut self,
+        requested_url: &str,
+        kind: BrowserResourceKind,
+        final_url: &str,
+        content_type: Option<String>,
+        bytes: &[u8],
+    ) {
+        if bytes.is_empty() || bytes.len() > MAX_BROWSER_RESOURCE_BYTES {
+            return;
+        }
+        if let Some(pos) = self
+            .entries
+            .iter()
+            .position(|entry| entry.kind == kind && entry.requested_url == requested_url)
+        {
+            self.entries.remove(pos);
+        }
+        while self.entries.len() >= MAX_BROWSER_CACHE_ENTRIES {
+            let evict = self
+                .entries
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| {
+                    a.last_used_tick
+                        .cmp(&b.last_used_tick)
+                        .then(a.hits.cmp(&b.hits))
+                })
+                .map(|(idx, _)| idx)
+                .unwrap_or(0);
+            self.entries.remove(evict);
+        }
+        let now = crate::interrupts::ticks();
+        self.entries.push(BrowserCachedResource {
+            requested_url: String::from(requested_url),
+            final_url: String::from(final_url),
+            kind,
+            content_type,
+            bytes: bytes.to_vec(),
+            created_tick: now,
+            last_used_tick: now,
+            hits: 0,
+        });
+    }
+
+    fn entries(&self) -> &[BrowserCachedResource] {
+        &self.entries
+    }
+}
+
+impl BrowserSubresourceStats {
+    fn note_cache(&mut self, hit: bool) {
+        if hit {
+            self.cache_hits = self.cache_hits.saturating_add(1);
+        } else {
+            self.cache_misses = self.cache_misses.saturating_add(1);
+        }
+    }
+
+    fn has_activity(self) -> bool {
+        self.stylesheets_loaded > 0
+            || self.stylesheets_failed > 0
+            || self.images_loaded > 0
+            || self.image_placeholders > 0
+            || self.images_failed > 0
+            || self.cache_hits > 0
+            || self.cache_misses > 0
+    }
+}
+
 #[derive(Clone)]
 struct InlineImage {
     image: crate::png::PngImage,
@@ -519,6 +665,7 @@ struct BrowserDomDocument {
 struct BrowserDocumentState {
     base_url: String,
     source: String,
+    external_css: Vec<String>,
     dom: BrowserDomDocument,
     forms: Vec<BrowserFormState>,
     controls: Vec<BrowserFormControlState>,
@@ -542,6 +689,9 @@ pub struct BrowserApp {
     last_width: i32,
     last_height: i32,
     last_page: Option<CachedPage>,
+    subresource_cache: BrowserSubresourceCache,
+    subresource_stats: BrowserSubresourceStats,
+    bypass_subresource_cache: bool,
     image_preview: Option<crate::png::PngImage>,
     inline_images: Vec<InlineImage>,
     hit_boxes: Vec<BrowserHitBox>,
@@ -569,6 +719,9 @@ impl BrowserApp {
             last_width: BROWSER_W,
             last_height: BROWSER_H,
             last_page: None,
+            subresource_cache: BrowserSubresourceCache::default(),
+            subresource_stats: BrowserSubresourceStats::default(),
+            bypass_subresource_cache: false,
             image_preview: None,
             inline_images: Vec::new(),
             hit_boxes: Vec::new(),
@@ -622,8 +775,10 @@ impl BrowserApp {
         match c {
             'j' | 'J' => self.scroll_by(1),
             'k' | 'K' => self.scroll_by(-1),
-            'r' | 'R' => self.reload(),
+            'r' => self.reload(),
+            'R' => self.hard_reload(),
             'b' | 'B' => self.bookmark_current(),
+            'c' | 'C' => self.navigate(CACHE_INTERNAL_URL, true),
             'd' | 'D' => self.save_current_page(false),
             'h' | 'H' => self.navigate("browser://history", true),
             'm' | 'M' => self.navigate("browser://bookmarks", true),
@@ -771,6 +926,7 @@ impl BrowserApp {
         }
         self.address_focused = false;
         self.address_selected = false;
+        self.bypass_subresource_cache = false;
         self.render();
     }
 
@@ -821,10 +977,8 @@ impl BrowserApp {
             )
         } else {
             self.image_preview = None;
-            let images = self.set_html_document(&response.final_url, &response.body);
-            if images > 0 {
-                self.status.push_str(&format!("  images={}", images));
-            }
+            self.set_html_document(&response.final_url, &response.body);
+            self.append_subresource_status();
             self.lines.clone()
         };
         if self.lines.is_empty() {
@@ -850,6 +1004,7 @@ impl BrowserApp {
         self.scroll = 0;
         self.address_focused = false;
         self.address_selected = false;
+        self.bypass_subresource_cache = false;
         self.last_page = None;
         self.image_preview = None;
         self.inline_images.clear();
@@ -882,6 +1037,14 @@ impl BrowserApp {
                 self.title = String::from("Session");
                 self.status = crate::browser_session::summary_line();
                 self.lines = browser_session_lines();
+            }
+            CACHE_INTERNAL_URL => {
+                self.title = String::from("Cache");
+                self.status = format!(
+                    "{} cached subresource(s)",
+                    self.subresource_cache.entries().len()
+                );
+                self.lines = self.browser_cache_lines();
             }
             _ if url.starts_with("browser://search?q=") => {
                 let query = decode_query(&url["browser://search?q=".len()..]);
@@ -938,6 +1101,12 @@ impl BrowserApp {
     }
 
     fn reload(&mut self) {
+        let url = self.address.clone();
+        self.navigate(&url, false);
+    }
+
+    fn hard_reload(&mut self) {
+        self.bypass_subresource_cache = true;
         let url = self.address.clone();
         self.navigate(&url, false);
     }
@@ -1043,6 +1212,7 @@ impl BrowserApp {
         }
         self.address_focused = false;
         self.address_selected = false;
+        self.bypass_subresource_cache = false;
         self.render();
         true
     }
@@ -1070,6 +1240,7 @@ impl BrowserApp {
         );
         self.address_focused = false;
         self.address_selected = false;
+        self.bypass_subresource_cache = false;
         self.render();
     }
 
@@ -1087,10 +1258,8 @@ impl BrowserApp {
             body_bytes: bytes,
             content_type: Some(String::from("text/html")),
         });
-        let images = self.set_html_document(&url, &body);
-        if images > 0 {
-            self.status.push_str(&format!("  images={}", images));
-        }
+        self.set_html_document(&url, &body);
+        self.append_subresource_status();
         self.lines = if self.lines.is_empty() {
             vec![kind_line("(empty document)", BrowserLineKind::Muted)]
         } else {
@@ -1098,6 +1267,7 @@ impl BrowserApp {
         };
         self.address_focused = false;
         self.address_selected = false;
+        self.bypass_subresource_cache = false;
         self.render();
     }
 
@@ -1127,9 +1297,119 @@ impl BrowserApp {
         out
     }
 
+    fn browser_cache_lines(&self) -> Vec<BrowserLine> {
+        let mut out = vec![
+            kind_line("Browser Cache", BrowserLineKind::Heading),
+            kind_line(
+                "In-memory CSS and image subresources for this Browser window.",
+                BrowserLineKind::Muted,
+            ),
+            line(""),
+        ];
+        let stats = self.subresource_stats;
+        out.push(kind_line(
+            &format!(
+                "last load: css={}/{} images={} placeholders={} failed={} cache={}/{}",
+                stats.stylesheets_loaded,
+                stats
+                    .stylesheets_loaded
+                    .saturating_add(stats.stylesheets_failed),
+                stats.images_loaded,
+                stats.image_placeholders,
+                stats.images_failed,
+                stats.cache_hits,
+                stats.cache_hits.saturating_add(stats.cache_misses)
+            ),
+            BrowserLineKind::Muted,
+        ));
+        if self.subresource_cache.entries().is_empty() {
+            out.push(kind_line(
+                "No cached subresources yet.",
+                BrowserLineKind::Muted,
+            ));
+            return out;
+        }
+        let now = crate::interrupts::ticks();
+        for entry in self.subresource_cache.entries().iter().rev().take(32) {
+            let age = now
+                .saturating_sub(entry.created_tick)
+                .saturating_div(crate::interrupts::TIMER_HZ as u64);
+            let used = now
+                .saturating_sub(entry.last_used_tick)
+                .saturating_div(crate::interrupts::TIMER_HZ as u64);
+            out.push(link_line(
+                &format!(
+                    "{}  {} bytes  hits={}  age={}s  used={}s  {}",
+                    entry.kind.label(),
+                    entry.bytes.len(),
+                    entry.hits,
+                    age,
+                    used,
+                    entry
+                        .content_type
+                        .as_deref()
+                        .unwrap_or("application/octet-stream")
+                ),
+                &entry.final_url,
+            ));
+            if entry.requested_url != entry.final_url {
+                out.push(kind_line(
+                    &format!("requested {}", entry.requested_url),
+                    BrowserLineKind::Muted,
+                ));
+            }
+        }
+        out
+    }
+
+    fn append_subresource_status(&mut self) {
+        let stats = self.subresource_stats;
+        if !stats.has_activity() {
+            return;
+        }
+        let css_total = stats
+            .stylesheets_loaded
+            .saturating_add(stats.stylesheets_failed);
+        if css_total > 0 {
+            self.status
+                .push_str(&format!("  css={}/{}", stats.stylesheets_loaded, css_total));
+        }
+        let image_total = stats
+            .images_loaded
+            .saturating_add(stats.image_placeholders)
+            .saturating_add(stats.images_failed);
+        if image_total > 0 {
+            self.status.push_str(&format!(
+                "  images={} placeholders={} failed={}",
+                stats.images_loaded, stats.image_placeholders, stats.images_failed
+            ));
+        }
+        let cache_total = stats.cache_hits.saturating_add(stats.cache_misses);
+        if cache_total > 0 {
+            self.status
+                .push_str(&format!("  cache={}/{}", stats.cache_hits, cache_total));
+        }
+    }
+
     fn set_html_document(&mut self, base_url: &str, body: &str) -> usize {
-        self.document = Some(BrowserDocumentState::from_html(base_url, body));
-        self.reflow_document()
+        self.subresource_stats = BrowserSubresourceStats::default();
+        let body_text = response_body_text(body).unwrap_or(body);
+        let effective_base = extract_base_href(body_text, base_url);
+        let external_css = load_document_stylesheets(
+            &effective_base,
+            body_text,
+            &mut self.subresource_cache,
+            &mut self.subresource_stats,
+            self.bypass_subresource_cache,
+        );
+        self.document = Some(BrowserDocumentState::from_html_with_external_css(
+            &effective_base,
+            body,
+            external_css,
+        ));
+        let images = self.reflow_document();
+        self.bypass_subresource_cache = false;
+        images
     }
 
     fn reflow_document(&mut self) -> usize {
@@ -1142,7 +1422,14 @@ impl BrowserApp {
             self.cols.max(48),
             document,
         );
-        let images = self.attach_html_images(&mut lines);
+        let images = attach_html_images_with_cache(
+            &mut lines,
+            &mut self.inline_images,
+            &mut self.subresource_cache,
+            &mut self.subresource_stats,
+            self.cols.max(48),
+            self.bypass_subresource_cache,
+        );
         self.lines = if lines.is_empty() {
             vec![kind_line("(empty document)", BrowserLineKind::Muted)]
         } else {
@@ -1333,52 +1620,6 @@ impl BrowserApp {
             }
             Err(err) => Some(format!("PNG preview unavailable: {}", err)),
         }
-    }
-
-    fn attach_html_images(&mut self, lines: &mut Vec<BrowserLine>) -> usize {
-        self.inline_images.clear();
-        let mut idx = 0usize;
-        while idx < lines.len() && self.inline_images.len() < MAX_HTML_INLINE_IMAGES {
-            let should_try = lines
-                .get(idx)
-                .map(|line| line.kind == BrowserLineKind::Image && line.link.is_some())
-                .unwrap_or(false);
-            if !should_try {
-                idx += 1;
-                continue;
-            }
-            let Some(url) = lines[idx].link.clone() else {
-                idx += 1;
-                continue;
-            };
-            let alt = image_alt_from_line(&lines[idx].text);
-            match fetch_png_for_browser(&url) {
-                Ok((image, source_url, byte_len)) => {
-                    let slot = self.inline_images.len();
-                    let rows = inline_image_reserved_rows_for(
-                        image.width,
-                        image.height,
-                        self.cols.max(48),
-                    );
-                    lines[idx].image_slot = Some(slot);
-                    lines[idx].text = format!(
-                        "[image] {}  {}x{}  {} bytes",
-                        alt, image.width, image.height, byte_len
-                    );
-                    lines[idx].link = Some(source_url);
-                    self.inline_images.push(InlineImage { image });
-                    for _ in 1..rows {
-                        lines.insert(idx + 1, inline_image_spacer(slot, &url));
-                    }
-                    idx += rows;
-                }
-                Err(err) => {
-                    lines[idx].text = format!("{} ({})", lines[idx].text, err);
-                    idx += 1;
-                }
-            }
-        }
-        self.inline_images.len()
     }
 
     fn scroll_by(&mut self, delta: i32) {
@@ -2629,6 +2870,7 @@ fn welcome_lines() -> Vec<BrowserLine> {
         link_line("Bookmarks", "browser://bookmarks"),
         link_line("Downloads", "browser://downloads"),
         link_line("Session state", SESSION_INTERNAL_URL),
+        link_line("Cache state", CACHE_INTERNAL_URL),
     ]
 }
 
@@ -2861,6 +3103,322 @@ fn looks_like_html_bytes(bytes: &[u8]) -> bool {
     let sample = String::from_utf8_lossy(&bytes[..sample_len]);
     let lower = lowercase_ascii(&sample);
     lower.contains("<html") || lower.contains("<!doctype html") || lower.contains("<body")
+}
+
+fn load_document_stylesheets(
+    base_url: &str,
+    body: &str,
+    cache: &mut BrowserSubresourceCache,
+    stats: &mut BrowserSubresourceStats,
+    bypass_cache: bool,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for url in stylesheet_urls(base_url, body) {
+        match fetch_subresource_with_cache(
+            &url,
+            BrowserResourceKind::Stylesheet,
+            cache,
+            stats,
+            bypass_cache,
+        ) {
+            Ok(resource) => {
+                if !is_stylesheet_content(resource.content_type.as_deref(), &resource.final_url) {
+                    stats.stylesheets_failed = stats.stylesheets_failed.saturating_add(1);
+                    continue;
+                }
+                let css = String::from_utf8_lossy(&resource.bytes).into_owned();
+                if css.trim().is_empty() {
+                    stats.stylesheets_failed = stats.stylesheets_failed.saturating_add(1);
+                    continue;
+                }
+                stats.stylesheets_loaded = stats.stylesheets_loaded.saturating_add(1);
+                out.push(css);
+                if out.len() >= MAX_STYLESHEET_SUBRESOURCES {
+                    break;
+                }
+            }
+            Err(_) => {
+                stats.stylesheets_failed = stats.stylesheets_failed.saturating_add(1);
+            }
+        }
+    }
+    out
+}
+
+fn stylesheet_urls(base_url: &str, body: &str) -> Vec<String> {
+    let lower = lowercase_ascii(body);
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while out.len() < MAX_STYLESHEET_SUBRESOURCES {
+        let Some(rel) = lower[i..].find("<link") else {
+            break;
+        };
+        let start = i + rel;
+        let Some(end_rel) = find_tag_end(&body[start..]) else {
+            break;
+        };
+        let tag = &body[start + 1..start + end_rel];
+        let lower_tag = lowercase_ascii(tag.trim());
+        if tag_name_of(&lower_tag) == "link"
+            && link_rel_includes_stylesheet(tag)
+            && !link_media_is_unsupported(tag)
+        {
+            if let Some(href) = attr_value(tag, "href") {
+                let href = decode_entities(href.trim());
+                if !href.is_empty() {
+                    let url = resolve_url(base_url, &href);
+                    if !out.iter().any(|existing| existing == &url) {
+                        out.push(url);
+                    }
+                }
+            }
+        }
+        i = start + end_rel + 1;
+    }
+    out
+}
+
+fn link_rel_includes_stylesheet(tag: &str) -> bool {
+    attr_value(tag, "rel")
+        .map(|rel| {
+            lowercase_ascii(&rel)
+                .split_whitespace()
+                .any(|part| part == "stylesheet")
+        })
+        .unwrap_or(false)
+}
+
+fn link_media_is_unsupported(tag: &str) -> bool {
+    let Some(media) = attr_value(tag, "media") else {
+        return false;
+    };
+    let media = lowercase_ascii(&media);
+    !(media.trim().is_empty()
+        || media
+            .split(',')
+            .any(|part| matches!(part.trim(), "all" | "screen")))
+}
+
+fn is_stylesheet_content(content_type: Option<&str>, url: &str) -> bool {
+    content_type
+        .and_then(|value| value.split(';').next())
+        .map(|value| {
+            let value = value.trim();
+            value.eq_ignore_ascii_case("text/css") || value.eq_ignore_ascii_case("text/plain")
+        })
+        .unwrap_or_else(|| extension_from_path(url).eq_ignore_ascii_case("css"))
+}
+
+fn attach_html_images_with_cache(
+    lines: &mut Vec<BrowserLine>,
+    inline_images: &mut Vec<InlineImage>,
+    cache: &mut BrowserSubresourceCache,
+    stats: &mut BrowserSubresourceStats,
+    cols: usize,
+    bypass_cache: bool,
+) -> usize {
+    inline_images.clear();
+    let mut idx = 0usize;
+    while idx < lines.len() && inline_images.len() < MAX_HTML_INLINE_IMAGES {
+        let should_try = lines
+            .get(idx)
+            .map(|line| line.kind == BrowserLineKind::Image && line.link.is_some())
+            .unwrap_or(false);
+        if !should_try {
+            idx += 1;
+            continue;
+        }
+        let Some(url) = lines[idx].link.clone() else {
+            idx += 1;
+            continue;
+        };
+        let alt = image_alt_from_line(&lines[idx].text);
+        match fetch_image_for_browser(&url, cache, stats, bypass_cache) {
+            Ok(BrowserFetchedImage::Png {
+                image,
+                source_url,
+                byte_len,
+                cache_hit,
+            }) => {
+                let slot = inline_images.len();
+                let rows = inline_image_reserved_rows_for(image.width, image.height, cols);
+                lines[idx].image_slot = Some(slot);
+                lines[idx].text = format!(
+                    "[image] {}  {}x{}  {} bytes{}",
+                    alt,
+                    image.width,
+                    image.height,
+                    byte_len,
+                    if cache_hit { " cached" } else { "" }
+                );
+                lines[idx].link = Some(source_url);
+                inline_images.push(InlineImage { image });
+                for _ in 1..rows {
+                    lines.insert(idx + 1, inline_image_spacer(slot, &url));
+                }
+                idx += rows;
+            }
+            Ok(BrowserFetchedImage::Placeholder {
+                label,
+                source_url,
+                byte_len,
+                cache_hit,
+            }) => {
+                lines[idx].text = format!(
+                    "[image] {}  {}  {} bytes  preview unavailable{}",
+                    alt,
+                    label,
+                    byte_len,
+                    if cache_hit { " cached" } else { "" }
+                );
+                lines[idx].link = Some(source_url);
+                idx += 1;
+            }
+            Err(err) => {
+                lines[idx].text = format!("{} ({})", lines[idx].text, err);
+                idx += 1;
+            }
+        }
+    }
+    inline_images.len()
+}
+
+enum BrowserFetchedImage {
+    Png {
+        image: crate::png::PngImage,
+        source_url: String,
+        byte_len: usize,
+        cache_hit: bool,
+    },
+    Placeholder {
+        label: String,
+        source_url: String,
+        byte_len: usize,
+        cache_hit: bool,
+    },
+}
+
+fn fetch_image_for_browser(
+    url: &str,
+    cache: &mut BrowserSubresourceCache,
+    stats: &mut BrowserSubresourceStats,
+    bypass_cache: bool,
+) -> Result<BrowserFetchedImage, String> {
+    let resource =
+        fetch_subresource_with_cache(url, BrowserResourceKind::Image, cache, stats, bypass_cache)
+            .map_err(String::from)?;
+    let cache_hit = resource.cache_hit;
+    if !is_image_content(resource.content_type.as_deref())
+        && !looks_like_image_bytes(&resource.bytes)
+        && !is_known_image_path(&resource.final_url)
+    {
+        stats.images_failed = stats.images_failed.saturating_add(1);
+        return Err(String::from("preview skipped: response is not image data"));
+    }
+    if !is_png_content(resource.content_type.as_deref(), &resource.final_url) {
+        let label = image_metadata_label(
+            &resource.bytes,
+            resource.content_type.as_deref(),
+            &resource.final_url,
+        )
+        .unwrap_or_else(|| String::from("image metadata unavailable"));
+        stats.image_placeholders = stats.image_placeholders.saturating_add(1);
+        return Ok(BrowserFetchedImage::Placeholder {
+            label,
+            source_url: resource.final_url,
+            byte_len: resource.bytes.len(),
+            cache_hit,
+        });
+    }
+    match crate::png::decode_rgb8(&resource.bytes, MAX_INLINE_PNG_PIXELS) {
+        Ok(image) => {
+            stats.images_loaded = stats.images_loaded.saturating_add(1);
+            Ok(BrowserFetchedImage::Png {
+                image,
+                source_url: resource.final_url,
+                byte_len: resource.bytes.len(),
+                cache_hit,
+            })
+        }
+        Err(err) => {
+            stats.images_failed = stats.images_failed.saturating_add(1);
+            Err(format!("PNG preview unavailable: {}", err))
+        }
+    }
+}
+
+fn fetch_subresource_with_cache(
+    url: &str,
+    kind: BrowserResourceKind,
+    cache: &mut BrowserSubresourceCache,
+    stats: &mut BrowserSubresourceStats,
+    bypass_cache: bool,
+) -> Result<BrowserFetchedResource, &'static str> {
+    if !bypass_cache {
+        if let Some(resource) = cache.lookup(url, kind) {
+            stats.note_cache(true);
+            return Ok(resource);
+        }
+    }
+    stats.note_cache(false);
+    let resource = load_subresource_uncached(url, kind)?;
+    cache.remember(
+        url,
+        kind,
+        &resource.final_url,
+        resource.content_type.clone(),
+        &resource.bytes,
+    );
+    Ok(resource)
+}
+
+fn load_subresource_uncached(
+    url: &str,
+    kind: BrowserResourceKind,
+) -> Result<BrowserFetchedResource, &'static str> {
+    if let Some(path) = url.strip_prefix("file://") {
+        let bytes = crate::vfs::vfs_read_file(path).ok_or("subresource file missing")?;
+        if bytes.len() > MAX_BROWSER_RESOURCE_BYTES {
+            return Err("subresource too large");
+        }
+        let content_type = browser_resource_content_type(kind, path, &bytes);
+        return Ok(BrowserFetchedResource {
+            final_url: file_url_for_path(path),
+            content_type,
+            bytes,
+            cache_hit: false,
+        });
+    }
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err("unsupported subresource URL");
+    }
+    let response = crate::net::browser_get_response(url)?;
+    if response.body_bytes.len() > MAX_BROWSER_RESOURCE_BYTES {
+        return Err("subresource too large");
+    }
+    Ok(BrowserFetchedResource {
+        final_url: response.final_url,
+        content_type: response.content_type,
+        bytes: response.body_bytes,
+        cache_hit: false,
+    })
+}
+
+fn browser_resource_content_type(
+    kind: BrowserResourceKind,
+    path: &str,
+    bytes: &[u8],
+) -> Option<String> {
+    match kind {
+        BrowserResourceKind::Stylesheet => {
+            if extension_from_path(path).eq_ignore_ascii_case("css") {
+                Some(String::from("text/css"))
+            } else {
+                Some(String::from("text/plain"))
+            }
+        }
+        BrowserResourceKind::Image => image_content_type_for(path, bytes).map(String::from),
+    }
 }
 
 fn inline_image_spacer(_slot: usize, url: &str) -> BrowserLine {
@@ -3121,29 +3679,6 @@ fn read_le_u24_local(bytes: &[u8], pos: usize) -> Option<u32> {
     )
 }
 
-fn fetch_png_for_browser(url: &str) -> Result<(crate::png::PngImage, String, usize), &'static str> {
-    if let Some(path) = url.strip_prefix("file://") {
-        let bytes = crate::vfs::vfs_read_file(path).ok_or("image file missing")?;
-        if !is_png_content(None, path) && !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-            return Err("preview skipped: not PNG");
-        }
-        let image = crate::png::decode_rgb8(&bytes, MAX_INLINE_PNG_PIXELS)?;
-        return Ok((image, file_url_for_path(path), bytes.len()));
-    }
-    if !(url.starts_with("http://") || url.starts_with("https://")) {
-        return Err("preview skipped: unsupported image URL");
-    }
-    if matches!(extension_from_path(url), "jpg" | "gif" | "webp") {
-        return Err("preview skipped: not PNG");
-    }
-    let response = crate::net::browser_get_response(url)?;
-    if !is_png_content(response.content_type.as_deref(), &response.final_url) {
-        return Err("preview skipped: not PNG");
-    }
-    let image = crate::png::decode_rgb8(&response.body_bytes, MAX_INLINE_PNG_PIXELS)?;
-    Ok((image, response.final_url, response.body_bytes.len()))
-}
-
 fn response_body_text(response: &str) -> Option<&str> {
     response
         .split_once("\r\n\r\n")
@@ -3196,6 +3731,8 @@ fn extension_for_content_type(content_type: Option<&str>) -> Option<&'static str
     let value = content_type?.split(';').next()?.trim();
     if value.eq_ignore_ascii_case("text/html") {
         Some("html")
+    } else if value.eq_ignore_ascii_case("text/css") {
+        Some("css")
     } else if value.eq_ignore_ascii_case("text/plain") {
         Some("txt")
     } else if value.eq_ignore_ascii_case("image/png") {
@@ -3216,6 +3753,8 @@ fn extension_from_path(path: &str) -> &'static str {
     let lower = lowercase_ascii(leaf);
     if lower.ends_with(".html") || lower.ends_with(".htm") {
         "html"
+    } else if lower.ends_with(".css") {
+        "css"
     } else if lower.ends_with(".txt") {
         "txt"
     } else if lower.ends_with(".png") {
@@ -3671,12 +4210,16 @@ struct StyleHints {
 }
 
 impl StyleHints {
-    fn from_document(body: &str) -> Self {
+    fn from_document_with_external_css(body: &str, external_css: &[String]) -> Self {
         let lower = lowercase_ascii(body);
         let mut hints = Self {
             hidden_classes: Vec::new(),
             rules: Vec::new(),
         };
+        for css in external_css.iter().take(MAX_STYLESHEET_SUBRESOURCES) {
+            let css = lowercase_ascii(css);
+            collect_css_hints(&css, &mut hints);
+        }
         let mut i = 0usize;
         while let Some(rel) = lower[i..].find("<style") {
             let start = i + rel;
@@ -4316,7 +4859,7 @@ impl<'a> BrowserRenderControls<'a> {
 }
 
 fn render_document(base_url: &str, response: &str, cols: usize) -> Vec<BrowserLine> {
-    render_document_core(base_url, response, cols, None)
+    render_document_core(base_url, response, cols, &[], None)
 }
 
 fn render_document_interactive(
@@ -4326,13 +4869,20 @@ fn render_document_interactive(
     document: &BrowserDocumentState,
 ) -> Vec<BrowserLine> {
     let mut controls = BrowserRenderControls::new(document);
-    render_document_core(base_url, response, cols, Some(&mut controls))
+    render_document_core(
+        base_url,
+        response,
+        cols,
+        &document.external_css,
+        Some(&mut controls),
+    )
 }
 
 fn render_document_core(
     base_url: &str,
     response: &str,
     cols: usize,
+    external_css: &[String],
     mut controls: Option<&mut BrowserRenderControls<'_>>,
 ) -> Vec<BrowserLine> {
     let body = response
@@ -4345,7 +4895,7 @@ fn render_document_core(
     }
     let effective_base = extract_base_href(body, base_url);
     let base_url: &str = &effective_base;
-    let style_hints = StyleHints::from_document(body);
+    let style_hints = StyleHints::from_document_with_external_css(body, external_css);
     let mut out = Vec::new();
     let mut text = String::new();
     let mut state = HtmlRenderState::new();
@@ -4451,7 +5001,11 @@ pub fn render_document_style_debug_for_test(
     response: &str,
     cols: usize,
 ) -> Vec<String> {
-    render_document(base_url, response, cols)
+    browser_style_debug_lines(render_document(base_url, response, cols))
+}
+
+fn browser_style_debug_lines(lines: Vec<BrowserLine>) -> Vec<String> {
+    lines
         .into_iter()
         .filter(|line| !line.text.is_empty())
         .map(|line| {
@@ -4657,6 +5211,68 @@ pub fn render_document_box_debug_for_test(
             out
         })
         .collect()
+}
+
+pub fn browser_subresource_debug_for_test(
+    base_url: &str,
+    response: &str,
+    cols: usize,
+) -> Vec<String> {
+    let body = response_body_text(response).unwrap_or(response);
+    let effective_base = extract_base_href(body, base_url);
+    let mut cache = BrowserSubresourceCache::default();
+    let mut stats = BrowserSubresourceStats::default();
+    let external_css =
+        load_document_stylesheets(&effective_base, body, &mut cache, &mut stats, false);
+    let document =
+        BrowserDocumentState::from_html_with_external_css(&effective_base, response, external_css);
+    let mut first_lines =
+        render_document_interactive(&document.base_url, &document.source, cols, &document);
+    let mut inline_images = Vec::new();
+    attach_html_images_with_cache(
+        &mut first_lines,
+        &mut inline_images,
+        &mut cache,
+        &mut stats,
+        cols,
+        false,
+    );
+
+    let second_css =
+        load_document_stylesheets(&effective_base, body, &mut cache, &mut stats, false);
+    let second_document =
+        BrowserDocumentState::from_html_with_external_css(&effective_base, response, second_css);
+    let mut second_lines = render_document_interactive(
+        &second_document.base_url,
+        &second_document.source,
+        cols,
+        &second_document,
+    );
+    let mut second_inline_images = Vec::new();
+    attach_html_images_with_cache(
+        &mut second_lines,
+        &mut second_inline_images,
+        &mut cache,
+        &mut stats,
+        cols,
+        false,
+    );
+
+    let mut out = vec![format!(
+        "stats css={}/{} images={} placeholders={} failed={} cache={}/{} entries={}",
+        stats.stylesheets_loaded,
+        stats
+            .stylesheets_loaded
+            .saturating_add(stats.stylesheets_failed),
+        stats.images_loaded,
+        stats.image_placeholders,
+        stats.images_failed,
+        stats.cache_hits,
+        stats.cache_hits.saturating_add(stats.cache_misses),
+        cache.entries().len()
+    )];
+    out.extend(browser_style_debug_lines(second_lines));
+    out
 }
 
 pub fn document_interaction_debug_for_test(base_url: &str, response: &str) -> Vec<String> {
@@ -4934,11 +5550,20 @@ struct FormField {
 
 impl BrowserDocumentState {
     fn from_html(base_url: &str, response: &str) -> Self {
+        Self::from_html_with_external_css(base_url, response, Vec::new())
+    }
+
+    fn from_html_with_external_css(
+        base_url: &str,
+        response: &str,
+        external_css: Vec<String>,
+    ) -> Self {
         let body = response_body_text(response).unwrap_or(response);
         let effective_base = extract_base_href(body, base_url);
         let mut state = Self {
             base_url: effective_base,
             source: String::from(body),
+            external_css,
             dom: BrowserDomDocument::new(),
             forms: Vec::new(),
             controls: Vec::new(),

@@ -510,6 +510,15 @@ fn png_decode_roundtrip() -> bool {
         "/TMP/PHASE57.LAYOUT.HTML",
         b"<!doctype html><html><head><title>Phase 57 Browser Layout</title><style>.float{float:left;width:96px;padding:4px;border:1px solid #335577;background:#eaf6ff}.rel{position:relative;left:12px;top:6px;z-index:2;width:60%;padding:4px;border:1px solid #884422;background:#fff8ea}.abs{position:absolute;left:176px;top:38px;z-index:5;width:112px;padding:4px;border:1px solid #552266;background:#f4eeff}ul.square{list-style-type:square}</style></head><body><h1>Phase 57 browser layout</h1><p>Phase 57 parser paragraph<div class=\"rel\">Relative positioned panel</div><div class=\"float\">Float note</div><p>Text beside float uses remaining flow width.</p><ul class=\"square\"><li>First square<li>Second square</ul><table><tr><th>Feature</th><th>Longer status column</th><tr><td>Parser<td>implicit cell close</table><div class=\"abs\">Absolute badge</div></body></html>",
     );
+    let _ = crate::vfs::vfs_safe_write_file(
+        "/TMP/PHASE58.CSS",
+        b".external{color:#165a72;background:#eaf7ef;margin-left:20px;padding:4px;border:1px solid #226644}.hero-img{width:32px;height:24px}.quiet{display:none}",
+    );
+    let _ = crate::vfs::vfs_safe_write_file("/TMP/PHASE58.GIF", b"GIF89a\x10\x00\x08\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff,\x00\x00\x00\x00\x10\x00\x08\x00\x00;");
+    let _ = crate::vfs::vfs_safe_write_file(
+        "/TMP/PHASE58.SUBRESOURCES.HTML",
+        b"<!doctype html><html><head><title>Phase 58 Subresources</title><link rel=\"stylesheet\" href=\"PHASE58.CSS\"></head><body><h1>Phase 58 subresources</h1><p class=\"external\">External stylesheet panel</p><p class=\"quiet\">Hidden external text</p><img class=\"hero-img\" src=\"PNGTEST.PNG\" alt=\"cached png\"><img src=\"PHASE58.GIF\" alt=\"metadata gif\"><a href=\"browser://cache\">Open cache state</a></body></html>",
+    );
     image.width == 2
         && image.height == 2
         && image.pixels.as_slice() == [0x00ff0000, 0x0000ff00, 0x000000ff, 0x00ffffff]
@@ -698,6 +707,31 @@ fn browser_html_render_roundtrip() -> bool {
         && phase57_lines
             .iter()
             .any(|line| line.contains("| Parser") && line.contains("implicit cell close"));
+    let phase58 = "<!doctype html><html><head><link rel=\"stylesheet\" href=\"PHASE58.CSS\"></head><body><p class=\"external\">External stylesheet panel</p><p class=\"quiet\">Hidden external text</p><img class=\"hero-img\" src=\"PNGTEST.PNG\" alt=\"cached png\"><img src=\"PHASE58.GIF\" alt=\"metadata gif\"><a href=\"browser://cache\">Open cache state</a></body></html>";
+    let phase58_debug = crate::apps::browser::browser_subresource_debug_for_test(
+        "file:///TMP/PHASE58.SUBRESOURCES.HTML",
+        phase58,
+        72,
+    );
+    let has_phase58_stats = phase58_debug
+        .iter()
+        .any(|line| line == "stats css=2/2 images=2 placeholders=2 failed=0 cache=3/6 entries=3");
+    let has_phase58_css = phase58_debug.iter().any(|line| {
+        line.contains("External stylesheet panel")
+            && line.contains("[indent=24]")
+            && line.contains("[color=#165A72]")
+            && line.contains("[bg=#EAF7EF]")
+            && line.contains("[border=1 #226644]")
+    }) && !phase58_debug
+        .iter()
+        .any(|line| line.contains("Hidden external text"));
+    let has_phase58_images = phase58_debug.iter().any(|line| {
+        line.contains("[image] cached png") && line.contains("2x2") && line.contains("cached")
+    }) && phase58_debug.iter().any(|line| {
+        line.contains("[image] metadata gif")
+            && line.contains("GIF 16x8")
+            && line.contains("preview unavailable cached")
+    });
     has_heading
         && has_css
         && has_quote
@@ -713,4 +747,7 @@ fn browser_html_render_roundtrip() -> bool {
         && has_phase57_style
         && has_phase57_layout
         && has_phase57_parser
+        && has_phase58_stats
+        && has_phase58_css
+        && has_phase58_images
 }

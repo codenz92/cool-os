@@ -4,7 +4,7 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–57 are complete. The current milestone gives coolOS a much more
+Phases 1–58 are complete. The current milestone gives coolOS a much more
 normal command-line and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
@@ -16,8 +16,9 @@ DOM-event hit-box fixture coverage, and DOM-backed form controls with live
 editing, reset handling, real URL-encoded POST request bodies, persistent
 cookie/session state, CSS2 box-model layout, positioned/floating boxes, z-index
 paint order, improved table/list layout, and parser repair for common implied
-HTML closes.
-Phases 45-57 focus on responsiveness, interactive terminal behavior, and
+HTML closes plus external stylesheet/image subresource loading with bounded
+cache metadata.
+Phases 45-58 focus on responsiveness, interactive terminal behavior, and
 desktop-browser compatibility:
 cursor-only framebuffer updates,
 input-first idle-loop ordering, adaptive 36/144 Hz frame pacing, compositor
@@ -25,7 +26,8 @@ telemetry, and `poll`-driven userspace waits for pipes, TTY stdin, sockets,
 GUI events, and child exits, plus raw TTY input, ANSI-rendered TUI output,
 keyboard-editable Browser controls, and a richer native Browser rendering
 surface with GET/POST form submission, a persistent cookie jar, and bounded
-margin/padding/border/position/float layout.
+margin/padding/border/position/float layout plus a small Browser subresource
+cache.
 
 ---
 
@@ -574,15 +576,17 @@ HTTPS rather than a fake port-443 passthrough.
 
 - `src/net.rs` owns HTTP redirect following and chunked transfer decoding so Terminal,
   browser, and syscall callers share one HTTP implementation.
-- `src/apps/browser.rs` remains a native no_std GUI app. Phases 49-57 give it a
+- `src/apps/browser.rs` remains a native no_std GUI app. Phases 49-58 give it a
   bounded browser-engine layer for HTML/CSS line boxes, images, forms, and
   DOM-backed document controls, persistent cookie/session state, CSS2 box-model
   layout, positioning/floats, z-index paint order, table/list improvements, and
-  implied-close parser repair while keeping JavaScript execution as future work.
+  implied-close parser repair plus external stylesheet/image subresources and
+  cache metadata while keeping JavaScript execution as future work.
 - `/bin/wget` now sends an HTTP/1.1 request with a coolOS user agent, keeping it as a
   raw userspace socket demo.
-- The next browser phase after 57 is resource/cache work: CSS/image subresource
-  loading, cache metadata, cleaner reload behavior, and eventually JavaScript.
+- The next browser phase after 58 is a small JavaScript/DOM runtime: script
+  loading policy, event dispatch hooks, bounded timers, and DOM mutation enough
+  for simple interactive pages.
 
 ---
 
@@ -1653,8 +1657,36 @@ and malformed-but-common HTML structure.
 **Current status:** complete. The Browser now has a more resilient layout/parser
 layer for ordinary desktop web pages: positioned and floating boxes, z-ordered
 painting and hit testing, better list/table output, and parser recovery for
-common omitted closing tags. External CSS/image subresources, cache semantics,
-and JavaScript remain future browser-engine work.
+common omitted closing tags. External CSS/image subresources and cache semantics
+moved into Phase 58; JavaScript remains future browser-engine work.
+
+---
+
+## ✅ Phase 58 — Browser Subresources and Cache
+
+**Goal:** Let the Browser render common page dependencies instead of only the
+main HTML document: external stylesheets, HTML image resources, and visible
+cache state.
+
+- [x] Discover bounded `<link rel="stylesheet">` resources, resolve them
+      against `<base>` / page URLs, and load local, HTTP, or HTTPS CSS through
+      the shared Browser loader path.
+- [x] Feed loaded external CSS into the existing selector/cascade engine before
+      rendering while preserving inline style and inline `<style>` behavior.
+- [x] Route HTML-sourced images through a bounded subresource path that decodes
+      PNG previews and keeps JPEG/GIF/WebP as dimension-aware placeholders.
+- [x] Add an in-memory subresource cache with URL, kind, content type, size,
+      age, last-use, and hit-count metadata.
+- [x] Add `browser://cache`, cache hit/miss status text, normal reload reuse,
+      and uppercase `R` hard reload behavior for subresources.
+- [x] Add `/TMP/PHASE58.SUBRESOURCES.HTML`, `/TMP/PHASE58.CSS`, subresource
+      debug selftest coverage, and `make smoke-phase58-browser-subresources`.
+
+**Current status:** complete. The Browser now has the first practical
+subresource layer for desktop pages: external CSS affects layout, inline PNGs
+reuse cached bytes across reflow/reload, non-PNG images keep useful metadata
+placeholders, and the cache can be inspected from inside the OS. JavaScript,
+script loading policy, and DOM mutation remain future browser-engine work.
 
 ---
 
@@ -1731,4 +1763,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.18 | Phase 54 complete: Browser POST submission |
 | v7.19 | Phase 55 complete: Browser session state |
 | v7.20 | Phase 56 complete: CSS2 box model and reflow |
-| v7.21 | Current — Phase 57 complete: Browser layout and parser fidelity |
+| v7.21 | Phase 57 complete: Browser layout and parser fidelity |
+| v7.22 | Current — Phase 58 complete: Browser subresources and cache |

@@ -13,7 +13,7 @@ stdio, and IPC with pipes, shared memory, and per-task fd tables.
 
 ---
 
-# Current state — v7.21
+# Current state — v7.22
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -59,7 +59,7 @@ rename, writable file descriptors, fd-mapped child stdio, sync, and RTC time;
 `/bin/sh` now supports quoting, relative paths, redirection, and one-stage
 pipelines; `/bin` includes practical file/text/date/devkit tools; sysreport can
 write `/LOGS/SYSREPORT.TXT`; and the generated image ships `/SDK` docs and
-templates. Phases 45-57 add compositor smoothness, evented terminal work, and
+templates. Phases 45-58 add compositor smoothness, evented terminal work, and
 a richer native browser renderer:
 timer ticks now request
 paced frames instead of unconditional full redraws, mouse-only motion uses a
@@ -82,7 +82,8 @@ bounded margins, padding, borders, backgrounds, percentage widths, positioned
 and floating boxes, z-index paint ordering, stronger table/list layout, tolerant
 HTML parser repair for common implied closes, and smoke fixtures for the browser
 engine, CSS layout, forms, DOM events, DOM-backed form interaction, POST form
-pages, session state, box-model pages, and deeper layout pages.
+pages, session state, box-model pages, deeper layout pages, and subresource
+cache pages.
 
 | Context | Mode | Description |
 | :------ | :--- | :---------- |
@@ -152,7 +153,7 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **Text Viewer** | Right-click | Scrollable "About" doc; `j`/`k` to scroll. |
 | **Color Picker** | Right-click | Clickable 16-colour EGA palette grid. |
 | **File Manager** | Right-click / desktop icon | Browse and mutate the CoolFS root with breadcrumbs, recursive search, sorting, multi-select, clipboard copy/cut/paste, Trash-backed delete, properties, inline text editing, Open With Editor/Viewer, and ELF launch routing. |
-| **Web Browser** | Launcher / desktop icon | Native HTTP/HTTPS/local-file browser with address/search bar, redirects, decoded chunked responses, headings/lists/quotes/tables, CSS2-style cascade, box-model, positioning, float, z-index, table/list, and parser-repair hints for tag/class/id/inline selectors, styled text blocks, direct and HTML-sourced inline PNG previews, image metadata/placeholders for JPEG/GIF/WebP, clickable links/forms, session history, visible TLS trust-root status, persistent bookmarks, persistent cookies, and `browser://session`. |
+| **Web Browser** | Launcher / desktop icon | Native HTTP/HTTPS/local-file browser with address/search bar, redirects, decoded chunked responses, headings/lists/quotes/tables, CSS2-style cascade, box-model, positioning, float, z-index, table/list, parser-repair, external stylesheet, inline-image cache, and subresource metadata hints for tag/class/id/inline selectors, styled text blocks, direct and HTML-sourced inline PNG previews, image metadata/placeholders for JPEG/GIF/WebP, clickable links/forms, session history, visible TLS trust-root status, persistent bookmarks, persistent cookies, `browser://session`, and `browser://cache`. |
 | **Accounts** | Launcher / Display Settings Users tab | Admin account management for first-run setup, account creation, role changes, enable/disable, password reset, and deletion. |
 | **Trash Bin** | Launcher / desktop icon / `exec /bin/trash` | Ring-3 GUI utility that lists deleted items staged in `/Trash` and can permanently empty them. |
 | **Screenshot** | Launcher / desktop icon / `exec /bin/screenshot` | Ring-3 GUI utility that queues a focused-window PPM capture to `/Pictures`. |
@@ -599,7 +600,7 @@ movement, and screen/line clearing. `libcool::tty` exposes mode/size helpers,
 and `/bin/tuidemo` smokes raw single-key input without Enter plus ANSI-rendered
 status text.
 
-**Browser rendering phases (49-57).** The native Browser now has a more explicit
+**Browser rendering phases (49-58).** The native Browser now has a more explicit
 HTML/CSS rendering path: style blocks and inline styles are parsed into bounded
 rules for tag, class, id, and simple compound selectors; computed style drives
 hidden content, alignment, indentation, text color, backgrounds, preformatted
@@ -614,8 +615,12 @@ laid-out box rects for link/control hit testing. HTML parsing now repairs common
 implied closes for paragraphs, list items, rows, and cells so malformed desktop
 pages do not bleed styles or table state. Table rows use bounded content-aware
 column sizing, and CSS list markers can render square/circle/decimal/none
-variants. Image handling keeps the PNG decoder bounded while recognizing
-PNG/JPEG/GIF/WebP dimensions for previews/placeholders. Forms render text,
+variants. External `<link rel="stylesheet">` resources now load through a
+bounded local/HTTP/HTTPS subresource path and feed the existing cascade before
+rendering. Image handling keeps the PNG decoder bounded while recognizing
+PNG/JPEG/GIF/WebP dimensions for previews/placeholders; HTML-sourced images now
+share a small in-memory cache with stylesheet resources, and `browser://cache`
+shows URL, type, size, age, last-use, and hit metadata. Forms render text,
 search, and email fields, checkboxes, radios, selects, textareas, and buttons,
 preserve checked/default values, and now bind rendered controls to a bounded
 DOM/form-state model. Clicks and keyboard focus edit live control values,
@@ -625,13 +630,14 @@ submit encoded live values, and POST forms now send
 response path used by normal page loads. Browser GET/POST page loads now share
 a persistent cookie jar in `/CONFIG/BROWSER.COOKIES`; `Set-Cookie` handling
 covers Domain, Path, Secure, and Max-Age deletion, and `browser://session`
-shows redacted session state. The Browser can also be launched from Terminal
-with `browser [url]`. The fixture targets from `make
-smoke-phase49-browser-engine` through `make smoke-phase57-browser-layout` boot
+shows redacted session state. Normal reloads reuse cached subresources while
+uppercase `R` performs a hard subresource reload. The Browser can also be
+launched from Terminal with `browser [url]`. The fixture targets from `make
+smoke-phase49-browser-engine` through `make smoke-phase58-browser-subresources` boot
 pages or internal Browser diagnostics; the Phase 54 target submits the fixture
 form over HTTPS, Phase 55 opens the session-state surface, Phase 56 renders the
 CSS box-model fixture, and Phase 57 renders the positioning/floats/parser
-fixture.
+fixture, and Phase 58 renders the external CSS/image/cache fixture.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
@@ -708,5 +714,6 @@ while kernel faults still panic.
 | 55 | Browser session state — persistent cookie jar, session-aware GET/POST, and `browser://session` | **Done** |
 | 56 | CSS2 box model and reflow — margins, padding, borders, percentage widths, and box hit testing | **Done** |
 | 57 | Browser layout and parser fidelity — positioning, floats, z-index, list/table layout, and implied-close repair | **Done** |
+| 58 | Browser subresources and cache — external CSS, cached images, metadata placeholders, and `browser://cache` | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).
