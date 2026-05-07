@@ -4,7 +4,7 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–56 are complete. The current milestone gives coolOS a much more
+Phases 1–57 are complete. The current milestone gives coolOS a much more
 normal command-line and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
@@ -13,9 +13,11 @@ v10 TTY control for raw terminal-mode programs. The native browser now has a
 bounded HTML/CSS rendering foundation with CSS selector/cascade support,
 CSS-styled line boxes, better image metadata/sizing, form submit URL handling,
 DOM-event hit-box fixture coverage, and DOM-backed form controls with live
-editing, reset handling, real URL-encoded POST request bodies, and persistent
-cookie/session state plus CSS2 box-model layout.
-Phases 45-56 focus on responsiveness, interactive terminal behavior, and
+editing, reset handling, real URL-encoded POST request bodies, persistent
+cookie/session state, CSS2 box-model layout, positioned/floating boxes, z-index
+paint order, improved table/list layout, and parser repair for common implied
+HTML closes.
+Phases 45-57 focus on responsiveness, interactive terminal behavior, and
 desktop-browser compatibility:
 cursor-only framebuffer updates,
 input-first idle-loop ordering, adaptive 36/144 Hz frame pacing, compositor
@@ -23,7 +25,7 @@ telemetry, and `poll`-driven userspace waits for pipes, TTY stdin, sockets,
 GUI events, and child exits, plus raw TTY input, ANSI-rendered TUI output,
 keyboard-editable Browser controls, and a richer native Browser rendering
 surface with GET/POST form submission, a persistent cookie jar, and bounded
-margin/padding/border layout.
+margin/padding/border/position/float layout.
 
 ---
 
@@ -572,14 +574,15 @@ HTTPS rather than a fake port-443 passthrough.
 
 - `src/net.rs` owns HTTP redirect following and chunked transfer decoding so Terminal,
   browser, and syscall callers share one HTTP implementation.
-- `src/apps/browser.rs` remains a native no_std GUI app. Phases 49-56 give it a
+- `src/apps/browser.rs` remains a native no_std GUI app. Phases 49-57 give it a
   bounded browser-engine layer for HTML/CSS line boxes, images, forms, and
-  DOM-backed document controls, persistent cookie/session state, and CSS2
-  box-model layout while keeping JavaScript execution as future work.
+  DOM-backed document controls, persistent cookie/session state, CSS2 box-model
+  layout, positioning/floats, z-index paint order, table/list improvements, and
+  implied-close parser repair while keeping JavaScript execution as future work.
 - `/bin/wget` now sends an HTTP/1.1 request with a coolOS user agent, keeping it as a
   raw userspace socket demo.
-- The next browser phase after 56 is deeper layout/parser work: CSS positioning,
-  table/list/floats fidelity, HTML5 parser cleanup, and eventually JavaScript.
+- The next browser phase after 57 is resource/cache work: CSS/image subresource
+  loading, cache metadata, cleaner reload behavior, and eventually JavaScript.
 
 ---
 
@@ -1619,8 +1622,39 @@ metrics that affect wrapping, painting, and hit testing.
 
 **Current status:** complete. The Browser now handles the practical CSS2 box
 model needed for readable desktop pages: bounded margin/padding/border boxes,
-background painting, percentage-width reflow, and box-based hit testing. CSS
-positioning, floats, richer table layout, and JavaScript remain future work.
+background painting, percentage-width reflow, and box-based hit testing. Deeper
+positioning, floats, parser recovery, and table/list fidelity moved into Phase
+57.
+
+---
+
+## ✅ Phase 57 — Browser Layout and Parser Fidelity
+
+**Goal:** Make the Browser layout engine handle the next set of common desktop
+page constructs: positioned boxes, floats, z-ordering, stronger tables/lists,
+and malformed-but-common HTML structure.
+
+- [x] Extend the CSS cascade with `position`, `top/right/bottom/left`, `float`,
+      `z-index`, and `list-style` / `list-style-type` parsing.
+- [x] Carry positioning, float, z-index, and list marker metadata through
+      `BrowserLineStyle`, style debug output, and box layout debug output.
+- [x] Update layout placement so relative/sticky boxes offset visually while
+      staying in normal flow, absolute/fixed boxes can anchor by offsets, and
+      z-index/source order controls paint and hit-test priority.
+- [x] Add bounded left/right float handling that reserves horizontal flow space
+      for following text while keeping painted float boxes in the document.
+- [x] Improve table/list fidelity with CSS square/circle/decimal/none list
+      markers and content-aware table column sizing.
+- [x] Repair common HTML implied closes for paragraphs, list items, table rows,
+      and table cells in both renderer flow and DOM/control scanning.
+- [x] Add `/TMP/PHASE57.LAYOUT.HTML`, parser/layout selftest checks, and
+      `make smoke-phase57-browser-layout`.
+
+**Current status:** complete. The Browser now has a more resilient layout/parser
+layer for ordinary desktop web pages: positioned and floating boxes, z-ordered
+painting and hit testing, better list/table output, and parser recovery for
+common omitted closing tags. External CSS/image subresources, cache semantics,
+and JavaScript remain future browser-engine work.
 
 ---
 
@@ -1696,4 +1730,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.17 | Phase 53 complete: DOM-backed browser forms |
 | v7.18 | Phase 54 complete: Browser POST submission |
 | v7.19 | Phase 55 complete: Browser session state |
-| v7.20 | Current — Phase 56 complete: CSS2 box model and reflow |
+| v7.20 | Phase 56 complete: CSS2 box model and reflow |
+| v7.21 | Current — Phase 57 complete: Browser layout and parser fidelity |

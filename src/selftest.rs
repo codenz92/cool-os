@@ -506,6 +506,10 @@ fn png_decode_roundtrip() -> bool {
         "/TMP/PHASE56.BOX.HTML",
         b"<!doctype html><html><head><title>Phase 56 CSS Box</title><style>.box{width:50%;margin:4px 8px 6px 8px;padding:6px 10px;border:2px solid #335577;background:#eaf6ff}.wide{width:75%;padding:4px 12px;border:1px solid #884422;background:#fff8ea}input.field{width:50%;padding:4px;border:1px solid #335577}</style></head><body><h1>Phase 56 CSS box model</h1><div class=\"box\">Phase 56 box model wraps text inside a bounded content box while margin padding border and background are painted by layout.</div><p class=\"wide\">Percentage width blocks reflow when the Browser window size changes.</p><form action=\"/box\"><input class=\"field\" type=\"search\" name=\"q\" value=\"layout\" placeholder=\"Box search\"><input type=\"submit\" value=\"Go\"></form></body></html>",
     );
+    let _ = crate::vfs::vfs_safe_write_file(
+        "/TMP/PHASE57.LAYOUT.HTML",
+        b"<!doctype html><html><head><title>Phase 57 Browser Layout</title><style>.float{float:left;width:96px;padding:4px;border:1px solid #335577;background:#eaf6ff}.rel{position:relative;left:12px;top:6px;z-index:2;width:60%;padding:4px;border:1px solid #884422;background:#fff8ea}.abs{position:absolute;left:176px;top:38px;z-index:5;width:112px;padding:4px;border:1px solid #552266;background:#f4eeff}ul.square{list-style-type:square}</style></head><body><h1>Phase 57 browser layout</h1><p>Phase 57 parser paragraph<div class=\"rel\">Relative positioned panel</div><div class=\"float\">Float note</div><p>Text beside float uses remaining flow width.</p><ul class=\"square\"><li>First square<li>Second square</ul><table><tr><th>Feature</th><th>Longer status column</th><tr><td>Parser<td>implicit cell close</table><div class=\"abs\">Absolute badge</div></body></html>",
+    );
     image.width == 2
         && image.height == 2
         && image.pixels.as_slice() == [0x00ff0000, 0x0000ff00, 0x000000ff, 0x00ffffff]
@@ -638,6 +642,62 @@ fn browser_html_render_roundtrip() -> bool {
             && line.contains("box=184x")
             && line.contains("at 8,")
     });
+    let phase57 = "<!doctype html><html><head><style>.float{float:left;width:96px;padding:4px;border:1px solid #335577;background:#eaf6ff}.rel{position:relative;left:12px;top:6px;z-index:2;width:60%;padding:4px;border:1px solid #884422;background:#fff8ea}.abs{position:absolute;left:176px;top:38px;z-index:5;width:112px;padding:4px;border:1px solid #552266;background:#f4eeff}ul.square{list-style-type:square}</style></head><body><p>Phase 57 parser paragraph<div class=\"rel\">Relative positioned panel</div><div class=\"float\">Float note</div><p>Text beside float uses remaining flow width.</p><ul class=\"square\"><li>First square<li>Second square</ul><table><tr><th>Feature</th><th>Longer status column</th><tr><td>Parser<td>implicit cell close</table><div class=\"abs\">Absolute badge</div></body></html>";
+    let phase57_lines = crate::apps::browser::render_document_debug_for_test(
+        "file:///TMP/PHASE57.LAYOUT.HTML",
+        phase57,
+        72,
+    );
+    let phase57_style = crate::apps::browser::render_document_style_debug_for_test(
+        "file:///TMP/PHASE57.LAYOUT.HTML",
+        phase57,
+        72,
+    );
+    let phase57_layout = crate::apps::browser::render_document_box_debug_for_test(
+        "file:///TMP/PHASE57.LAYOUT.HTML",
+        phase57,
+        72,
+        320,
+    );
+    let has_phase57_style = phase57_style.iter().any(|line| {
+        line.contains("Relative positioned panel")
+            && line.contains("[pos=relative left=12 top=6]")
+            && line.contains("[z=2]")
+    }) && phase57_style
+        .iter()
+        .any(|line| line.contains("Float note") && line.contains("[float=left]"))
+        && phase57_style
+            .iter()
+            .any(|line| line.contains("- First square"));
+    let has_phase57_layout = phase57_layout.iter().any(|line| {
+        line.contains("Relative positioned panel")
+            && line.contains("pos=relative")
+            && line.contains("z=2")
+            && line.contains("at 12,")
+    }) && phase57_layout.iter().any(|line| {
+        line.contains("Absolute badge")
+            && line.contains("pos=absolute")
+            && line.contains("z=5")
+            && line.contains("at 176,38")
+    }) && phase57_layout
+        .iter()
+        .any(|line| line.contains("Text beside float") && line.contains("at 114,"));
+    let has_phase57_parser = phase57_lines
+        .iter()
+        .any(|line| line == "Phase 57 parser paragraph")
+        && phase57_lines
+            .iter()
+            .any(|line| line == "Relative positioned panel")
+        && phase57_lines.iter().any(|line| line == "- First square")
+        && phase57_lines.iter().any(|line| line == "- Second square")
+        && phase57_lines.iter().any(|line| {
+            line.contains("| Feature")
+                && line.contains("Longer status column")
+                && !line.contains("implicit cell close")
+        })
+        && phase57_lines
+            .iter()
+            .any(|line| line.contains("| Parser") && line.contains("implicit cell close"));
     has_heading
         && has_css
         && has_quote
@@ -650,4 +710,7 @@ fn browser_html_render_roundtrip() -> bool {
         && has_cookie_request
         && has_box_style
         && has_box_layout
+        && has_phase57_style
+        && has_phase57_layout
+        && has_phase57_parser
 }

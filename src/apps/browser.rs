@@ -89,6 +89,34 @@ enum BrowserLineBoxPart {
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum CssPosition {
+    #[default]
+    Static,
+    Relative,
+    Absolute,
+    Fixed,
+    Sticky,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum CssFloat {
+    #[default]
+    None,
+    Left,
+    Right,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum CssListStyle {
+    #[default]
+    Disc,
+    Circle,
+    Square,
+    Decimal,
+    None,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct BrowserBoxStyle {
     margin_top: usize,
     margin_right: usize,
@@ -188,6 +216,14 @@ struct BrowserLineStyle {
     text_color: Option<u32>,
     background: Option<u32>,
     box_style: BrowserBoxStyle,
+    position: CssPosition,
+    offset_top: Option<isize>,
+    offset_right: Option<isize>,
+    offset_bottom: Option<isize>,
+    offset_left: Option<isize>,
+    float_side: CssFloat,
+    z_index: Option<i16>,
+    list_style: CssListStyle,
 }
 
 impl BrowserLineStyle {
@@ -201,6 +237,26 @@ impl BrowserLineStyle {
             text_color: other.text_color.or(self.text_color),
             background: other.background.or(self.background),
             box_style: self.box_style.merged(other.box_style),
+            position: if other.position != CssPosition::Static {
+                other.position
+            } else {
+                self.position
+            },
+            offset_top: other.offset_top.or(self.offset_top),
+            offset_right: other.offset_right.or(self.offset_right),
+            offset_bottom: other.offset_bottom.or(self.offset_bottom),
+            offset_left: other.offset_left.or(self.offset_left),
+            float_side: if other.float_side != CssFloat::None {
+                other.float_side
+            } else {
+                self.float_side
+            },
+            z_index: other.z_index.or(self.z_index),
+            list_style: if other.list_style != CssListStyle::Disc {
+                other.list_style
+            } else {
+                self.list_style
+            },
         }
     }
 
@@ -219,6 +275,20 @@ impl BrowserLineStyle {
             container_px.saturating_sub(horizontal)
         };
         (width_px / CHAR_W).clamp(8, container_cols.max(8))
+    }
+
+    fn visual_z(self) -> i16 {
+        self.z_index.unwrap_or(0)
+    }
+
+    fn has_flow_effect(self) -> bool {
+        self.position != CssPosition::Static
+            || self.float_side != CssFloat::None
+            || self.offset_top.is_some()
+            || self.offset_right.is_some()
+            || self.offset_bottom.is_some()
+            || self.offset_left.is_some()
+            || self.z_index.is_some()
     }
 }
 
@@ -345,6 +415,8 @@ struct BrowserLayoutItem {
     image_slot: Option<usize>,
     style: BrowserLineStyle,
     control_id: Option<usize>,
+    z_index: i16,
+    source_order: usize,
 }
 
 struct BrowserLayout {
@@ -1816,9 +1888,12 @@ fn layout_browser_lines(
 ) -> BrowserLayout {
     let mut items = Vec::new();
     let mut y = 0usize;
+    let mut max_bottom = 0usize;
+    let mut active_floats = Vec::new();
     let mut i = 0usize;
     while i < lines.len() {
         let line = &lines[i];
+        prune_active_floats(&mut active_floats, y);
         if line.kind == BrowserLineKind::Image
             && line.text.trim().is_empty()
             && line.image_slot.is_none()
@@ -1839,6 +1914,7 @@ fn layout_browser_lines(
             && line.image_slot.is_none()
             && matches!(line.control, BrowserControl::None)
             && !line.style.box_style.has_layout()
+            && !line.style.has_flow_effect()
         {
             let align = line.align;
             let mut group = Vec::new();
@@ -1858,6 +1934,7 @@ fn layout_browser_lines(
                     || next.image_slot.is_some()
                     || !matches!(next.control, BrowserControl::None)
                     || next.text.trim().is_empty()
+                    || next.style.has_flow_effect()
                 {
                     break;
                 }
@@ -1902,6 +1979,8 @@ fn layout_browser_lines(
                         image_slot: None,
                         style: next.style,
                         control_id: next.control_id,
+                        z_index: next.style.visual_z(),
+                        source_order: items.len(),
                     });
                     x = x.saturating_add(w).saturating_add(CONTROL_GAP + 8);
                 }
@@ -1912,6 +1991,7 @@ fn layout_browser_lines(
         }
         if matches!(line.control, BrowserControl::Button { .. })
             && !line.style.box_style.has_layout()
+            && !line.style.has_flow_effect()
         {
             let align = line.align;
             let mut group = Vec::new();
@@ -1920,6 +2000,7 @@ fn layout_browser_lines(
             while let Some(next) = lines.get(j) {
                 if next.align != align
                     || next.style != line.style
+                    || next.style.has_flow_effect()
                     || !matches!(next.control, BrowserControl::Button { .. })
                 {
                     break;
@@ -1961,6 +2042,8 @@ fn layout_browser_lines(
                     image_slot: None,
                     style: next.style,
                     control_id: next.control_id,
+                    z_index: next.style.visual_z(),
+                    source_order: items.len(),
                 });
                 x = x.saturating_add(w).saturating_add(CONTROL_GAP);
             }
@@ -1972,8 +2055,11 @@ fn layout_browser_lines(
             let available_w = doc_w.saturating_sub(line.style.indent_px).max(1);
             let natural_w = control_width(&line.control, available_w);
             let h = control_height(&line.control);
-            let placed = place_boxed_item(line, doc_w, natural_w, h);
-            items.push(BrowserLayoutItem {
+            let (flow_left, flow_right) =
+                flow_reserve_for_line(&active_floats, y, doc_w, line.style.float_side);
+            let placed =
+                place_boxed_item_with_flow(line, doc_w, natural_w, h, flow_left, flow_right);
+            let mut item = BrowserLayoutItem {
                 x: placed.content_x,
                 y: y.saturating_add(placed.content_y),
                 w: placed.content_w,
@@ -1989,17 +2075,31 @@ fn layout_browser_lines(
                 image_slot: None,
                 style: line.style,
                 control_id: line.control_id,
-            });
-            y = y.saturating_add(placed.outer_h + BLOCK_GAP);
+                z_index: line.style.visual_z(),
+                source_order: items.len(),
+            };
+            apply_css_position(&mut item, doc_w);
+            max_bottom = max_bottom.max(item.box_y.saturating_add(item.box_h));
+            if line.style.float_side != CssFloat::None {
+                active_floats.push(ActiveBrowserFloat::from_item(line.style.float_side, &item));
+            }
+            items.push(item);
+            if line_part_occupies_flow(line) {
+                y = y.saturating_add(placed.outer_h + BLOCK_GAP);
+            }
             i += 1;
             continue;
         }
         if let Some(slot) = line.image_slot {
             if let Some(image) = inline_images.get(slot).map(|inline| &inline.image) {
+                let (flow_left, flow_right) =
+                    flow_reserve_for_line(&active_floats, y, doc_w, line.style.float_side);
                 let metrics = box_metrics(line.style.box_style, line.box_part);
                 let chrome = metrics.horizontal_chrome();
                 let max_w = doc_w
                     .saturating_sub(line.style.indent_px)
+                    .saturating_sub(flow_left)
+                    .saturating_sub(flow_right)
                     .saturating_sub(chrome)
                     .max(1);
                 let (draw_w, draw_h) = scaled_image_size_with_hint(
@@ -2009,8 +2109,9 @@ fn layout_browser_lines(
                     max_w,
                     INLINE_IMAGE_MAX_H,
                 );
-                let placed = place_boxed_item(line, doc_w, draw_w, draw_h);
-                items.push(BrowserLayoutItem {
+                let placed =
+                    place_boxed_item_with_flow(line, doc_w, draw_w, draw_h, flow_left, flow_right);
+                let mut item = BrowserLayoutItem {
                     x: placed.content_x,
                     y: y.saturating_add(placed.content_y),
                     w: placed.content_w,
@@ -2026,21 +2127,33 @@ fn layout_browser_lines(
                     image_slot: Some(slot),
                     style: line.style,
                     control_id: line.control_id,
-                });
-                y = y.saturating_add(placed.outer_h + BLOCK_GAP);
+                    z_index: line.style.visual_z(),
+                    source_order: items.len(),
+                };
+                apply_css_position(&mut item, doc_w);
+                max_bottom = max_bottom.max(item.box_y.saturating_add(item.box_h));
+                if line.style.float_side != CssFloat::None {
+                    active_floats.push(ActiveBrowserFloat::from_item(line.style.float_side, &item));
+                }
+                items.push(item);
+                if line_part_occupies_flow(line) {
+                    y = y.saturating_add(placed.outer_h + BLOCK_GAP);
+                }
                 i += 1;
                 continue;
             }
         }
-        let available_w = content_available_width(line, doc_w);
+        let (flow_left, flow_right) =
+            flow_reserve_for_line(&active_floats, y, doc_w, line.style.float_side);
+        let available_w = content_available_width_with_flow(line, doc_w, flow_left, flow_right);
         let w = text_pixel_width(&line.text).min(available_w);
         let h = if line.kind == BrowserLineKind::Heading {
             LINE_H + 2
         } else {
             LINE_H
         };
-        let placed = place_boxed_item(line, doc_w, w, h);
-        items.push(BrowserLayoutItem {
+        let placed = place_boxed_item_with_flow(line, doc_w, w, h, flow_left, flow_right);
+        let mut item = BrowserLayoutItem {
             x: placed.content_x,
             y: y.saturating_add(placed.content_y),
             w: placed.content_w,
@@ -2056,13 +2169,28 @@ fn layout_browser_lines(
             image_slot: None,
             style: line.style,
             control_id: line.control_id,
-        });
-        y = y.saturating_add(placed.outer_h);
+            z_index: line.style.visual_z(),
+            source_order: items.len(),
+        };
+        apply_css_position(&mut item, doc_w);
+        max_bottom = max_bottom.max(item.box_y.saturating_add(item.box_h));
+        if line.style.float_side != CssFloat::None {
+            active_floats.push(ActiveBrowserFloat::from_item(line.style.float_side, &item));
+        }
+        items.push(item);
+        if line_part_occupies_flow(line) {
+            y = y.saturating_add(placed.outer_h);
+        }
         i += 1;
     }
+    items.sort_by(|a, b| {
+        a.z_index
+            .cmp(&b.z_index)
+            .then(a.source_order.cmp(&b.source_order))
+    });
     BrowserLayout {
         items,
-        content_h: y.saturating_add(BLOCK_GAP),
+        content_h: y.max(max_bottom).saturating_add(BLOCK_GAP),
     }
 }
 
@@ -2105,6 +2233,31 @@ struct PlacedBrowserBox {
     outer_h: usize,
 }
 
+#[derive(Clone, Copy)]
+struct ActiveBrowserFloat {
+    side: CssFloat,
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
+}
+
+impl ActiveBrowserFloat {
+    fn from_item(side: CssFloat, item: &BrowserLayoutItem) -> Self {
+        Self {
+            side,
+            x: item.box_x,
+            y: item.box_y,
+            w: item.box_w,
+            h: item.box_h.saturating_add(BLOCK_GAP),
+        }
+    }
+
+    fn overlaps_y(self, y: usize) -> bool {
+        y >= self.y && y < self.y.saturating_add(self.h)
+    }
+}
+
 fn box_metrics(style: BrowserBoxStyle, part: BrowserLineBoxPart) -> BrowserBoxMetrics {
     let border = style.border_width.min(8);
     let top = matches!(part, BrowserLineBoxPart::Single | BrowserLineBoxPart::First);
@@ -2125,10 +2278,17 @@ fn box_metrics(style: BrowserBoxStyle, part: BrowserLineBoxPart) -> BrowserBoxMe
     }
 }
 
-fn content_available_width(line: &BrowserLine, doc_w: usize) -> usize {
+fn content_available_width_with_flow(
+    line: &BrowserLine,
+    doc_w: usize,
+    flow_left: usize,
+    flow_right: usize,
+) -> usize {
     let metrics = box_metrics(line.style.box_style, line.box_part);
     let available = doc_w
         .saturating_sub(line.style.indent_px)
+        .saturating_sub(flow_left)
+        .saturating_sub(flow_right)
         .saturating_sub(metrics.horizontal_chrome())
         .max(1);
     line.style
@@ -2138,14 +2298,16 @@ fn content_available_width(line: &BrowserLine, doc_w: usize) -> usize {
         .unwrap_or(available)
 }
 
-fn place_boxed_item(
+fn place_boxed_item_with_flow(
     line: &BrowserLine,
     doc_w: usize,
     natural_w: usize,
     natural_h: usize,
+    flow_left: usize,
+    flow_right: usize,
 ) -> PlacedBrowserBox {
     let metrics = box_metrics(line.style.box_style, line.box_part);
-    let available_content_w = content_available_width(line, doc_w);
+    let available_content_w = content_available_width_with_flow(line, doc_w, flow_left, flow_right);
     let specified_w = line
         .style
         .box_style
@@ -2171,11 +2333,17 @@ fn place_boxed_item(
         .margin_left
         .saturating_add(box_w)
         .saturating_add(metrics.margin_right);
-    let align_space = doc_w.saturating_sub(line.style.indent_px).max(1);
-    let outer_x = line
-        .style
-        .indent_px
-        .saturating_add(aligned_x(align_space, outer_w, line.align));
+    let align_space = doc_w
+        .saturating_sub(line.style.indent_px)
+        .saturating_sub(flow_left)
+        .saturating_sub(flow_right)
+        .max(1);
+    let flow_origin = line.style.indent_px.saturating_add(flow_left);
+    let outer_x = match line.style.float_side {
+        CssFloat::Left => line.style.indent_px,
+        CssFloat::Right => doc_w.saturating_sub(outer_w).max(line.style.indent_px),
+        CssFloat::None => flow_origin.saturating_add(aligned_x(align_space, outer_w, line.align)),
+    };
     let box_x = outer_x.saturating_add(metrics.margin_left);
     let box_y = metrics.margin_top;
     let content_x = box_x
@@ -2205,6 +2373,99 @@ fn place_boxed_item(
         box_w,
         box_h,
         outer_h,
+    }
+}
+
+fn prune_active_floats(floats: &mut Vec<ActiveBrowserFloat>, y: usize) {
+    floats.retain(|float_box| y < float_box.y.saturating_add(float_box.h));
+}
+
+fn flow_reserve_for_line(
+    floats: &[ActiveBrowserFloat],
+    y: usize,
+    doc_w: usize,
+    line_float: CssFloat,
+) -> (usize, usize) {
+    if line_float != CssFloat::None {
+        return (0, 0);
+    }
+    let mut left = 0usize;
+    let mut right = 0usize;
+    for float_box in floats {
+        if !float_box.overlaps_y(y) {
+            continue;
+        }
+        match float_box.side {
+            CssFloat::Left => {
+                left = left.max(float_box.x.saturating_add(float_box.w).saturating_add(8));
+            }
+            CssFloat::Right => {
+                right = right.max(
+                    doc_w
+                        .saturating_sub(float_box.x)
+                        .saturating_add(8)
+                        .min(doc_w),
+                );
+            }
+            CssFloat::None => {}
+        }
+    }
+    if left.saturating_add(right).saturating_add(CHAR_W * 8) > doc_w {
+        (0, 0)
+    } else {
+        (left, right)
+    }
+}
+
+fn line_part_occupies_flow(line: &BrowserLine) -> bool {
+    !matches!(
+        line.style.position,
+        CssPosition::Absolute | CssPosition::Fixed
+    ) && line.style.float_side == CssFloat::None
+}
+
+fn apply_css_position(item: &mut BrowserLayoutItem, doc_w: usize) {
+    let style = item.style;
+    let content_dx = item.x.saturating_sub(item.box_x);
+    let content_dy = item.y.saturating_sub(item.box_y);
+    match style.position {
+        CssPosition::Static => {}
+        CssPosition::Relative | CssPosition::Sticky => {
+            let dx = style
+                .offset_left
+                .unwrap_or(0)
+                .saturating_sub(style.offset_right.unwrap_or(0));
+            let dy = style
+                .offset_top
+                .unwrap_or(0)
+                .saturating_sub(style.offset_bottom.unwrap_or(0));
+            item.box_x = offset_usize(item.box_x, dx);
+            item.box_y = offset_usize(item.box_y, dy);
+            item.x = offset_usize(item.x, dx);
+            item.y = offset_usize(item.y, dy);
+        }
+        CssPosition::Absolute | CssPosition::Fixed => {
+            if let Some(left) = style.offset_left {
+                item.box_x = offset_usize(0, left);
+            } else if let Some(right) = style.offset_right {
+                item.box_x = offset_usize(doc_w.saturating_sub(item.box_w), -right);
+            }
+            if let Some(top) = style.offset_top {
+                item.box_y = offset_usize(0, top);
+            } else if let Some(bottom) = style.offset_bottom {
+                item.box_y = offset_usize(item.box_y, -bottom);
+            }
+            item.x = item.box_x.saturating_add(content_dx);
+            item.y = item.box_y.saturating_add(content_dy);
+        }
+    }
+}
+
+fn offset_usize(value: usize, delta: isize) -> usize {
+    if delta >= 0 {
+        value.saturating_add(delta as usize)
+    } else {
+        value.saturating_sub(delta.unsigned_abs())
     }
 }
 
@@ -3256,6 +3517,14 @@ struct CssDeclarations {
     padding_left: Option<usize>,
     border_width: Option<usize>,
     border_color: Option<u32>,
+    position: Option<CssPosition>,
+    offset_top: Option<isize>,
+    offset_right: Option<isize>,
+    offset_bottom: Option<isize>,
+    offset_left: Option<isize>,
+    float_side: Option<CssFloat>,
+    z_index: Option<i16>,
+    list_style: Option<CssListStyle>,
     preformatted: Option<bool>,
 }
 
@@ -3320,6 +3589,14 @@ struct CssCascade {
     padding_left: CssSlot<usize>,
     border_width: CssSlot<usize>,
     border_color: CssSlot<u32>,
+    position: CssSlot<CssPosition>,
+    offset_top: CssSlot<isize>,
+    offset_right: CssSlot<isize>,
+    offset_bottom: CssSlot<isize>,
+    offset_left: CssSlot<isize>,
+    float_side: CssSlot<CssFloat>,
+    z_index: CssSlot<i16>,
+    list_style: CssSlot<CssListStyle>,
     preformatted: CssSlot<bool>,
 }
 
@@ -3356,6 +3633,21 @@ impl CssCascade {
             .apply(declarations.border_width, specificity, order);
         self.border_color
             .apply(declarations.border_color, specificity, order);
+        self.position
+            .apply(declarations.position, specificity, order);
+        self.offset_top
+            .apply(declarations.offset_top, specificity, order);
+        self.offset_right
+            .apply(declarations.offset_right, specificity, order);
+        self.offset_bottom
+            .apply(declarations.offset_bottom, specificity, order);
+        self.offset_left
+            .apply(declarations.offset_left, specificity, order);
+        self.float_side
+            .apply(declarations.float_side, specificity, order);
+        self.z_index.apply(declarations.z_index, specificity, order);
+        self.list_style
+            .apply(declarations.list_style, specificity, order);
         self.preformatted
             .apply(declarations.preformatted, specificity, order);
     }
@@ -3369,6 +3661,7 @@ struct TagStyle {
     line: BrowserLineStyle,
     width: Option<usize>,
     height: Option<usize>,
+    list_style: Option<CssListStyle>,
     preformatted: bool,
 }
 
@@ -3447,12 +3740,30 @@ impl StyleHints {
                     width: cascade.width.value,
                     height: cascade.height.value.map(|height| height.min(512)),
                 },
+                position: cascade.position.value.unwrap_or(CssPosition::Static),
+                offset_top: cascade.offset_top.value.map(|value| value.clamp(-512, 512)),
+                offset_right: cascade
+                    .offset_right
+                    .value
+                    .map(|value| value.clamp(-512, 512)),
+                offset_bottom: cascade
+                    .offset_bottom
+                    .value
+                    .map(|value| value.clamp(-512, 512)),
+                offset_left: cascade
+                    .offset_left
+                    .value
+                    .map(|value| value.clamp(-512, 512)),
+                float_side: cascade.float_side.value.unwrap_or(CssFloat::None),
+                z_index: cascade.z_index.value.map(|value| value.clamp(-64, 64)),
+                list_style: cascade.list_style.value.unwrap_or(CssListStyle::Disc),
             },
             width: match cascade.width.value {
                 Some(CssLength::Px(width)) => Some(width),
                 _ => None,
             },
             height: cascade.height.value,
+            list_style: cascade.list_style.value,
             preformatted: cascade.preformatted.value.unwrap_or(false),
         }
     }
@@ -3601,6 +3912,34 @@ fn parse_css_declarations(input: &str) -> CssDeclarations {
                     out.border_width = Some(1);
                 }
             }
+            "position" => {
+                out.position = match value.as_str() {
+                    "relative" => Some(CssPosition::Relative),
+                    "absolute" => Some(CssPosition::Absolute),
+                    "fixed" => Some(CssPosition::Fixed),
+                    "sticky" => Some(CssPosition::Sticky),
+                    "static" => Some(CssPosition::Static),
+                    _ => out.position,
+                };
+            }
+            "top" => out.offset_top = parse_css_signed_length_px(&value).or(out.offset_top),
+            "right" => out.offset_right = parse_css_signed_length_px(&value).or(out.offset_right),
+            "bottom" => {
+                out.offset_bottom = parse_css_signed_length_px(&value).or(out.offset_bottom)
+            }
+            "left" => out.offset_left = parse_css_signed_length_px(&value).or(out.offset_left),
+            "float" => {
+                out.float_side = match value.as_str() {
+                    "left" => Some(CssFloat::Left),
+                    "right" => Some(CssFloat::Right),
+                    "none" => Some(CssFloat::None),
+                    _ => out.float_side,
+                };
+            }
+            "z-index" => out.z_index = parse_css_integer_i16(&value).or(out.z_index),
+            "list-style" | "list-style-type" => {
+                out.list_style = parse_css_list_style(&value).or(out.list_style)
+            }
             "white-space" => {
                 if value == "pre" || value == "pre-wrap" || value == "break-spaces" {
                     out.preformatted = Some(true);
@@ -3671,6 +4010,59 @@ fn parse_css_length_px(value: &str) -> Option<usize> {
             number.min(2048)
         }
     })
+}
+
+fn parse_css_signed_length_px(value: &str) -> Option<isize> {
+    let value = value.trim();
+    if value.is_empty() || value == "auto" || value.ends_with('%') {
+        return None;
+    }
+    let negative = value.starts_with('-');
+    let unsigned = value.trim_start_matches(|c| c == '+' || c == '-');
+    let parsed = parse_css_length_px(unsigned)? as isize;
+    Some(if negative { -parsed } else { parsed })
+}
+
+fn parse_css_integer_i16(value: &str) -> Option<i16> {
+    let value = value.trim();
+    if value == "auto" || value.is_empty() {
+        return None;
+    }
+    let negative = value.starts_with('-');
+    let unsigned = value.trim_start_matches(|c| c == '+' || c == '-');
+    let mut number = 0i16;
+    let mut saw_digit = false;
+    for b in unsigned.bytes() {
+        if !b.is_ascii_digit() {
+            break;
+        }
+        number = number.saturating_mul(10).saturating_add((b - b'0') as i16);
+        saw_digit = true;
+    }
+    if !saw_digit {
+        return None;
+    }
+    Some(if negative {
+        number.saturating_neg()
+    } else {
+        number
+    })
+}
+
+fn parse_css_list_style(value: &str) -> Option<CssListStyle> {
+    for part in value.split_whitespace() {
+        match part {
+            "disc" => return Some(CssListStyle::Disc),
+            "circle" => return Some(CssListStyle::Circle),
+            "square" => return Some(CssListStyle::Square),
+            "decimal" | "decimal-leading-zero" | "lower-roman" | "upper-roman" => {
+                return Some(CssListStyle::Decimal)
+            }
+            "none" => return Some(CssListStyle::None),
+            _ => {}
+        }
+    }
+    None
 }
 
 fn parse_css_number(value: &str) -> Option<usize> {
@@ -4003,6 +4395,9 @@ fn render_document_core(
                     i += end_rel + 1;
                     continue;
                 }
+                if !lower_tag.starts_with('/') {
+                    repair_html_before_start(&mut out, &mut text, cols, &mut state, lower_name);
+                }
                 handle_tag(
                     tag,
                     &lower_tag,
@@ -4082,6 +4477,7 @@ pub fn render_document_style_debug_for_test(
                 out.push(']');
             }
             push_box_style_debug(&mut out, line.style.box_style);
+            push_flow_style_debug(&mut out, line.style);
             if line.align == BrowserAlign::Center {
                 out.push_str(" [align=center]");
             } else if line.align == BrowserAlign::Right {
@@ -4148,6 +4544,73 @@ fn push_box_style_debug(out: &mut String, style: BrowserBoxStyle) {
     }
 }
 
+fn push_flow_style_debug(out: &mut String, style: BrowserLineStyle) {
+    if style.position != CssPosition::Static {
+        out.push_str(" [pos=");
+        push_position_debug(out, style.position);
+        if let Some(left) = style.offset_left {
+            out.push_str(" left=");
+            out.push_str(&format!("{}", left));
+        }
+        if let Some(top) = style.offset_top {
+            out.push_str(" top=");
+            out.push_str(&format!("{}", top));
+        }
+        if let Some(right) = style.offset_right {
+            out.push_str(" right=");
+            out.push_str(&format!("{}", right));
+        }
+        if let Some(bottom) = style.offset_bottom {
+            out.push_str(" bottom=");
+            out.push_str(&format!("{}", bottom));
+        }
+        out.push(']');
+    }
+    if style.float_side != CssFloat::None {
+        out.push_str(" [float=");
+        push_float_debug(out, style.float_side);
+        out.push(']');
+    }
+    if let Some(z_index) = style.z_index {
+        out.push_str(" [z=");
+        out.push_str(&format!("{}", z_index));
+        out.push(']');
+    }
+    if style.list_style != CssListStyle::Disc {
+        out.push_str(" [list=");
+        push_list_style_debug(out, style.list_style);
+        out.push(']');
+    }
+}
+
+fn push_position_debug(out: &mut String, position: CssPosition) {
+    out.push_str(match position {
+        CssPosition::Static => "static",
+        CssPosition::Relative => "relative",
+        CssPosition::Absolute => "absolute",
+        CssPosition::Fixed => "fixed",
+        CssPosition::Sticky => "sticky",
+    });
+}
+
+fn push_float_debug(out: &mut String, float_side: CssFloat) {
+    out.push_str(match float_side {
+        CssFloat::None => "none",
+        CssFloat::Left => "left",
+        CssFloat::Right => "right",
+    });
+}
+
+fn push_list_style_debug(out: &mut String, list_style: CssListStyle) {
+    out.push_str(match list_style {
+        CssListStyle::Disc => "disc",
+        CssListStyle::Circle => "circle",
+        CssListStyle::Square => "square",
+        CssListStyle::Decimal => "decimal",
+        CssListStyle::None => "none",
+    });
+}
+
 fn push_css_length_debug(out: &mut String, length: CssLength) {
     match length {
         CssLength::Px(px) => out.push_str(&format!("{}", px)),
@@ -4175,10 +4638,23 @@ pub fn render_document_box_debug_for_test(
         .into_iter()
         .filter(|item| !item.text.is_empty())
         .map(|item| {
-            format!(
+            let mut out = format!(
                 "{} content={}x{} box={}x{} at {},{}",
                 item.text, item.w, item.h, item.box_w, item.box_h, item.box_x, item.box_y
-            )
+            );
+            if item.style.position != CssPosition::Static {
+                out.push_str(" pos=");
+                push_position_debug(&mut out, item.style.position);
+            }
+            if item.style.float_side != CssFloat::None {
+                out.push_str(" float=");
+                push_float_debug(&mut out, item.style.float_side);
+            }
+            if item.z_index != 0 {
+                out.push_str(" z=");
+                out.push_str(&format!("{}", item.z_index));
+            }
+            out
         })
         .collect()
 }
@@ -4276,7 +4752,9 @@ struct HtmlRenderState {
     cell_controls: Vec<(usize, BrowserControl)>,
     align_stack: Vec<(String, BrowserAlign)>,
     style_stack: Vec<(String, BrowserLineStyle)>,
+    list_style_stack: Vec<(String, CssListStyle)>,
     table_cell_align: BrowserAlign,
+    open_elements: Vec<String>,
 }
 
 impl HtmlRenderState {
@@ -4305,7 +4783,9 @@ impl HtmlRenderState {
             cell_controls: Vec::new(),
             align_stack: Vec::new(),
             style_stack: Vec::new(),
+            list_style_stack: Vec::new(),
             table_cell_align: BrowserAlign::Left,
+            open_elements: Vec::new(),
         }
     }
 
@@ -4352,6 +4832,53 @@ impl HtmlRenderState {
         {
             self.style_stack.truncate(pos);
         }
+    }
+
+    fn current_list_style(&self) -> CssListStyle {
+        self.list_style_stack
+            .last()
+            .map(|(_, style)| *style)
+            .unwrap_or_else(|| {
+                if self.ordered_stack.is_empty() {
+                    CssListStyle::Disc
+                } else {
+                    CssListStyle::Decimal
+                }
+            })
+    }
+
+    fn push_list_style(&mut self, name: &str, style: CssListStyle) {
+        self.list_style_stack.push((String::from(name), style));
+    }
+
+    fn pop_list_style(&mut self, name: &str) {
+        if let Some(pos) = self
+            .list_style_stack
+            .iter()
+            .rposition(|(tag_name, _)| tag_name == name)
+        {
+            self.list_style_stack.truncate(pos);
+        }
+    }
+
+    fn push_open_element(&mut self, name: &str) {
+        if self.open_elements.len() < 64 {
+            self.open_elements.push(String::from(name));
+        }
+    }
+
+    fn pop_open_element(&mut self, name: &str) {
+        if let Some(pos) = self
+            .open_elements
+            .iter()
+            .rposition(|tag_name| tag_name == name)
+        {
+            self.open_elements.truncate(pos);
+        }
+    }
+
+    fn has_open_element(&self, name: &str) -> bool {
+        self.open_elements.iter().any(|tag_name| tag_name == name)
     }
 
     fn push_pre_style(&mut self, name: &str) {
@@ -4887,6 +5414,7 @@ fn scan_dom_and_controls(body: &str, base_url: &str, document: &mut BrowserDocum
                     continue;
                 }
 
+                repair_dom_before_start(document, &mut stack, &mut names, name);
                 let parent = *stack.last().unwrap_or(&document.dom.root);
                 let attrs = parse_dom_attrs(tag);
                 let node = document.dom.push_element(parent, name, attrs);
@@ -4976,6 +5504,48 @@ fn flush_dom_text(document: &mut BrowserDocumentState, stack: &[usize], text: &m
     let parent = *stack.last().unwrap_or(&document.dom.root);
     document.dom.push_text(parent, decode_entities(text));
     text.clear();
+}
+
+fn repair_dom_before_start(
+    document: &mut BrowserDocumentState,
+    stack: &mut Vec<usize>,
+    names: &mut Vec<String>,
+    name: &str,
+) {
+    if matches!(name, "td" | "th") {
+        while names
+            .last()
+            .map(|open| open == "td" || open == "th")
+            .unwrap_or(false)
+        {
+            stack.pop();
+            names.pop();
+        }
+    }
+    if name == "tr" {
+        while names
+            .last()
+            .map(|open| open == "td" || open == "th")
+            .unwrap_or(false)
+        {
+            stack.pop();
+            names.pop();
+        }
+        while names.last().map(|open| open == "tr").unwrap_or(false) {
+            stack.pop();
+            names.pop();
+        }
+    }
+    if name == "li" && names.iter().any(|open| open == "li") {
+        pop_dom_stack(stack, names, "li");
+    }
+    if is_block_boundary(name) && names.iter().any(|open| open == "p") {
+        pop_dom_stack(stack, names, "p");
+    }
+    if stack.is_empty() {
+        stack.push(document.dom.root);
+        names.push(String::from("document"));
+    }
 }
 
 fn pop_dom_stack(stack: &mut Vec<usize>, names: &mut Vec<String>, name: &str) {
@@ -5373,6 +5943,84 @@ fn parse_alignment(value: &str) -> Option<BrowserAlign> {
     }
 }
 
+fn repair_html_before_start(
+    out: &mut Vec<BrowserLine>,
+    text: &mut String,
+    cols: usize,
+    state: &mut HtmlRenderState,
+    name: &str,
+) {
+    if matches!(name, "td" | "th") && state.in_table_cell {
+        finish_table_cell(state);
+    }
+    if name == "tr" {
+        if state.in_table_cell {
+            finish_table_cell(state);
+        }
+        if state.in_table && !state.table_row.is_empty() {
+            finish_table_row(out, state, cols);
+        }
+    }
+    if name == "li" && state.has_open_element("li") {
+        close_implicit_element(out, text, cols, state, "li");
+    }
+    if is_block_boundary(name) && state.has_open_element("p") {
+        close_implicit_element(out, text, cols, state, "p");
+    }
+}
+
+fn close_implicit_element(
+    out: &mut Vec<BrowserLine>,
+    text: &mut String,
+    cols: usize,
+    state: &mut HtmlRenderState,
+    name: &str,
+) {
+    flush_flow_text(out, text, cols, state);
+    state.pop_align(name);
+    state.pop_style(name);
+    state.pop_list_style(name);
+    state.pop_pre_style(name);
+    state.pop_suppressed_text(name);
+    state.pop_open_element(name);
+    if matches!(name, "p" | "li") {
+        push_blank_line(out);
+    }
+}
+
+fn is_block_boundary(name: &str) -> bool {
+    matches!(
+        name,
+        "address"
+            | "article"
+            | "aside"
+            | "blockquote"
+            | "div"
+            | "dl"
+            | "fieldset"
+            | "figcaption"
+            | "figure"
+            | "footer"
+            | "form"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+            | "header"
+            | "hr"
+            | "main"
+            | "nav"
+            | "ol"
+            | "p"
+            | "pre"
+            | "section"
+            | "table"
+            | "ul"
+    )
+}
+
 fn handle_tag(
     tag: &str,
     lower_tag: &str,
@@ -5391,6 +6039,7 @@ fn handle_tag(
     let mut controls = controls;
     if closing {
         state.pop_suppressed_text(name);
+        state.pop_open_element(name);
     }
 
     if state.in_table_cell {
@@ -5419,12 +6068,17 @@ fn handle_tag(
         if closing {
             state.pop_align(name);
             state.pop_style(name);
+            state.pop_list_style(name);
             state.pop_pre_style(name);
         } else if !is_void_element(name) {
+            state.push_open_element(name);
             if let Some(align) = tag_style.align.or_else(|| tag_alignment(tag, name)) {
                 state.push_align(name, align);
             }
             state.push_style(name, tag_style.line);
+            if let Some(list_style) = tag_style.list_style {
+                state.push_list_style(name, list_style);
+            }
             if tag_style.preformatted {
                 state.push_pre_style(name);
             }
@@ -5436,14 +6090,19 @@ fn handle_tag(
     if closing {
         state.pop_align(name);
         state.pop_style(name);
+        state.pop_list_style(name);
         state.pop_pre_style(name);
     } else if !is_void_element(name) {
+        state.push_open_element(name);
         if let Some(align) = tag_style.align.or_else(|| tag_alignment(tag, name)) {
             state.push_align(name, align);
         }
     }
     if !closing && !is_void_element(name) {
         state.push_style(name, tag_style.line);
+        if let Some(list_style) = tag_style.list_style {
+            state.push_list_style(name, list_style);
+        }
         if tag_style.preformatted {
             state.push_pre_style(name);
         }
@@ -6295,11 +6954,26 @@ fn list_prefix(state: &mut HtmlRenderState) -> String {
     for _ in 1..state.list_depth {
         out.push_str("  ");
     }
-    if let Some(next) = state.ordered_stack.last_mut() {
-        out.push_str(&format!("{}. ", *next));
-        *next = next.saturating_add(1);
-    } else {
-        out.push_str("* ");
+    match state.current_list_style() {
+        CssListStyle::Decimal => {
+            if let Some(next) = state.ordered_stack.last_mut() {
+                out.push_str(&format!("{}. ", *next));
+                *next = next.saturating_add(1);
+            } else {
+                out.push_str("1. ");
+            }
+        }
+        CssListStyle::Circle => out.push_str("o "),
+        CssListStyle::Square => out.push_str("- "),
+        CssListStyle::None => {}
+        CssListStyle::Disc => {
+            if let Some(next) = state.ordered_stack.last_mut() {
+                out.push_str(&format!("{}. ", *next));
+                *next = next.saturating_add(1);
+            } else {
+                out.push_str("* ");
+            }
+        }
     }
     out
 }
@@ -6509,6 +7183,14 @@ fn finish_table_cell(state: &mut HtmlRenderState) {
     state.cell_controls.clear();
     state.pop_align("td");
     state.pop_align("th");
+    state.pop_style("td");
+    state.pop_style("th");
+    state.pop_list_style("td");
+    state.pop_list_style("th");
+    state.pop_pre_style("td");
+    state.pop_pre_style("th");
+    state.pop_open_element("td");
+    state.pop_open_element("th");
     state.table_cell_align = state.current_align();
 }
 
@@ -6555,11 +7237,18 @@ fn finish_table_row(out: &mut Vec<BrowserLine>, state: &mut HtmlRenderState, col
 }
 
 fn format_table_row(cells: &[TableCell], cols: usize) -> String {
-    let width = table_cell_width(cells.len(), cols);
+    let widths = table_column_widths(cells, cols);
     let mut out = String::from("|");
-    for cell in cells {
+    for (idx, cell) in cells.iter().enumerate() {
         out.push(' ');
-        push_truncated_padded(&mut out, &cell.text, width);
+        push_truncated_padded(
+            &mut out,
+            &cell.text,
+            widths
+                .get(idx)
+                .copied()
+                .unwrap_or_else(|| table_cell_width(cells.len(), cols)),
+        );
         out.push(' ');
         out.push('|');
     }
@@ -6567,15 +7256,67 @@ fn format_table_row(cells: &[TableCell], cols: usize) -> String {
 }
 
 fn format_table_separator(cells: &[TableCell], cols: usize) -> String {
-    let width = table_cell_width(cells.len(), cols);
+    let widths = table_column_widths(cells, cols);
     let mut out = String::from("+");
-    for _ in cells {
+    for idx in 0..cells.len() {
+        let width = widths
+            .get(idx)
+            .copied()
+            .unwrap_or_else(|| table_cell_width(cells.len(), cols));
         for _ in 0..(width + 2) {
             out.push('-');
         }
         out.push('+');
     }
     out
+}
+
+fn table_column_widths(cells: &[TableCell], cols: usize) -> Vec<usize> {
+    if cells.is_empty() {
+        return Vec::new();
+    }
+    let chrome = cells.len().saturating_mul(3).saturating_add(1);
+    let budget = cols
+        .saturating_sub(chrome)
+        .max(cells.len().saturating_mul(8));
+    let mut widths = Vec::new();
+    let mut used = 0usize;
+    for cell in cells {
+        let wanted = clean_inline_text(&cell.text).chars().count().clamp(8, 32);
+        widths.push(wanted);
+        used = used.saturating_add(wanted);
+    }
+    while used > budget {
+        let Some((idx, width)) = widths
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.cmp(b))
+            .map(|(idx, width)| (idx, *width))
+        else {
+            break;
+        };
+        if width <= 8 {
+            break;
+        }
+        widths[idx] = widths[idx].saturating_sub(1);
+        used = used.saturating_sub(1);
+    }
+    while used < budget {
+        let Some((idx, width)) = widths
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| a.cmp(b))
+            .map(|(idx, width)| (idx, *width))
+        else {
+            break;
+        };
+        if width >= 32 {
+            break;
+        }
+        widths[idx] = widths[idx].saturating_add(1);
+        used = used.saturating_add(1);
+    }
+    widths
 }
 
 fn table_cell_width(cell_count: usize, cols: usize) -> usize {
