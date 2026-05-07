@@ -1232,7 +1232,7 @@ impl TerminalApp {
             ("coolfs", "CoolFS mount status"),
             ("fsrepair", "repair standard FS dirs"),
             ("recovery [op]", "boot recovery status/repair"),
-            ("update <op>", "stage/apply/rollback system updates"),
+            ("update <op>", "verify/stage/apply/rollback signed updates"),
             ("mounts", "mount/cache/journal status"),
             ("vfs", "mount table and fd tables"),
             ("path <path>", "inspect normalized VFS path"),
@@ -1828,8 +1828,65 @@ impl TerminalApp {
     fn cmd_update(&mut self, args: Vec<&str>) {
         match args.as_slice() {
             [] | ["status"] => self.cmd_lines("UPDATE STATUS", crate::updates::status_lines()),
+            ["verify"] => self.cmd_lines("UPDATE VERIFY", crate::updates::verify_lines()),
+            ["keys"] => self.cmd_lines("UPDATE TRUST KEYS", crate::updates::trust_key_lines()),
             ["history"] | ["log"] => {
                 self.cmd_lines("UPDATE HISTORY", crate::updates::history_lines())
+            }
+            ["sign"] => {
+                if !self.require_admin("update") {
+                    return;
+                }
+                match crate::updates::sign_staged() {
+                    Ok(()) => {
+                        self.set_fg(FG_ACCENT);
+                        self.print_str("update: signed\n");
+                    }
+                    Err(err) => {
+                        self.set_fg(FG_ERROR);
+                        self.print_str("update: ");
+                        self.set_fg(FG_OUTPUT);
+                        self.print_str(err);
+                        self.print_char('\n');
+                    }
+                }
+            }
+            ["corrupt-payload", rest @ ..] => {
+                if !self.require_admin("update") {
+                    return;
+                }
+                let text = collect_words(rest.iter().copied());
+                match crate::updates::corrupt_staged_payload(&text) {
+                    Ok(()) => {
+                        self.set_fg(FG_ACCENT);
+                        self.print_str("update: payload corrupted\n");
+                    }
+                    Err(err) => {
+                        self.set_fg(FG_ERROR);
+                        self.print_str("update: ");
+                        self.set_fg(FG_OUTPUT);
+                        self.print_str(err);
+                        self.print_char('\n');
+                    }
+                }
+            }
+            ["unsign"] => {
+                if !self.require_admin("update") {
+                    return;
+                }
+                match crate::updates::remove_staged_signature() {
+                    Ok(()) => {
+                        self.set_fg(FG_ACCENT);
+                        self.print_str("update: unsigned\n");
+                    }
+                    Err(err) => {
+                        self.set_fg(FG_ERROR);
+                        self.print_str("update: ");
+                        self.set_fg(FG_OUTPUT);
+                        self.print_str(err);
+                        self.print_char('\n');
+                    }
+                }
             }
             ["stage", target, rest @ ..] => {
                 if !self.require_admin("update") {
@@ -1891,7 +1948,7 @@ impl TerminalApp {
             _ => {
                 self.set_fg(FG_ERROR);
                 self.print_str(
-                    "usage: update [status|history|stage <path> <text>|apply|rollback]\n",
+                    "usage: update [status|verify|keys|history|sign|stage <path> <text>|apply|rollback]\n",
                 );
             }
         }

@@ -4,7 +4,7 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–66 are complete. The current milestone gives coolOS a much more
+Phases 1–67 are complete. The current milestone gives coolOS a much more
 normal command-line and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
@@ -40,8 +40,13 @@ file state. Phase 66 adds boot-health validation on top of that update path:
 `/BOOT/STATE.TXT` tracks pending update ids and validation attempts,
 `/BOOT/LAST-GOOD.TXT` records the last desktop-ready boot, and a pending update
 that fails to reach the healthy checkpoint is automatically rolled back from the
-Phase 65 snapshot on the next boot.
-Phases 45-66 focus on responsiveness, interactive terminal behavior, and
+Phase 65 snapshot on the next boot. Phase 67 adds signed staged-update trust:
+staged manifests now include per-payload SHA-256 hashes, `/UPDATES/STAGED`
+carries a keyed `UPDATE.SIG`, `/CONFIG/UPDATE-KEYS.TXT` exposes trusted update
+key metadata, `update verify|keys|sign` make the trust path inspectable, and
+apply refuses unsigned or tampered payloads before taking snapshots or stopping
+services.
+Phases 45-67 focus on responsiveness, interactive terminal behavior, and
 desktop-browser compatibility:
 cursor-only framebuffer updates,
 input-first idle-loop ordering, adaptive 36/144 Hz frame pacing, compositor
@@ -52,8 +57,9 @@ surface with GET/POST form submission, persistent cookie/storage state, and
 bounded margin/padding/border/position/float layout plus a small Browser
 subresource cache, script runtime, web-app API layer, main-response
 content-type routing, compatibility diagnostics, resource accounting for the
-scheduler, VMM, VFS, shared memory, and sockets, low-memory recovery, and
-durable service recovery, and update rollback.
+scheduler, VMM, VFS, shared memory, and sockets, low-memory recovery, durable
+service recovery, update rollback, boot-health rollback, and signed update
+verification.
 
 ---
 
@@ -1973,6 +1979,35 @@ attempt failed before the healthy checkpoint.
 
 ---
 
+## ✅ Phase 67 — Signed Updates and Integrity Verification
+
+**Goal:** Add a trust gate to the Phase 65/66 update path so staged updates are
+verified before they can modify files, stop services, or become pending boot
+validation candidates.
+
+- [x] Add `src/update_crypto.rs` with no_std SHA-256, HMAC-SHA256, hex encoding,
+      and constant-time digest comparison helpers for kernel update checks.
+- [x] Extend staged update manifests with per-file `sha256=` payload hashes and
+      write `/UPDATES/STAGED/UPDATE.SIG` as a keyed `hmac-sha256` signature over
+      the manifest.
+- [x] Add built-in trust metadata at `/CONFIG/UPDATE-KEYS.TXT` and expose it
+      through Terminal `update keys`.
+- [x] Verify the trusted key id, algorithm, manifest digest, signature, and each
+      payload hash before snapshot creation, service stops, or file writes.
+- [x] Add Terminal `update verify` and admin-gated `update sign`, plus
+      deterministic admin diagnostics for tamper/unsigned smoke coverage.
+- [x] Record successful verification in `/UPDATES/APPLIED.MF`, update history,
+      Recovery, Diagnostics, Log Viewer, and Sysreport update sections.
+- [x] Add `make smoke-phase67-update-trust` with valid, tampered, unsigned, and
+      rollback flows, and document v7.31.
+
+**Current status:** complete. coolOS now refuses unsigned staged updates and
+payloads whose bytes no longer match the signed manifest. This is a built-in
+HMAC trust foundation for the current local updater, not yet a public-key vendor
+signing or multi-key rotation system.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -2055,4 +2090,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.27 | Phase 63 complete: Memory pressure and OOM recovery |
 | v7.28 | Phase 64 complete: Persistent service supervision and recovery |
 | v7.29 | Phase 65 complete: System update, snapshot, and rollback |
-| v7.30 | Current — Phase 66 complete: Boot health and last-known-good rollback |
+| v7.30 | Phase 66 complete: Boot health and last-known-good rollback |
+| v7.31 | Current — Phase 67 complete: Signed updates and integrity verification |

@@ -67,6 +67,7 @@ mod task_snapshot;
 mod tls;
 mod tls_roots;
 mod tty;
+mod update_crypto;
 mod updates;
 mod usb;
 mod userspace;

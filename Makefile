@@ -1,4 +1,4 @@
-.PHONY: run run-net run-usb run-usb-init run-smooth run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-phase31-accounts smoke-phase32-isolation smoke-phase33-process-control smoke-phase34-tty-jobs smoke-phase35-tty-input smoke-phase36-userspace-shell smoke-phase37-coreutils smoke-phase38-apps smoke-phase39-recovery smoke-phase40-shell-semantics smoke-phase41-fs-durability smoke-phase42-app-consistency smoke-phase43-observability smoke-phase44-devkit smoke-phase45-smoothness smoke-phase46-adaptive-refresh smoke-phase47-evented-userspace smoke-phase48-terminal-tui smoke-phase49-browser-engine smoke-phase50-css-layout smoke-phase51-browser-forms smoke-phase52-dom-events smoke-phase53-dom-forms smoke-phase54-browser-post smoke-phase55-browser-session smoke-phase56-css-box-model smoke-phase57-browser-layout smoke-phase58-browser-subresources smoke-phase59-browser-js smoke-phase60-browser-webapi smoke-phase61-browser-compat smoke-phase62-resource-limits smoke-phase63-memory-pressure smoke-phase64-services smoke-phase65-update-rollback smoke-phase66-boot-health smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
+.PHONY: run run-net run-usb run-usb-init run-smooth run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-phase31-accounts smoke-phase32-isolation smoke-phase33-process-control smoke-phase34-tty-jobs smoke-phase35-tty-input smoke-phase36-userspace-shell smoke-phase37-coreutils smoke-phase38-apps smoke-phase39-recovery smoke-phase40-shell-semantics smoke-phase41-fs-durability smoke-phase42-app-consistency smoke-phase43-observability smoke-phase44-devkit smoke-phase45-smoothness smoke-phase46-adaptive-refresh smoke-phase47-evented-userspace smoke-phase48-terminal-tui smoke-phase49-browser-engine smoke-phase50-css-layout smoke-phase51-browser-forms smoke-phase52-dom-events smoke-phase53-dom-forms smoke-phase54-browser-post smoke-phase55-browser-session smoke-phase56-css-box-model smoke-phase57-browser-layout smoke-phase58-browser-subresources smoke-phase59-browser-js smoke-phase60-browser-webapi smoke-phase61-browser-compat smoke-phase62-resource-limits smoke-phase63-memory-pressure smoke-phase64-services smoke-phase65-update-rollback smoke-phase66-boot-health smoke-phase67-update-trust smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -1499,6 +1499,78 @@ smoke-phase66-boot-health: build
 		--expect "action=rollback-ok" \
 		--expect "boot_health status=healthy pending_update=none attempts=0" \
 		--expect "== boot health ==" \
+		--expect "[selftest] kernel unit checks ok=27 fail=0" \
+		--expect "[boot] desktop ready"
+
+smoke-phase67-update-trust: build
+	mkdir -p "$(SMOKE_ARTIFACT_DIR)"
+	rm -f "$(SMOKE_ARTIFACT_DIR)/phase67-update-trust.img"
+	cp "$(FSIMG)" "$(SMOKE_ARTIFACT_DIR)/phase67-update-trust.img"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-valid" \
+		--bios "$(BIOS)" \
+		--fsimg "$(SMOKE_ARTIFACT_DIR)/phase67-update-trust.img" \
+		--fs-writable \
+		--usb \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--fw-cmd "update keys;;update stage /CONFIG/P67 ok;;update verify;;update apply;;hash /CONFIG/P67;;flush" \
+		--expect "UPDATE TRUST KEYS" \
+		--expect "key=coolos-dev algorithm=hmac-sha256 status=trusted scope=staged-updates" \
+		--expect "UPDATE VERIFY" \
+		--expect "trust=ok key=coolos-dev algorithm=hmac-sha256 files=1" \
+		--expect "update: applied" \
+		--expect "hash /CONFIG/P67 len=2 sum=218" \
+		--expect "flush: ok" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-tamper" \
+		--bios "$(BIOS)" \
+		--fsimg "$(SMOKE_ARTIFACT_DIR)/phase67-update-trust.img" \
+		--fs-writable \
+		--usb \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--fw-cmd "update stage /CONFIG/P67 bad;;update corrupt-payload evil;;update verify;;update apply;;hash /CONFIG/P67;;flush" \
+		--expect "update: payload corrupted" \
+		--expect "trust=failed error=payload hash mismatch" \
+		--expect "update: payload hash mismatch" \
+		--expect "hash /CONFIG/P67 len=2 sum=218" \
+		--expect "flush: ok" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-unsigned" \
+		--bios "$(BIOS)" \
+		--fsimg "$(SMOKE_ARTIFACT_DIR)/phase67-update-trust.img" \
+		--fs-writable \
+		--usb \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--fw-cmd "update stage /CONFIG/P67 new;;update unsign;;update verify;;update apply;;hash /CONFIG/P67;;flush" \
+		--expect "update: unsigned" \
+		--expect "trust=failed error=staged update is unsigned" \
+		--expect "update: staged update is unsigned" \
+		--expect "hash /CONFIG/P67 len=2 sum=218" \
+		--expect "flush: ok" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-rollback" \
+		--bios "$(BIOS)" \
+		--fsimg "$(SMOKE_ARTIFACT_DIR)/phase67-update-trust.img" \
+		--fs-writable \
+		--usb \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--fw-cmd "update stage /CONFIG/P67 new;;update apply;;hash /CONFIG/P67;;update rollback;;hash /CONFIG/P67;;update status;;recovery;;sysreport" \
+		--screendump "$(SMOKE_ARTIFACT_DIR)/phase67-update-trust.ppm" \
+		--expect-framebuffer-window \
+		--expect "update: applied" \
+		--expect "hash /CONFIG/P67 len=3 sum=330" \
+		--expect "update: rollback ok" \
+		--expect "hash /CONFIG/P67 len=2 sum=218" \
+		--expect "trust=ok key=coolos-dev algorithm=hmac-sha256 files=1" \
+		--expect "update_trust=ok key=coolos-dev algorithm=hmac-sha256 files=1" \
+		--expect "== updates ==" \
 		--expect "[selftest] kernel unit checks ok=27 fail=0" \
 		--expect "[boot] desktop ready"
 
