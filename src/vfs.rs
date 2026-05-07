@@ -467,6 +467,14 @@ pub fn resource_stats() -> VfsResourceStats {
     }
 }
 
+pub fn task_open_fd_count(task_id: usize) -> usize {
+    VFS.lock()
+        .task_fds
+        .get(task_id)
+        .map(TaskFdTable::open_count)
+        .unwrap_or(0)
+}
+
 pub fn inspect_path(path: &str) -> PathInfo {
     let path = normalize_path(path);
     let mount = resolve_mount(&path);
@@ -1202,6 +1210,9 @@ pub fn vfs_open(path: &str) -> usize {
         Some(data) => data,
         None => return usize::MAX,
     };
+    if !crate::memory_pressure::admit_allocation(data.len(), "vfs-open") {
+        return usize::MAX;
+    }
 
     let task_id = crate::scheduler::current_task_id();
     let mut vfs = VFS.lock();
@@ -1363,6 +1374,9 @@ pub fn vfs_unregister_poll_waiter(fd: usize, task_id: usize) {
 
 pub fn vfs_pipe() -> Option<(usize, usize)> {
     let task_id = crate::scheduler::current_task_id();
+    if !crate::memory_pressure::admit_allocation(PIPE_SIZE, "vfs-pipe") {
+        return None;
+    }
     let mut vfs = VFS.lock();
     vfs.ensure_task(task_id);
     if vfs.task_fds[task_id].free_slots() < 2 {

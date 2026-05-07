@@ -40,6 +40,7 @@ mod jobs;
 mod keyboard;
 mod klog;
 mod memory;
+mod memory_pressure;
 mod mouse;
 mod net;
 mod notifications;
@@ -296,6 +297,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         services::supervise();
         deferred::drain_budget(1);
         net::poll();
+        memory_pressure::tick();
         wm::compose_if_needed();
         x86_64::instructions::hlt();
     }

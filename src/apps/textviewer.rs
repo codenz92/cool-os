@@ -25,7 +25,7 @@ const SUBTLE: u32 = 0x00_66_AA_DD;
 const MUTED: u32 = 0x00_55_7A_92;
 
 const ABOUT: &[&str] = &[
-    " coolOS v7.26",
+    " coolOS v7.27",
     " Bare-metal OS in Rust",
     "",
     " == Current Platform ==",
@@ -38,6 +38,7 @@ const ABOUT: &[&str] = &[
     " Raw TTY control, terminal geometry, and ANSI/TUI output",
     " Adaptive 36/144 Hz pacing and cursor overlay smoothness",
     " Resource caps for tasks, memory, fds, shmem, and sockets",
+    " Memory pressure telemetry, cache trimming, and OOM reclaim",
     "",
     " == Commands ==",
     " help         - list terminal commands",
@@ -49,6 +50,7 @@ const ABOUT: &[&str] = &[
     " browser://storage shows Browser localStorage keys",
     " browser://compat shows Browser compatibility state",
     " diagnostics  - health and resource-limit report",
+    " memory       - heap pressure and per-task memory",
     " sysreport    - write /LOGS/SYSREPORT.TXT",
     " devkit       - SDK paths and templates",
     " smoothness   - compositor pacing and latency telemetry",
@@ -166,6 +168,16 @@ impl TextViewerApp {
             crate::wm::compositor::compositor_lines(),
         );
         push_section(&mut lines, "heap", crate::allocator::heap_lines());
+        push_section(
+            &mut lines,
+            "memory pressure",
+            crate::memory_pressure::lines(),
+        );
+        push_section(
+            &mut lines,
+            "task memory",
+            crate::scheduler::task_memory_lines(),
+        );
         push_section(
             &mut lines,
             "resource limits",

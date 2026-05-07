@@ -13,7 +13,7 @@ stdio, and IPC with pipes, shared memory, and per-task fd tables.
 
 ---
 
-# Current state — v7.26
+# Current state — v7.27
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -59,7 +59,7 @@ rename, writable file descriptors, fd-mapped child stdio, sync, and RTC time;
 `/bin/sh` now supports quoting, relative paths, redirection, and one-stage
 pipelines; `/bin` includes practical file/text/date/devkit tools; sysreport can
 write `/LOGS/SYSREPORT.TXT`; and the generated image ships `/SDK` docs and
-templates. Phases 45-62 add compositor smoothness, evented terminal work, and
+templates. Phases 45-63 add compositor smoothness, evented terminal work, and
 a richer native browser renderer:
 timer ticks now request
 paced frames instead of unconditional full redraws, mouse-only motion uses a
@@ -98,7 +98,12 @@ active user tasks are capped, user address spaces and individual `mmap` calls
 are bounded, fd allocation preflights before object allocation, shared-memory
 and socket quotas are enforced per task and globally, task exit/fault paths
 close owned sockets and file tables, and diagnostics/sysreport expose a
-resource-limits section.
+resource-limits section. Phase 63 adds memory-pressure recovery: allocator
+snapshots classify heap pressure as normal/low/critical, task memory estimates
+show user pages, shared memory, kernel stacks, fds, and sockets, the main loop
+periodically trims reclaimable CoolFS and Browser caches, large cache/task/fd
+allocations are admitted against a reserve, and a critical heap can reclaim the
+largest non-current user task through the scheduler cleanup path.
 
 | Context | Mode | Description |
 | :------ | :--- | :---------- |
@@ -141,10 +146,10 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **PS/2 mouse** | Full hardware init (CCB, 0xF6/0xF4), 9-bit signed X/Y deltas, IRQ12 packet collection via atomics. |
 | **Window manager** | Z-ordered windows, focus-on-click, title-bar drag, edge snapping, keyboard snapping, task switcher overlay, minimise/maximise/restore, resize grip, close button, taskbar previews/right-click actions, per-window pixel back-buffer. |
 | **Desktop shell** | Wallpaper, desktop icons, right-click context menu, start menu, taskbar window buttons, configurable shortcuts, launcher/search palette, login/lock greeter, Accounts settings, notification center, File Manager drag/drop/open-with routing, shared clipboard plumbing, userspace app lifecycle tracking with System Monitor controls, persistent settings, session restore, clock, and adaptive compositor smoothness telemetry. |
-| **Heap** | `LockedHeap` allocator — `String`, `Vec`, `Box` all work. 32 MiB heap to accommodate large shadow and window buffers. |
+| **Heap** | `LockedHeap` allocator — `String`, `Vec`, `Box` all work. 32 MiB heap to accommodate large shadow and window buffers, with high-water snapshots, low/critical pressure states, allocation admission reserves, and memory-pressure diagnostics. |
 | **Paging / VMM** | 4-level `OffsetPageTable` + global `BootInfoFrameAllocator`. Per-process PML4 cloned from kernel upper half; private user-space mappings in lower half. `vmm::` module exposes `new_process_pml4`, `map_page_in`, `map_region`, `switch_to`. |
 | **IDT** | Breakpoint, Double Fault, Page Fault with user-task termination/crashdump handling for invalid ring-3 accesses, General Protection Fault, Invalid Opcode, Timer (IRQ0), Keyboard (IRQ1), Mouse (IRQ12). |
-| **Scheduler** | Preemptive round-robin at 288 Hz. Each task carries `pml4: Option<PhysFrame>` plus `uid`, `gid`, capability credentials, current working directory, process group, controlling TTY, pending signal state, and a private 64 KiB kernel stack. The scheduler switches CR3 when needed and updates TSS RSP0 to the selected task's stack so ring-3 IRQ frames never share one global stack. Task lifecycle now distinguishes ready/running/blocked/stopped/exited/reaped states, records parents and exit codes, supports blocking `waitpid`/reaping, supports kernel-side task termination, and backs blocking pipe/TTY reads with `block_current` / `unblock(id)`. |
+| **Scheduler** | Preemptive round-robin at 288 Hz. Each task carries `pml4: Option<PhysFrame>` plus `uid`, `gid`, capability credentials, current working directory, process group, controlling TTY, pending signal state, and a private 64 KiB kernel stack. The scheduler switches CR3 when needed and updates TSS RSP0 to the selected task's stack so ring-3 IRQ frames never share one global stack. Task lifecycle now distinguishes ready/running/blocked/stopped/exited/reaped states, records parents and exit codes, supports blocking `waitpid`/reaping, supports kernel-side task termination and OOM reclaim of the largest non-current user task, and backs blocking pipe/TTY reads with `block_current` / `unblock(id)`. |
 | **TTY sessions** | Each Terminal owns a kernel TTY with canonical/raw input modes, echo and signal flags, cell geometry, a dedicated output queue, and a foreground process group. Userspace `read(0)` plus stdout/stderr route through the task's controlling TTY by default, fd mappings can override 0/1/2 for pipes and redirection, `exec` blocks the prompt as a foreground job, background jobs keep their terminal output route, and Ctrl+C/Ctrl+Z signal the foreground group when signal mode is enabled. |
 | **Process isolation** | Two user processes share the same user-stack virtual address (`0x7FFF_0010_0000`) but map it to different physical frames. Guard pages (kernel-only) sit below each stack. |
 | **GDT + TSS** | Four segments (kernel code/data ring 0, user code/data ring 3) + TSS. RSP0 starts on a fallback ISR stack and is updated on every context switch to the selected task's private kernel stack for ring-3 IRQ entry. |
@@ -153,9 +158,9 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **Userspace** | Ring-3 code can run either as the original isolation stubs or as real ELF64 binaries loaded from `/bin`. The `libcool` SDK crate now provides no_std entry/argv setup plus process, signal/process-group, file, pipe, evented poll, TTY mode/size, mmap, shared-memory, event, DNS/HTTP, TCP socket, filesystem utility, screenshot, time, and userspace GUI wrappers. `/bin/sh` reads stdin from the TTY, tracks the kernel cwd, parses quoting and escapes, runs builtins, resolves bare commands under `/bin`, supports `<`/`>` redirection and one-stage `|` pipelines, and can launch argv/fd-capable children with `spawn_args` or `spawn_fds_args`. `/bin/ls`, `/bin/cat`, `/bin/echo`, `/bin/pwd`, `/bin/mkdir`, `/bin/touch`, `/bin/rm`, `/bin/writefile`, `/bin/cp`, `/bin/mv`, `/bin/grep`, `/bin/head`, `/bin/tail`, `/bin/date`, `/bin/uname`, `/bin/clear`, `/bin/stat`, `/bin/sync`, `/bin/devkit`, `/bin/polldemo`, and `/bin/tuidemo` cover practical command-line, evented, and terminal-mode workflows. `sys_exec` replaces the current userspace image in-place by swapping CR3 and rewriting the saved syscall return frame. Shared memory (`sys_shmem_create`/`sys_shmem_map`) maps a region of physical frames into the caller's address space at a fixed VA. |
 | **ELF loader** | Validates ELF64 headers, maps `PT_LOAD` segments into a fresh address space, allocates a private user stack, builds an initial `argc/argv/envp` stack frame, and can either spawn a new task or prepare an image for `sys_exec`. |
 | **ATA PIO driver** | Primary-bus slave device (QEMU `if=ide,index=1`). LBA28 PIO reads/writes, BSY/DRQ polling with bounded retries and software reset recovery, nIEN=1 (device interrupts disabled). Wrapped in `without_interrupts` to prevent preemption mid-transfer. |
-| **CoolFS layer** | Native coolOS root filesystem mounted at `/`, stored directly at LBA 0 of the attached OS disk. It has a CoolFS superblock, fixed inode table with durable `uid`/`gid`/mode metadata, block bitmap, 4 KiB blocks, direct plus indirect data blocks, directory records, a 64-slot block cache with dirty 4 KiB writeback, VFS read/write/create/rename/delete/copy routing, stats, and boot self-tests. |
+| **CoolFS layer** | Native coolOS root filesystem mounted at `/`, stored directly at LBA 0 of the attached OS disk. It has a CoolFS superblock, fixed inode table with durable `uid`/`gid`/mode metadata, block bitmap, 4 KiB blocks, direct plus indirect data blocks, directory records, a 64-slot block cache with dirty 4 KiB writeback, pressure-triggered clean-cache trimming, VFS read/write/create/rename/delete/copy routing, stats, and boot self-tests. |
 | **FAT32 layer** | Optional legacy import mount at `/FAT`, formatted in a separate 8 MiB-offset disk region. BPB parsing, FAT chain walking, short-name and long-filename lookup, directory traversal, cluster→sector mapping, mutation helpers, free-space stats, and `fsck` remain available without being required for CoolFS boot. |
-| **VFS** | CoolFS-root path routing, `/FAT` legacy routing, CoolFS read/write/execute permission enforcement, task-local cwd resolution, and task-local fd tables (16 slots, with explicit 0/1/2 mappings for child stdio) backed by shared file/pipe/shmem objects. `vfs_open` reads whole files into heap buffers after access checks; `vfs_open_write` buffers writable file descriptors and commits through safe CoolFS writes on close/exit; `vfs_pipe` allocates a 512-byte kernel ring buffer and returns per-task read/write fds; `vfs_read_blocking` blocks tasks on empty pipes and wakes them on write/EOF; `ipc` and `spawn_fds_args` selectively inherit pipe/file fds into child processes; `vfs_shmem_create`/`vfs_shmem_map` manage a shared memory region pool indexed by ID. |
+| **VFS** | CoolFS-root path routing, `/FAT` legacy routing, CoolFS read/write/execute permission enforcement, task-local cwd resolution, and task-local fd tables (16 slots, with explicit 0/1/2 mappings for child stdio) backed by shared file/pipe/shmem objects. `vfs_open` reads whole files into heap buffers after access checks and drops them if pressure admission fails; `vfs_open_write` buffers writable file descriptors and commits through safe CoolFS writes on close/exit; `vfs_pipe` allocates a 512-byte kernel ring buffer only when the heap reserve allows it; `vfs_read_blocking` blocks tasks on empty pipes and wakes them on write/EOF; `ipc` and `spawn_fds_args` selectively inherit pipe/file fds into child processes; `vfs_shmem_create`/`vfs_shmem_map` manage a shared memory region pool indexed by ID. |
 | **Networking** | Legacy PCI virtio-net driver for QEMU user networking, polling RX/TX virtqueues, Ethernet framing, ARP cache, IPv4, ICMP echo, UDP DNS queries, minimal TCP client sockets, userspace socket syscalls, HTTP/1.1, and verified TLS 1.3 HTTPS for the native browser/terminal path. |
 | **Kernel services** | Persistent kernel log buffer flushed to `/LOGS/KERNEL.TXT`, crash-screen log tail, sysreport generation to `/LOGS/SYSREPORT.TXT`, central device registry for PCI/USB/system devices, installable package/app manifests with file associations, networking status, ACPI power-control status foundation, and a credentialed service supervisor that restarts failed services under service uid/gid 200. |
 | **Applications** | Terminal, System Monitor, Text Viewer, Color Picker, File Manager, Web Browser, ring-3 Notes, Text Editor, Trash Bin, Screenshot, Process Demo, and GUI Demo. Text-file opens route into `/bin/editor <path>` with kernel viewer fallback, while File Manager exposes explicit Open With Editor/Viewer actions. |
@@ -166,7 +171,7 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | App | How to open | Description |
 | :-- | :---------- | :---------- |
 | **Terminal** | Launcher / right-click | Interactive shell. Type commands, press Enter. |
-| **System Monitor** | Right-click | Live CPU vendor, heap usage, uptime, scheduler counts, USB/input status, and userspace app lifecycle controls for close, kill, and app path. |
+| **System Monitor** | Right-click | Live CPU vendor, heap usage and pressure state, uptime, scheduler counts, USB/input status, and userspace app lifecycle controls for close, kill, and app path. |
 | **Text Viewer** | Right-click | Scrollable "About" doc; `j`/`k` to scroll. |
 | **Color Picker** | Right-click | Clickable 16-colour EGA palette grid. |
 | **File Manager** | Right-click / desktop icon | Browse and mutate the CoolFS root with breadcrumbs, recursive search, sorting, multi-select, clipboard copy/cut/paste, Trash-backed delete, properties, inline text editing, Open With Editor/Viewer, and ELF launch routing. |
@@ -246,7 +251,8 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `log` | Flush and print the kernel log tail |
 | `logs` | Open the in-terminal log view |
 | `profiler` | Print boot/session profiler events |
-| `diagnostics` | Print kernel, profiler, service, compositor, heap, resource-limit, filesystem, VFS, and crash diagnostics |
+| `memory` | Print heap pressure, reclaim counters, OOM state, and per-task memory estimates |
+| `diagnostics` | Print kernel, profiler, service, compositor, heap, memory-pressure, resource-limit, filesystem, VFS, and crash diagnostics |
 | `sysreport [write]` | Print the generated system report or write it to `/LOGS/SYSREPORT.TXT` |
 | `devkit` | Print SDK paths, ABI version, and userspace template locations |
 | `compositor` | Print FPS, frame pacing, frame budget, damage, and cursor overlay telemetry |
@@ -690,7 +696,10 @@ renders the Google/Search compatibility fixture and verifies that Closure script
 source does not appear as page text. Phase 62 adds scheduler, VMM, VFS, shared
 memory, and socket quota diagnostics, folds the resource-limit checks into the
 kernel selftest path, and adds `make smoke-phase62-resource-limits` to boot the
-diagnostics surface and verify the resource-limit report.
+diagnostics surface and verify the resource-limit report. Phase 63 adds the
+`memory` command, memory-pressure diagnostics, per-task memory estimates,
+clean-cache/browser-cache trimming, allocation admission checks, and
+`make smoke-phase63-memory-pressure`.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
@@ -772,5 +781,6 @@ while kernel faults still panic.
 | 60 | Browser web-app APIs — storage, cookies, location/history, class/attribute/style DOM APIs, fetch, and `browser://storage` | **Done** |
 | 61 | Browser modern-page compatibility — raw script suppression, content-type routing, Google/Search shell, and `browser://compat` | **Done** |
 | 62 | Kernel resource limits and cleanup — task/address-space/fd/shmem/socket caps plus diagnostics and smoke coverage | **Done** |
+| 63 | Memory pressure and OOM recovery — heap pressure states, cache trimming, per-task estimates, admission checks, and OOM reclaim | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

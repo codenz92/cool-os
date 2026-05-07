@@ -27,7 +27,7 @@
 ///   [stack_ptr + 136]  RFLAGS
 ///   [stack_ptr + 144]  RSP   (task's stack pointer restored by iretq)
 ///   [stack_ptr + 152]  SS
-use alloc::{format, string::String, vec::Vec};
+use alloc::{format, string::String, vec, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::structures::paging::PhysFrame;
 
@@ -49,6 +49,25 @@ pub struct SchedulerResourceStats {
     pub task_slots: usize,
     pub reaped_tasks: usize,
     pub user_tasks: usize,
+}
+
+#[derive(Clone)]
+pub struct TaskMemoryStats {
+    pub pid: usize,
+    pub name: &'static str,
+    pub status: TaskStatus,
+    pub user_pages: usize,
+    pub shmem_pages: usize,
+    pub kernel_stack_bytes: usize,
+    pub open_fds: usize,
+    pub sockets: usize,
+    pub estimated_bytes: usize,
+}
+
+#[derive(Clone, Copy)]
+pub struct ReclaimedTask {
+    pub pid: usize,
+    pub estimated_bytes: usize,
 }
 
 // ── TaskStatus ────────────────────────────────────────────────────────────────
@@ -146,6 +165,9 @@ impl Scheduler {
         ss: u64,
         pml4: Option<PhysFrame>,
     ) -> Option<usize> {
+        if !crate::memory_pressure::has_allocation_reserve(STACK_SIZE) {
+            return None;
+        }
         if self.tasks.try_reserve_exact(1).is_err() {
             return None;
         }
@@ -444,6 +466,100 @@ pub fn resource_stats() -> SchedulerResourceStats {
         reaped_tasks,
         user_tasks,
     }
+}
+
+pub fn task_memory_stats() -> Vec<TaskMemoryStats> {
+    let seeds: Vec<(usize, &'static str, TaskStatus, Option<PhysFrame>, bool)> = {
+        let sched = SCHEDULER.lock();
+        sched
+            .tasks
+            .iter()
+            .enumerate()
+            .filter(|(pid, task)| *pid != 0 && task.status != TaskStatus::Reaped)
+            .map(|(pid, task)| {
+                (
+                    pid,
+                    task.name,
+                    task.status,
+                    task.pml4,
+                    !task.stack.is_empty(),
+                )
+            })
+            .collect()
+    };
+
+    let mut out = Vec::new();
+    for (pid, name, status, pml4, has_stack) in seeds {
+        let user_pages = pml4.map(crate::vmm::owned_leaf_pages).unwrap_or(0);
+        let shmem_pages = crate::vfs::task_shmem_pages(pid);
+        let kernel_stack_bytes = if has_stack { STACK_SIZE } else { 0 };
+        let open_fds = crate::vfs::task_open_fd_count(pid);
+        let sockets = crate::net::owner_socket_count(pid);
+        let estimated_bytes = user_pages
+            .saturating_add(shmem_pages)
+            .saturating_mul(4096)
+            .saturating_add(kernel_stack_bytes)
+            .saturating_add(open_fds.saturating_mul(64))
+            .saturating_add(sockets.saturating_mul(1024));
+        out.push(TaskMemoryStats {
+            pid,
+            name,
+            status,
+            user_pages,
+            shmem_pages,
+            kernel_stack_bytes,
+            open_fds,
+            sockets,
+            estimated_bytes,
+        });
+    }
+    out
+}
+
+pub fn task_memory_lines() -> Vec<String> {
+    let stats = task_memory_stats();
+    if stats.is_empty() {
+        return vec![String::from("tasks memory: none")];
+    }
+    let mut lines = Vec::new();
+    for task in stats.iter().take(16) {
+        lines.push(format!(
+            "pid={} name={} state={} user_pages={} shmem_pages={} kstack={} fds={} sockets={} estimated={}",
+            task.pid,
+            task.name,
+            task_status_label(task.status),
+            task.user_pages,
+            task.shmem_pages,
+            task.kernel_stack_bytes,
+            task.open_fds,
+            task.sockets,
+            task.estimated_bytes
+        ));
+    }
+    lines
+}
+
+pub fn reclaim_largest_user_task(exit_code: u64) -> Option<ReclaimedTask> {
+    let current = current_task_id();
+    let victim = task_memory_stats()
+        .into_iter()
+        .filter(|task| {
+            task.pid != current
+                && task.user_pages > 0
+                && matches!(
+                    task.status,
+                    TaskStatus::Ready
+                        | TaskStatus::Running
+                        | TaskStatus::Blocked
+                        | TaskStatus::Stopped
+                )
+        })
+        .max_by_key(|task| task.estimated_bytes)?;
+    force_reclaim_task(victim.pid, exit_code).ok()?;
+    Some(ReclaimedTask {
+        pid: victim.pid,
+        estimated_bytes: victim.estimated_bytes,
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -1005,6 +1121,69 @@ fn cleanup_task_resources(task_id: usize) {
     crate::net::close_owner_sockets(task_id);
 }
 
+fn task_status_label(status: TaskStatus) -> &'static str {
+    match status {
+        TaskStatus::Ready => "ready",
+        TaskStatus::Running => "running",
+        TaskStatus::Blocked => "blocked",
+        TaskStatus::Stopped => "stopped",
+        TaskStatus::Exited => "exited",
+        TaskStatus::Reaped => "reaped",
+    }
+}
+
+fn release_task_stack(task: &mut Task) {
+    if task.stack.capacity() > 0 {
+        task.stack = Vec::new();
+        crate::slab::record_free("task-stack", STACK_SIZE);
+    }
+    task.stack_ptr = 0;
+    task.syscall_stack_top = 0;
+}
+
+fn force_reclaim_task(task_id: usize, code: u64) -> Result<(), KillError> {
+    if task_id == 0 {
+        return Err(KillError::CannotKillIdle);
+    }
+    let current = current_task_id();
+    if task_id == current {
+        return Err(KillError::CannotKillCurrent);
+    }
+
+    let (name, parent, pml4_to_free) = {
+        let mut sched = SCHEDULER.lock();
+        let task = sched.tasks.get_mut(task_id).ok_or(KillError::InvalidTask)?;
+        if task.status == TaskStatus::Exited {
+            return Err(KillError::AlreadyExited);
+        }
+        if task.status == TaskStatus::Reaped {
+            return Err(KillError::AlreadyReaped);
+        }
+        let name = task.name;
+        let parent = task.parent;
+        task.status = TaskStatus::Reaped;
+        task.exit_code = Some(code);
+        task.wake_tick = None;
+        release_task_stack(task);
+        let pml4 = task.pml4.take();
+        (name, parent, pml4)
+    };
+
+    wake_waiting_parent(parent, task_id);
+    cleanup_task_resources(task_id);
+    crate::wm::close_user_gui_windows_for_owner(task_id);
+    crate::profiler::record_task(task_id, name, "oom-reclaimed");
+    crate::crashdump::record_task_report(task_id, "memory pressure oom");
+    crate::notifications::push_transient("Task reclaimed", "memory pressure");
+    crate::app_lifecycle::record_process_exit(task_id, "oom");
+    crate::deferred::enqueue(crate::deferred::DeferredWork::PersistTaskSnapshot);
+    crate::deferred::enqueue(crate::deferred::DeferredWork::FlushKernelLog);
+    if let Some(pml4) = pml4_to_free {
+        crate::vmm::free_address_space(pml4);
+    }
+    Ok(())
+}
+
 pub fn waitpid(parent: usize, task_id: usize) -> Result<u64, WaitError> {
     if task_id == 0 {
         return Err(WaitError::InvalidTask);
@@ -1020,10 +1199,7 @@ pub fn waitpid(parent: usize, task_id: usize) -> Result<u64, WaitError> {
             TaskStatus::Exited => {
                 let code = task.exit_code.unwrap_or(0);
                 task.status = TaskStatus::Reaped;
-                task.stack.clear();
-                crate::slab::record_free("task-stack", STACK_SIZE);
-                task.stack_ptr = 0;
-                task.syscall_stack_top = 0;
+                release_task_stack(task);
                 pml4_to_free = task.pml4.take();
                 Ok(code)
             }
@@ -1133,10 +1309,7 @@ pub fn reap_all_exited(parent: usize) -> usize {
                 continue;
             }
             task.status = TaskStatus::Reaped;
-            task.stack.clear();
-            crate::slab::record_free("task-stack", STACK_SIZE);
-            task.stack_ptr = 0;
-            task.syscall_stack_top = 0;
+            release_task_stack(task);
             if let Some(pml4) = task.pml4.take() {
                 pml4s_to_free.push(pml4);
             }

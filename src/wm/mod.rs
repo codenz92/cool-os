@@ -293,6 +293,13 @@ pub fn close_user_gui_windows_for_owner(owner: usize) {
     }
 }
 
+pub fn trim_browser_memory_pressure() -> usize {
+    compositor::WM
+        .try_lock()
+        .map(|mut wm| wm.trim_browser_memory_pressure())
+        .unwrap_or(0)
+}
+
 pub(crate) fn drain_user_gui_owner_cleanup(wm: &mut compositor::WindowManager) {
     let owners = x86_64::instructions::interrupts::without_interrupts(|| {
         let mut pending = PENDING_USER_GUI_OWNER_CLEANUP.lock();

@@ -441,6 +441,16 @@ pub fn resource_stats() -> NetResourceStats {
     }
 }
 
+pub fn owner_socket_count(owner: usize) -> usize {
+    NET_STATE
+        .lock()
+        .sockets
+        .iter()
+        .flatten()
+        .filter(|socket| socket.owner == owner)
+        .count()
+}
+
 pub fn poll() {
     let frames = crate::virtio_net::poll();
     for frame in frames {

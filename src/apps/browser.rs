@@ -533,6 +533,9 @@ impl BrowserSubresourceCache {
         if bytes.is_empty() || bytes.len() > MAX_BROWSER_RESOURCE_BYTES {
             return;
         }
+        if !crate::memory_pressure::admit_allocation(bytes.len(), "browser-cache") {
+            return;
+        }
         if let Some(pos) = self
             .entries
             .iter()
@@ -569,6 +572,17 @@ impl BrowserSubresourceCache {
 
     fn entries(&self) -> &[BrowserCachedResource] {
         &self.entries
+    }
+
+    fn trim_memory_pressure(&mut self) -> usize {
+        let bytes = self
+            .entries
+            .iter()
+            .map(|entry| entry.bytes.len())
+            .fold(0usize, |total, len| total.saturating_add(len));
+        self.entries.clear();
+        self.entries.shrink_to_fit();
+        bytes
     }
 }
 
@@ -911,6 +925,22 @@ impl BrowserApp {
         let mut app = Self::new(x, y);
         app.navigate(url, true);
         app
+    }
+
+    pub fn trim_memory_pressure(&mut self) -> usize {
+        let mut bytes = self.subresource_cache.trim_memory_pressure();
+        if let Some(page) = self.last_page.take() {
+            bytes = bytes
+                .saturating_add(page.body.len())
+                .saturating_add(page.body_bytes.len());
+        }
+        if let Some(image) = self.image_preview.take() {
+            bytes = bytes.saturating_add(image.pixels.len().saturating_mul(4));
+        }
+        for inline in self.inline_images.drain(..) {
+            bytes = bytes.saturating_add(inline.image.pixels.len().saturating_mul(4));
+        }
+        bytes
     }
 
     pub fn handle_key(&mut self, c: char) {

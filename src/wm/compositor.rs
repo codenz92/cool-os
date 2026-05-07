@@ -1263,6 +1263,19 @@ impl WindowManager {
         }
     }
 
+    pub fn trim_browser_memory_pressure(&mut self) -> usize {
+        let mut bytes = 0usize;
+        for window in self.windows.iter_mut() {
+            if let AppWindow::Browser(browser) = window {
+                bytes = bytes.saturating_add(browser.trim_memory_pressure());
+            }
+        }
+        if bytes > 0 {
+            crate::wm::request_repaint();
+        }
+        bytes
+    }
+
     fn find_user_gui_index(&self, owner: usize, handle: u64) -> Option<usize> {
         self.windows.iter().position(|window| {
             matches!(window, AppWindow::UserGui(app) if app.owner() == owner && app.handle() == handle)

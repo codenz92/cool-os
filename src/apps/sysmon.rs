@@ -116,9 +116,11 @@ impl SysMonApp {
             .map(|v| v.as_str())
             .unwrap_or("unknown");
 
-        let used = crate::allocator::heap_used();
-        let heap_total = crate::allocator::HEAP_SIZE;
-        let heap_free = heap_total.saturating_sub(used);
+        let heap = crate::allocator::heap_snapshot();
+        let pressure = crate::memory_pressure::snapshot();
+        let used = heap.used;
+        let heap_total = heap.total;
+        let heap_free = heap.free;
         let heap_ratio = if heap_total > 0 {
             (used.saturating_mul(100) / heap_total).min(100)
         } else {
@@ -195,10 +197,16 @@ impl SysMonApp {
         heap_free_line.push_usize(heap_ratio);
         heap_free_line.push_str("%");
         self.put_str_px(stride, 280, 82, heap_free_line.as_str(), MUTED);
+        let mut pressure_line = NumberLine::new();
+        pressure_line.push_str("pressure ");
+        pressure_line.push_str(pressure.level.as_str());
+        pressure_line.push_str(" oom ");
+        pressure_line.push_usize(pressure.oom_kills);
+        self.put_str_px(stride, 280, 92, pressure_line.as_str(), MUTED);
         self.draw_bar(
             stride,
             280,
-            90,
+            98,
             200,
             6,
             heap_ratio,

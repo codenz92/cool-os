@@ -12,6 +12,16 @@ pub fn lines() -> Vec<String> {
     push_section(&mut lines, "tasks", crate::process_model::status_lines());
     push_section(
         &mut lines,
+        "memory pressure",
+        crate::memory_pressure::lines(),
+    );
+    push_section(
+        &mut lines,
+        "task memory",
+        crate::scheduler::task_memory_lines(),
+    );
+    push_section(
+        &mut lines,
         "resource limits",
         crate::resource_limits::lines(),
     );

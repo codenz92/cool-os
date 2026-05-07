@@ -269,6 +269,16 @@ pub fn flush() -> Result<(), FsError> {
     })
 }
 
+pub fn trim_clean_cache(keep_blocks: usize) -> Result<usize, FsError> {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut slot = COOLFS_IMAGE.lock();
+        let Some(image) = slot.as_mut() else {
+            return Ok(0);
+        };
+        image.cache.trim_clean(keep_blocks)
+    })
+}
+
 pub fn lines() -> Vec<String> {
     match stats() {
         Some(stats) => alloc::vec![
@@ -644,6 +654,28 @@ impl BlockCache {
             }
         }
         Ok(())
+    }
+
+    fn trim_clean(&mut self, keep_blocks: usize) -> Result<usize, FsError> {
+        let mut removed = 0usize;
+        while self.entries.len() > keep_blocks {
+            let Some(evict_idx) = self
+                .entries
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| !entry.dirty && entry.block != 0)
+                .min_by_key(|(_, entry)| entry.age)
+                .map(|(idx, _)| idx)
+            else {
+                break;
+            };
+            self.entries.remove(evict_idx);
+            removed = removed.saturating_add(1);
+        }
+        if removed > 0 {
+            self.entries.shrink_to_fit();
+        }
+        Ok(removed.saturating_mul(BLOCK_SIZE))
     }
 }
 

@@ -724,6 +724,16 @@ impl TerminalApp {
 
             Some("heap") => self.cmd_lines("HEAP DIAGNOSTICS", crate::allocator::heap_lines()),
 
+            Some("memory") | Some("mem") => {
+                let mut lines = crate::memory_pressure::lines();
+                push_terminal_section(
+                    &mut lines,
+                    "task memory",
+                    crate::scheduler::task_memory_lines(),
+                );
+                self.cmd_lines("MEMORY PRESSURE", lines)
+            }
+
             Some("slab") => self.cmd_lines("SLAB DIAGNOSTICS", crate::slab::lines()),
 
             Some("waitq") => self.cmd_lines("WAIT QUEUES", crate::wait_queue::lines()),
@@ -1201,6 +1211,7 @@ impl TerminalApp {
             ),
             ("smoothness", "compositor pacing and latency telemetry"),
             ("heap", "heap diagnostics"),
+            ("memory", "heap pressure, reclaim, OOM, and per-task memory"),
             ("slab", "slab allocator diagnostics"),
             ("waitq", "kernel wait queue diagnostics"),
             ("writeback", "async disk writeback state"),
@@ -2733,18 +2744,21 @@ impl TerminalApp {
     }
 
     fn cmd_info(&mut self) {
-        let heap_used = crate::allocator::heap_used();
-        let heap_total = crate::allocator::HEAP_SIZE;
+        let heap = crate::allocator::heap_snapshot();
+        let pressure = crate::memory_pressure::snapshot();
         let task_stats = crate::scheduler::resource_stats();
 
         self.set_fg(FG_ACCENT);
         self.print_str("Heap  : ");
         self.set_fg(FG_OUTPUT);
-        self.print_size(heap_used);
+        self.print_size(heap.used);
         self.set_fg(FG_DIM);
         self.print_str(" / ");
         self.set_fg(FG_OUTPUT);
-        self.print_size(heap_total);
+        self.print_size(heap.total);
+        self.set_fg(FG_DIM);
+        self.print_str(" ");
+        self.print_str(pressure.level.as_str());
         self.print_char('\n');
 
         self.set_fg(FG_ACCENT);
@@ -3400,6 +3414,16 @@ fn diagnostics_lines() -> Vec<String> {
         crate::wm::compositor::compositor_lines(),
     );
     push_terminal_section(&mut lines, "heap", crate::allocator::heap_lines());
+    push_terminal_section(
+        &mut lines,
+        "memory pressure",
+        crate::memory_pressure::lines(),
+    );
+    push_terminal_section(
+        &mut lines,
+        "task memory",
+        crate::scheduler::task_memory_lines(),
+    );
     push_terminal_section(
         &mut lines,
         "resource limits",

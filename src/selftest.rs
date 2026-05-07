@@ -318,6 +318,7 @@ fn process_kernel_supervisor_only() -> bool {
     };
 
     let resource_limits_ok = crate::resource_limits::selftest_passes()
+        && crate::memory_pressure::selftest_passes()
         && !crate::vmm::can_add_owned_pages(
             pml4,
             crate::resource_limits::MAX_USER_ADDRESS_SPACE_PAGES + 1,

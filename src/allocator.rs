@@ -18,6 +18,15 @@ static DIAG_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 pub const HEAP_START: usize = 0x_4444_4444_0000;
 pub const HEAP_SIZE: usize = 32 * 1024 * 1024; // 32 MiB
 
+#[derive(Clone, Copy)]
+pub struct HeapSnapshot {
+    pub total: usize,
+    pub used: usize,
+    pub free: usize,
+    pub high_water: usize,
+    pub diag_samples: usize,
+}
+
 pub fn init_heap(
     mapper: &mut impl Mapper<Size4KiB>,
     frame_allocator: &mut impl FrameAllocator<Size4KiB>,
@@ -45,8 +54,7 @@ pub fn init_heap(
     Ok(())
 }
 
-pub fn heap_used() -> usize {
-    let used = ALLOCATOR.lock().used();
+fn record_heap_sample(used: usize) {
     DIAG_SAMPLES.fetch_add(1, Ordering::Relaxed);
     let mut high = HIGH_WATER.load(Ordering::Relaxed);
     while used > high {
@@ -55,11 +63,18 @@ pub fn heap_used() -> usize {
             Err(next) => high = next,
         }
     }
-    used
 }
 
-pub fn heap_free() -> usize {
-    HEAP_SIZE.saturating_sub(heap_used())
+pub fn heap_snapshot() -> HeapSnapshot {
+    let used = ALLOCATOR.lock().used();
+    record_heap_sample(used);
+    HeapSnapshot {
+        total: HEAP_SIZE,
+        used,
+        free: HEAP_SIZE.saturating_sub(used),
+        high_water: HIGH_WATER.load(Ordering::Relaxed),
+        diag_samples: DIAG_SAMPLES.load(Ordering::Relaxed),
+    }
 }
 
 pub fn heap_ready() -> bool {
@@ -67,20 +82,13 @@ pub fn heap_ready() -> bool {
 }
 
 pub fn heap_lines() -> alloc::vec::Vec<alloc::string::String> {
-    let used = heap_used();
-    let free = heap_free();
+    let snapshot = heap_snapshot();
     alloc::vec![
-        alloc::format!("heap_total={} bytes", HEAP_SIZE),
-        alloc::format!("heap_used={} bytes", used),
-        alloc::format!("heap_free={} bytes", free),
-        alloc::format!(
-            "heap_high_water={} bytes",
-            HIGH_WATER.load(Ordering::Relaxed)
-        ),
-        alloc::format!(
-            "allocator_diag_samples={}",
-            DIAG_SAMPLES.load(Ordering::Relaxed)
-        ),
+        alloc::format!("heap_total={} bytes", snapshot.total),
+        alloc::format!("heap_used={} bytes", snapshot.used),
+        alloc::format!("heap_free={} bytes", snapshot.free),
+        alloc::format!("heap_high_water={} bytes", snapshot.high_water),
+        alloc::format!("allocator_diag_samples={}", snapshot.diag_samples),
         alloc::format!("fragmentation_probe=free/used/high-water via linked-list allocator"),
     ]
 }
