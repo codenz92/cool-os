@@ -527,6 +527,11 @@ fn png_decode_roundtrip() -> bool {
         "/TMP/PHASE59.JS.HTML",
         b"<!doctype html><html><head><title>Phase 59 Browser JS</title><script src=\"PHASE59.JS\"></script><script>document.getElementById('status').textContent='Inline script ran';document.querySelector('.phase').className='phase ready';setTimeout(function(){document.getElementById('timer').textContent='Timer fired';},1);</script><style>.ready{color:#165a72;background:#eaf7ef}</style></head><body><h1>Phase 59 Browser JS</h1><p id=\"status\">Initial</p><p id=\"external\">External pending</p><p id=\"timer\">Timer pending</p><p class=\"phase\">Class pending</p><form action=\"/phase59\"><input id=\"name\" name=\"name\" value=\"initial\"><input id=\"agree\" type=\"checkbox\" name=\"agree\" value=\"1\"><button id=\"go\" type=\"button\">Run</button><input type=\"submit\" name=\"send\" value=\"Send\"></form><a href=\"browser://js\">Script diagnostics</a></body></html>",
     );
+    let _ = crate::vfs::vfs_safe_write_file("/TMP/PHASE60.DATA", b"Fetch payload ready");
+    let _ = crate::vfs::vfs_safe_write_file(
+        "/TMP/PHASE60.WEBAPP.HTML",
+        b"<!doctype html><html><head><title>Phase 60 Browser Web APIs</title><style>.ready{color:#165a72;background:#eaf7ef;border:1px solid #226644;padding:4px}</style><script>localStorage.setItem('phase60','local ready');sessionStorage.setItem('phase60','session ready');document.getElementById('local').textContent=localStorage.getItem('phase60');document.getElementById('session').textContent=sessionStorage.getItem('phase60');document.querySelectorAll('.item')[1].textContent='Second item updated';document.querySelector('#card').classList.add('ready');document.getElementById('card').setAttribute('data-state','attribute ready');document.getElementById('attr').textContent=document.getElementById('card').getAttribute('data-state');document.getElementById('card').style.backgroundColor='#eaf7ef';history.pushState({},'','?phase=60');document.getElementById('query').textContent=location.search;fetch('PHASE60.DATA').then(function(text){document.getElementById('fetch').textContent=text;});</script></head><body><h1>Phase 60 Browser Web APIs</h1><div id=\"card\"><p id=\"local\">local pending</p><p id=\"session\">session pending</p><p id=\"attr\">attr pending</p><p id=\"query\">query pending</p><p id=\"fetch\">fetch pending</p><p class=\"item\">First item</p><p class=\"item\">Second item</p></div><a href=\"browser://storage\">Storage diagnostics</a></body></html>",
+    );
     image.width == 2
         && image.height == 2
         && image.pixels.as_slice() == [0x00ff0000, 0x0000ff00, 0x000000ff, 0x00ffffff]
@@ -606,6 +611,9 @@ fn browser_html_render_roundtrip() -> bool {
         && cookie_debug
             .iter()
             .any(|line| line == "secure_header=sid=abc; theme=dark")
+        && cookie_debug
+            .iter()
+            .any(|line| line == "document_cookie=theme=dark")
         && cookie_debug
             .iter()
             .any(|line| line == "plain_header=theme=dark")
@@ -763,6 +771,54 @@ fn browser_html_render_roundtrip() -> bool {
         && phase59_debug
             .iter()
             .any(|line| line == "file:///phase59?name=clicked&agree=1&send=Send");
+    let phase60 = "<!doctype html><html><head><script>localStorage.setItem('phase60','local ready');sessionStorage.setItem('phase60','session ready');document.getElementById('local').textContent=localStorage.getItem('phase60');document.getElementById('session').textContent=sessionStorage.getItem('phase60');document.querySelectorAll('.item')[1].textContent='Second item updated';document.querySelector('#card').classList.add('ready');document.getElementById('card').setAttribute('data-state','attribute ready');document.getElementById('attr').textContent=document.getElementById('card').getAttribute('data-state');document.getElementById('card').style.backgroundColor='#eaf7ef';history.pushState({},'','?phase=60');document.getElementById('query').textContent=location.search;fetch('PHASE60.DATA').then(function(text){document.getElementById('fetch').textContent=text;});</script></head><body><div id=\"card\"><p id=\"local\">local pending</p><p id=\"session\">session pending</p><p id=\"attr\">attr pending</p><p id=\"query\">query pending</p><p id=\"fetch\">fetch pending</p><p class=\"item\">First item</p><p class=\"item\">Second item</p></div></body></html>";
+    let phase60_debug = crate::apps::browser::browser_web_api_debug_for_test(
+        "file:///TMP/PHASE60.WEBAPP.HTML",
+        phase60,
+        72,
+    );
+    let phase60_cookie = "<!doctype html><html><head><script>document.cookie='phase60=ready; Path=/app';document.getElementById('cookie').textContent=document.cookie;</script></head><body><p id=\"cookie\">cookie pending</p></body></html>";
+    let phase60_cookie_debug = crate::apps::browser::browser_web_api_debug_for_test(
+        "https://example.com/app/page.html",
+        phase60_cookie,
+        72,
+    );
+    let storage_debug = crate::browser_storage::storage_debug_for_test("file://");
+    let has_phase60_stats = phase60_debug.iter().any(|line| {
+        line.contains("js inline=1 external=0/0")
+            && line.contains("storage=2/2")
+            && line.contains("fetch=1")
+            && line.contains("nav=1")
+            && line.contains("errors=0")
+    }) && phase60_cookie_debug
+        .iter()
+        .any(|line| line.contains("cookies=1/1") && line.contains("errors=0"));
+    let has_phase60_dom = phase60_debug.iter().any(|line| line == "local ready")
+        && phase60_debug.iter().any(|line| line == "session ready")
+        && phase60_debug.iter().any(|line| line == "attribute ready")
+        && phase60_debug.iter().any(|line| line == "?phase=60")
+        && phase60_debug
+            .iter()
+            .any(|line| line == "Fetch payload ready")
+        && phase60_debug
+            .iter()
+            .any(|line| line == "Second item updated")
+        && phase60_debug
+            .iter()
+            .any(|line| line == "base=file:///TMP/?phase=60")
+        && phase60_cookie_debug
+            .iter()
+            .any(|line| line == "phase60=ready")
+        && storage_debug
+            .iter()
+            .any(|line| line == "local_first=stored")
+        && storage_debug
+            .iter()
+            .any(|line| line == "local_second=updated")
+        && storage_debug
+            .iter()
+            .any(|line| line == "local_removed=true")
+        && storage_debug.iter().any(|line| line == "local_after=-");
     has_heading
         && has_css
         && has_quote
@@ -783,4 +839,6 @@ fn browser_html_render_roundtrip() -> bool {
         && has_phase58_images
         && has_phase59_stats
         && has_phase59_dom
+        && has_phase60_stats
+        && has_phase60_dom
 }

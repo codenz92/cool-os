@@ -17,17 +17,19 @@ editing, reset handling, real URL-encoded POST request bodies, persistent
 cookie/session state, CSS2 box-model layout, positioned/floating boxes, z-index
 paint order, improved table/list layout, and parser repair for common implied
 HTML closes plus external stylesheet/image/script subresource loading with
-bounded cache metadata and a small JavaScript/DOM mutation runtime.
-Phases 45-59 focus on responsiveness, interactive terminal behavior, and
+bounded cache metadata, a small JavaScript/DOM mutation runtime, and bounded
+web-app APIs for storage, cookies, location/history, attributes/classes/styles,
+and same-origin fetch callbacks.
+Phases 45-60 focus on responsiveness, interactive terminal behavior, and
 desktop-browser compatibility:
 cursor-only framebuffer updates,
 input-first idle-loop ordering, adaptive 36/144 Hz frame pacing, compositor
 telemetry, and `poll`-driven userspace waits for pipes, TTY stdin, sockets,
 GUI events, and child exits, plus raw TTY input, ANSI-rendered TUI output,
 keyboard-editable Browser controls, and a richer native Browser rendering
-surface with GET/POST form submission, a persistent cookie jar, and bounded
-margin/padding/border/position/float layout plus a small Browser subresource
-cache and script runtime.
+surface with GET/POST form submission, persistent cookie/storage state, and
+bounded margin/padding/border/position/float layout plus a small Browser
+subresource cache, script runtime, and web-app API layer.
 
 ---
 
@@ -576,17 +578,19 @@ HTTPS rather than a fake port-443 passthrough.
 
 - `src/net.rs` owns HTTP redirect following and chunked transfer decoding so Terminal,
   browser, and syscall callers share one HTTP implementation.
-- `src/apps/browser.rs` remains a native no_std GUI app. Phases 49-59 give it a
+- `src/apps/browser.rs` remains a native no_std GUI app. Phases 49-60 give it a
   bounded browser-engine layer for HTML/CSS line boxes, images, forms, and
   DOM-backed document controls, persistent cookie/session state, CSS2 box-model
   layout, positioning/floats, z-index paint order, table/list improvements, and
   implied-close parser repair plus external stylesheet/image subresources and
-  cache metadata plus a small bounded JavaScript/DOM runtime.
+  cache metadata plus a small bounded JavaScript/DOM runtime and web-app API
+  layer.
 - `/bin/wget` now sends an HTTP/1.1 request with a coolOS user agent, keeping it as a
   raw userspace socket demo.
-- Phase 59 adds the small JavaScript/DOM runtime planned after the subresource
-  layer: same-origin script loading, event dispatch hooks, bounded timers, and
-  DOM mutation enough for simple interactive pages.
+- Phases 59-60 add the small JavaScript/DOM runtime planned after the
+  subresource layer: same-origin script loading, event dispatch hooks, bounded
+  timers, DOM mutation, storage/cookie APIs, location/history hooks, and
+  same-origin fetch enough for simple interactive pages.
 
 ---
 
@@ -1714,10 +1718,47 @@ pretending coolOS has a full modern JS engine yet.
 
 **Current status:** complete. The Browser now has the first useful script layer:
 simple pages can initialize text, classes, and form values, respond to button
-clicks, and inspect script runtime counts from inside coolOS. This is still a
-bounded compatibility layer rather than a full ECMAScript engine; storage APIs,
-XHR/fetch, layout-query APIs, and broader JS semantics remain future browser
-engine work.
+clicks, and inspect script runtime counts from inside coolOS. Phase 60 builds
+on this bounded compatibility layer with storage, cookie, location/history, and
+same-origin fetch APIs; broader ECMAScript semantics and full async networking
+remain future browser engine work.
+
+---
+
+## ✅ Phase 60 — Browser Web-App APIs
+
+**Goal:** Let small HTML5-style web apps persist state, inspect browser context,
+and fetch same-origin text resources inside the native Browser.
+
+- [x] Add persistent per-origin `localStorage` backed by
+      `/CONFIG/BROWSER.STORAGE`, with bounded entry/key/value counts and
+      corruption recovery through the config-store path.
+- [x] Add per-document `sessionStorage` for script state that survives reflow
+      within the loaded document but does not persist across pages.
+- [x] Expose JS `document.cookie` reads/writes through the existing persistent
+      Browser cookie jar while preserving the same Domain/Path/Secure policy
+      used by Browser network requests.
+- [x] Add bounded `location.href`, `location.search`, `location.assign`,
+      `location.replace`, `history.pushState`, and `history.replaceState`
+      hooks so scripts can inspect or request navigation state.
+- [x] Expand practical DOM APIs with `querySelectorAll(...)[index]`,
+      `classList.add/remove/toggle`, `setAttribute`, `getAttribute`,
+      `removeAttribute`, and `style.<property>` mutations that serialize back
+      into the DOM before reflow.
+- [x] Add simple script variables plus same-origin `fetch()` text callbacks for
+      local, HTTP, and HTTPS resources, including bounded POST body support for
+      web targets.
+- [x] Add `browser://storage`, expanded `browser://js` API counters,
+      `/TMP/PHASE60.WEBAPP.HTML`, `/TMP/PHASE60.DATA`, selftest coverage, and
+      `make smoke-phase60-browser-webapi`.
+
+**Current status:** complete. The Browser can now run small stateful pages:
+scripts can persist localStorage, use sessionStorage, read/write cookies, adjust
+classes/attributes/styles, inspect `location.search`, update history state, and
+consume same-origin text resources through a bounded fetch callback. This is
+still intentionally not a full browser VM: Promise scheduling, service workers,
+WebSockets, IndexedDB, canvas/media, and complete HTML5 API coverage remain
+future work.
 
 ---
 
@@ -1796,4 +1837,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.20 | Phase 56 complete: CSS2 box model and reflow |
 | v7.21 | Phase 57 complete: Browser layout and parser fidelity |
 | v7.22 | Phase 58 complete: Browser subresources and cache |
-| v7.23 | Current — Phase 59 complete: Browser JavaScript and DOM runtime |
+| v7.23 | Phase 59 complete: Browser JavaScript and DOM runtime |
+| v7.24 | Current — Phase 60 complete: Browser web-app APIs |

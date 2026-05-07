@@ -13,7 +13,7 @@ stdio, and IPC with pipes, shared memory, and per-task fd tables.
 
 ---
 
-# Current state — v7.23
+# Current state — v7.24
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -59,7 +59,7 @@ rename, writable file descriptors, fd-mapped child stdio, sync, and RTC time;
 `/bin/sh` now supports quoting, relative paths, redirection, and one-stage
 pipelines; `/bin` includes practical file/text/date/devkit tools; sysreport can
 write `/LOGS/SYSREPORT.TXT`; and the generated image ships `/SDK` docs and
-templates. Phases 45-59 add compositor smoothness, evented terminal work, and
+templates. Phases 45-60 add compositor smoothness, evented terminal work, and
 a richer native browser renderer:
 timer ticks now request
 paced frames instead of unconditional full redraws, mouse-only motion uses a
@@ -83,9 +83,12 @@ and floating boxes, z-index paint ordering, stronger table/list layout, tolerant
 HTML parser repair for common implied closes, and smoke fixtures for the browser
 engine, CSS layout, forms, DOM events, DOM-backed form interaction, POST form
 pages, session state, box-model pages, deeper layout pages, and subresource
-cache pages. Phase 59 adds a bounded JavaScript/DOM runtime with same-origin
+cache pages. Phases 59-60 add a bounded JavaScript/DOM runtime with same-origin
 script loading, inline handlers, `addEventListener` hooks, bounded timers,
-script-driven DOM text/class/form mutations, and `browser://js` diagnostics.
+script-driven DOM text/class/form mutations, persistent `localStorage`,
+per-document `sessionStorage`, JS `document.cookie`, `location`/`history`
+hooks, `querySelectorAll`, `classList`, attribute/style mutations, same-origin
+fetch callbacks, and `browser://js` / `browser://storage` diagnostics.
 
 | Context | Mode | Description |
 | :------ | :--- | :---------- |
@@ -155,7 +158,7 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **Text Viewer** | Right-click | Scrollable "About" doc; `j`/`k` to scroll. |
 | **Color Picker** | Right-click | Clickable 16-colour EGA palette grid. |
 | **File Manager** | Right-click / desktop icon | Browse and mutate the CoolFS root with breadcrumbs, recursive search, sorting, multi-select, clipboard copy/cut/paste, Trash-backed delete, properties, inline text editing, Open With Editor/Viewer, and ELF launch routing. |
-| **Web Browser** | Launcher / desktop icon | Native HTTP/HTTPS/local-file browser with address/search bar, redirects, decoded chunked responses, headings/lists/quotes/tables, CSS2-style cascade, box-model, positioning, float, z-index, table/list, parser-repair, external stylesheet/script loading, inline-image cache, subresource metadata hints, a bounded JavaScript/DOM runtime for text/class/value/checked mutations plus event handlers/timers, styled text blocks, direct and HTML-sourced inline PNG previews, image metadata/placeholders for JPEG/GIF/WebP, clickable links/forms, session history, visible TLS trust-root status, persistent bookmarks, persistent cookies, `browser://session`, `browser://cache`, and `browser://js`. |
+| **Web Browser** | Launcher / desktop icon | Native HTTP/HTTPS/local-file browser with address/search bar, redirects, decoded chunked responses, headings/lists/quotes/tables, CSS2-style cascade, box-model, positioning, float, z-index, table/list, parser-repair, external stylesheet/script loading, inline-image cache, subresource metadata hints, a bounded JavaScript/DOM runtime for text/class/value/checked mutations plus event handlers/timers, web-app APIs for storage, cookies, location/history, attributes/styles/classes, and same-origin fetch callbacks, styled text blocks, direct and HTML-sourced inline PNG previews, image metadata/placeholders for JPEG/GIF/WebP, clickable links/forms, session history, visible TLS trust-root status, persistent bookmarks, persistent cookies/storage, `browser://session`, `browser://cache`, `browser://js`, and `browser://storage`. |
 | **Accounts** | Launcher / Display Settings Users tab | Admin account management for first-run setup, account creation, role changes, enable/disable, password reset, and deletion. |
 | **Trash Bin** | Launcher / desktop icon / `exec /bin/trash` | Ring-3 GUI utility that lists deleted items staged in `/Trash` and can permanently empty them. |
 | **Screenshot** | Launcher / desktop icon / `exec /bin/screenshot` | Ring-3 GUI utility that queues a focused-window PPM capture to `/Pictures`. |
@@ -602,7 +605,7 @@ movement, and screen/line clearing. `libcool::tty` exposes mode/size helpers,
 and `/bin/tuidemo` smokes raw single-key input without Enter plus ANSI-rendered
 status text.
 
-**Browser rendering phases (49-59).** The native Browser now has a more explicit
+**Browser rendering phases (49-60).** The native Browser now has a more explicit
 HTML/CSS rendering path: style blocks and inline styles are parsed into bounded
 rules for tag, class, id, and simple compound selectors; computed style drives
 hidden content, alignment, indentation, text color, backgrounds, preformatted
@@ -638,16 +641,26 @@ bounded JavaScript subset after DOM construction: same-origin external scripts
 and inline scripts can mutate `textContent`, `className`, form `value`,
 `checked`, and `disabled` state, register `click`/`change`/`submit` handlers
 through inline attributes or `addEventListener`, and run bounded timer callbacks.
-Script mutations serialize back through the DOM state before reflow, and
-`browser://js` reports script, handler, timer, mutation, and error counts for
-the last loaded page. The Browser can also be launched from Terminal with
+Script mutations serialize back through the DOM state before reflow. Phase 60
+adds a bounded web-app API layer: persistent per-origin `localStorage` in
+`/CONFIG/BROWSER.STORAGE`, per-document `sessionStorage`, JS `document.cookie`
+read/write through the existing cookie jar, `location.href` / `location.search`
+and `history.pushState` / `replaceState` hooks, `querySelectorAll` indexing,
+`classList.add/remove/toggle`, `setAttribute` / `getAttribute`,
+`removeAttribute`, `style.<property>` mutations, simple script variables, and
+same-origin `fetch()` text callbacks for local/HTTP/HTTPS resources.
+`browser://js` reports script, handler, timer, mutation, storage, cookie,
+fetch, navigation, and error counts for the last loaded page, while
+`browser://storage` lists persisted localStorage keys. The Browser can also be
+launched from Terminal with
 `browser [url]`. The fixture targets from `make smoke-phase49-browser-engine`
-through `make smoke-phase59-browser-js` boot
+through `make smoke-phase60-browser-webapi` boot
 pages or internal Browser diagnostics; the Phase 54 target submits the fixture
 form over HTTPS, Phase 55 opens the session-state surface, Phase 56 renders the
 CSS box-model fixture, and Phase 57 renders the positioning/floats/parser
 fixture, Phase 58 renders the external CSS/image/cache fixture, and Phase 59
-renders the script/DOM mutation fixture.
+renders the script/DOM mutation fixture, and Phase 60 renders the storage,
+cookie, history/location, attribute/style/class, and fetch fixture.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
@@ -726,5 +739,6 @@ while kernel faults still panic.
 | 57 | Browser layout and parser fidelity — positioning, floats, z-index, list/table layout, and implied-close repair | **Done** |
 | 58 | Browser subresources and cache — external CSS, cached images, metadata placeholders, and `browser://cache` | **Done** |
 | 59 | Browser JavaScript and DOM runtime — bounded script loading, handlers, timers, mutations, and `browser://js` | **Done** |
+| 60 | Browser web-app APIs — storage, cookies, location/history, class/attribute/style DOM APIs, fetch, and `browser://storage` | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

@@ -22,6 +22,7 @@ const DOWNLOADS_DIR: &str = "/Downloads";
 const SESSION_INTERNAL_URL: &str = "browser://session";
 const CACHE_INTERNAL_URL: &str = "browser://cache";
 const JS_INTERNAL_URL: &str = "browser://js";
+const STORAGE_INTERNAL_URL: &str = "browser://storage";
 const MAX_BOOKMARKS: usize = 32;
 const MAX_INLINE_PNG_PIXELS: usize = 1_048_576;
 const MAX_HTML_INLINE_IMAGES: usize = 4;
@@ -31,6 +32,9 @@ const MAX_SCRIPT_BYTES: usize = 64 * 1024;
 const MAX_SCRIPT_STATEMENTS: usize = 192;
 const MAX_SCRIPT_EVENT_HANDLERS: usize = 64;
 const MAX_SCRIPT_RECURSION: usize = 4;
+const MAX_SCRIPT_VARS: usize = 8;
+const MAX_SCRIPT_FETCH_BYTES: usize = 64 * 1024;
+const MAX_SESSION_STORAGE_ENTRIES: usize = 32;
 const MAX_BROWSER_CACHE_ENTRIES: usize = 16;
 const MAX_BROWSER_RESOURCE_BYTES: usize = 512 * 1024;
 const INLINE_IMAGE_MAX_H: usize = 168;
@@ -594,6 +598,12 @@ struct BrowserScriptStats {
     handlers: usize,
     timers: usize,
     mutations: usize,
+    storage_reads: usize,
+    storage_writes: usize,
+    cookie_reads: usize,
+    cookie_writes: usize,
+    fetches: usize,
+    navigation_requests: usize,
     errors: usize,
     statements: usize,
 }
@@ -606,6 +616,12 @@ impl BrowserScriptStats {
             || self.handlers > 0
             || self.timers > 0
             || self.mutations > 0
+            || self.storage_reads > 0
+            || self.storage_writes > 0
+            || self.cookie_reads > 0
+            || self.cookie_writes > 0
+            || self.fetches > 0
+            || self.navigation_requests > 0
             || self.errors > 0
             || self.statements > 0
     }
@@ -649,6 +665,18 @@ struct BrowserScriptHandler {
     node_id: usize,
     event: BrowserScriptEvent,
     code: String,
+}
+
+#[derive(Clone)]
+struct BrowserScriptVar {
+    name: String,
+    value: String,
+}
+
+#[derive(Clone)]
+struct BrowserSessionStorageEntry {
+    key: String,
+    value: String,
 }
 
 #[derive(Clone)]
@@ -745,7 +773,10 @@ struct BrowserDocumentState {
     forms: Vec<BrowserFormState>,
     controls: Vec<BrowserFormControlState>,
     script_handlers: Vec<BrowserScriptHandler>,
+    session_storage: Vec<BrowserSessionStorageEntry>,
+    script_globals: Vec<BrowserScriptVar>,
     script_stats: BrowserScriptStats,
+    pending_navigation: Option<String>,
     focused_control: Option<usize>,
 }
 
@@ -1131,6 +1162,11 @@ impl BrowserApp {
                 self.status = script_stats_debug_line(self.script_stats);
                 self.lines = self.browser_script_lines();
             }
+            STORAGE_INTERNAL_URL => {
+                self.title = String::from("Storage");
+                self.status = crate::browser_storage::summary_line();
+                self.lines = browser_storage_lines();
+            }
             _ if url.starts_with("browser://search?q=") => {
                 let query = decode_query(&url["browser://search?q=".len()..]);
                 self.title = String::from("Search");
@@ -1473,6 +1509,15 @@ impl BrowserApp {
                 "dom: mutations={} errors={}",
                 stats.mutations, stats.errors
             )),
+            line(&format!(
+                "web APIs: storage={}/{} cookies={}/{} fetch={} nav={}",
+                stats.storage_reads,
+                stats.storage_writes,
+                stats.cookie_reads,
+                stats.cookie_writes,
+                stats.fetches,
+                stats.navigation_requests
+            )),
         ];
         if stats.errors > 0 {
             out.push(kind_line(
@@ -1522,12 +1567,19 @@ impl BrowserApp {
             .saturating_add(stats.external_scripts)
             .saturating_add(stats.external_failed);
         self.status.push_str(&format!(
-            "  js={}/{} handlers={} timers={} mut={} err={}",
+            "  js={}/{} handlers={} timers={} mut={} api={} err={}",
             stats.inline_scripts.saturating_add(stats.external_scripts),
             total,
             stats.handlers,
             stats.timers,
             stats.mutations,
+            stats
+                .storage_reads
+                .saturating_add(stats.storage_writes)
+                .saturating_add(stats.cookie_reads)
+                .saturating_add(stats.cookie_writes)
+                .saturating_add(stats.fetches)
+                .saturating_add(stats.navigation_requests),
             stats.errors
         ));
     }
@@ -1661,6 +1713,15 @@ impl BrowserApp {
         };
         if let Some(document) = self.document.as_ref() {
             self.script_stats = document.script_stats;
+        }
+        let pending_navigation = self
+            .document
+            .as_mut()
+            .and_then(|document| document.pending_navigation.take());
+        if let Some(url) = pending_navigation {
+            self.status = format!("Script navigating {}", url);
+            self.navigate(&url, true);
+            return;
         }
         match activation {
             BrowserControlActivation::Ignored => {
@@ -3035,6 +3096,7 @@ fn welcome_lines() -> Vec<BrowserLine> {
         link_line("Session state", SESSION_INTERNAL_URL),
         link_line("Cache state", CACHE_INTERNAL_URL),
         link_line("Script diagnostics", JS_INTERNAL_URL),
+        link_line("Web storage", STORAGE_INTERNAL_URL),
     ]
 }
 
@@ -3050,6 +3112,28 @@ fn browser_session_lines() -> Vec<BrowserLine> {
             } else if text.starts_with("Cookie jar:")
                 || text.starts_with("Storage:")
                 || text == "No cookies stored."
+            {
+                kind_line(&text, BrowserLineKind::Muted)
+            } else {
+                line(&text)
+            }
+        })
+        .collect()
+}
+
+fn browser_storage_lines() -> Vec<BrowserLine> {
+    crate::browser_storage::lines()
+        .into_iter()
+        .enumerate()
+        .map(|(idx, text)| {
+            if idx == 0 {
+                kind_line(&text, BrowserLineKind::Heading)
+            } else if text.is_empty() {
+                BrowserLine::new(String::new(), None, BrowserLineKind::Text)
+            } else if text.starts_with("localStorage:")
+                || text.starts_with("Storage:")
+                || text.starts_with("sessionStorage")
+                || text == "No localStorage entries stored."
             {
                 kind_line(&text, BrowserLineKind::Muted)
             } else {
@@ -5660,6 +5744,52 @@ pub fn browser_script_debug_for_test(base_url: &str, response: &str, cols: usize
     out
 }
 
+pub fn browser_web_api_debug_for_test(base_url: &str, response: &str, cols: usize) -> Vec<String> {
+    let body = response_body_text(response).unwrap_or(response);
+    let effective_base = extract_base_href(body, base_url);
+    let mut cache = BrowserSubresourceCache::default();
+    let mut subresource_stats = BrowserSubresourceStats::default();
+    let external_css = load_document_stylesheets(
+        &effective_base,
+        body,
+        &mut cache,
+        &mut subresource_stats,
+        false,
+    );
+    let scripts = load_document_scripts(
+        &effective_base,
+        body,
+        &mut cache,
+        &mut subresource_stats,
+        false,
+    );
+    let document = BrowserDocumentState::from_html_with_external_css_and_scripts(
+        &effective_base,
+        response,
+        external_css,
+        scripts.sources,
+        scripts.stats,
+    );
+    let mut out = vec![
+        script_stats_debug_line(document.script_stats),
+        format!("base={}", document.base_url),
+        format!(
+            "pending_nav={}",
+            document
+                .pending_navigation
+                .clone()
+                .unwrap_or_else(|| String::from("-"))
+        ),
+    ];
+    out.extend(
+        render_document_interactive(&document.base_url, &document.source, cols, &document)
+            .into_iter()
+            .filter(|line| !line.text.is_empty())
+            .map(|line| line.text),
+    );
+    out
+}
+
 pub fn document_interaction_debug_for_test(base_url: &str, response: &str) -> Vec<String> {
     let mut document = BrowserDocumentState::from_html(base_url, response);
     let attr_count = document
@@ -5724,13 +5854,19 @@ pub fn document_interaction_debug_for_test(base_url: &str, response: &str) -> Ve
 
 fn script_stats_debug_line(stats: BrowserScriptStats) -> String {
     format!(
-        "js inline={} external={}/{} handlers={} timers={} mutations={} errors={} statements={}",
+        "js inline={} external={}/{} handlers={} timers={} mutations={} storage={}/{} cookies={}/{} fetch={} nav={} errors={} statements={}",
         stats.inline_scripts,
         stats.external_scripts,
         stats.external_scripts.saturating_add(stats.external_failed),
         stats.handlers,
         stats.timers,
         stats.mutations,
+        stats.storage_reads,
+        stats.storage_writes,
+        stats.cookie_reads,
+        stats.cookie_writes,
+        stats.fetches,
+        stats.navigation_requests,
         stats.errors,
         stats.statements
     )
@@ -5785,9 +5921,10 @@ fn script_statement_is_ignorable(statement: &str) -> bool {
         || trimmed == "'use strict'"
         || trimmed.starts_with("//")
         || trimmed.starts_with("/*")
-        || trimmed.starts_with("var ")
-        || trimmed.starts_with("let ")
-        || trimmed.starts_with("const ")
+        || ((trimmed.starts_with("var ")
+            || trimmed.starts_with("let ")
+            || trimmed.starts_with("const "))
+            && !trimmed.contains('='))
 }
 
 fn compact_script_expr(input: &str) -> String {
@@ -5876,6 +6013,9 @@ fn parse_script_assignment_left(
     left: &str,
 ) -> Option<(BrowserScriptTarget, BrowserScriptProperty)> {
     let compact = compact_script_expr(left);
+    if let Some((target, property)) = parse_style_assignment_left(&compact) {
+        return Some((target, BrowserScriptProperty::Style(property)));
+    }
     for (suffix, property) in [
         (".textContent", BrowserScriptProperty::TextContent),
         (".innerText", BrowserScriptProperty::TextContent),
@@ -5891,6 +6031,14 @@ fn parse_script_assignment_left(
     None
 }
 
+fn parse_style_assignment_left(compact: &str) -> Option<(BrowserScriptTarget, String)> {
+    let marker = ".style.";
+    let pos = compact.rfind(marker)?;
+    let target = parse_script_target(&compact[..pos])?;
+    let property = css_property_from_js_name(&compact[pos + marker.len()..])?;
+    Some((target, property))
+}
+
 fn parse_script_target(input: &str) -> Option<BrowserScriptTarget> {
     let compact = compact_script_expr(input);
     parse_script_call_string_arg(&compact, "document.getElementById")
@@ -5899,6 +6047,418 @@ fn parse_script_target(input: &str) -> Option<BrowserScriptTarget> {
             parse_script_call_string_arg(&compact, "document.querySelector")
                 .map(BrowserScriptTarget::Selector)
         })
+        .or_else(|| parse_query_selector_all_target(&compact))
+}
+
+fn parse_query_selector_all_target(input: &str) -> Option<BrowserScriptTarget> {
+    let close = input.find(")[")?;
+    let target = &input[..close + 1];
+    let selector = parse_script_call_string_arg(target, "document.querySelectorAll")?;
+    let rest = &input[close + 2..];
+    let end = rest.find(']')?;
+    let index = rest[..end].parse::<usize>().ok()?;
+    Some(BrowserScriptTarget::SelectorAll(selector, index))
+}
+
+fn parse_storage_call(compact: &str) -> Option<BrowserStorageCall> {
+    let (area, rest) = strip_storage_area_prefix(compact)?;
+    if let Some(args) = parse_method_args(rest, ".setItem") {
+        let key = parse_script_string_literal(args.first()?.as_str())?.0;
+        let value_expr = args.get(1)?.clone();
+        return Some(BrowserStorageCall {
+            area,
+            method: BrowserStorageMethod::SetItem,
+            key: Some(truncate_script_value(&key)),
+            value_expr: Some(value_expr),
+        });
+    }
+    if let Some(args) = parse_method_args(rest, ".removeItem") {
+        let key = parse_script_string_literal(args.first()?.as_str())?.0;
+        return Some(BrowserStorageCall {
+            area,
+            method: BrowserStorageMethod::RemoveItem,
+            key: Some(truncate_script_value(&key)),
+            value_expr: None,
+        });
+    }
+    if rest == ".clear()" {
+        return Some(BrowserStorageCall {
+            area,
+            method: BrowserStorageMethod::Clear,
+            key: None,
+            value_expr: None,
+        });
+    }
+    None
+}
+
+fn parse_storage_get_item_expr(compact: &str) -> Option<(BrowserStorageArea, String)> {
+    let (area, rest) = strip_storage_area_prefix(compact)?;
+    let args = parse_method_args(rest, ".getItem")?;
+    let key = parse_script_string_literal(args.first()?.as_str())?.0;
+    Some((area, truncate_script_value(&key)))
+}
+
+fn strip_storage_area_prefix(input: &str) -> Option<(BrowserStorageArea, &str)> {
+    for (prefix, area) in [
+        ("localStorage", BrowserStorageArea::Local),
+        ("window.localStorage", BrowserStorageArea::Local),
+        ("sessionStorage", BrowserStorageArea::Session),
+        ("window.sessionStorage", BrowserStorageArea::Session),
+    ] {
+        if let Some(rest) = input.strip_prefix(prefix) {
+            return Some((area, rest));
+        }
+    }
+    None
+}
+
+fn parse_class_list_call(compact: &str) -> Option<ClassListCall> {
+    let marker = ".classList.";
+    let pos = compact.find(marker)?;
+    let target = parse_script_target(&compact[..pos])?;
+    let rest = &compact[pos + marker.len()..];
+    for (name, op) in [
+        ("add", ClassListOp::Add),
+        ("remove", ClassListOp::Remove),
+        ("toggle", ClassListOp::Toggle),
+    ] {
+        let Some(args) = parse_method_args(rest, name) else {
+            continue;
+        };
+        let class_name = parse_script_string_literal(args.first()?.as_str())?.0;
+        return Some(ClassListCall {
+            target,
+            op,
+            class_name: truncate_script_value(&class_name),
+        });
+    }
+    None
+}
+
+fn parse_attribute_call(compact: &str) -> Option<BrowserAttributeCall> {
+    let marker = ".setAttribute";
+    if let Some(pos) = compact.find(marker) {
+        let target = parse_script_target(&compact[..pos])?;
+        let args = parse_method_args(&compact[pos..], marker)?;
+        let name = parse_script_string_literal(args.first()?.as_str())?.0;
+        let value_expr = args.get(1)?.clone();
+        return Some(BrowserAttributeCall {
+            target,
+            op: BrowserAttributeOp::Set,
+            name: lowercase_ascii(&truncate_script_value(&name)),
+            value_expr: Some(value_expr),
+        });
+    }
+    let marker = ".removeAttribute";
+    let pos = compact.find(marker)?;
+    let target = parse_script_target(&compact[..pos])?;
+    let args = parse_method_args(&compact[pos..], marker)?;
+    let name = parse_script_string_literal(args.first()?.as_str())?.0;
+    Some(BrowserAttributeCall {
+        target,
+        op: BrowserAttributeOp::Remove,
+        name: lowercase_ascii(&truncate_script_value(&name)),
+        value_expr: None,
+    })
+}
+
+fn parse_get_attribute_expr(compact: &str) -> Option<BrowserAttributeCall> {
+    let marker = ".getAttribute";
+    let pos = compact.find(marker)?;
+    let target = parse_script_target(&compact[..pos])?;
+    let args = parse_method_args(&compact[pos..], marker)?;
+    let name = parse_script_string_literal(args.first()?.as_str())?.0;
+    Some(BrowserAttributeCall {
+        target,
+        op: BrowserAttributeOp::Set,
+        name: lowercase_ascii(&truncate_script_value(&name)),
+        value_expr: None,
+    })
+}
+
+fn parse_history_url_arg(compact: &str) -> Option<String> {
+    let prefixes = [
+        "history.pushState",
+        "window.history.pushState",
+        "history.replaceState",
+        "window.history.replaceState",
+        "location.assign",
+        "window.location.assign",
+        "location.replace",
+        "window.location.replace",
+    ];
+    for prefix in prefixes {
+        if let Some(args) = parse_method_args(compact, prefix) {
+            if prefix.contains("history.") {
+                return args.get(2).cloned();
+            }
+            return args.first().cloned();
+        }
+    }
+    None
+}
+
+fn parse_fetch_request(compact: &str) -> Option<BrowserFetchRequest> {
+    let args = if compact.starts_with("fetch(") {
+        parse_method_args(compact, "fetch")?
+    } else {
+        parse_method_args(compact, "window.fetch")?
+    };
+    let url = parse_script_string_literal(args.first()?.as_str())?.0;
+    let mut method = BrowserFetchMethod::Get;
+    let mut body = String::new();
+    if let Some(options) = args.get(1) {
+        if parse_object_string_field(options, "method")
+            .map(|value| value.eq_ignore_ascii_case("POST"))
+            .unwrap_or(false)
+        {
+            method = BrowserFetchMethod::Post;
+        }
+        if let Some(value) = parse_object_string_field(options, "body") {
+            body = truncate_script_value(&value);
+        }
+    }
+    Some(BrowserFetchRequest {
+        url: truncate_script_value(&url),
+        method,
+        body,
+    })
+}
+
+fn parse_object_string_field(input: &str, key: &str) -> Option<String> {
+    let compact = compact_script_expr(input);
+    for quote in ["'", "\""] {
+        let marker = format!("{}:{}", key, quote);
+        if let Some(pos) = compact.find(&marker) {
+            let value_start = pos + marker.len() - quote.len();
+            return parse_script_string_literal(&compact[value_start..]).map(|(value, _)| value);
+        }
+    }
+    None
+}
+
+fn load_fetch_post_uncached(url: &str, body: &str) -> Result<BrowserFetchedResource, &'static str> {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err("unsupported fetch POST URL");
+    }
+    let response =
+        crate::net::browser_post_response(url, body, "application/x-www-form-urlencoded")?;
+    Ok(BrowserFetchedResource {
+        final_url: response.final_url,
+        content_type: response.content_type,
+        bytes: response.body_bytes,
+        cache_hit: false,
+    })
+}
+
+fn extract_fetch_text_callback_body(statement: &str) -> Option<String> {
+    let compact = compact_script_expr(statement);
+    let marker = ".text().then";
+    let compact_pos = compact.find(marker)?;
+    let mut seen_non_ws = 0usize;
+    let mut original_pos = 0usize;
+    for (idx, c) in statement.char_indices() {
+        if !c.is_ascii_whitespace() {
+            if seen_non_ws == compact_pos {
+                original_pos = idx;
+                break;
+            }
+            seen_non_ws += 1;
+        }
+    }
+    extract_script_function_body(&statement[original_pos..])
+}
+
+fn parse_method_args(input: &str, method: &str) -> Option<Vec<String>> {
+    let rest = input.strip_prefix(method)?;
+    let rest = rest.strip_prefix('(')?;
+    let mut quote: Option<u8> = None;
+    let mut escaped = false;
+    let mut depth = 1usize;
+    let bytes = rest.as_bytes();
+    for (idx, b) in bytes.iter().copied().enumerate() {
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == q {
+                quote = None;
+            }
+            continue;
+        }
+        match b {
+            b'\'' | b'"' => quote = Some(b),
+            b'(' | b'[' | b'{' => depth = depth.saturating_add(1),
+            b')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(split_script_args(&rest[..idx]));
+                }
+            }
+            b']' | b'}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn split_script_args(input: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut quote: Option<u8> = None;
+    let mut escaped = false;
+    let mut depth = 0usize;
+    let bytes = input.as_bytes();
+    for (idx, b) in bytes.iter().copied().enumerate() {
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == q {
+                quote = None;
+            }
+            continue;
+        }
+        match b {
+            b'\'' | b'"' => quote = Some(b),
+            b'(' | b'[' | b'{' => depth = depth.saturating_add(1),
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => {
+                out.push(String::from(input[start..idx].trim()));
+                start = idx.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+    if start <= input.len() {
+        let tail = input[start..].trim();
+        if !tail.is_empty() {
+            out.push(String::from(tail));
+        }
+    }
+    out
+}
+
+fn split_script_concat(input: &str) -> Option<Vec<String>> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut quote: Option<u8> = None;
+    let mut escaped = false;
+    let mut depth = 0usize;
+    let bytes = input.as_bytes();
+    for (idx, b) in bytes.iter().copied().enumerate() {
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == q {
+                quote = None;
+            }
+            continue;
+        }
+        match b {
+            b'\'' | b'"' => quote = Some(b),
+            b'(' | b'[' | b'{' => depth = depth.saturating_add(1),
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b'+' if depth == 0 => {
+                out.push(String::from(input[start..idx].trim()));
+                start = idx.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+    if out.is_empty() {
+        return None;
+    }
+    let tail = input[start..].trim();
+    if !tail.is_empty() {
+        out.push(String::from(tail));
+    }
+    Some(out)
+}
+
+fn css_property_from_js_name(input: &str) -> Option<String> {
+    let input = input.trim();
+    if input.is_empty() || input.len() > 48 {
+        return None;
+    }
+    let mut out = String::new();
+    for c in input.chars() {
+        if c.is_ascii_uppercase() {
+            if !out.is_empty() {
+                out.push('-');
+            }
+            out.push(c.to_ascii_lowercase());
+        } else if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' {
+            out.push(c);
+        } else {
+            return None;
+        }
+    }
+    Some(out)
+}
+
+fn valid_script_var_name(input: &str) -> bool {
+    let mut chars = input.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_' || first == '$')
+        && input.len() <= 32
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+}
+
+fn set_style_declaration(style: &mut String, property: &str, value: &str) {
+    let mut declarations: Vec<(String, String)> = Vec::new();
+    let wanted = lowercase_ascii(property);
+    let mut replaced = false;
+    for part in style.split(';') {
+        let Some((name, current)) = part.split_once(':') else {
+            continue;
+        };
+        let name = lowercase_ascii(name.trim());
+        if name.is_empty() {
+            continue;
+        }
+        if name == wanted {
+            declarations.push((name, String::from(value.trim())));
+            replaced = true;
+        } else {
+            declarations.push((name, String::from(current.trim())));
+        }
+        if declarations.len() >= MAX_DOM_ATTRS {
+            break;
+        }
+    }
+    if !replaced && declarations.len() < MAX_DOM_ATTRS {
+        declarations.push((wanted, String::from(value.trim())));
+    }
+    style.clear();
+    for (idx, (name, value)) in declarations.iter().enumerate() {
+        if idx > 0 {
+            style.push(';');
+        }
+        style.push_str(name);
+        style.push(':');
+        style.push_str(value);
+    }
+}
+
+fn style_declaration_value(style: &str, property: &str) -> Option<String> {
+    let wanted = lowercase_ascii(property);
+    for part in style.split(';') {
+        let Some((name, value)) = part.split_once(':') else {
+            continue;
+        };
+        if lowercase_ascii(name.trim()) == wanted {
+            return Some(String::from(value.trim()));
+        }
+    }
+    None
 }
 
 fn parse_script_call_string_arg(input: &str, name: &str) -> Option<String> {
@@ -6290,7 +6850,10 @@ impl BrowserDocumentState {
             forms: Vec::new(),
             controls: Vec::new(),
             script_handlers: Vec::new(),
+            session_storage: Vec::new(),
+            script_globals: Vec::new(),
             script_stats,
+            pending_navigation: None,
             focused_control: None,
         };
         scan_dom_and_controls(body, &state.base_url.clone(), &mut state);
@@ -6654,6 +7217,10 @@ impl BrowserDocumentState {
     }
 
     fn execute_script(&mut self, code: &str, depth: usize) {
+        self.execute_script_with_vars(code, depth, &[]);
+    }
+
+    fn execute_script_with_vars(&mut self, code: &str, depth: usize, vars: &[BrowserScriptVar]) {
         if depth > MAX_SCRIPT_RECURSION {
             self.script_stats.errors = self.script_stats.errors.saturating_add(1);
             return;
@@ -6669,21 +7236,44 @@ impl BrowserDocumentState {
                 continue;
             }
             self.script_stats.statements = self.script_stats.statements.saturating_add(1);
-            if self.execute_script_statement(statement, depth) {
+            if self.execute_script_statement(statement, depth, vars) {
                 continue;
             }
             self.script_stats.errors = self.script_stats.errors.saturating_add(1);
         }
     }
 
-    fn execute_script_statement(&mut self, statement: &str, depth: usize) -> bool {
+    fn execute_script_statement(
+        &mut self,
+        statement: &str,
+        depth: usize,
+        vars: &[BrowserScriptVar],
+    ) -> bool {
         let compact = compact_script_expr(statement);
         if compact.starts_with("setTimeout(") || compact.starts_with("window.setTimeout(") {
             let Some(body) = extract_script_function_body(statement) else {
                 return false;
             };
             self.script_stats.timers = self.script_stats.timers.saturating_add(1);
-            self.execute_script(&body, depth.saturating_add(1));
+            self.execute_script_with_vars(&body, depth.saturating_add(1), vars);
+            return true;
+        }
+        if self.execute_var_assignment(statement, vars) {
+            return true;
+        }
+        if self.execute_fetch_statement(statement, depth, vars) {
+            return true;
+        }
+        if self.execute_storage_statement(statement, vars) {
+            return true;
+        }
+        if self.execute_class_list_statement(statement) {
+            return true;
+        }
+        if self.execute_attribute_statement(statement, vars) {
+            return true;
+        }
+        if self.execute_history_statement(statement, vars) {
             return true;
         }
         if let Some((target, event, body)) = parse_add_event_listener(statement) {
@@ -6694,13 +7284,234 @@ impl BrowserDocumentState {
             return true;
         }
         if let Some((left, right)) = split_script_assignment(statement) {
+            if self.apply_global_script_assignment(left, right, vars) {
+                return true;
+            }
             let Some((target, property)) = parse_script_assignment_left(left) else {
                 return false;
             };
             let Some(node_id) = self.resolve_script_target(&target) else {
                 return false;
             };
-            return self.apply_script_property(node_id, property, right);
+            return self.apply_script_property(node_id, property, right, vars);
+        }
+        false
+    }
+
+    fn execute_var_assignment(&mut self, statement: &str, vars: &[BrowserScriptVar]) -> bool {
+        let trimmed = statement.trim();
+        let rest = if let Some(rest) = trimmed.strip_prefix("var ") {
+            rest
+        } else if let Some(rest) = trimmed.strip_prefix("let ") {
+            rest
+        } else if let Some(rest) = trimmed.strip_prefix("const ") {
+            rest
+        } else {
+            return false;
+        };
+        let Some((name, value_expr)) = split_script_assignment(rest) else {
+            return false;
+        };
+        let name = name.trim();
+        if !valid_script_var_name(name) {
+            return false;
+        }
+        let Some(value) = self.script_string_value(value_expr, vars) else {
+            return false;
+        };
+        self.set_script_global(name, &value);
+        true
+    }
+
+    fn execute_fetch_statement(
+        &mut self,
+        statement: &str,
+        depth: usize,
+        _vars: &[BrowserScriptVar],
+    ) -> bool {
+        let compact = compact_script_expr(statement);
+        if !(compact.starts_with("fetch(") || compact.starts_with("window.fetch(")) {
+            return false;
+        }
+        let Some(request) = parse_fetch_request(&compact) else {
+            return false;
+        };
+        let url = resolve_url(&self.base_url, &request.url);
+        if !script_url_allowed(&self.base_url, &url) {
+            return false;
+        }
+        let resource = match request.method {
+            BrowserFetchMethod::Get => load_subresource_uncached(&url, BrowserResourceKind::Script),
+            BrowserFetchMethod::Post => load_fetch_post_uncached(&url, &request.body),
+        };
+        let Ok(resource) = resource else {
+            return false;
+        };
+        if resource.bytes.len() > MAX_SCRIPT_FETCH_BYTES {
+            return false;
+        }
+        let body = truncate_script_value(&String::from_utf8_lossy(&resource.bytes));
+        self.script_stats.fetches = self.script_stats.fetches.saturating_add(1);
+        if let Some(callback) = extract_fetch_text_callback_body(statement)
+            .or_else(|| extract_script_function_body(statement))
+        {
+            let vars = vec![
+                BrowserScriptVar {
+                    name: String::from("text"),
+                    value: body.clone(),
+                },
+                BrowserScriptVar {
+                    name: String::from("body"),
+                    value: body.clone(),
+                },
+                BrowserScriptVar {
+                    name: String::from("responseText"),
+                    value: body,
+                },
+            ];
+            self.execute_script_with_vars(&callback, depth.saturating_add(1), &vars);
+        }
+        true
+    }
+
+    fn execute_storage_statement(&mut self, statement: &str, vars: &[BrowserScriptVar]) -> bool {
+        let compact = compact_script_expr(statement);
+        let Some(call) = parse_storage_call(&compact) else {
+            return false;
+        };
+        match call.method {
+            BrowserStorageMethod::SetItem => {
+                let Some(key) = call.key else {
+                    return false;
+                };
+                let Some(value_expr) = call.value_expr else {
+                    return false;
+                };
+                let Some(value) = self.script_string_value(&value_expr, vars) else {
+                    return false;
+                };
+                if self.set_script_storage(call.area, &key, &value) {
+                    self.script_stats.storage_writes =
+                        self.script_stats.storage_writes.saturating_add(1);
+                    return true;
+                }
+            }
+            BrowserStorageMethod::RemoveItem => {
+                let Some(key) = call.key else {
+                    return false;
+                };
+                if self.remove_script_storage(call.area, &key) {
+                    self.script_stats.storage_writes =
+                        self.script_stats.storage_writes.saturating_add(1);
+                    return true;
+                }
+            }
+            BrowserStorageMethod::Clear => {
+                let changed = self.clear_script_storage(call.area);
+                self.script_stats.storage_writes = self
+                    .script_stats
+                    .storage_writes
+                    .saturating_add(changed.max(1));
+                return true;
+            }
+        }
+        false
+    }
+
+    fn execute_class_list_statement(&mut self, statement: &str) -> bool {
+        let compact = compact_script_expr(statement);
+        let Some(call) = parse_class_list_call(&compact) else {
+            return false;
+        };
+        let Some(node_id) = self.resolve_script_target(&call.target) else {
+            return false;
+        };
+        if self.mutate_node_class_list(node_id, &call.class_name, call.op) {
+            self.note_script_mutation();
+            return true;
+        }
+        false
+    }
+
+    fn execute_attribute_statement(&mut self, statement: &str, vars: &[BrowserScriptVar]) -> bool {
+        let compact = compact_script_expr(statement);
+        let Some(call) = parse_attribute_call(&compact) else {
+            return false;
+        };
+        let Some(node_id) = self.resolve_script_target(&call.target) else {
+            return false;
+        };
+        match call.op {
+            BrowserAttributeOp::Set => {
+                let Some(value_expr) = call.value_expr else {
+                    return false;
+                };
+                let Some(value) = self.script_string_value(&value_expr, vars) else {
+                    return false;
+                };
+                if self.set_node_attribute_from_script(node_id, &call.name, &value) {
+                    self.note_script_mutation();
+                    return true;
+                }
+            }
+            BrowserAttributeOp::Remove => {
+                if self.remove_node_attribute_from_script(node_id, &call.name) {
+                    self.note_script_mutation();
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn execute_history_statement(&mut self, statement: &str, vars: &[BrowserScriptVar]) -> bool {
+        let compact = compact_script_expr(statement);
+        let Some(url_expr) = parse_history_url_arg(&compact) else {
+            return false;
+        };
+        let Some(url) = self.script_string_value(&url_expr, vars) else {
+            return false;
+        };
+        let url = resolve_url(&self.base_url, &url);
+        self.base_url = url;
+        self.script_stats.navigation_requests =
+            self.script_stats.navigation_requests.saturating_add(1);
+        true
+    }
+
+    fn apply_global_script_assignment(
+        &mut self,
+        left: &str,
+        right: &str,
+        vars: &[BrowserScriptVar],
+    ) -> bool {
+        let compact = compact_script_expr(left);
+        if compact == "document.cookie" {
+            let Some(cookie) = self.script_string_value(right, vars) else {
+                return false;
+            };
+            let Some((scheme, host, path)) = self.cookie_context() else {
+                return false;
+            };
+            if crate::browser_session::set_document_cookie_for_context(
+                &scheme, &host, &path, &cookie,
+            ) {
+                self.script_stats.cookie_writes = self.script_stats.cookie_writes.saturating_add(1);
+                return true;
+            }
+            return false;
+        }
+        if matches!(
+            compact.as_str(),
+            "location.href" | "window.location.href" | "document.location.href" | "window.location"
+        ) {
+            let Some(url) = self.script_string_value(right, vars) else {
+                return false;
+            };
+            self.pending_navigation = Some(resolve_url(&self.base_url, &url));
+            self.script_stats.navigation_requests =
+                self.script_stats.navigation_requests.saturating_add(1);
+            return true;
         }
         false
     }
@@ -6709,6 +7520,9 @@ impl BrowserDocumentState {
         match target {
             BrowserScriptTarget::Id(id) => self.find_node_by_id(id),
             BrowserScriptTarget::Selector(selector) => self.query_selector(selector),
+            BrowserScriptTarget::SelectorAll(selector, index) => {
+                self.query_selector_all(selector).get(*index).copied()
+            }
         }
     }
 
@@ -6729,12 +7543,16 @@ impl BrowserDocumentState {
     }
 
     fn query_selector(&self, selector: &str) -> Option<usize> {
+        self.query_selector_all(selector).into_iter().next()
+    }
+
+    fn query_selector_all(&self, selector: &str) -> Vec<usize> {
         let selector = selector.trim();
         if selector.is_empty() {
-            return None;
+            return Vec::new();
         }
         if let Some(id) = selector.strip_prefix('#') {
-            return self.find_node_by_id(id);
+            return self.find_node_by_id(id).into_iter().collect();
         }
         if let Some(class) = selector.strip_prefix('.') {
             return self
@@ -6742,7 +7560,7 @@ impl BrowserDocumentState {
                 .nodes
                 .iter()
                 .enumerate()
-                .find_map(|(node_id, node)| {
+                .filter_map(|(node_id, node)| {
                     let BrowserDomNodeKind::Element { attrs, .. } = &node.kind else {
                         return None;
                     };
@@ -6752,20 +7570,22 @@ impl BrowserDocumentState {
                         .map(|attr| attr.value.split_whitespace().any(|value| value == class))
                         .unwrap_or(false)
                         .then_some(node_id)
-                });
+                })
+                .collect();
         }
         let wanted = lowercase_ascii(selector);
         self.dom
             .nodes
             .iter()
             .enumerate()
-            .find_map(|(node_id, node)| {
+            .filter_map(|(node_id, node)| {
                 matches!(
                     &node.kind,
                     BrowserDomNodeKind::Element { name, .. } if name == &wanted
                 )
                 .then_some(node_id)
             })
+            .collect()
     }
 
     fn apply_script_property(
@@ -6773,10 +7593,11 @@ impl BrowserDocumentState {
         node_id: usize,
         property: BrowserScriptProperty,
         value: &str,
+        vars: &[BrowserScriptVar],
     ) -> bool {
         match property {
             BrowserScriptProperty::TextContent => {
-                let Some(text) = parse_script_string_value(value) else {
+                let Some(text) = self.script_string_value(value, vars) else {
                     return false;
                 };
                 if self.set_node_text_content(node_id, &text) {
@@ -6785,7 +7606,7 @@ impl BrowserDocumentState {
                 }
             }
             BrowserScriptProperty::ClassName => {
-                let Some(class_name) = parse_script_string_value(value) else {
+                let Some(class_name) = self.script_string_value(value, vars) else {
                     return false;
                 };
                 if self.set_node_attr(node_id, "class", &class_name) {
@@ -6794,7 +7615,7 @@ impl BrowserDocumentState {
                 }
             }
             BrowserScriptProperty::Value => {
-                let Some(value) = parse_script_string_value(value) else {
+                let Some(value) = self.script_string_value(value, vars) else {
                     return false;
                 };
                 if self.set_node_value(node_id, &value) {
@@ -6820,8 +7641,149 @@ impl BrowserDocumentState {
                     return true;
                 }
             }
+            BrowserScriptProperty::Style(property) => {
+                let Some(value) = self.script_string_value(value, vars) else {
+                    return false;
+                };
+                if self.set_node_style_property(node_id, &property, &value) {
+                    self.note_script_mutation();
+                    return true;
+                }
+            }
         }
         false
+    }
+
+    fn script_string_value(&mut self, input: &str, vars: &[BrowserScriptVar]) -> Option<String> {
+        let input = input.trim();
+        if input.is_empty() {
+            return None;
+        }
+        if let Some(parts) = split_script_concat(input) {
+            let mut out = String::new();
+            for part in parts {
+                let value = self.script_string_value(&part, vars)?;
+                if out.len().saturating_add(value.len()) > MAX_FORM_VALUE {
+                    let remaining = MAX_FORM_VALUE.saturating_sub(out.len());
+                    out.push_str(&value[..value.len().min(remaining)]);
+                    break;
+                }
+                out.push_str(&value);
+            }
+            return Some(out);
+        }
+        if let Some(value) = parse_script_string_value(input) {
+            return Some(value);
+        }
+        let compact = compact_script_expr(input);
+        if compact == "null" || compact == "undefined" {
+            return Some(String::new());
+        }
+        if compact == "document.cookie" {
+            let Some((scheme, host, path)) = self.cookie_context() else {
+                return Some(String::new());
+            };
+            self.script_stats.cookie_reads = self.script_stats.cookie_reads.saturating_add(1);
+            return Some(crate::browser_session::document_cookie_for_context(
+                &scheme, &host, &path,
+            ));
+        }
+        if matches!(
+            compact.as_str(),
+            "location.href" | "window.location.href" | "document.location.href"
+        ) {
+            return Some(self.base_url.clone());
+        }
+        if matches!(
+            compact.as_str(),
+            "location.search" | "window.location.search" | "document.location.search"
+        ) {
+            return Some(location_search(&self.base_url));
+        }
+        if let Some(value) = self.storage_get_from_expr(&compact) {
+            return Some(value);
+        }
+        if let Some(value) = self.node_get_attribute_from_expr(&compact) {
+            return Some(value);
+        }
+        if let Some(value) = self.node_property_value_from_expr(&compact) {
+            return Some(value);
+        }
+        for var in vars.iter().take(MAX_SCRIPT_VARS) {
+            if var.name == compact {
+                return Some(truncate_script_value(&var.value));
+            }
+        }
+        for var in self.script_globals.iter().take(MAX_SCRIPT_VARS) {
+            if var.name == compact {
+                return Some(truncate_script_value(&var.value));
+            }
+        }
+        None
+    }
+
+    fn set_script_global(&mut self, name: &str, value: &str) {
+        if let Some(var) = self.script_globals.iter_mut().find(|var| var.name == name) {
+            var.value = truncate_script_value(value);
+            return;
+        }
+        if self.script_globals.len() >= MAX_SCRIPT_VARS {
+            self.script_globals.remove(0);
+        }
+        self.script_globals.push(BrowserScriptVar {
+            name: String::from(name),
+            value: truncate_script_value(value),
+        });
+    }
+
+    fn storage_get_from_expr(&mut self, compact: &str) -> Option<String> {
+        let (area, key) = parse_storage_get_item_expr(compact)?;
+        let value = self
+            .get_script_storage(area, &key)
+            .unwrap_or_else(String::new);
+        self.script_stats.storage_reads = self.script_stats.storage_reads.saturating_add(1);
+        Some(value)
+    }
+
+    fn node_get_attribute_from_expr(&self, compact: &str) -> Option<String> {
+        let call = parse_get_attribute_expr(compact)?;
+        let node_id = self.resolve_script_target(&call.target)?;
+        self.node_attr_value(node_id, &call.name)
+            .or_else(|| Some(String::new()))
+    }
+
+    fn node_property_value_from_expr(&self, compact: &str) -> Option<String> {
+        let (target, property) = parse_script_assignment_left(compact)?;
+        let node_id = self.resolve_script_target(&target)?;
+        match property {
+            BrowserScriptProperty::TextContent => Some(self.node_text_content(node_id)),
+            BrowserScriptProperty::ClassName => self
+                .node_attr_value(node_id, "class")
+                .or_else(|| Some(String::new())),
+            BrowserScriptProperty::Value => Some(self.node_value(node_id)),
+            BrowserScriptProperty::Checked => Some(
+                self.control_for_node(node_id)
+                    .and_then(|control_id| self.controls.get(control_id))
+                    .map(|control| if control.checked { "true" } else { "false" })
+                    .unwrap_or("false")
+                    .into(),
+            ),
+            BrowserScriptProperty::Disabled => Some(
+                self.control_for_node(node_id)
+                    .and_then(|control_id| self.controls.get(control_id))
+                    .map(|control| if control.disabled { "true" } else { "false" })
+                    .unwrap_or("false")
+                    .into(),
+            ),
+            BrowserScriptProperty::Style(property) => Some(
+                self.node_style_property(node_id, &property)
+                    .unwrap_or_else(String::new),
+            ),
+        }
+    }
+
+    fn cookie_context(&self) -> Option<(String, String, String)> {
+        parse_web_url(&self.base_url).ok()
     }
 
     fn note_script_mutation(&mut self) {
@@ -6867,6 +7829,30 @@ impl BrowserDocumentState {
         true
     }
 
+    fn node_text_content(&self, node_id: usize) -> String {
+        let mut out = String::new();
+        self.push_node_text_content(node_id, &mut out);
+        truncate_script_value(&out)
+    }
+
+    fn push_node_text_content(&self, node_id: usize, out: &mut String) {
+        let Some(node) = self.dom.nodes.get(node_id) else {
+            return;
+        };
+        match &node.kind {
+            BrowserDomNodeKind::Text(text) => out.push_str(text),
+            BrowserDomNodeKind::Element { .. } => {
+                for child in &node.children {
+                    self.push_node_text_content(*child, out);
+                    if out.len() >= MAX_FORM_VALUE {
+                        out.truncate(MAX_FORM_VALUE);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     fn set_node_value(&mut self, node_id: usize, value: &str) -> bool {
         let value = truncate_script_value(value);
         if let Some(control_id) = self.control_for_node(node_id) {
@@ -6874,6 +7860,18 @@ impl BrowserDocumentState {
             return true;
         }
         self.set_node_attr(node_id, "value", &value)
+    }
+
+    fn node_value(&self, node_id: usize) -> String {
+        if let Some(control_id) = self.control_for_node(node_id) {
+            return self
+                .controls
+                .get(control_id)
+                .map(|control| control.value.clone())
+                .unwrap_or_else(String::new);
+        }
+        self.node_attr_value(node_id, "value")
+            .unwrap_or_else(String::new)
     }
 
     fn set_node_checked(&mut self, node_id: usize, checked: bool) -> bool {
@@ -6933,6 +7931,18 @@ impl BrowserDocumentState {
         true
     }
 
+    fn set_node_attribute_from_script(&mut self, node_id: usize, name: &str, value: &str) -> bool {
+        let name = lowercase_ascii(name.trim());
+        match name.as_str() {
+            "class" => self.set_node_attr(node_id, "class", &truncate_script_value(value)),
+            "style" => self.set_node_attr(node_id, "style", &truncate_script_value(value)),
+            "value" => self.set_node_value(node_id, value),
+            "checked" => self.set_node_checked(node_id, true),
+            "disabled" => self.set_node_disabled(node_id, true),
+            _ => self.set_node_attr(node_id, &name, &truncate_script_value(value)),
+        }
+    }
+
     fn remove_node_attr(&mut self, node_id: usize, name: &str) -> bool {
         let Some(BrowserDomNode {
             kind: BrowserDomNodeKind::Element { attrs, .. },
@@ -6945,6 +7955,77 @@ impl BrowserDocumentState {
             attrs.remove(pos);
         }
         true
+    }
+
+    fn remove_node_attribute_from_script(&mut self, node_id: usize, name: &str) -> bool {
+        let name = lowercase_ascii(name.trim());
+        match name.as_str() {
+            "checked" => self.set_node_checked(node_id, false),
+            "disabled" => self.set_node_disabled(node_id, false),
+            _ => self.remove_node_attr(node_id, &name),
+        }
+    }
+
+    fn node_attr_value(&self, node_id: usize, name: &str) -> Option<String> {
+        let BrowserDomNodeKind::Element { attrs, .. } = &self.dom.nodes.get(node_id)?.kind else {
+            return None;
+        };
+        attrs
+            .iter()
+            .find(|attr| attr.name == name)
+            .map(|attr| attr.value.clone())
+    }
+
+    fn set_node_style_property(&mut self, node_id: usize, property: &str, value: &str) -> bool {
+        let mut style = self
+            .node_attr_value(node_id, "style")
+            .unwrap_or_else(String::new);
+        set_style_declaration(&mut style, property, &truncate_script_value(value));
+        self.set_node_attr(node_id, "style", &style)
+    }
+
+    fn node_style_property(&self, node_id: usize, property: &str) -> Option<String> {
+        let style = self.node_attr_value(node_id, "style")?;
+        style_declaration_value(&style, property)
+    }
+
+    fn mutate_node_class_list(
+        &mut self,
+        node_id: usize,
+        class_name: &str,
+        op: ClassListOp,
+    ) -> bool {
+        if class_name.trim().is_empty() {
+            return false;
+        }
+        let class_name = truncate_script_value(class_name.trim());
+        let current = self
+            .node_attr_value(node_id, "class")
+            .unwrap_or_else(String::new);
+        let mut classes: Vec<String> = current
+            .split_whitespace()
+            .map(String::from)
+            .take(16)
+            .collect();
+        let exists = classes.iter().any(|class| class == &class_name);
+        match op {
+            ClassListOp::Add => {
+                if !exists {
+                    classes.push(class_name);
+                }
+            }
+            ClassListOp::Remove => {
+                classes.retain(|class| class != &class_name);
+            }
+            ClassListOp::Toggle => {
+                if exists {
+                    classes.retain(|class| class != &class_name);
+                } else {
+                    classes.push(class_name);
+                }
+            }
+        }
+        self.set_node_attr(node_id, "class", &classes.join(" "))
     }
 
     fn control_for_node(&self, node_id: usize) -> Option<usize> {
@@ -7035,6 +8116,86 @@ impl BrowserDocumentState {
             }
         }
         out
+    }
+
+    fn get_script_storage(&self, area: BrowserStorageArea, key: &str) -> Option<String> {
+        match area {
+            BrowserStorageArea::Local => {
+                crate::browser_storage::local_get(&storage_origin_for_url(&self.base_url)?, key)
+            }
+            BrowserStorageArea::Session => self
+                .session_storage
+                .iter()
+                .find(|entry| entry.key == key)
+                .map(|entry| entry.value.clone()),
+        }
+    }
+
+    fn set_script_storage(&mut self, area: BrowserStorageArea, key: &str, value: &str) -> bool {
+        match area {
+            BrowserStorageArea::Local => {
+                let Some(origin) = storage_origin_for_url(&self.base_url) else {
+                    return false;
+                };
+                crate::browser_storage::local_set(&origin, key, value)
+            }
+            BrowserStorageArea::Session => {
+                if key.is_empty() || key.len() > 64 || value.len() > MAX_FORM_VALUE {
+                    return false;
+                }
+                if let Some(entry) = self
+                    .session_storage
+                    .iter_mut()
+                    .find(|entry| entry.key == key)
+                {
+                    entry.value = truncate_script_value(value);
+                    return true;
+                }
+                if self.session_storage.len() >= MAX_SESSION_STORAGE_ENTRIES {
+                    self.session_storage.remove(0);
+                }
+                self.session_storage.push(BrowserSessionStorageEntry {
+                    key: String::from(key),
+                    value: truncate_script_value(value),
+                });
+                true
+            }
+        }
+    }
+
+    fn remove_script_storage(&mut self, area: BrowserStorageArea, key: &str) -> bool {
+        match area {
+            BrowserStorageArea::Local => {
+                let Some(origin) = storage_origin_for_url(&self.base_url) else {
+                    return false;
+                };
+                crate::browser_storage::local_remove(&origin, key)
+            }
+            BrowserStorageArea::Session => {
+                let Some(pos) = self
+                    .session_storage
+                    .iter()
+                    .position(|entry| entry.key == key)
+                else {
+                    return false;
+                };
+                self.session_storage.remove(pos);
+                true
+            }
+        }
+    }
+
+    fn clear_script_storage(&mut self, area: BrowserStorageArea) -> usize {
+        match area {
+            BrowserStorageArea::Local => storage_origin_for_url(&self.base_url)
+                .map(|origin| crate::browser_storage::local_clear(&origin))
+                .unwrap_or(0),
+            BrowserStorageArea::Session => {
+                let removed = self.session_storage.len();
+                self.session_storage.clear();
+                removed
+            }
+        }
     }
 
     fn run_control_event(&mut self, control_id: usize, event: BrowserScriptEvent) -> bool {
@@ -7263,15 +8424,75 @@ enum BrowserControlActivation {
 enum BrowserScriptTarget {
     Id(String),
     Selector(String),
+    SelectorAll(String, usize),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum BrowserScriptProperty {
     TextContent,
     ClassName,
     Value,
     Checked,
     Disabled,
+    Style(String),
+}
+
+#[derive(Clone, Copy)]
+enum BrowserStorageArea {
+    Local,
+    Session,
+}
+
+#[derive(Clone, Copy)]
+enum BrowserStorageMethod {
+    SetItem,
+    RemoveItem,
+    Clear,
+}
+
+struct BrowserStorageCall {
+    area: BrowserStorageArea,
+    method: BrowserStorageMethod,
+    key: Option<String>,
+    value_expr: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+enum ClassListOp {
+    Add,
+    Remove,
+    Toggle,
+}
+
+struct ClassListCall {
+    target: BrowserScriptTarget,
+    op: ClassListOp,
+    class_name: String,
+}
+
+#[derive(Clone, Copy)]
+enum BrowserAttributeOp {
+    Set,
+    Remove,
+}
+
+struct BrowserAttributeCall {
+    target: BrowserScriptTarget,
+    op: BrowserAttributeOp,
+    name: String,
+    value_expr: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+enum BrowserFetchMethod {
+    Get,
+    Post,
+}
+
+struct BrowserFetchRequest {
+    url: String,
+    method: BrowserFetchMethod,
+    body: String,
 }
 
 struct PendingOption {
@@ -9867,6 +11088,31 @@ fn resolve_url(base: &str, href: &str) -> String {
     out.push_str(&dir);
     out.push_str(href);
     out
+}
+
+fn storage_origin_for_url(url: &str) -> Option<String> {
+    if url.starts_with("file://") {
+        return Some(String::from("file://"));
+    }
+    let Ok((scheme, host, _)) = parse_web_url(url) else {
+        return None;
+    };
+    let mut out = scheme;
+    out.push_str("://");
+    out.push_str(&lowercase_ascii(&host));
+    Some(out)
+}
+
+fn location_search(url: &str) -> String {
+    let query_start = url.find('?');
+    let Some(start) = query_start else {
+        return String::new();
+    };
+    let end = url[start..]
+        .find('#')
+        .map(|rel| start + rel)
+        .unwrap_or(url.len());
+    String::from(&url[start..end])
 }
 
 fn find_tag_end(s: &str) -> Option<usize> {

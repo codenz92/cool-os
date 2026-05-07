@@ -18,6 +18,7 @@ struct Cookie {
     domain: String,
     path: String,
     secure: bool,
+    http_only: bool,
     host_only: bool,
 }
 
@@ -55,6 +56,30 @@ pub fn store_set_cookie_headers(scheme: &str, host: &str, path: &str, headers: &
     changed
 }
 
+pub fn document_cookie_for_context(scheme: &str, host: &str, path: &str) -> String {
+    let mut jar = COOKIE_JAR.lock();
+    jar.ensure_loaded();
+    jar.document_cookie_for(scheme, host, path)
+        .unwrap_or_else(String::new)
+}
+
+pub fn set_document_cookie_for_context(scheme: &str, host: &str, path: &str, cookie: &str) -> bool {
+    if cookie
+        .split(';')
+        .skip(1)
+        .any(|part| part.trim().eq_ignore_ascii_case("httponly"))
+    {
+        return false;
+    }
+    let mut jar = COOKIE_JAR.lock();
+    jar.ensure_loaded();
+    if !jar.store_set_cookie(scheme, host, path, cookie) {
+        return false;
+    }
+    jar.save();
+    true
+}
+
 pub fn summary_line() -> String {
     let mut jar = COOKIE_JAR.lock();
     jar.ensure_loaded();
@@ -79,9 +104,10 @@ pub fn lines() -> Vec<String> {
     for cookie in jar.cookies.iter().take(MAX_COOKIES) {
         let scope = if cookie.host_only { "host" } else { "domain" };
         let secure = if cookie.secure { " secure" } else { "" };
+        let http_only = if cookie.http_only { " httponly" } else { "" };
         out.push(format!(
-            "{}  {}  {}  {}{}",
-            cookie.name, cookie.domain, cookie.path, scope, secure
+            "{}  {}  {}  {}{}{}",
+            cookie.name, cookie.domain, cookie.path, scope, secure, http_only
         ));
     }
     out
@@ -108,6 +134,7 @@ pub fn cookie_debug_for_test() -> Vec<String> {
         "bad=x; Domain=evil.example; Path=/",
     );
     let secure = jar.cookie_header_for("https", "example.com", "/account");
+    let document = jar.document_cookie_for("https", "example.com", "/account");
     let plain = jar.cookie_header_for("http", "example.com", "/account");
     let subdomain = jar.cookie_header_for("https", "www.example.com", "/account");
     let deleted = jar.store_set_cookie(
@@ -124,6 +151,10 @@ pub fn cookie_debug_for_test() -> Vec<String> {
         format!(
             "secure_header={}",
             secure.unwrap_or_else(|| String::from("-"))
+        ),
+        format!(
+            "document_cookie={}",
+            document.unwrap_or_else(|| String::from("-"))
         ),
         format!(
             "plain_header={}",
@@ -190,6 +221,12 @@ impl CookieJar {
             out.push('|');
             out.push_str(if cookie.secure { "secure" } else { "plain" });
             out.push('|');
+            out.push_str(if cookie.http_only {
+                "httponly"
+            } else {
+                "script"
+            });
+            out.push('|');
             out.push_str(if cookie.host_only { "host" } else { "domain" });
             out.push('\n');
         }
@@ -197,6 +234,20 @@ impl CookieJar {
     }
 
     fn cookie_header_for(&self, scheme: &str, host: &str, path: &str) -> Option<String> {
+        self.cookie_header_for_with_filter(scheme, host, path, false)
+    }
+
+    fn document_cookie_for(&self, scheme: &str, host: &str, path: &str) -> Option<String> {
+        self.cookie_header_for_with_filter(scheme, host, path, true)
+    }
+
+    fn cookie_header_for_with_filter(
+        &self,
+        scheme: &str,
+        host: &str,
+        path: &str,
+        script_visible_only: bool,
+    ) -> Option<String> {
         let host = canonical_host(host);
         let path = request_path(path);
         if host.is_empty() {
@@ -204,6 +255,9 @@ impl CookieJar {
         }
         let mut header = String::new();
         for cookie in &self.cookies {
+            if script_visible_only && cookie.http_only {
+                continue;
+            }
             if cookie.secure && scheme != "https" {
                 continue;
             }
@@ -269,6 +323,7 @@ fn parse_set_cookie(scheme: &str, host: &str, path: &str, header: &str) -> Optio
         domain: String::from(host),
         path: default_cookie_path(path),
         secure: false,
+        http_only: false,
         host_only: true,
     };
     let mut delete = false;
@@ -278,9 +333,11 @@ fn parse_set_cookie(scheme: &str, host: &str, path: &str, header: &str) -> Optio
             cookie.secure = true;
             continue;
         }
-        if attr.eq_ignore_ascii_case("httponly")
-            || attr.to_ascii_lowercase().starts_with("samesite")
-        {
+        if attr.eq_ignore_ascii_case("httponly") {
+            cookie.http_only = true;
+            continue;
+        }
+        if attr.to_ascii_lowercase().starts_with("samesite") {
             continue;
         }
         let Some((key, value)) = attr.split_once('=') else {
@@ -326,7 +383,13 @@ fn parse_cookie_line(line: &str) -> Option<Cookie> {
         "plain" => false,
         _ => return None,
     };
-    let host_only = match parts.next()? {
+    let next = parts.next()?;
+    let (http_only, host_scope) = match next {
+        "httponly" => (true, parts.next()?),
+        "script" => (false, parts.next()?),
+        legacy_scope => (false, legacy_scope),
+    };
+    let host_only = match host_scope {
         "host" => true,
         "domain" => false,
         _ => return None,
@@ -347,6 +410,7 @@ fn parse_cookie_line(line: &str) -> Option<Cookie> {
         domain,
         path: String::from(path),
         secure,
+        http_only,
         host_only,
     })
 }

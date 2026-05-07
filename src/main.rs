@@ -16,6 +16,7 @@ mod boot_splash;
 mod boot_watchdog;
 mod branding;
 mod browser_session;
+mod browser_storage;
 mod clipboard;
 mod config_store;
 mod coolfs;
