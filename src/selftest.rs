@@ -502,6 +502,10 @@ fn png_decode_roundtrip() -> bool {
         "/TMP/PHASE55.SESSION.HTML",
         b"<!doctype html><html><head><title>Phase 55 Session</title><style>.session{color:#16435c;background:#edf8ff}</style></head><body><h1>Phase 55 browser session</h1><p class=\"session\">Browser GET and POST requests now use persistent cookie state.</p><a href=\"browser://session\">Open session state</a></body></html>",
     );
+    let _ = crate::vfs::vfs_safe_write_file(
+        "/TMP/PHASE56.BOX.HTML",
+        b"<!doctype html><html><head><title>Phase 56 CSS Box</title><style>.box{width:50%;margin:4px 8px 6px 8px;padding:6px 10px;border:2px solid #335577;background:#eaf6ff}.wide{width:75%;padding:4px 12px;border:1px solid #884422;background:#fff8ea}input.field{width:50%;padding:4px;border:1px solid #335577}</style></head><body><h1>Phase 56 CSS box model</h1><div class=\"box\">Phase 56 box model wraps text inside a bounded content box while margin padding border and background are painted by layout.</div><p class=\"wide\">Percentage width blocks reflow when the Browser window size changes.</p><form action=\"/box\"><input class=\"field\" type=\"search\" name=\"q\" value=\"layout\" placeholder=\"Box search\"><input type=\"submit\" value=\"Go\"></form></body></html>",
+    );
     image.width == 2
         && image.height == 2
         && image.pixels.as_slice() == [0x00ff0000, 0x0000ff00, 0x000000ff, 0x00ffffff]
@@ -604,6 +608,36 @@ fn browser_html_render_roundtrip() -> bool {
         && cookie_request
             .iter()
             .any(|line| line == "Cookie: sid=abc; theme=dark");
+    let phase56 = "<!doctype html><html><head><style>.box{width:50%;margin:4px 8px 6px 8px;padding:6px 10px;border:2px solid #335577;background:#eaf6ff}.wide{width:75%;padding:4px 12px;border:1px solid #884422;background:#fff8ea}input.field{width:50%;padding:4px;border:1px solid #335577}</style></head><body><div class=\"box\">Phase 56 box model wraps text inside a bounded content box while margin padding border and background are painted by layout.</div><p class=\"wide\">Percentage width blocks reflow when the Browser window size changes.</p><form action=\"/box\"><input class=\"field\" type=\"search\" name=\"q\" value=\"layout\" placeholder=\"Box search\"><input type=\"submit\" value=\"Go\"></form></body></html>";
+    let box_style = crate::apps::browser::render_document_style_debug_for_test(
+        "file:///TMP/PHASE56.BOX.HTML",
+        phase56,
+        72,
+    );
+    let box_layout = crate::apps::browser::render_document_box_debug_for_test(
+        "file:///TMP/PHASE56.BOX.HTML",
+        phase56,
+        72,
+        320,
+    );
+    let has_box_style = box_style.iter().any(|line| {
+        line.contains("Phase 56 box model")
+            && line.contains("[box-w=50%]")
+            && line.contains("[margin=4,8,6,8]")
+            && line.contains("[pad=6,10,6,10]")
+            && line.contains("[border=2 #335577]")
+    }) && box_style.iter().any(|line| {
+        line.contains("[search] Box search")
+            && line.contains("[box-w=50%]")
+            && line.contains("[pad=4,4,4,4]")
+            && line.contains("[border=1 #335577]")
+    });
+    let has_box_layout = box_layout.iter().any(|line| {
+        line.contains("Phase 56 box model")
+            && line.contains("content=160x")
+            && line.contains("box=184x")
+            && line.contains("at 8,")
+    });
     has_heading
         && has_css
         && has_quote
@@ -614,4 +648,6 @@ fn browser_html_render_roundtrip() -> bool {
         && has_post_request
         && has_cookie_session
         && has_cookie_request
+        && has_box_style
+        && has_box_layout
 }

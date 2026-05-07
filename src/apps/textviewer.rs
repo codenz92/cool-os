@@ -25,7 +25,7 @@ const SUBTLE: u32 = 0x00_66_AA_DD;
 const MUTED: u32 = 0x00_55_7A_92;
 
 const ABOUT: &[&str] = &[
-    " coolOS v7.19",
+    " coolOS v7.20",
     " Bare-metal OS in Rust",
     "",
     " == Current Platform ==",
@@ -33,7 +33,7 @@ const ABOUT: &[&str] = &[
     " CoolFS root filesystem with users, modes, and VFS",
     " TTY sessions, foreground jobs, and userspace /bin/sh",
     " Shell pipes, redirection, cwd, stat, rename, and sync",
-    " Browser DOM/forms/POST/CSS/images/cookies, packages",
+    " Browser CSS boxes/DOM/forms/POST/images/cookies",
     " Evented poll ABI for pipes, TTY, sockets, GUI, and child exit",
     " Raw TTY control, terminal geometry, and ANSI/TUI output",
     " Adaptive 36/144 Hz pacing and cursor overlay smoothness",

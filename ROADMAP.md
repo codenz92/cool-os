@@ -4,7 +4,7 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–55 are complete. The current milestone gives coolOS a much more
+Phases 1–56 are complete. The current milestone gives coolOS a much more
 normal command-line and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
@@ -14,15 +14,16 @@ bounded HTML/CSS rendering foundation with CSS selector/cascade support,
 CSS-styled line boxes, better image metadata/sizing, form submit URL handling,
 DOM-event hit-box fixture coverage, and DOM-backed form controls with live
 editing, reset handling, real URL-encoded POST request bodies, and persistent
-cookie/session state.
-Phases 45-55 focus on responsiveness, interactive terminal behavior, and
+cookie/session state plus CSS2 box-model layout.
+Phases 45-56 focus on responsiveness, interactive terminal behavior, and
 desktop-browser compatibility:
 cursor-only framebuffer updates,
 input-first idle-loop ordering, adaptive 36/144 Hz frame pacing, compositor
 telemetry, and `poll`-driven userspace waits for pipes, TTY stdin, sockets,
 GUI events, and child exits, plus raw TTY input, ANSI-rendered TUI output,
 keyboard-editable Browser controls, and a richer native Browser rendering
-surface with GET/POST form submission and a persistent cookie jar.
+surface with GET/POST form submission, a persistent cookie jar, and bounded
+margin/padding/border layout.
 
 ---
 
@@ -571,14 +572,14 @@ HTTPS rather than a fake port-443 passthrough.
 
 - `src/net.rs` owns HTTP redirect following and chunked transfer decoding so Terminal,
   browser, and syscall callers share one HTTP implementation.
-- `src/apps/browser.rs` remains a native no_std GUI app. Phases 49-55 give it a
+- `src/apps/browser.rs` remains a native no_std GUI app. Phases 49-56 give it a
   bounded browser-engine layer for HTML/CSS line boxes, images, forms, and
-  DOM-backed document controls plus persistent cookie/session state while
-  keeping JavaScript execution as future work.
+  DOM-backed document controls, persistent cookie/session state, and CSS2
+  box-model layout while keeping JavaScript execution as future work.
 - `/bin/wget` now sends an HTTP/1.1 request with a coolOS user agent, keeping it as a
   raw userspace socket demo.
-- The next browser phase after 55 is script/runtime work: incremental reflow
-  hooks, a DOM event loop, CSS2 box-model depth, and eventually JavaScript.
+- The next browser phase after 56 is deeper layout/parser work: CSS positioning,
+  table/list/floats fidelity, HTML5 parser cleanup, and eventually JavaScript.
 
 ---
 
@@ -1591,7 +1592,35 @@ browser.
 **Current status:** complete. The Browser now persists cookies across page
 loads, applies scope/path/secure matching when building requests, and exposes a
 redacted session-state page. JavaScript execution, HTTP cache behavior, and a
-full CSS2 box model remain future browser-engine work.
+richer layout/runtime stack remain future browser-engine work.
+
+---
+
+## ✅ Phase 56 — CSS2 Box Model and Reflow
+
+**Goal:** Move Browser layout beyond styled text rows by adding bounded CSS2 box
+metrics that affect wrapping, painting, and hit testing.
+
+- [x] Extend the CSS cascade with `width`, `max-width`, `height`,
+      margin/padding shorthands and edges, border width/color/style, and
+      percentage width parsing.
+- [x] Carry box metrics through `BrowserLineStyle` so rendered text, controls,
+      and images keep their content box separate from painted border/background
+      boxes.
+- [x] Wrap text inside fixed and percentage-width content boxes instead of only
+      the viewport width.
+- [x] Update the Browser layout pass to compute content rects, painted box
+      rects, margins, padding, borders, and bounded heights, then reuse those
+      box rects for link/control hit testing.
+- [x] Paint CSS backgrounds and borders from layout boxes while preserving
+      existing text/image/control rendering and resize-triggered reflow.
+- [x] Add `/TMP/PHASE56.BOX.HTML`, box-style/layout selftest checks, and
+      `make smoke-phase56-css-box-model`.
+
+**Current status:** complete. The Browser now handles the practical CSS2 box
+model needed for readable desktop pages: bounded margin/padding/border boxes,
+background painting, percentage-width reflow, and box-based hit testing. CSS
+positioning, floats, richer table layout, and JavaScript remain future work.
 
 ---
 
@@ -1666,4 +1695,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.16 | Phase 52 complete: DOM/event foundation |
 | v7.17 | Phase 53 complete: DOM-backed browser forms |
 | v7.18 | Phase 54 complete: Browser POST submission |
-| v7.19 | Current — Phase 55 complete: Browser session state |
+| v7.19 | Phase 55 complete: Browser session state |
+| v7.20 | Current — Phase 56 complete: CSS2 box model and reflow |

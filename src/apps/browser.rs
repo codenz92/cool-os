@@ -65,11 +65,129 @@ enum BrowserAlign {
     Right,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CssLength {
+    Px(usize),
+    Percent(u8),
+}
+
+impl CssLength {
+    fn resolve_px(self, container_px: usize) -> usize {
+        match self {
+            Self::Px(px) => px,
+            Self::Percent(percent) => container_px.saturating_mul(percent as usize) / 100,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BrowserLineBoxPart {
+    Single,
+    First,
+    Middle,
+    Last,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct BrowserBoxStyle {
+    margin_top: usize,
+    margin_right: usize,
+    margin_bottom: usize,
+    margin_left: usize,
+    padding_top: usize,
+    padding_right: usize,
+    padding_bottom: usize,
+    padding_left: usize,
+    border_width: usize,
+    border_color: Option<u32>,
+    width: Option<CssLength>,
+    height: Option<usize>,
+}
+
+impl BrowserBoxStyle {
+    fn has_layout(self) -> bool {
+        self.margin_top > 0
+            || self.margin_right > 0
+            || self.margin_bottom > 0
+            || self.margin_left > 0
+            || self.padding_top > 0
+            || self.padding_right > 0
+            || self.padding_bottom > 0
+            || self.padding_left > 0
+            || self.border_width > 0
+            || self.width.is_some()
+            || self.height.is_some()
+    }
+
+    fn has_decoration(self, background: Option<u32>) -> bool {
+        background.is_some()
+            || self.border_width > 0
+            || self.padding_top > 0
+            || self.padding_right > 0
+            || self.padding_bottom > 0
+            || self.padding_left > 0
+    }
+
+    fn merged(self, other: Self) -> Self {
+        Self {
+            margin_top: if other.margin_top > 0 {
+                other.margin_top
+            } else {
+                self.margin_top
+            },
+            margin_right: if other.margin_right > 0 {
+                other.margin_right
+            } else {
+                self.margin_right
+            },
+            margin_bottom: if other.margin_bottom > 0 {
+                other.margin_bottom
+            } else {
+                self.margin_bottom
+            },
+            margin_left: if other.margin_left > 0 {
+                other.margin_left
+            } else {
+                self.margin_left
+            },
+            padding_top: if other.padding_top > 0 {
+                other.padding_top
+            } else {
+                self.padding_top
+            },
+            padding_right: if other.padding_right > 0 {
+                other.padding_right
+            } else {
+                self.padding_right
+            },
+            padding_bottom: if other.padding_bottom > 0 {
+                other.padding_bottom
+            } else {
+                self.padding_bottom
+            },
+            padding_left: if other.padding_left > 0 {
+                other.padding_left
+            } else {
+                self.padding_left
+            },
+            border_width: if other.border_width > 0 {
+                other.border_width
+            } else {
+                self.border_width
+            },
+            border_color: other.border_color.or(self.border_color),
+            width: other.width.or(self.width),
+            height: other.height.or(self.height),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct BrowserLineStyle {
     indent_px: usize,
     text_color: Option<u32>,
     background: Option<u32>,
+    box_style: BrowserBoxStyle,
 }
 
 impl BrowserLineStyle {
@@ -82,7 +200,25 @@ impl BrowserLineStyle {
             indent_px: self.indent_px.saturating_add(other.indent_px).min(160),
             text_color: other.text_color.or(self.text_color),
             background: other.background.or(self.background),
+            box_style: self.box_style.merged(other.box_style),
         }
+    }
+
+    fn content_cols(self, container_cols: usize) -> usize {
+        let container_px = container_cols.saturating_mul(CHAR_W);
+        let horizontal = self
+            .box_style
+            .padding_left
+            .saturating_add(self.box_style.padding_right)
+            .saturating_add(self.box_style.border_width.saturating_mul(2))
+            .saturating_add(self.box_style.margin_left)
+            .saturating_add(self.box_style.margin_right);
+        let width_px = if let Some(width) = self.box_style.width {
+            width.resolve_px(container_px)
+        } else {
+            container_px.saturating_sub(horizontal)
+        };
+        (width_px / CHAR_W).clamp(8, container_cols.max(8))
     }
 }
 
@@ -134,6 +270,7 @@ struct BrowserLine {
     style: BrowserLineStyle,
     image_hint: ImageHint,
     control_id: Option<usize>,
+    box_part: BrowserLineBoxPart,
 }
 
 impl BrowserLine {
@@ -148,6 +285,7 @@ impl BrowserLine {
             style: BrowserLineStyle::default(),
             image_hint: ImageHint::default(),
             control_id: None,
+            box_part: BrowserLineBoxPart::Single,
         }
     }
 
@@ -175,6 +313,11 @@ impl BrowserLine {
         self.control_id = control_id;
         self
     }
+
+    fn with_box_part(mut self, part: BrowserLineBoxPart) -> Self {
+        self.box_part = part;
+        self
+    }
 }
 
 struct BrowserHitBox {
@@ -191,6 +334,10 @@ struct BrowserLayoutItem {
     y: usize,
     w: usize,
     h: usize,
+    box_x: usize,
+    box_y: usize,
+    box_w: usize,
+    box_h: usize,
     text: String,
     link: Option<String>,
     kind: BrowserLineKind,
@@ -1317,17 +1464,21 @@ impl BrowserApp {
 
         let viewport_bottom = self.scroll.saturating_add(lines_h);
         for item in layout.items.into_iter() {
-            if item.y.saturating_add(item.h) <= self.scroll || item.y >= viewport_bottom {
+            if item.box_y.saturating_add(item.box_h) <= self.scroll || item.box_y >= viewport_bottom
+            {
                 continue;
             }
-            if item.y < self.scroll || item.y.saturating_add(item.h) > viewport_bottom {
+            if item.box_y < self.scroll || item.box_y.saturating_add(item.box_h) > viewport_bottom {
                 continue;
             }
             let y = lines_y + item.y.saturating_sub(self.scroll);
             let x = PAD_X + item.x;
+            let box_x = PAD_X + item.box_x;
+            let box_y = lines_y + item.box_y.saturating_sub(self.scroll);
             if y >= doc_y.saturating_add(doc_h) {
                 continue;
             }
+            self.draw_box_decoration(stride, box_x, box_y, item.box_w, item.box_h, item.style);
 
             if let Some(slot) = item.image_slot {
                 if let Some(image) = self
@@ -1335,16 +1486,6 @@ impl BrowserApp {
                     .get(slot)
                     .map(|inline| inline.image.clone())
                 {
-                    if let Some(bg) = item.style.background {
-                        self.fill_rect(
-                            stride,
-                            x.saturating_sub(4),
-                            y.saturating_sub(2),
-                            item.w.saturating_add(8),
-                            item.h.saturating_add(4),
-                            bg,
-                        );
-                    }
                     draw_image_preview_pixels(
                         &mut self.window.buf,
                         width,
@@ -1359,16 +1500,6 @@ impl BrowserApp {
                     );
                 }
             } else if matches!(item.control, BrowserControl::None) {
-                if let Some(bg) = item.style.background {
-                    self.fill_rect(
-                        stride,
-                        x.saturating_sub(4),
-                        y.saturating_sub(2),
-                        item.w.saturating_add(8),
-                        item.h.saturating_add(4),
-                        bg,
-                    );
-                }
                 let color = item
                     .style
                     .text_color
@@ -1383,16 +1514,6 @@ impl BrowserApp {
                     self.fill_rect(stride, x, y + 10, text.len() * CHAR_W, 1, LINK);
                 }
             } else {
-                if let Some(bg) = item.style.background {
-                    self.fill_rect(
-                        stride,
-                        x.saturating_sub(4),
-                        y.saturating_sub(2),
-                        item.w.saturating_add(8),
-                        item.h.saturating_add(4),
-                        bg,
-                    );
-                }
                 self.draw_control(
                     stride,
                     x,
@@ -1406,10 +1527,10 @@ impl BrowserApp {
 
             if item.link.is_some() || item.control_id.is_some() {
                 self.hit_boxes.push(BrowserHitBox {
-                    x,
-                    y,
-                    w: item.w,
-                    h: item.h.max(LINE_H),
+                    x: box_x,
+                    y: box_y,
+                    w: item.box_w.max(item.w),
+                    h: item.box_h.max(item.h).max(LINE_H),
                     link: item.link,
                     control_id: item.control_id,
                 });
@@ -1600,6 +1721,38 @@ impl BrowserApp {
         self.fill_rect(stride, x + w - 1, y, 1, h, color);
     }
 
+    fn draw_box_decoration(
+        &mut self,
+        stride: usize,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+        style: BrowserLineStyle,
+    ) {
+        if w == 0 || h == 0 || !style.box_style.has_decoration(style.background) {
+            return;
+        }
+        if let Some(bg) = style.background {
+            self.fill_rect(stride, x, y, w, h, bg);
+        }
+        let border_w = style.box_style.border_width.min(8);
+        let color = style.box_style.border_color.unwrap_or(BORDER);
+        for inset in 0..border_w {
+            if w <= inset.saturating_mul(2) || h <= inset.saturating_mul(2) {
+                break;
+            }
+            self.draw_rect(
+                stride,
+                x + inset,
+                y + inset,
+                w.saturating_sub(inset * 2),
+                h.saturating_sub(inset * 2),
+                color,
+            );
+        }
+    }
+
     fn draw_image_preview(
         &mut self,
         stride: usize,
@@ -1685,6 +1838,7 @@ fn layout_browser_lines(
             && !line.text.trim().is_empty()
             && line.image_slot.is_none()
             && matches!(line.control, BrowserControl::None)
+            && !line.style.box_style.has_layout()
         {
             let align = line.align;
             let mut group = Vec::new();
@@ -1737,6 +1891,10 @@ fn layout_browser_lines(
                         y,
                         w,
                         h: LINE_H,
+                        box_x: x,
+                        box_y: y,
+                        box_w: w,
+                        box_h: LINE_H,
                         text: next.text.clone(),
                         link: next.link.clone(),
                         kind: next.kind,
@@ -1752,7 +1910,9 @@ fn layout_browser_lines(
                 continue;
             }
         }
-        if matches!(line.control, BrowserControl::Button { .. }) {
+        if matches!(line.control, BrowserControl::Button { .. })
+            && !line.style.box_style.has_layout()
+        {
             let align = line.align;
             let mut group = Vec::new();
             let mut total_w = 0usize;
@@ -1790,6 +1950,10 @@ fn layout_browser_lines(
                     y,
                     w,
                     h: CONTROL_H,
+                    box_x: x,
+                    box_y: y,
+                    box_w: w,
+                    box_h: CONTROL_H,
                     text: next.text.clone(),
                     link: next.link.clone(),
                     kind: next.kind,
@@ -1806,16 +1970,18 @@ fn layout_browser_lines(
         }
         if !matches!(line.control, BrowserControl::None) {
             let available_w = doc_w.saturating_sub(line.style.indent_px).max(1);
-            let w = control_width(&line.control, available_w);
+            let natural_w = control_width(&line.control, available_w);
             let h = control_height(&line.control);
+            let placed = place_boxed_item(line, doc_w, natural_w, h);
             items.push(BrowserLayoutItem {
-                x: line
-                    .style
-                    .indent_px
-                    .saturating_add(aligned_x(available_w, w, line.align)),
-                y,
-                w,
-                h,
+                x: placed.content_x,
+                y: y.saturating_add(placed.content_y),
+                w: placed.content_w,
+                h: placed.content_h,
+                box_x: placed.box_x,
+                box_y: y.saturating_add(placed.box_y),
+                box_w: placed.box_w,
+                box_h: placed.box_h,
                 text: line.text.clone(),
                 link: line.link.clone(),
                 kind: line.kind,
@@ -1824,13 +1990,18 @@ fn layout_browser_lines(
                 style: line.style,
                 control_id: line.control_id,
             });
-            y = y.saturating_add(h + BLOCK_GAP);
+            y = y.saturating_add(placed.outer_h + BLOCK_GAP);
             i += 1;
             continue;
         }
         if let Some(slot) = line.image_slot {
             if let Some(image) = inline_images.get(slot).map(|inline| &inline.image) {
-                let max_w = doc_w.saturating_sub(line.style.indent_px).max(1);
+                let metrics = box_metrics(line.style.box_style, line.box_part);
+                let chrome = metrics.horizontal_chrome();
+                let max_w = doc_w
+                    .saturating_sub(line.style.indent_px)
+                    .saturating_sub(chrome)
+                    .max(1);
                 let (draw_w, draw_h) = scaled_image_size_with_hint(
                     image.width,
                     image.height,
@@ -1838,14 +2009,16 @@ fn layout_browser_lines(
                     max_w,
                     INLINE_IMAGE_MAX_H,
                 );
+                let placed = place_boxed_item(line, doc_w, draw_w, draw_h);
                 items.push(BrowserLayoutItem {
-                    x: line
-                        .style
-                        .indent_px
-                        .saturating_add(aligned_x(max_w, draw_w, line.align)),
-                    y,
-                    w: draw_w,
-                    h: draw_h,
+                    x: placed.content_x,
+                    y: y.saturating_add(placed.content_y),
+                    w: placed.content_w,
+                    h: placed.content_h,
+                    box_x: placed.box_x,
+                    box_y: y.saturating_add(placed.box_y),
+                    box_w: placed.box_w,
+                    box_h: placed.box_h,
                     text: String::new(),
                     link: line.link.clone(),
                     kind: BrowserLineKind::Image,
@@ -1854,26 +2027,28 @@ fn layout_browser_lines(
                     style: line.style,
                     control_id: line.control_id,
                 });
-                y = y.saturating_add(draw_h + BLOCK_GAP);
+                y = y.saturating_add(placed.outer_h + BLOCK_GAP);
                 i += 1;
                 continue;
             }
         }
-        let available_w = doc_w.saturating_sub(line.style.indent_px).max(1);
+        let available_w = content_available_width(line, doc_w);
         let w = text_pixel_width(&line.text).min(available_w);
         let h = if line.kind == BrowserLineKind::Heading {
             LINE_H + 2
         } else {
             LINE_H
         };
+        let placed = place_boxed_item(line, doc_w, w, h);
         items.push(BrowserLayoutItem {
-            x: line
-                .style
-                .indent_px
-                .saturating_add(aligned_x(available_w, w, line.align)),
-            y,
-            w,
-            h,
+            x: placed.content_x,
+            y: y.saturating_add(placed.content_y),
+            w: placed.content_w,
+            h: placed.content_h,
+            box_x: placed.box_x,
+            box_y: y.saturating_add(placed.box_y),
+            box_w: placed.box_w,
+            box_h: placed.box_h,
             text: line.text.clone(),
             link: line.link.clone(),
             kind: line.kind,
@@ -1882,12 +2057,154 @@ fn layout_browser_lines(
             style: line.style,
             control_id: line.control_id,
         });
-        y = y.saturating_add(h);
+        y = y.saturating_add(placed.outer_h);
         i += 1;
     }
     BrowserLayout {
         items,
         content_h: y.saturating_add(BLOCK_GAP),
+    }
+}
+
+#[derive(Clone, Copy)]
+struct BrowserBoxMetrics {
+    margin_top: usize,
+    margin_right: usize,
+    margin_bottom: usize,
+    margin_left: usize,
+    padding_top: usize,
+    padding_right: usize,
+    padding_bottom: usize,
+    padding_left: usize,
+    border_top: usize,
+    border_right: usize,
+    border_bottom: usize,
+    border_left: usize,
+}
+
+impl BrowserBoxMetrics {
+    fn horizontal_chrome(self) -> usize {
+        self.margin_left
+            .saturating_add(self.margin_right)
+            .saturating_add(self.padding_left)
+            .saturating_add(self.padding_right)
+            .saturating_add(self.border_left)
+            .saturating_add(self.border_right)
+    }
+}
+
+struct PlacedBrowserBox {
+    content_x: usize,
+    content_y: usize,
+    content_w: usize,
+    content_h: usize,
+    box_x: usize,
+    box_y: usize,
+    box_w: usize,
+    box_h: usize,
+    outer_h: usize,
+}
+
+fn box_metrics(style: BrowserBoxStyle, part: BrowserLineBoxPart) -> BrowserBoxMetrics {
+    let border = style.border_width.min(8);
+    let top = matches!(part, BrowserLineBoxPart::Single | BrowserLineBoxPart::First);
+    let bottom = matches!(part, BrowserLineBoxPart::Single | BrowserLineBoxPart::Last);
+    BrowserBoxMetrics {
+        margin_top: if top { style.margin_top } else { 0 },
+        margin_right: style.margin_right,
+        margin_bottom: if bottom { style.margin_bottom } else { 0 },
+        margin_left: style.margin_left,
+        padding_top: if top { style.padding_top } else { 0 },
+        padding_right: style.padding_right,
+        padding_bottom: if bottom { style.padding_bottom } else { 0 },
+        padding_left: style.padding_left,
+        border_top: if top { border } else { 0 },
+        border_right: border,
+        border_bottom: if bottom { border } else { 0 },
+        border_left: border,
+    }
+}
+
+fn content_available_width(line: &BrowserLine, doc_w: usize) -> usize {
+    let metrics = box_metrics(line.style.box_style, line.box_part);
+    let available = doc_w
+        .saturating_sub(line.style.indent_px)
+        .saturating_sub(metrics.horizontal_chrome())
+        .max(1);
+    line.style
+        .box_style
+        .width
+        .map(|width| width.resolve_px(doc_w).min(available).max(1))
+        .unwrap_or(available)
+}
+
+fn place_boxed_item(
+    line: &BrowserLine,
+    doc_w: usize,
+    natural_w: usize,
+    natural_h: usize,
+) -> PlacedBrowserBox {
+    let metrics = box_metrics(line.style.box_style, line.box_part);
+    let available_content_w = content_available_width(line, doc_w);
+    let specified_w = line
+        .style
+        .box_style
+        .width
+        .map(|width| width.resolve_px(doc_w).min(available_content_w).max(1));
+    let content_w = specified_w.unwrap_or_else(|| natural_w.min(available_content_w).max(1));
+    let content_h = if matches!(line.box_part, BrowserLineBoxPart::Single) {
+        line.style
+            .box_style
+            .height
+            .map(|height| height.max(natural_h))
+            .unwrap_or(natural_h)
+    } else {
+        natural_h
+    };
+    let box_w = metrics
+        .border_left
+        .saturating_add(metrics.padding_left)
+        .saturating_add(content_w)
+        .saturating_add(metrics.padding_right)
+        .saturating_add(metrics.border_right);
+    let outer_w = metrics
+        .margin_left
+        .saturating_add(box_w)
+        .saturating_add(metrics.margin_right);
+    let align_space = doc_w.saturating_sub(line.style.indent_px).max(1);
+    let outer_x = line
+        .style
+        .indent_px
+        .saturating_add(aligned_x(align_space, outer_w, line.align));
+    let box_x = outer_x.saturating_add(metrics.margin_left);
+    let box_y = metrics.margin_top;
+    let content_x = box_x
+        .saturating_add(metrics.border_left)
+        .saturating_add(metrics.padding_left);
+    let content_y = metrics
+        .margin_top
+        .saturating_add(metrics.border_top)
+        .saturating_add(metrics.padding_top);
+    let box_h = metrics
+        .border_top
+        .saturating_add(metrics.padding_top)
+        .saturating_add(content_h)
+        .saturating_add(metrics.padding_bottom)
+        .saturating_add(metrics.border_bottom);
+    let outer_h = metrics
+        .margin_top
+        .saturating_add(box_h)
+        .saturating_add(metrics.margin_bottom);
+    PlacedBrowserBox {
+        content_x,
+        content_y,
+        content_w,
+        content_h,
+        box_x,
+        box_y,
+        box_w,
+        box_h,
+        outer_h,
     }
 }
 
@@ -2927,8 +3244,18 @@ struct CssDeclarations {
     indent_px: Option<usize>,
     color: Option<u32>,
     background: Option<u32>,
-    width: Option<usize>,
+    width: Option<CssLength>,
     height: Option<usize>,
+    margin_top: Option<usize>,
+    margin_right: Option<usize>,
+    margin_bottom: Option<usize>,
+    margin_left: Option<usize>,
+    padding_top: Option<usize>,
+    padding_right: Option<usize>,
+    padding_bottom: Option<usize>,
+    padding_left: Option<usize>,
+    border_width: Option<usize>,
+    border_color: Option<u32>,
     preformatted: Option<bool>,
 }
 
@@ -2981,8 +3308,18 @@ struct CssCascade {
     indent_px: CssSlot<usize>,
     color: CssSlot<u32>,
     background: CssSlot<u32>,
-    width: CssSlot<usize>,
+    width: CssSlot<CssLength>,
     height: CssSlot<usize>,
+    margin_top: CssSlot<usize>,
+    margin_right: CssSlot<usize>,
+    margin_bottom: CssSlot<usize>,
+    margin_left: CssSlot<usize>,
+    padding_top: CssSlot<usize>,
+    padding_right: CssSlot<usize>,
+    padding_bottom: CssSlot<usize>,
+    padding_left: CssSlot<usize>,
+    border_width: CssSlot<usize>,
+    border_color: CssSlot<u32>,
     preformatted: CssSlot<bool>,
 }
 
@@ -2999,6 +3336,26 @@ impl CssCascade {
             .apply(declarations.background, specificity, order);
         self.width.apply(declarations.width, specificity, order);
         self.height.apply(declarations.height, specificity, order);
+        self.margin_top
+            .apply(declarations.margin_top, specificity, order);
+        self.margin_right
+            .apply(declarations.margin_right, specificity, order);
+        self.margin_bottom
+            .apply(declarations.margin_bottom, specificity, order);
+        self.margin_left
+            .apply(declarations.margin_left, specificity, order);
+        self.padding_top
+            .apply(declarations.padding_top, specificity, order);
+        self.padding_right
+            .apply(declarations.padding_right, specificity, order);
+        self.padding_bottom
+            .apply(declarations.padding_bottom, specificity, order);
+        self.padding_left
+            .apply(declarations.padding_left, specificity, order);
+        self.border_width
+            .apply(declarations.border_width, specificity, order);
+        self.border_color
+            .apply(declarations.border_color, specificity, order);
         self.preformatted
             .apply(declarations.preformatted, specificity, order);
     }
@@ -3076,8 +3433,25 @@ impl StyleHints {
                 indent_px: cascade.indent_px.value.unwrap_or(0).min(160),
                 text_color: cascade.color.value,
                 background: cascade.background.value,
+                box_style: BrowserBoxStyle {
+                    margin_top: cascade.margin_top.value.unwrap_or(0).min(96),
+                    margin_right: cascade.margin_right.value.unwrap_or(0).min(160),
+                    margin_bottom: cascade.margin_bottom.value.unwrap_or(0).min(96),
+                    margin_left: cascade.margin_left.value.unwrap_or(0).min(160),
+                    padding_top: cascade.padding_top.value.unwrap_or(0).min(96),
+                    padding_right: cascade.padding_right.value.unwrap_or(0).min(160),
+                    padding_bottom: cascade.padding_bottom.value.unwrap_or(0).min(96),
+                    padding_left: cascade.padding_left.value.unwrap_or(0).min(160),
+                    border_width: cascade.border_width.value.unwrap_or(0).min(8),
+                    border_color: cascade.border_color.value,
+                    width: cascade.width.value,
+                    height: cascade.height.value.map(|height| height.min(512)),
+                },
             },
-            width: cascade.width.value,
+            width: match cascade.width.value {
+                Some(CssLength::Px(width)) => Some(width),
+                _ => None,
+            },
             height: cascade.height.value,
             preformatted: cascade.preformatted.value.unwrap_or(false),
         }
@@ -3173,19 +3547,60 @@ fn parse_css_declarations(input: &str) -> CssDeclarations {
             "margin" => {
                 if value.contains("auto") {
                     out.align = Some(BrowserAlign::Center);
-                } else {
-                    out.indent_px = first_css_length_px(&value).or(out.indent_px);
+                }
+                if let Some([top, right, bottom, left]) = parse_css_box_lengths_px(&value) {
+                    out.margin_top = Some(top);
+                    out.margin_right = Some(right);
+                    out.margin_bottom = Some(bottom);
+                    out.margin_left = Some(left);
                 }
             }
-            "margin-left" | "padding-left" | "text-indent" => {
-                out.indent_px = parse_css_length_px(&value).or(out.indent_px);
+            "margin-top" => out.margin_top = parse_css_length_px(&value).or(out.margin_top),
+            "margin-right" => out.margin_right = parse_css_length_px(&value).or(out.margin_right),
+            "margin-bottom" => {
+                out.margin_bottom = parse_css_length_px(&value).or(out.margin_bottom)
             }
+            "margin-left" => {
+                out.margin_left = parse_css_length_px(&value).or(out.margin_left);
+            }
+            "padding" => {
+                if let Some([top, right, bottom, left]) = parse_css_box_lengths_px(&value) {
+                    out.padding_top = Some(top);
+                    out.padding_right = Some(right);
+                    out.padding_bottom = Some(bottom);
+                    out.padding_left = Some(left);
+                }
+            }
+            "padding-top" => out.padding_top = parse_css_length_px(&value).or(out.padding_top),
+            "padding-right" => {
+                out.padding_right = parse_css_length_px(&value).or(out.padding_right)
+            }
+            "padding-bottom" => {
+                out.padding_bottom = parse_css_length_px(&value).or(out.padding_bottom)
+            }
+            "padding-left" => {
+                out.padding_left = parse_css_length_px(&value).or(out.padding_left);
+            }
+            "text-indent" => out.indent_px = parse_css_length_px(&value).or(out.indent_px),
             "color" => out.color = parse_css_color(&value).or(out.color),
             "background" | "background-color" => {
                 out.background = parse_css_color(&value).or(out.background)
             }
-            "width" | "max-width" => out.width = parse_css_length_px(&value).or(out.width),
+            "width" | "max-width" => out.width = parse_css_length(&value).or(out.width),
             "height" | "max-height" => out.height = parse_css_length_px(&value).or(out.height),
+            "border" => {
+                if let Some(width) = first_css_length_px(&value) {
+                    out.border_width = Some(width);
+                }
+                out.border_color = first_css_color(&value).or(out.border_color);
+            }
+            "border-width" => out.border_width = first_css_length_px(&value).or(out.border_width),
+            "border-color" => out.border_color = first_css_color(&value).or(out.border_color),
+            "border-style" => {
+                if value != "none" && value != "hidden" && out.border_width.is_none() {
+                    out.border_width = Some(1);
+                }
+            }
             "white-space" => {
                 if value == "pre" || value == "pre-wrap" || value == "break-spaces" {
                     out.preformatted = Some(true);
@@ -3197,6 +3612,24 @@ fn parse_css_declarations(input: &str) -> CssDeclarations {
     out
 }
 
+fn parse_css_box_lengths_px(value: &str) -> Option<[usize; 4]> {
+    let mut lengths = Vec::new();
+    for part in value.split_whitespace().take(4) {
+        if part == "auto" {
+            lengths.push(0);
+            continue;
+        }
+        lengths.push(parse_css_length_px(part)?);
+    }
+    match lengths.as_slice() {
+        [a] => Some([*a, *a, *a, *a]),
+        [a, b] => Some([*a, *b, *a, *b]),
+        [a, b, c] => Some([*a, *b, *c, *b]),
+        [a, b, c, d] => Some([*a, *b, *c, *d]),
+        _ => None,
+    }
+}
+
 fn first_css_length_px(value: &str) -> Option<usize> {
     for part in value.split_whitespace() {
         if let Some(length) = parse_css_length_px(part) {
@@ -3206,11 +3639,41 @@ fn first_css_length_px(value: &str) -> Option<usize> {
     None
 }
 
+fn first_css_color(value: &str) -> Option<u32> {
+    for part in value.split_whitespace() {
+        if let Some(color) = parse_css_color(part) {
+            return Some(color);
+        }
+    }
+    None
+}
+
+fn parse_css_length(value: &str) -> Option<CssLength> {
+    let value = value.trim();
+    if value.is_empty() || value == "auto" {
+        return None;
+    }
+    if let Some(percent) = value.strip_suffix('%') {
+        return parse_css_number(percent).map(|number| CssLength::Percent(number.min(100) as u8));
+    }
+    parse_css_length_px(value).map(CssLength::Px)
+}
+
 fn parse_css_length_px(value: &str) -> Option<usize> {
     let value = value.trim();
     if value.is_empty() || value == "auto" || value.ends_with('%') {
         return None;
     }
+    parse_css_number(value).map(|number| {
+        if value.contains("em") || value.contains("rem") {
+            number.saturating_mul(16).min(2048)
+        } else {
+            number.min(2048)
+        }
+    })
+}
+
+fn parse_css_number(value: &str) -> Option<usize> {
     let mut number = 0usize;
     let mut saw_digit = false;
     let mut decimal = false;
@@ -3231,11 +3694,7 @@ fn parse_css_length_px(value: &str) -> Option<usize> {
     if !saw_digit || number == 0 {
         return None;
     }
-    if value.contains("em") || value.contains("rem") {
-        Some(number.saturating_mul(16).min(2048))
-    } else {
-        Some(number.min(2048))
-    }
+    Some(number)
 }
 
 fn parse_css_color(value: &str) -> Option<u32> {
@@ -3602,9 +4061,14 @@ pub fn render_document_style_debug_for_test(
         .filter(|line| !line.text.is_empty())
         .map(|line| {
             let mut out = line.text;
-            if line.style.indent_px > 0 {
+            let visual_indent = line
+                .style
+                .indent_px
+                .saturating_add(line.style.box_style.margin_left)
+                .saturating_add(line.style.box_style.padding_left);
+            if visual_indent > 0 {
                 out.push_str(" [indent=");
-                out.push_str(&format!("{}", line.style.indent_px));
+                out.push_str(&format!("{}", visual_indent));
                 out.push(']');
             }
             if let Some(color) = line.style.text_color {
@@ -3617,6 +4081,7 @@ pub fn render_document_style_debug_for_test(
                 push_hex_color(&mut out, background);
                 out.push(']');
             }
+            push_box_style_debug(&mut out, line.style.box_style);
             if line.align == BrowserAlign::Center {
                 out.push_str(" [align=center]");
             } else if line.align == BrowserAlign::Right {
@@ -3627,6 +4092,93 @@ pub fn render_document_style_debug_for_test(
                 out.push_str(&link);
             }
             out
+        })
+        .collect()
+}
+
+fn push_box_style_debug(out: &mut String, style: BrowserBoxStyle) {
+    if let Some(width) = style.width {
+        out.push_str(" [box-w=");
+        push_css_length_debug(out, width);
+        out.push(']');
+    }
+    if let Some(height) = style.height {
+        out.push_str(" [box-h=");
+        out.push_str(&format!("{}", height));
+        out.push(']');
+    }
+    if style.margin_top > 0
+        || style.margin_right > 0
+        || style.margin_bottom > 0
+        || style.margin_left > 0
+    {
+        out.push_str(" [margin=");
+        push_box_edges_debug(
+            out,
+            style.margin_top,
+            style.margin_right,
+            style.margin_bottom,
+            style.margin_left,
+        );
+        out.push(']');
+    }
+    if style.padding_top > 0
+        || style.padding_right > 0
+        || style.padding_bottom > 0
+        || style.padding_left > 0
+    {
+        out.push_str(" [pad=");
+        push_box_edges_debug(
+            out,
+            style.padding_top,
+            style.padding_right,
+            style.padding_bottom,
+            style.padding_left,
+        );
+        out.push(']');
+    }
+    if style.border_width > 0 {
+        out.push_str(" [border=");
+        out.push_str(&format!("{}", style.border_width));
+        if let Some(color) = style.border_color {
+            out.push(' ');
+            push_hex_color(out, color);
+        }
+        out.push(']');
+    }
+}
+
+fn push_css_length_debug(out: &mut String, length: CssLength) {
+    match length {
+        CssLength::Px(px) => out.push_str(&format!("{}", px)),
+        CssLength::Percent(percent) => {
+            out.push_str(&format!("{}", percent));
+            out.push('%');
+        }
+    }
+}
+
+fn push_box_edges_debug(out: &mut String, top: usize, right: usize, bottom: usize, left: usize) {
+    out.push_str(&format!("{},{},{},{}", top, right, bottom, left));
+}
+
+pub fn render_document_box_debug_for_test(
+    base_url: &str,
+    response: &str,
+    cols: usize,
+    doc_w: usize,
+) -> Vec<String> {
+    let lines = render_document(base_url, response, cols);
+    let layout = layout_browser_lines(&lines, &[], doc_w);
+    layout
+        .items
+        .into_iter()
+        .filter(|item| !item.text.is_empty())
+        .map(|item| {
+            format!(
+                "{} content={}x{} box={}x{} at {},{}",
+                item.text, item.w, item.h, item.box_w, item.box_h, item.box_x, item.box_y
+            )
         })
         .collect()
 }
@@ -4978,7 +5530,7 @@ fn handle_tag(
         }
         "input" => {
             if !closing {
-                push_input_line(out, tag, state, controls.as_deref_mut());
+                push_input_line(out, tag, state, controls.as_deref_mut(), tag_style);
             }
         }
         "button" => {
@@ -5135,6 +5687,7 @@ fn push_input_line(
     tag: &str,
     state: &mut HtmlRenderState,
     controls: Option<&mut BrowserRenderControls<'_>>,
+    tag_style: TagStyle,
 ) {
     let input_type = attr_value(tag, "type").unwrap_or_else(|| String::from("text"));
     let input_type = lowercase_ascii(input_type.trim());
@@ -5257,7 +5810,7 @@ fn push_input_line(
             line_kind_for_link(&link, BrowserLineKind::Code),
         )
         .aligned(state.current_align())
-        .styled(state.current_line_style())
+        .styled(state.current_line_style().merged(tag_style.line))
         .with_control(control)
         .with_control_id(control_id),
     );
@@ -6209,27 +6762,19 @@ fn wrap_plain_text_kind(
     align: BrowserAlign,
     style: BrowserLineStyle,
 ) -> Vec<BrowserLine> {
-    let cols = cols.clamp(20, 120);
-    let mut out = Vec::new();
+    let cols = style.content_cols(cols.clamp(20, 120)).clamp(8, 120);
+    let mut chunks = Vec::new();
     let mut line = String::new();
     for word in text.split_whitespace() {
         if word.len() > cols {
             if !line.is_empty() {
-                out.push(
-                    BrowserLine::new(line, link.clone(), line_kind_for_link(&link, kind))
-                        .aligned(align)
-                        .styled(style),
-                );
+                chunks.push(line);
                 line = String::new();
             }
             let mut chunk = String::new();
             for c in word.chars() {
                 if chunk.len() >= cols {
-                    out.push(
-                        BrowserLine::new(chunk, link.clone(), line_kind_for_link(&link, kind))
-                            .aligned(align)
-                            .styled(style),
-                    );
+                    chunks.push(chunk);
                     chunk = String::new();
                 }
                 chunk.push(c);
@@ -6241,11 +6786,7 @@ fn wrap_plain_text_kind(
         }
         let extra = if line.is_empty() { 0 } else { 1 };
         if line.len() + word.len() + extra > cols && !line.is_empty() {
-            out.push(
-                BrowserLine::new(line, link.clone(), line_kind_for_link(&link, kind))
-                    .aligned(align)
-                    .styled(style),
-            );
+            chunks.push(line);
             line = String::new();
         }
         if !line.is_empty() {
@@ -6254,11 +6795,25 @@ fn wrap_plain_text_kind(
         line.push_str(word);
     }
     if !line.is_empty() {
-        let kind = line_kind_for_link(&link, kind);
+        chunks.push(line);
+    }
+    let total = chunks.len();
+    let mut out = Vec::new();
+    for (idx, chunk) in chunks.into_iter().enumerate() {
+        let part = if total <= 1 || !style.box_style.has_layout() {
+            BrowserLineBoxPart::Single
+        } else if idx == 0 {
+            BrowserLineBoxPart::First
+        } else if idx + 1 == total {
+            BrowserLineBoxPart::Last
+        } else {
+            BrowserLineBoxPart::Middle
+        };
         out.push(
-            BrowserLine::new(line, link, kind)
+            BrowserLine::new(chunk, link.clone(), line_kind_for_link(&link, kind))
                 .aligned(align)
-                .styled(style),
+                .styled(style)
+                .with_box_part(part),
         );
     }
     out
