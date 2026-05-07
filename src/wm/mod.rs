@@ -12,19 +12,25 @@ use spin::Mutex;
 static REPAINT: AtomicBool = AtomicBool::new(false);
 static CURSOR_REPAINT: AtomicBool = AtomicBool::new(false);
 static FRAME_TICK: AtomicBool = AtomicBool::new(false);
-static LAST_PASSIVE_FRAME_TICK: AtomicU64 = AtomicU64::new(0);
+static LAST_PACED_FRAME_TICK: AtomicU64 = AtomicU64::new(0);
+static ACTIVE_FRAME_UNTIL_TICK: AtomicU64 = AtomicU64::new(0);
+static ACTIVE_FRAME_BOOSTS: AtomicU64 = AtomicU64::new(0);
 static SESSION_LOCK_REQUEST: AtomicBool = AtomicBool::new(false);
 static SCREENSHOT_REQUEST: Mutex<Option<String>> = Mutex::new(None);
 static PENDING_USER_GUI_OWNER_CLEANUP: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 static PENDING_STARTUP_COMMANDS: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new());
 
 const PASSIVE_FRAME_HZ: u64 = 36;
+const ACTIVE_FRAME_HZ: u64 = 144;
+const ACTIVE_FRAME_BOOST_MS: u64 = 750;
 
 pub fn request_repaint() {
+    boost_active_frame_pacing();
     REPAINT.store(true, Ordering::Relaxed);
 }
 
 pub fn request_cursor_repaint() {
+    boost_active_frame_pacing();
     CURSOR_REPAINT.store(true, Ordering::Relaxed);
 }
 
@@ -46,32 +52,122 @@ pub fn compose_if_needed() {
     let cursor = CURSOR_REPAINT.swap(false, Ordering::Relaxed);
     let tick = FRAME_TICK.swap(false, Ordering::Relaxed);
     let now = crate::interrupts::ticks();
-    let passive_due = tick && passive_frame_due(now);
-    let startup_pending = !PENDING_STARTUP_COMMANDS.lock().is_empty();
+    let paced_due = tick && paced_frame_due(now);
+    let startup_due = startup_command_due_at(now);
 
-    if full || startup_pending || passive_due {
+    if full || startup_due || paced_due {
+        mark_paced_frame(now);
         compositor::WM.lock().compose();
     } else if cursor {
         let mut wm = compositor::WM.lock();
         if !wm.compose_cursor_only() {
+            mark_paced_frame(now);
             wm.compose();
         }
     }
 }
 
-fn passive_frame_due(now: u64) -> bool {
-    let divisor = (crate::interrupts::TIMER_HZ as u64 / PASSIVE_FRAME_HZ).max(1);
-    let last = LAST_PASSIVE_FRAME_TICK.load(Ordering::Relaxed);
+fn boost_active_frame_pacing() {
+    let now = crate::interrupts::ticks();
+    let until = now.wrapping_add(crate::interrupts::ticks_for_millis(ACTIVE_FRAME_BOOST_MS));
+    loop {
+        let current = ACTIVE_FRAME_UNTIL_TICK.load(Ordering::Relaxed);
+        if until <= current {
+            break;
+        }
+        if ACTIVE_FRAME_UNTIL_TICK
+            .compare_exchange(current, until, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            ACTIVE_FRAME_BOOSTS.fetch_add(1, Ordering::Relaxed);
+            break;
+        }
+    }
+}
+
+fn paced_frame_due(now: u64) -> bool {
+    let divisor = frame_budget_ticks_for_hz(target_frame_hz_at(now));
+    let last = LAST_PACED_FRAME_TICK.load(Ordering::Relaxed);
     if now.wrapping_sub(last) >= divisor {
-        LAST_PASSIVE_FRAME_TICK.store(now, Ordering::Relaxed);
+        LAST_PACED_FRAME_TICK.store(now, Ordering::Relaxed);
         true
     } else {
         false
     }
 }
 
+fn mark_paced_frame(now: u64) {
+    LAST_PACED_FRAME_TICK.store(now, Ordering::Relaxed);
+}
+
+fn frame_budget_ticks_for_hz(hz: u64) -> u64 {
+    let timer_hz = crate::interrupts::TIMER_HZ as u64;
+    let hz = hz.max(1);
+    ((timer_hz + hz - 1) / hz).max(1)
+}
+
+fn target_frame_hz_at(now: u64) -> u64 {
+    if active_frame_boosted_at(now) {
+        ACTIVE_FRAME_HZ
+    } else {
+        PASSIVE_FRAME_HZ
+    }
+}
+
+fn active_frame_boosted_at(now: u64) -> bool {
+    let until = ACTIVE_FRAME_UNTIL_TICK.load(Ordering::Relaxed);
+    until != 0 && until >= now
+}
+
+fn startup_command_due_at(now: u64) -> bool {
+    PENDING_STARTUP_COMMANDS
+        .lock()
+        .first()
+        .map(|(_, ready_tick)| now.wrapping_sub(*ready_tick) < u64::MAX / 2)
+        .unwrap_or(false)
+}
+
 pub fn passive_frame_hz() -> u64 {
     PASSIVE_FRAME_HZ
+}
+
+pub fn active_frame_hz() -> u64 {
+    ACTIVE_FRAME_HZ
+}
+
+pub fn active_frame_boost_ms() -> u64 {
+    ACTIVE_FRAME_BOOST_MS
+}
+
+pub fn active_frame_boosts() -> u64 {
+    ACTIVE_FRAME_BOOSTS.load(Ordering::Relaxed)
+}
+
+pub fn target_frame_hz() -> u64 {
+    target_frame_hz_at(crate::interrupts::ticks())
+}
+
+pub fn target_frame_budget_ticks() -> u64 {
+    frame_budget_ticks_for_hz(target_frame_hz())
+}
+
+pub fn active_frame_boost_ms_left() -> u64 {
+    let now = crate::interrupts::ticks();
+    let until = ACTIVE_FRAME_UNTIL_TICK.load(Ordering::Relaxed);
+    if until <= now {
+        return 0;
+    }
+    let ticks_left = until - now;
+    let timer_hz = crate::interrupts::TIMER_HZ as u64;
+    (ticks_left.saturating_mul(1000) + timer_hz - 1) / timer_hz
+}
+
+pub fn frame_pacing_mode() -> &'static str {
+    if active_frame_boost_ms_left() > 0 {
+        "active"
+    } else {
+        "idle"
+    }
 }
 
 pub fn prepare() {

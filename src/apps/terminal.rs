@@ -1085,8 +1085,11 @@ impl TerminalApp {
             ("sysreport [write]", "combined diagnostics report"),
             ("devkit", "SDK docs and app templates"),
             ("profiler", "boot/service/task timing"),
-            ("compositor", "FPS, frame, damage, and cursor telemetry"),
-            ("smoothness", "compositor latency telemetry"),
+            (
+                "compositor",
+                "FPS, pacing, budget, damage, and cursor telemetry",
+            ),
+            ("smoothness", "compositor pacing and latency telemetry"),
             ("heap", "heap diagnostics"),
             ("slab", "slab allocator diagnostics"),
             ("waitq", "kernel wait queue diagnostics"),

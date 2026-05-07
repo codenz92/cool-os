@@ -13,7 +13,7 @@ stdio, and IPC with pipes, shared memory, and per-task fd tables.
 
 ---
 
-# Current state — v7.9
+# Current state — v7.10
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -59,11 +59,12 @@ rename, writable file descriptors, fd-mapped child stdio, sync, and RTC time;
 `/bin/sh` now supports quoting, relative paths, redirection, and one-stage
 pipelines; `/bin` includes practical file/text/date/devkit tools; sysreport can
 write `/LOGS/SYSREPORT.TXT`; and the generated image ships `/SDK` docs and
-templates. Phase 45 adds compositor smoothness work: timer ticks now request
-passive frames instead of unconditional full redraws, mouse-only motion uses a
-hardware cursor overlay fast path, the main loop polls input before background
-maintenance, and `compositor`/`smoothness` telemetry exposes frame source,
-damage, and cursor overlay counters.
+templates. Phases 45-46 add compositor smoothness work: timer ticks now request
+paced frames instead of unconditional full redraws, mouse-only motion uses a
+hardware cursor overlay fast path, active input temporarily boosts full-frame
+pacing to 144 Hz while idle work stays at 36 Hz, the main loop polls input
+before background maintenance, and `compositor`/`smoothness` telemetry exposes
+frame source, adaptive pacing, budget, damage, and cursor overlay counters.
 
 | Context | Mode | Description |
 | :------ | :--- | :---------- |
@@ -97,10 +98,10 @@ built-in trust roots, and SAN-first hostname validation coverage.
 
 | Subsystem | Details |
 | :-------- | :------ |
-| **Framebuffer** | `bootloader 0.11` linear framebuffer at ≥1280×720. 3bpp and 4bpp both handled. Shadow-buffer compositor with dirty row-span blits, passive frame pacing, and a hardware cursor overlay fast path that restores/draws only cursor rectangles for mouse-only motion. No tearing. |
+| **Framebuffer** | `bootloader 0.11` linear framebuffer at ≥1280×720. 3bpp and 4bpp both handled. Shadow-buffer compositor with dirty row-span blits, adaptive 36/144 Hz frame pacing, and a hardware cursor overlay fast path that restores/draws only cursor rectangles for mouse-only motion. No tearing. |
 | **PS/2 mouse** | Full hardware init (CCB, 0xF6/0xF4), 9-bit signed X/Y deltas, IRQ12 packet collection via atomics. |
 | **Window manager** | Z-ordered windows, focus-on-click, title-bar drag, edge snapping, keyboard snapping, task switcher overlay, minimise/maximise/restore, resize grip, close button, taskbar previews/right-click actions, per-window pixel back-buffer. |
-| **Desktop shell** | Wallpaper, desktop icons, right-click context menu, start menu, taskbar window buttons, configurable shortcuts, launcher/search palette, login/lock greeter, Accounts settings, notification center, File Manager drag/drop/open-with routing, shared clipboard plumbing, userspace app lifecycle tracking with System Monitor controls, persistent settings, session restore, clock, and compositor smoothness telemetry. |
+| **Desktop shell** | Wallpaper, desktop icons, right-click context menu, start menu, taskbar window buttons, configurable shortcuts, launcher/search palette, login/lock greeter, Accounts settings, notification center, File Manager drag/drop/open-with routing, shared clipboard plumbing, userspace app lifecycle tracking with System Monitor controls, persistent settings, session restore, clock, and adaptive compositor smoothness telemetry. |
 | **Heap** | `LockedHeap` allocator — `String`, `Vec`, `Box` all work. 32 MiB heap to accommodate large shadow and window buffers. |
 | **Paging / VMM** | 4-level `OffsetPageTable` + global `BootInfoFrameAllocator`. Per-process PML4 cloned from kernel upper half; private user-space mappings in lower half. `vmm::` module exposes `new_process_pml4`, `map_page_in`, `map_region`, `switch_to`. |
 | **IDT** | Breakpoint, Double Fault, Page Fault with user-task termination/crashdump handling for invalid ring-3 accesses, General Protection Fault, Invalid Opcode, Timer (IRQ0), Keyboard (IRQ1), Mouse (IRQ12). |
@@ -208,8 +209,8 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `diagnostics` | Print kernel, profiler, service, compositor, heap, filesystem, VFS, and crash diagnostics |
 | `sysreport [write]` | Print the generated system report or write it to `/LOGS/SYSREPORT.TXT` |
 | `devkit` | Print SDK paths, ABI version, and userspace template locations |
-| `compositor` | Print FPS, frame, damage, and cursor overlay telemetry |
-| `smoothness` | Alias for compositor latency telemetry |
+| `compositor` | Print FPS, frame pacing, frame budget, damage, and cursor overlay telemetry |
+| `smoothness` | Alias for compositor pacing/latency telemetry |
 | `fsck` | Print CoolFS-root consistency plus optional legacy FAT32 import summary |
 | `recovery [repair\|fsck-on-boot on\|fsck-on-boot off]` | Show recovery status, write a repair report, or toggle boot fsck |
 | `coolfs` | Print CoolFS root mount and inode/block usage |
@@ -241,7 +242,8 @@ brew install qemu
 make run
 ```
 
-For the smoothest QEMU pointer path, use the phase 45 tablet-input profile:
+For the smoothest QEMU pointer path, use the phase 46 tablet-input and
+adaptive-refresh profile:
 
 ```bash
 make run-smooth
@@ -326,10 +328,12 @@ src/
   keyboard.rs      Modifier-aware lock-free input queue — IRQ/USB handlers push key events,
                    compositor drains them into global shortcuts or focused apps
   wm/
-    mod.rs         Public WM API — request_repaint, compose_if_needed, userspace GUI bridge
+    mod.rs         Public WM API — adaptive frame pacing, repaint requests,
+                   compose_if_needed, userspace GUI bridge
     compositor.rs  WindowManager — shadow buffer, z-order, drag, taskbar,
                    context menu, syscall output drain, AppWindow enum dispatch,
-                   dirty-span blit, hardware cursor overlay, frame-source telemetry
+                   dirty-span blit, hardware cursor overlay, frame-source and
+                   frame-budget telemetry
     window.rs      Window struct — back-buffer, hit tests
   apps/
     terminal.rs    TerminalApp — keyboard input, shell commands, text render
@@ -546,6 +550,15 @@ work to a smaller budget so input-to-pixel latency wins. `compositor` and
 `smoothness` show full-frame count, cursor-fast count, passive frame cadence,
 damage rows/pixels, and cursor overlay pixel counts.
 
+**Adaptive high refresh (Phase 46).** The desktop keeps the Phase 45 idle cadence
+at 36 Hz, but real input and explicit repaint work extend a 750 ms active boost
+window that paces full frames at 144 Hz. Explicit repaints mark the pacing clock
+so the compositor avoids immediate duplicate passive frames after an input-driven
+frame. Delayed startup commands are checked on due ticks instead of forcing a
+full compose every idle loop. `compositor`/`smoothness` now reports pacing mode,
+target/idle/active Hz, remaining boost time, target frame-budget ticks, and
+budget misses.
+
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
 empty). `vmm::new_process_pml4` handles the clone; `vmm::map_page_in` / `vmm::map_region`
@@ -609,5 +622,6 @@ while kernel faults still panic.
 | 43 | Observability — generated sysreports written under `/LOGS` | **Done** |
 | 44 | Developer platform — `/SDK` docs/templates plus `/bin/devkit` | **Done** |
 | 45 | Compositor latency and smoothness — passive frame ticks, cursor overlay fast path, input-first loop, telemetry | **Done** |
+| 46 | Adaptive high refresh — 144 Hz active pacing, 36 Hz idle pacing, frame-budget telemetry | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

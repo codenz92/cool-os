@@ -61,6 +61,8 @@ static COMPOSITOR_FRAMES: AtomicU64 = AtomicU64::new(0);
 static COMPOSITOR_CURSOR_FAST_FRAMES: AtomicU64 = AtomicU64::new(0);
 static COMPOSITOR_CURSOR_PIXELS_LAST: AtomicU64 = AtomicU64::new(0);
 static COMPOSITOR_FULL_FRAMES: AtomicU64 = AtomicU64::new(0);
+static COMPOSITOR_FRAME_BUDGET_TICKS: AtomicU64 = AtomicU64::new(0);
+static COMPOSITOR_FRAME_BUDGET_MISSES: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy)]
 pub struct CompositorStats {
@@ -73,6 +75,8 @@ pub struct CompositorStats {
     pub full_frames: u64,
     pub cursor_fast_frames: u64,
     pub cursor_pixels_last: u64,
+    pub frame_budget_ticks: u64,
+    pub frame_budget_misses: u64,
 }
 
 pub fn compositor_stats() -> CompositorStats {
@@ -86,6 +90,8 @@ pub fn compositor_stats() -> CompositorStats {
         full_frames: COMPOSITOR_FULL_FRAMES.load(Ordering::Relaxed),
         cursor_fast_frames: COMPOSITOR_CURSOR_FAST_FRAMES.load(Ordering::Relaxed),
         cursor_pixels_last: COMPOSITOR_CURSOR_PIXELS_LAST.load(Ordering::Relaxed),
+        frame_budget_ticks: COMPOSITOR_FRAME_BUDGET_TICKS.load(Ordering::Relaxed),
+        frame_budget_misses: COMPOSITOR_FRAME_BUDGET_MISSES.load(Ordering::Relaxed),
     }
 }
 
@@ -106,6 +112,20 @@ pub fn compositor_lines() -> Vec<String> {
             stats.full_frames,
             stats.cursor_fast_frames,
             crate::wm::passive_frame_hz()
+        ),
+        format!(
+            "frame_pacing mode={} target_hz={} idle_hz={} active_hz={} boost_ms_left={} boost_ms={} boosts={}",
+            crate::wm::frame_pacing_mode(),
+            crate::wm::target_frame_hz(),
+            crate::wm::passive_frame_hz(),
+            crate::wm::active_frame_hz(),
+            crate::wm::active_frame_boost_ms_left(),
+            crate::wm::active_frame_boost_ms(),
+            crate::wm::active_frame_boosts()
+        ),
+        format!(
+            "frame_budget target_ticks={} misses={}",
+            stats.frame_budget_ticks, stats.frame_budget_misses
         ),
         format!(
             "cursor_mode=overlay cursor_pixels_last={}",
@@ -5345,9 +5365,14 @@ impl WindowManager {
     fn update_compositor_telemetry(&mut self, frame_start_tick: u64) {
         let now = crate::interrupts::ticks();
         let frame_ticks = now.wrapping_sub(frame_start_tick);
+        let budget_ticks = crate::wm::target_frame_budget_ticks();
         self.frame_ticks_peak = self.frame_ticks_peak.max(frame_ticks);
         self.fps_window_frames = self.fps_window_frames.saturating_add(1);
         COMPOSITOR_FULL_FRAMES.fetch_add(1, Ordering::Relaxed);
+        COMPOSITOR_FRAME_BUDGET_TICKS.store(budget_ticks, Ordering::Relaxed);
+        if frame_ticks > budget_ticks {
+            COMPOSITOR_FRAME_BUDGET_MISSES.fetch_add(1, Ordering::Relaxed);
+        }
         if self.fps_window_start_tick == 0 {
             self.fps_window_start_tick = now;
         }

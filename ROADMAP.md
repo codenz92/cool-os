@@ -4,13 +4,14 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–45 are complete. The current milestone gives coolOS a much more
+Phases 1–46 are complete. The current milestone gives coolOS a much more
 normal command-line and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, and an
-in-image `/SDK` with devkit templates. Phase 45 focuses on smoothness: passive
-frame pacing, cursor-only framebuffer updates, input-first idle-loop ordering,
-and compositor telemetry for damage and cursor overlay work.
+in-image `/SDK` with devkit templates. Phases 45-46 focus on smoothness:
+cursor-only framebuffer updates, input-first idle-loop ordering, adaptive
+36/144 Hz frame pacing, and compositor telemetry for damage, cursor overlay
+work, and frame-budget misses.
 
 ---
 
@@ -1336,6 +1337,33 @@ events still request full frames when the base scene changes.
 
 ---
 
+## ✅ Phase 46 — Adaptive High Refresh
+
+**Goal:** Make coolOS feel closer to a 144 Hz desktop without burning full-frame
+work while the machine is idle.
+
+- [x] Keep idle passive full-frame pacing at 36 Hz for clocks, animations, and
+      background UI updates.
+- [x] Add a 750 ms active boost window that raises full-frame pacing to 144 Hz
+      after explicit repaint work or mouse movement.
+- [x] Mark the pacing clock when an explicit full frame is composed so the next
+      passive timer tick does not immediately duplicate it.
+- [x] Preserve the Phase 45 cursor overlay fast path for plain pointer motion,
+      while allowing active full frames to refresh hover, menu, drag, resize, and
+      app animation state at high refresh during interaction.
+- [x] Check delayed startup commands on due/paced frames instead of forcing a
+      full compositor pass every idle loop while startup commands are waiting.
+- [x] Extend `compositor`/`smoothness` telemetry with pacing mode, target Hz,
+      idle/active Hz, boost duration/remaining time, target frame-budget ticks,
+      and budget misses.
+- [x] Add `make smoke-phase46-adaptive-refresh`.
+
+**Current status:** complete. A 144 Hz monitor can now get high-refresh full
+desktop frames during active work, while the idle desktop falls back to the
+lower Phase 45 cadence.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -1397,4 +1425,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.6 | Phase 42 complete: app consistency and in-OS help |
 | v7.7 | Phase 43 complete: observability and sysreport |
 | v7.8 | Phase 44 complete: developer platform and SDK devkit |
-| v7.9 | Current — Phase 45 complete: compositor latency and smoothness |
+| v7.9 | Phase 45 complete: compositor latency and smoothness |
+| v7.10 | Current — Phase 46 complete: adaptive high refresh |
