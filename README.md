@@ -13,7 +13,7 @@ stdio, and IPC with pipes, shared memory, and per-task fd tables.
 
 ---
 
-# Current state — v7.32
+# Current state — v7.33
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -30,12 +30,15 @@ A preemptive round-robin scheduler is driven by the PIT timer at **288 Hz**;
 the kernel boot stack remains the idle/window-manager context, the boot path
 performs a synchronous CoolFS read check, and the terminal can also spawn
 additional ring-3 ELF tasks from disk with `exec`. The shell also has a real
-package/app manifest path:
-UTF-8 `.PKG` manifests can install apps into `/APPS/<command>/APP.CFG`,
+signed package/app manifest path:
+UTF-8 `.PKG` manifests under `/Packages` require detached Ed25519 sidecar
+signatures before they can install apps into `/APPS/<command>/APP.CFG`,
 contribute launcher aliases and file associations, launch a declared userspace
-executable through `exec=`, and be removed without leaving stale launcher
-entries. Manifest permission labels become launch-time task capabilities, and
-the VFS/syscall layer enforces filesystem, network, desktop, and execute access.
+executable through `exec=`, or be repaired from their source archive. Package
+owner records under `/APPS/<command>/OWNER.TXT` pin the source path, signer,
+manifest digests, version, and dependencies. Manifest permission labels become
+launch-time task capabilities, and the VFS/syscall layer enforces filesystem,
+network, desktop, and execute access.
 The desktop now starts behind a compositor-owned greeter; the active session is
 backed by a persistent CoolFS user database, so
 Terminal commands, launched ELF tasks, and package apps inherit the logged-in
@@ -59,7 +62,7 @@ rename, writable file descriptors, fd-mapped child stdio, sync, and RTC time;
 `/bin/sh` now supports quoting, relative paths, redirection, and one-stage
 pipelines; `/bin` includes practical file/text/date/devkit tools; sysreport can
 write `/LOGS/SYSREPORT.TXT`; and the generated image ships `/SDK` docs and
-templates. Phases 45-68 add compositor smoothness, evented terminal work, and
+templates. Phases 45-69 add compositor smoothness, evented terminal work, and
 a richer native browser renderer:
 timer ticks now request
 paced frames instead of unconditional full redraws, mouse-only motion uses a
@@ -129,7 +132,12 @@ Terminal adds `update verify`, `update keys`, and admin-gated `update sign`, and
 captures a snapshot or stops services. Phase 68 upgrades that trust gate to
 Ed25519 public-key verification with multiple built-in keys, rotation metadata,
 revoked/expired key handling, versioned manifests, and anti-rollback refusal for
-older signed updates.
+older signed updates. Phase 69 applies the same public-key discipline to
+installable packages: `/CONFIG/PACKAGE-KEYS.TXT` exposes trusted, rotated,
+revoked, and expired package signing keys; `pkg verify` refuses unsigned,
+tampered, revoked, expired, unknown-key, dependency-missing, or downgrade
+package archives; installed package owner records make `pkg repair`,
+Recovery, Diagnostics, and Sysreport report package trust state.
 
 | Context | Mode | Description |
 | :------ | :--- | :---------- |
@@ -188,8 +196,9 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **FAT32 layer** | Optional legacy import mount at `/FAT`, formatted in a separate 8 MiB-offset disk region. BPB parsing, FAT chain walking, short-name and long-filename lookup, directory traversal, cluster→sector mapping, mutation helpers, free-space stats, and `fsck` remain available without being required for CoolFS boot. |
 | **VFS** | CoolFS-root path routing, `/FAT` legacy routing, CoolFS read/write/execute permission enforcement, task-local cwd resolution, and task-local fd tables (16 slots, with explicit 0/1/2 mappings for child stdio) backed by shared file/pipe/shmem objects. `vfs_open` reads whole files into heap buffers after access checks and drops them if pressure admission fails; `vfs_open_write` buffers writable file descriptors and commits through safe CoolFS writes on close/exit; `vfs_pipe` allocates a 512-byte kernel ring buffer only when the heap reserve allows it; `vfs_read_blocking` blocks tasks on empty pipes and wakes them on write/EOF; `ipc` and `spawn_fds_args` selectively inherit pipe/file fds into child processes; `vfs_shmem_create`/`vfs_shmem_map` manage a shared memory region pool indexed by ID. |
 | **Networking** | Legacy PCI virtio-net driver for QEMU user networking, polling RX/TX virtqueues, Ethernet framing, ARP cache, IPv4, ICMP echo, UDP DNS queries, minimal TCP client sockets, userspace socket syscalls, HTTP/1.1, and verified TLS 1.3 HTTPS for the native browser/terminal path. |
-| **Kernel services** | Persistent kernel log buffer flushed to `/LOGS/KERNEL.TXT`, crash-screen log tail, sysreport generation to `/LOGS/SYSREPORT.TXT`, central device registry for PCI/USB/system devices, installable package/app manifests with file associations, networking status, ACPI power-control status foundation, a credentialed durable service supervisor with dependency metadata, persisted `/CONFIG/SERVICES.CFG` desired state, `/LOGS/SERVICES.TXT` restart history, backoff, and recovery diagnostics under service uid/gid 200, plus boot-health state under `/BOOT` for last-known-good validation. |
+| **Kernel services** | Persistent kernel log buffer flushed to `/LOGS/KERNEL.TXT`, crash-screen log tail, sysreport generation to `/LOGS/SYSREPORT.TXT`, central device registry for PCI/USB/system devices, signed installable package/app manifests with file associations and owner records, networking status, ACPI power-control status foundation, a credentialed durable service supervisor with dependency metadata, persisted `/CONFIG/SERVICES.CFG` desired state, `/LOGS/SERVICES.TXT` restart history, backoff, and recovery diagnostics under service uid/gid 200, plus boot-health state under `/BOOT` for last-known-good validation. |
 | **Updates / rollback** | Ed25519-signed staged system update manifests under `/UPDATES/STAGED`, per-payload SHA-256 verification, public-key trust checks against `/CONFIG/UPDATE-KEYS.TXT`, multiple trusted/revoked/expired key states, anti-rollback version checks, payload snapshots under `/UPDATES/SNAPSHOTS/LAST`, update journals in `/LOGS/UPDATE.TXT`, service-aware apply/rollback operations, recovery rollback integration, and automatic rollback when a pending update fails boot validation. |
+| **Packages** | Ed25519-signed package archives under `/Packages` with detached `<package>.sig` files, public package trust keys under `/CONFIG/PACKAGE-KEYS.TXT`, version/dependency checks, per-install owner records under `/APPS/<command>/OWNER.TXT`, package history under `/LOGS/PACKAGES.TXT`, verified `pkg install\|run\|repair`, and recovery/sysreport package trust diagnostics. |
 | **Applications** | Terminal, System Monitor, Text Viewer, Color Picker, File Manager, Web Browser, ring-3 Notes, Text Editor, Trash Bin, Screenshot, Process Demo, and GUI Demo. Text-file opens route into `/bin/editor <path>` with kernel viewer fallback, while File Manager exposes explicit Open With Editor/Viewer actions. |
 | **Disk image** | `disk-image/src/fs_image.rs` builds `fs.img` as a 64 MiB raw OS disk: native CoolFS starts at LBA 0 with root-owned system paths, user-owned writable paths, executable `/bin` ELFs, `/RECOVERY` boot/repair docs, `/SDK` devkit docs/templates, `/Packages/guidemo.pkg`, and `/Documents/package-demo.p25`; an optional FAT32 `/FAT` import region starts at 8 MiB. The Makefile attaches it to QEMU as the IDE slave. |
 
@@ -291,7 +300,8 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `recovery [repair\|rollback\|fsck-on-boot on\|fsck-on-boot off]` | Show recovery and boot-health status, write a repair report, roll back the last update, or toggle boot fsck |
 | `coolfs` | Print CoolFS root mount and inode/block usage |
 | `df` | Print CoolFS `/` and optional FAT32 `/FAT` used/free/total space |
-| `pkg [list\|install <path-or-id>\|remove <id>\|run <id> [args...]]` | Manage built-in and manifest-installed packages. |
+| `pkg [list\|keys\|info <id\|path>\|verify <id\|path>\|install <id\|path>\|remove <id>\|repair <id>\|run <id> [args...]]` | Inspect package trust keys, verify signed package archives or installed owner records, install/remove/repair packages, and launch package apps. |
+| `pkg [sign <path>\|sign-as <path> <key>\|unsign <path>\|tamper <path>\|deps <path> [ids...]\|break <id>]` | Admin/test package trust helpers used by the smoke suite for rotated, unsigned, tampered, dependency, and repair flows. |
 | `shortcuts` | Print configured global shortcuts |
 | `clip [text]` | Show clipboard summary or copy text |
 | `paste` | Paste shared clipboard text |
@@ -386,8 +396,9 @@ src/
   sysreport.rs     System report generator for diagnostics and /LOGS/SYSREPORT.TXT
   boot_health.rs   Boot validation, last-known-good state, and auto rollback
   services.rs      Durable service supervisor with dependency/backoff policy and /CONFIG + /LOGS state
-  update_crypto.rs SHA-256 and Ed25519 helpers for update trust checks
+  update_crypto.rs SHA-256 and Ed25519 helpers for update/package trust checks
   updates.rs       Signed staged system updates, snapshots, journals, and rollback
+  packages.rs      Built-in package registry plus signed archive verify/install/repair
   notifications.rs Desktop notification queue used by USB/task/filesystem events
   app_lifecycle.rs Persistent app recents/settings plus runtime userspace app ownership
   clipboard.rs     Shared text/path clipboard service
@@ -565,6 +576,10 @@ and algorithm in the applied manifest, and exposes update trust state in
 Recovery, Diagnostics, and Sysreport. Phase 68 moves that trust model to
 Ed25519 public keys, records update OS/version metadata, accepts rotated trusted
 keys, and rejects revoked, expired, unknown, or non-monotonic signed updates.
+Phase 69 adds package-level Ed25519 trust: package archives are verified through
+detached `.sig` sidecars, installs record owner/source/signature metadata under
+`/APPS`, dependencies and package downgrades are refused, and recovery/sysreport
+surface installed package trust.
 
 **GUI login and lock screen (Phase 30).** The desktop now boots into a
 boot-splash-style compositor greeter instead of exposing the session
@@ -762,7 +777,11 @@ checks, trust diagnostics in Recovery/Sysreport, and
 flows. Phase 68 adds Ed25519 public-key verification, key rotation/revocation
 metadata, anti-rollback version checks, `update sign-as` and
 `update stage-version` diagnostics, and `make smoke-phase68-update-keys` for
-active, rotated, revoked, expired, unknown, and downgrade cases.
+active, rotated, revoked, expired, unknown, and downgrade cases. Phase 69 adds
+`pkg keys|verify|info|repair|history`, package owner records, package trust
+diagnostics, and `make smoke-phase69-package-trust` for valid install, rotated
+signing keys, unsigned/tampered archives, revoked/expired/unknown keys,
+dependency refusal, repair, recovery, and sysreport coverage.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
@@ -850,5 +869,6 @@ while kernel faults still panic.
 | 66 | Boot health and last-known-good rollback — pending-update validation, boot history, and automatic snapshot restore | **Done** |
 | 67 | Signed updates and integrity verification — per-payload hashes, signed manifest trust diagnostics, and apply refusal for tampered updates | **Done** |
 | 68 | Update key rotation and anti-rollback — Ed25519 public-key signatures, trusted/revoked/expired key states, and monotonic update versions | **Done** |
+| 69 | Package trust and repair — Ed25519-signed package archives, owner records, dependencies, and recovery/sysreport diagnostics | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

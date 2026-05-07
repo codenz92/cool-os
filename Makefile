@@ -1,4 +1,4 @@
-.PHONY: run run-net run-usb run-usb-init run-smooth run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-phase31-accounts smoke-phase32-isolation smoke-phase33-process-control smoke-phase34-tty-jobs smoke-phase35-tty-input smoke-phase36-userspace-shell smoke-phase37-coreutils smoke-phase38-apps smoke-phase39-recovery smoke-phase40-shell-semantics smoke-phase41-fs-durability smoke-phase42-app-consistency smoke-phase43-observability smoke-phase44-devkit smoke-phase45-smoothness smoke-phase46-adaptive-refresh smoke-phase47-evented-userspace smoke-phase48-terminal-tui smoke-phase49-browser-engine smoke-phase50-css-layout smoke-phase51-browser-forms smoke-phase52-dom-events smoke-phase53-dom-forms smoke-phase54-browser-post smoke-phase55-browser-session smoke-phase56-css-box-model smoke-phase57-browser-layout smoke-phase58-browser-subresources smoke-phase59-browser-js smoke-phase60-browser-webapi smoke-phase61-browser-compat smoke-phase62-resource-limits smoke-phase63-memory-pressure smoke-phase64-services smoke-phase65-update-rollback smoke-phase66-boot-health smoke-phase67-update-trust smoke-phase68-update-keys smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
+.PHONY: run run-net run-usb run-usb-init run-smooth run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-phase31-accounts smoke-phase32-isolation smoke-phase33-process-control smoke-phase34-tty-jobs smoke-phase35-tty-input smoke-phase36-userspace-shell smoke-phase37-coreutils smoke-phase38-apps smoke-phase39-recovery smoke-phase40-shell-semantics smoke-phase41-fs-durability smoke-phase42-app-consistency smoke-phase43-observability smoke-phase44-devkit smoke-phase45-smoothness smoke-phase46-adaptive-refresh smoke-phase47-evented-userspace smoke-phase48-terminal-tui smoke-phase49-browser-engine smoke-phase50-css-layout smoke-phase51-browser-forms smoke-phase52-dom-events smoke-phase53-dom-forms smoke-phase54-browser-post smoke-phase55-browser-session smoke-phase56-css-box-model smoke-phase57-browser-layout smoke-phase58-browser-subresources smoke-phase59-browser-js smoke-phase60-browser-webapi smoke-phase61-browser-compat smoke-phase62-resource-limits smoke-phase63-memory-pressure smoke-phase64-services smoke-phase65-update-rollback smoke-phase66-boot-health smoke-phase67-update-trust smoke-phase68-update-keys smoke-phase69-package-trust smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -1678,6 +1678,113 @@ smoke-phase68-update-keys: build
 		--expect "action=verify-failed" \
 		--expect "update_trust=failed error=update key not trusted" \
 		--expect "== updates ==" \
+		--expect "[selftest] kernel unit checks ok=27 fail=0" \
+		--expect "[boot] desktop ready"
+
+smoke-phase69-package-trust: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-valid" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--fw-cmd "pkg keys;;pkg verify /Packages/guidemo.pkg;;pkg info /Packages/guidemo.pkg;;pkg install /Packages/guidemo.pkg;;pkg verify pkgdemo;;pkg info pkgdemo;;cat /APPS/pkgdemo/OWNER.TXT;;flush" \
+		--expect "PACKAGE TRUST KEYS" \
+		--expect "key=phase69-pkg-a algorithm=ed25519 status=trusted scope=packages" \
+		--expect "key=phase69-pkg-b algorithm=ed25519 status=trusted scope=packages" \
+		--expect "key=phase69-pkg-revoked algorithm=ed25519 status=revoked scope=packages" \
+		--expect "key=phase69-pkg-expired algorithm=ed25519 status=trusted scope=packages" \
+		--expect "package_trust=ok key=phase69-pkg-a algorithm=ed25519 id=app.phase25.guidemo version=1.0 command=pkgdemo" \
+		--expect "[pkg] installed app.phase25.guidemo name=Packaged GUI Demo exec=/bin/guidemo" \
+		--expect "installed_trust=ok id=app.phase25.guidemo command=pkgdemo version=1.0 key=phase69-pkg-a algorithm=ed25519" \
+		--expect "verified_by=phase69-pkg-a" \
+		--expect "flush: ok" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-rotated" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--fw-cmd "pkg sign-as /Packages/guidemo.pkg phase69-pkg-b;;pkg verify /Packages/guidemo.pkg;;pkg install /Packages/guidemo.pkg;;cat /APPS/pkgdemo/OWNER.TXT;;flush" \
+		--expect "pkg: ok" \
+		--expect "package_trust=ok key=phase69-pkg-b algorithm=ed25519 id=app.phase25.guidemo version=1.0 command=pkgdemo" \
+		--expect "[pkg] installed app.phase25.guidemo name=Packaged GUI Demo exec=/bin/guidemo" \
+		--expect "verified_by=phase69-pkg-b" \
+		--expect "flush: ok" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-unsigned-tampered" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--fw-cmd "pkg unsign /Packages/guidemo.pkg;;pkg verify /Packages/guidemo.pkg;;pkg install /Packages/guidemo.pkg;;pkg sign /Packages/guidemo.pkg;;pkg tamper /Packages/guidemo.pkg;;pkg verify /Packages/guidemo.pkg;;pkg install /Packages/guidemo.pkg;;flush" \
+		--expect "package_trust=failed error=package is unsigned" \
+		--expect "pkg: package is unsigned" \
+		--expect "package_trust=failed error=package manifest hash mismatch" \
+		--expect "pkg: package manifest hash mismatch" \
+		--expect "flush: ok" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-bad-keys" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--fw-cmd "pkg sign-as /Packages/guidemo.pkg phase69-pkg-revoked;;pkg verify /Packages/guidemo.pkg;;pkg install /Packages/guidemo.pkg;;pkg sign-as /Packages/guidemo.pkg phase69-pkg-expired;;pkg verify /Packages/guidemo.pkg;;pkg install /Packages/guidemo.pkg;;flush" \
+		--expect "package_trust=failed error=package key revoked" \
+		--expect "pkg: package key revoked" \
+		--expect "package_trust=failed error=package key expired" \
+		--expect "pkg: package key expired" \
+		--expect "flush: ok" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-unknown-key" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--fw-cmd "pkg sign-as /Packages/guidemo.pkg phase69-pkg-unknown;;pkg verify /Packages/guidemo.pkg;;pkg install /Packages/guidemo.pkg;;flush" \
+		--expect "package_trust=failed error=package key not trusted" \
+		--expect "pkg: package key not trusted" \
+		--expect "flush: ok" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-deps" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--fw-cmd "pkg deps /Packages/guidemo.pkg app.missing;;pkg sign /Packages/guidemo.pkg;;pkg verify /Packages/guidemo.pkg;;pkg install /Packages/guidemo.pkg;;flush" \
+		--screendump "$(SMOKE_ARTIFACT_DIR)/phase69-package-trust.ppm" \
+		--expect-framebuffer-window \
+		--expect "dependencies=missing app.missing" \
+		--expect "pkg: package dependency missing" \
+		--expect "flush: ok" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-repair-report" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--fw-cmd "pkg install /Packages/guidemo.pkg;;pkg break pkgdemo;;pkg verify pkgdemo;;pkg repair pkgdemo;;pkg verify pkgdemo;;pkg remove pkgdemo;;pkg verify pkgdemo;;pkg history;;recovery;;sysreport" \
+		--expect "[pkg] installed app.phase25.guidemo name=Packaged GUI Demo exec=/bin/guidemo" \
+		--expect "installed_trust=failed error=installed manifest invalid" \
+		--expect "installed_trust=ok id=app.phase25.guidemo command=pkgdemo version=1.0 key=phase69-pkg-a algorithm=ed25519" \
+		--expect "[pkg] removed app.phase25.guidemo" \
+		--expect "installed_trust=failed error=package owner missing" \
+		--expect "PACKAGE HISTORY" \
+		--expect "package_trust=ok signed=0" \
+		--expect "== packages ==" \
 		--expect "[selftest] kernel unit checks ok=27 fail=0" \
 		--expect "[boot] desktop ready"
 

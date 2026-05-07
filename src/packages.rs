@@ -3,6 +3,47 @@ extern crate alloc;
 use alloc::{format, string::String, vec::Vec};
 use spin::Mutex;
 
+const TRUST_KEYS_PATH: &str = "/CONFIG/PACKAGE-KEYS.TXT";
+const PACKAGE_LOG_PATH: &str = "/LOGS/PACKAGES.TXT";
+const TRUST_ALGORITHM: &str = "ed25519";
+const TRUST_KEY_ID: &str = "phase69-pkg-a";
+const CURRENT_OS_VERSION: u64 = 69;
+const CURRENT_EPOCH: u64 = 69;
+const MAX_EPOCH: u64 = 9999;
+
+const PKG_A_SEED: [u8; 32] = [
+    0x4c, 0xcd, 0x08, 0x9b, 0x28, 0xff, 0x96, 0xda, 0x9d, 0xb6, 0xc3, 0x46, 0xec, 0x11, 0x4e, 0x0f,
+    0x5b, 0x8a, 0x31, 0x9f, 0x35, 0xab, 0xa6, 0x24, 0xda, 0x8c, 0xf6, 0xed, 0x4f, 0xb8, 0xa6, 0xfb,
+];
+const PKG_A_PUBLIC: [u8; 32] = [
+    0x3d, 0x40, 0x17, 0xc3, 0xe8, 0x43, 0x89, 0x5a, 0x92, 0xb7, 0x0a, 0xa7, 0x4d, 0x1b, 0x7e, 0xbc,
+    0x9c, 0x98, 0x2c, 0xcf, 0x2e, 0xc4, 0x96, 0x8c, 0xc0, 0xcd, 0x55, 0xf1, 0x2a, 0xf4, 0x66, 0x0c,
+];
+const PKG_B_SEED: [u8; 32] = [
+    0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfd, 0x5a, 0x60, 0xba, 0x84, 0x4a, 0xf4, 0x92, 0xec, 0x2c, 0xc4,
+    0x44, 0x49, 0xc5, 0x69, 0x7b, 0x32, 0x69, 0x19, 0x70, 0x3b, 0xac, 0x03, 0x1c, 0xae, 0x7f, 0x60,
+];
+const PKG_B_PUBLIC: [u8; 32] = [
+    0xd7, 0x5a, 0x98, 0x01, 0x82, 0xb1, 0x0a, 0xb7, 0xd5, 0x4b, 0xfe, 0xd3, 0xc9, 0x64, 0x07, 0x3a,
+    0x0e, 0xe1, 0x72, 0xf3, 0xda, 0xa6, 0x23, 0x25, 0xaf, 0x02, 0x1a, 0x68, 0xf7, 0x07, 0x51, 0x1a,
+];
+const PKG_REVOKED_SEED: [u8; 32] = [
+    0xc5, 0xaa, 0x8d, 0xf4, 0x3f, 0x9f, 0x83, 0x7b, 0xed, 0xb7, 0x44, 0x2f, 0x31, 0xdc, 0xb7, 0xb1,
+    0x66, 0xd3, 0x85, 0x35, 0x07, 0x6f, 0x09, 0x4b, 0x85, 0xce, 0x3a, 0x2e, 0x0b, 0x44, 0x58, 0xf7,
+];
+const PKG_REVOKED_PUBLIC: [u8; 32] = [
+    0xfc, 0x51, 0xcd, 0x8e, 0x62, 0x18, 0xa1, 0xa3, 0x8d, 0xa4, 0x7e, 0xd0, 0x02, 0x30, 0xf0, 0x58,
+    0x08, 0x16, 0xed, 0x13, 0xba, 0x33, 0x03, 0xac, 0x5d, 0xeb, 0x91, 0x15, 0x48, 0x90, 0x80, 0x25,
+];
+const PKG_EXPIRED_SEED: [u8; 32] = [
+    0xf5, 0xe5, 0x76, 0x7c, 0xf1, 0x53, 0x31, 0x95, 0x17, 0x63, 0x0f, 0x22, 0x68, 0x76, 0xb8, 0x6c,
+    0x81, 0x60, 0xcc, 0x58, 0x3b, 0xc0, 0x13, 0x74, 0x4c, 0x6b, 0xf2, 0x55, 0xf5, 0xcc, 0x0e, 0xe5,
+];
+const PKG_EXPIRED_PUBLIC: [u8; 32] = [
+    0x27, 0x81, 0x17, 0xfc, 0x14, 0x4c, 0x72, 0x34, 0x0f, 0x67, 0xd0, 0xf2, 0x31, 0x6e, 0x83, 0x86,
+    0xce, 0xff, 0xbf, 0x2b, 0x24, 0x28, 0xc9, 0xc5, 0x1f, 0xef, 0x7c, 0x59, 0x7f, 0x1d, 0x42, 0x6e,
+];
+
 #[derive(Clone)]
 pub struct Package {
     pub id: String,
@@ -21,10 +62,72 @@ pub struct PackageLaunch {
     pub exec_path: String,
 }
 
+struct ArchiveManifest {
+    id: String,
+    name: String,
+    command: String,
+    version: String,
+    icon: String,
+    category: String,
+    permission: String,
+    exec_path: String,
+    aliases: String,
+    associations: String,
+    dependencies: Vec<String>,
+    min_os_version: u64,
+    trust_manifest: String,
+    installed_manifest: String,
+}
+
+struct PackageSignature {
+    key: String,
+    algorithm: String,
+    package_id: String,
+    package_version: String,
+    issued_epoch: u64,
+    manifest_sha256: String,
+    signature: String,
+}
+
+struct TrustedKey {
+    id: String,
+    algorithm: String,
+    status: String,
+    public_key: [u8; 32],
+    not_before: u64,
+    not_after: u64,
+    generation: u64,
+}
+
+struct PackageVerification {
+    id: String,
+    command: String,
+    version: String,
+    key: String,
+    algorithm: String,
+    manifest_sha256: String,
+    signature_path: String,
+    dependencies: Vec<String>,
+}
+
+struct OwnerRecord {
+    id: String,
+    name: String,
+    command: String,
+    version: String,
+    source: String,
+    manifest_path: String,
+    installed_sha256: String,
+    package_manifest_sha256: String,
+    verified_by: String,
+    algorithm: String,
+    dependencies: Vec<String>,
+}
+
 static INSTALLED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 pub fn init() {
-    let _ = crate::vfs::vfs_kernel_create_dir("/APPS");
+    ensure_layout();
     let mut installed = Vec::new();
     for app in crate::app_metadata::APPS {
         installed.push(String::from(app.id));
@@ -35,14 +138,14 @@ pub fn init() {
         match crate::vfs::vfs_kernel_read_file(&path) {
             Some(bytes) if bytes == manifest.as_bytes() => {}
             Some(_) => {
-                let _ = crate::vfs::vfs_kernel_safe_write_file(&path, manifest.as_bytes());
+                let _ = safe_write(&path, manifest.as_bytes());
             }
             None => {
-                let _ = crate::vfs::vfs_kernel_create_file(&path);
-                let _ = crate::vfs::vfs_kernel_write_file(&path, manifest.as_bytes());
+                let _ = safe_write(&path, manifest.as_bytes());
             }
         }
     }
+    ensure_fixture_signature("/Packages/guidemo.pkg");
     for manifest in crate::app_metadata::installed_app_manifests() {
         if !installed
             .iter()
@@ -110,7 +213,7 @@ pub fn lines() -> Vec<String> {
 }
 
 pub fn install(id_or_command: &str) -> Result<(), &'static str> {
-    if id_or_command.to_ascii_uppercase().ends_with(".PKG") || id_or_command.starts_with('/') {
+    if is_archive_path(id_or_command) {
         return install_archive(id_or_command);
     }
     let app = find_app(id_or_command).ok_or("unknown package")?;
@@ -122,72 +225,45 @@ pub fn install(id_or_command: &str) -> Result<(), &'static str> {
     let _ = crate::vfs::vfs_kernel_create_dir(&dir);
     let path = app_manifest_path(app.command);
     let manifest = manifest_for(app);
-    let _ = crate::vfs::vfs_kernel_create_file(&path);
-    let _ = crate::vfs::vfs_kernel_safe_write_file(&path, manifest.as_bytes());
+    let _ = safe_write(&path, manifest.as_bytes());
     crate::event_bus::emit("packages", "install", app.id);
     Ok(())
 }
 
 pub fn install_archive(path: &str) -> Result<(), &'static str> {
-    let bytes = crate::vfs::vfs_kernel_read_file(path).ok_or("package file not found")?;
-    let text = core::str::from_utf8(&bytes).map_err(|_| "package is not UTF-8 manifest")?;
-    let id = manifest_value(text, "id").ok_or("package missing id")?;
-    let name = manifest_value(text, "name").unwrap_or(id);
-    let command = manifest_value(text, "command").ok_or("package missing command")?;
-    let version = manifest_value(text, "version").unwrap_or("1.0");
-    let icon = manifest_value(text, "icon").unwrap_or("PK");
-    let category = manifest_value(text, "category").unwrap_or("Tools");
-    let permission = manifest_value(text, "permission").unwrap_or("user");
-    let exec_path = manifest_value(text, "exec").ok_or("package missing exec")?;
-    let aliases = manifest_value(text, "aliases").unwrap_or("");
-    let associations = manifest_value(text, "associations").unwrap_or("");
-    if crate::app_metadata::is_builtin_id(id)
-        || crate::app_metadata::app_by_id_or_command(command).is_some()
-        || crate::app_metadata::app_by_name(name).is_some()
-    {
-        return Err("package collides with built-in app");
-    }
-    if !id.starts_with("app.") || command.contains('/') || command.contains("..") {
-        return Err("invalid package manifest");
-    }
-    if !exec_path.starts_with('/') || crate::vfs::vfs_kernel_read_file(exec_path).is_none() {
-        return Err("package exec not found");
-    }
-    let dir = app_dir(command);
+    ensure_layout();
+    let (archive, verification) = verify_archive(path)?;
+    check_archive_collision(&archive)?;
+    check_dependencies(&archive)?;
+    check_package_downgrade(&archive)?;
+
+    let dir = app_dir(&archive.command);
     let _ = crate::vfs::vfs_kernel_create_dir(&dir);
-    let manifest_path = app_manifest_path(command);
-    let mut manifest = String::new();
-    manifest.push_str("id=");
-    manifest.push_str(id);
-    manifest.push_str("\nname=");
-    manifest.push_str(name);
-    manifest.push_str("\ncommand=");
-    manifest.push_str(command);
-    manifest.push_str("\nversion=");
-    manifest.push_str(version);
-    manifest.push_str("\nicon=");
-    manifest.push_str(icon);
-    manifest.push_str("\ncategory=");
-    manifest.push_str(category);
-    manifest.push_str("\npermission=");
-    manifest.push_str(permission);
-    manifest.push_str("\nexec=");
-    manifest.push_str(exec_path);
-    manifest.push_str("\naliases=");
-    manifest.push_str(aliases);
-    manifest.push_str("\nassociations=");
-    manifest.push_str(associations);
-    manifest.push('\n');
-    crate::app_metadata::validate_manifest_text(&manifest)?;
-    let _ = crate::vfs::vfs_kernel_create_file(&manifest_path);
-    crate::vfs::vfs_kernel_safe_write_file(&manifest_path, manifest.as_bytes())
+    let manifest_path = app_manifest_path(&archive.command);
+    safe_write(&manifest_path, archive.installed_manifest.as_bytes())
         .map_err(|_| "install write failed")?;
+    write_owner_record(path, &archive, &verification)?;
     let mut installed = INSTALLED.lock();
-    if !installed.iter().any(|existing| existing == id) {
-        installed.push(String::from(id));
+    if !installed
+        .iter()
+        .any(|existing| existing.eq_ignore_ascii_case(&archive.id))
+    {
+        installed.push(archive.id.clone());
     }
-    crate::event_bus::emit("packages", "install-pkg", id);
-    crate::println!("[pkg] installed {} name={} exec={}", id, name, exec_path);
+    append_log(
+        "install",
+        &[format!(
+            "id={} command={} version={} key={} source={}",
+            archive.id, archive.command, archive.version, verification.key, path
+        )],
+    );
+    crate::event_bus::emit("packages", "install-pkg", &archive.id);
+    crate::println!(
+        "[pkg] installed {} name={} exec={}",
+        archive.id,
+        archive.name,
+        archive.exec_path
+    );
     Ok(())
 }
 
@@ -195,16 +271,24 @@ pub fn uninstall(id_or_command: &str) -> Result<(), &'static str> {
     if let Some(app) = find_app(id_or_command) {
         INSTALLED.lock().retain(|id| id != app.id);
         let _ = delete_app_dir(app.command);
+        append_log("remove", &[format!("id={} builtin=true", app.id)]);
         crate::event_bus::emit("packages", "remove", app.id);
         crate::println!("[pkg] removed {}", app.id);
         return Ok(());
     }
     let manifest = crate::app_metadata::installed_manifest_by_id_or_command(id_or_command)
+        .or_else(|| {
+            owner_record_by_id_or_command(id_or_command).map(|owner| owner_to_manifest(&owner))
+        })
         .ok_or("unknown package")?;
     INSTALLED
         .lock()
         .retain(|id| !id.eq_ignore_ascii_case(&manifest.id));
     delete_app_dir(&manifest.command).map_err(|_| "remove failed")?;
+    append_log(
+        "remove",
+        &[format!("id={} command={}", manifest.id, manifest.command)],
+    );
     crate::event_bus::emit("packages", "remove", &manifest.id);
     crate::println!("[pkg] removed {}", manifest.id);
     Ok(())
@@ -214,6 +298,9 @@ pub fn launch(id_or_command: &str, args: &[&str]) -> Result<PackageLaunch, &'sta
     let manifest = launch_manifest(id_or_command).ok_or("unknown package")?;
     if !is_installed(&manifest.id) {
         return Err("package not installed");
+    }
+    if !crate::app_metadata::is_builtin_id(&manifest.id) {
+        verify_installed_package(&manifest.id)?;
     }
     if !manifest.exec_path.starts_with('/') {
         return Err("package has no userspace executable");
@@ -251,6 +338,951 @@ pub fn launch_manifest(id_or_command: &str) -> Option<crate::app_metadata::AppMa
     crate::app_metadata::installed_manifest_by_id_or_command(id_or_command)
 }
 
+pub fn key_lines() -> Vec<String> {
+    ensure_layout();
+    let mut lines = alloc::vec![
+        format!(
+            "keys={} built_in=4 signature_required=yes repair=yes",
+            TRUST_KEYS_PATH
+        ),
+        String::from("signature_sidecar=<package>.sig"),
+    ];
+    for key in trusted_keys() {
+        lines.push(format!(
+            "key={} algorithm={} status={} scope=packages not_before={} not_after={} generation={} public={}",
+            key.id,
+            key.algorithm,
+            key.status,
+            key.not_before,
+            key.not_after,
+            key.generation,
+            crate::update_crypto::hex(&key.public_key)
+        ));
+    }
+    lines
+}
+
+pub fn verify_lines(value: &str) -> Vec<String> {
+    if is_archive_path(value) {
+        return archive_verify_lines(value);
+    }
+    if let Some(app) = find_app(value) {
+        if !is_installed(app.id) {
+            return alloc::vec![String::from(
+                "installed_trust=failed error=package not installed"
+            )];
+        }
+        return alloc::vec![
+            format!(
+                "installed_trust=ok id={} command={} version=builtin key=built-in algorithm=kernel",
+                app.id, app.command
+            ),
+            format!("source=built-in exec={}", exec_for_app(app)),
+        ];
+    }
+    match verify_installed_package(value) {
+        Ok((manifest, owner)) => alloc::vec![
+            format!(
+                "installed_trust=ok id={} command={} version={} key={} algorithm={}",
+                manifest.id, manifest.command, manifest.version, owner.verified_by, owner.algorithm
+            ),
+            format!("manifest_sha256={}", owner.installed_sha256),
+            format!("source={}", owner.source),
+        ],
+        Err(err) => alloc::vec![format!("installed_trust=failed error={}", err)],
+    }
+}
+
+pub fn info_lines(value: &str) -> Vec<String> {
+    if is_archive_path(value) {
+        let mut lines = archive_info_lines(value);
+        lines.extend(archive_verify_lines(value));
+        return lines;
+    }
+    if let Some(app) = find_app(value) {
+        return alloc::vec![
+            format!("id={} name={} command={}", app.id, app.name, app.command),
+            format!(
+                "version=builtin permission={} exec={}",
+                app.permission,
+                exec_for_app(app)
+            ),
+            format!(
+                "installed={} trust=builtin",
+                if is_installed(app.id) { "yes" } else { "no" }
+            ),
+        ];
+    }
+    match owner_record_by_id_or_command(value) {
+        Some(owner) => alloc::vec![
+            format!(
+                "id={} name={} command={}",
+                owner.id, owner.name, owner.command
+            ),
+            format!("version={} source={}", owner.version, owner.source),
+            format!(
+                "verified_by={} algorithm={} package_manifest_sha256={}",
+                owner.verified_by, owner.algorithm, owner.package_manifest_sha256
+            ),
+            format!(
+                "manifest={} installed_sha256={}",
+                owner.manifest_path, owner.installed_sha256
+            ),
+            format!("depends={}", join_csv(&owner.dependencies)),
+        ],
+        None => alloc::vec![String::from("package=unknown")],
+    }
+}
+
+pub fn sign_archive(path: &str) -> Result<(), &'static str> {
+    sign_archive_as(path, TRUST_KEY_ID)
+}
+
+pub fn sign_archive_as(path: &str, key_id: &str) -> Result<(), &'static str> {
+    ensure_layout();
+    let bytes = crate::vfs::vfs_kernel_read_file(path).ok_or("package file not found")?;
+    let text = core::str::from_utf8(&bytes).map_err(|_| "package is not UTF-8 manifest")?;
+    let archive = parse_archive_manifest(text)?;
+    write_signature(path, &archive, key_id)?;
+    append_log(
+        "sign",
+        &[format!(
+            "path={} id={} version={} key={}",
+            path, archive.id, archive.version, key_id
+        )],
+    );
+    Ok(())
+}
+
+pub fn remove_signature(path: &str) -> Result<(), &'static str> {
+    let sig_path = signature_path(path);
+    match crate::vfs::vfs_kernel_delete(&sig_path) {
+        Ok(()) => {
+            append_log("unsign", &[format!("path={} signature={}", path, sig_path)]);
+            Ok(())
+        }
+        Err(crate::fat32::FsError::NotFound) => Err("package is unsigned"),
+        Err(_) => Err("signature delete failed"),
+    }
+}
+
+pub fn tamper_archive_name(path: &str) -> Result<(), &'static str> {
+    let bytes = crate::vfs::vfs_kernel_read_file(path).ok_or("package file not found")?;
+    let text = core::str::from_utf8(&bytes).map_err(|_| "package is not UTF-8 manifest")?;
+    let mut out = String::new();
+    let mut changed = false;
+    for line in text.lines() {
+        if line.trim_start().starts_with("name=") {
+            out.push_str("name=Tampered Package\n");
+            changed = true;
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if !changed {
+        out.push_str("name=Tampered Package\n");
+    }
+    safe_write(path, out.as_bytes())?;
+    append_log("tamper", &[format!("path={} signature=preserved", path)]);
+    Ok(())
+}
+
+pub fn set_archive_dependencies(path: &str, deps: &str) -> Result<(), &'static str> {
+    let bytes = crate::vfs::vfs_kernel_read_file(path).ok_or("package file not found")?;
+    let text = core::str::from_utf8(&bytes).map_err(|_| "package is not UTF-8 manifest")?;
+    let dependencies = split_csv(deps);
+    for dep in &dependencies {
+        if !safe_token(dep, true) {
+            return Err("invalid dependency");
+        }
+    }
+    let mut out = String::new();
+    let mut changed = false;
+    for line in text.lines() {
+        if line.trim_start().starts_with("depends=") {
+            out.push_str("depends=");
+            out.push_str(&join_csv_field(&dependencies));
+            out.push('\n');
+            changed = true;
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if !changed {
+        out.push_str("depends=");
+        out.push_str(&join_csv_field(&dependencies));
+        out.push('\n');
+    }
+    safe_write(path, out.as_bytes())?;
+    append_log(
+        "depends",
+        &[format!("path={} depends={}", path, join_csv(&dependencies))],
+    );
+    Ok(())
+}
+
+pub fn break_installed(id_or_command: &str) -> Result<(), &'static str> {
+    let owner = owner_record_by_id_or_command(id_or_command).ok_or("package owner missing")?;
+    safe_write(&owner.manifest_path, b"broken=true\n")?;
+    append_log(
+        "break",
+        &[format!("id={} manifest={}", owner.id, owner.manifest_path)],
+    );
+    Ok(())
+}
+
+pub fn repair(id_or_command: &str) -> Result<(), &'static str> {
+    let owner = owner_record_by_id_or_command(id_or_command).ok_or("package owner missing")?;
+    let (archive, verification) = verify_archive(&owner.source)?;
+    if !archive.id.eq_ignore_ascii_case(&owner.id)
+        || !archive.command.eq_ignore_ascii_case(&owner.command)
+    {
+        return Err("package source mismatch");
+    }
+    check_dependencies(&archive)?;
+    safe_write(&owner.manifest_path, archive.installed_manifest.as_bytes())?;
+    write_owner_record(&owner.source, &archive, &verification)?;
+    let mut installed = INSTALLED.lock();
+    if !installed
+        .iter()
+        .any(|existing| existing.eq_ignore_ascii_case(&archive.id))
+    {
+        installed.push(archive.id.clone());
+    }
+    append_log(
+        "repair",
+        &[format!(
+            "id={} command={} key={} source={}",
+            archive.id, archive.command, verification.key, owner.source
+        )],
+    );
+    crate::event_bus::emit("packages", "repair", &archive.id);
+    Ok(())
+}
+
+pub fn recovery_lines() -> Vec<String> {
+    let mut signed = 0usize;
+    let mut broken = 0usize;
+    for package in list()
+        .into_iter()
+        .filter(|pkg| !pkg.builtin && pkg.installed)
+    {
+        match verify_installed_package(&package.id) {
+            Ok(_) => signed += 1,
+            Err(_) => broken += 1,
+        }
+    }
+    let mut lines = alloc::vec![
+        format!(
+            "packages installed={} signed={} broken={}",
+            signed + broken,
+            signed,
+            broken
+        ),
+        format!("package_keys={} signature_required=yes", TRUST_KEYS_PATH),
+    ];
+    if broken == 0 {
+        lines.push(format!("package_trust=ok signed={}", signed));
+    } else {
+        lines.push(format!("package_trust=failed broken={}", broken));
+    }
+    lines
+}
+
+pub fn status_lines() -> Vec<String> {
+    let mut lines = alloc::vec![
+        format!("keys={} log={}", TRUST_KEYS_PATH, PACKAGE_LOG_PATH),
+        String::from("archives=/Packages signature_sidecar=<package>.sig"),
+    ];
+    lines.extend(recovery_lines());
+    for package in list()
+        .into_iter()
+        .filter(|pkg| !pkg.builtin && pkg.installed)
+    {
+        match verify_installed_package(&package.id) {
+            Ok((manifest, owner)) => lines.push(format!(
+                "package={} command={} version={} trust=ok key={} source={}",
+                manifest.id, manifest.command, manifest.version, owner.verified_by, owner.source
+            )),
+            Err(err) => lines.push(format!("package={} trust=failed error={}", package.id, err)),
+        }
+    }
+    lines
+}
+
+pub fn history_lines() -> Vec<String> {
+    let Some(data) = crate::vfs::vfs_kernel_read_file(PACKAGE_LOG_PATH) else {
+        return alloc::vec![format!("history={} missing", PACKAGE_LOG_PATH)];
+    };
+    let Ok(text) = core::str::from_utf8(&data) else {
+        return alloc::vec![format!("history={} unreadable", PACKAGE_LOG_PATH)];
+    };
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        if !line.trim().is_empty() {
+            lines.push(String::from(line));
+        }
+    }
+    if lines.is_empty() {
+        lines.push(format!("history={} empty", PACKAGE_LOG_PATH));
+    }
+    lines
+}
+
+fn archive_verify_lines(path: &str) -> Vec<String> {
+    match verify_archive(path) {
+        Ok((archive, verification)) => {
+            let dependency_line = match first_missing_dependency(&archive.dependencies) {
+                Some(dep) => format!("dependencies=missing {}", dep),
+                None => format!("dependencies=ok count={}", archive.dependencies.len()),
+            };
+            alloc::vec![
+                format!(
+                    "package_trust=ok key={} algorithm={} id={} version={} command={}",
+                    verification.key,
+                    verification.algorithm,
+                    verification.id,
+                    verification.version,
+                    verification.command
+                ),
+                format!("manifest_sha256={}", verification.manifest_sha256),
+                format!("signature={}", verification.signature_path),
+                dependency_line,
+            ]
+        }
+        Err(err) => alloc::vec![format!("package_trust=failed error={}", err)],
+    }
+}
+
+fn archive_info_lines(path: &str) -> Vec<String> {
+    let Some(bytes) = crate::vfs::vfs_kernel_read_file(path) else {
+        return alloc::vec![format!("path={} missing", path)];
+    };
+    let Ok(text) = core::str::from_utf8(&bytes) else {
+        return alloc::vec![format!("path={} not_utf8", path)];
+    };
+    match parse_archive_manifest(text) {
+        Ok(archive) => alloc::vec![
+            format!("path={}", path),
+            format!(
+                "id={} name={} command={} version={}",
+                archive.id, archive.name, archive.command, archive.version
+            ),
+            format!(
+                "icon={} category={} exec={} permission={}",
+                archive.icon, archive.category, archive.exec_path, archive.permission
+            ),
+            format!(
+                "aliases={} associations={}",
+                archive.aliases, archive.associations
+            ),
+            format!(
+                "depends={} min_os_version={}",
+                join_csv(&archive.dependencies),
+                archive.min_os_version
+            ),
+        ],
+        Err(err) => alloc::vec![format!("path={} invalid={}", path, err)],
+    }
+}
+
+fn verify_archive(path: &str) -> Result<(ArchiveManifest, PackageVerification), &'static str> {
+    let bytes = crate::vfs::vfs_kernel_read_file(path).ok_or("package file not found")?;
+    let text = core::str::from_utf8(&bytes).map_err(|_| "package is not UTF-8 manifest")?;
+    let archive = parse_archive_manifest(text)?;
+    if archive.min_os_version > CURRENT_OS_VERSION {
+        return Err("package requires newer OS");
+    }
+    let sig_path = signature_path(path);
+    let signature = package_signature(&sig_path)?;
+    if signature.algorithm != TRUST_ALGORITHM {
+        return Err("unsupported package signature");
+    }
+    if !signature.package_id.eq_ignore_ascii_case(&archive.id) {
+        return Err("signature package mismatch");
+    }
+    if signature.package_version != archive.version {
+        return Err("signature version mismatch");
+    }
+    let key = find_trusted_key(&signature.key).ok_or("package key not trusted")?;
+    if key.algorithm != signature.algorithm {
+        return Err("unsupported package signature");
+    }
+    if key.status == "revoked" {
+        return Err("package key revoked");
+    }
+    if key.status != "trusted" {
+        return Err("package key not trusted");
+    }
+    if signature.issued_epoch < key.not_before {
+        return Err("package key not yet valid");
+    }
+    if signature.issued_epoch > key.not_after {
+        return Err("package key expired");
+    }
+    let digest = crate::update_crypto::sha256(archive.trust_manifest.as_bytes());
+    if !crate::update_crypto::hex_matches_digest(&signature.manifest_sha256, &digest) {
+        return Err("package manifest hash mismatch");
+    }
+    let signature_bytes =
+        crate::update_crypto::hex_to_64(&signature.signature).ok_or("package signature invalid")?;
+    if !crate::update_crypto::ed25519_verify(
+        &key.public_key,
+        archive.trust_manifest.as_bytes(),
+        &signature_bytes,
+    ) {
+        return Err("package signature invalid");
+    }
+    let verification = PackageVerification {
+        id: archive.id.clone(),
+        command: archive.command.clone(),
+        version: archive.version.clone(),
+        key: signature.key,
+        algorithm: signature.algorithm,
+        manifest_sha256: crate::update_crypto::hex(&digest),
+        signature_path: sig_path,
+        dependencies: archive.dependencies.clone(),
+    };
+    Ok((archive, verification))
+}
+
+fn verify_installed_package(
+    id_or_command: &str,
+) -> Result<(crate::app_metadata::AppManifest, OwnerRecord), &'static str> {
+    if let Some(app) = find_app(id_or_command) {
+        if is_installed(app.id) {
+            return Err("built-in package trust is implicit");
+        }
+        return Err("package not installed");
+    }
+    let owner = owner_record_by_id_or_command(id_or_command).ok_or("package owner missing")?;
+    let bytes = crate::vfs::vfs_kernel_read_file(&owner.manifest_path)
+        .ok_or("installed manifest missing")?;
+    let text = core::str::from_utf8(&bytes).map_err(|_| "installed manifest is not UTF-8")?;
+    crate::app_metadata::validate_manifest_text(text).map_err(|_| "installed manifest invalid")?;
+    let manifest = manifest_from_text(text)?;
+    if !manifest.id.eq_ignore_ascii_case(&owner.id)
+        || !manifest.command.eq_ignore_ascii_case(&owner.command)
+    {
+        return Err("installed manifest owner mismatch");
+    }
+    let installed_sha = crate::update_crypto::digest_hex(text.as_bytes());
+    if installed_sha != owner.installed_sha256 {
+        return Err("installed manifest hash mismatch");
+    }
+    let (archive, verification) = verify_archive(&owner.source)?;
+    if !archive.id.eq_ignore_ascii_case(&owner.id)
+        || !archive.command.eq_ignore_ascii_case(&owner.command)
+        || verification.manifest_sha256 != owner.package_manifest_sha256
+    {
+        return Err("package source mismatch");
+    }
+    Ok((manifest, owner))
+}
+
+fn parse_archive_manifest(text: &str) -> Result<ArchiveManifest, &'static str> {
+    let id = manifest_value(text, "id").ok_or("package missing id")?;
+    let name = manifest_value(text, "name").unwrap_or(id);
+    let command = manifest_value(text, "command").ok_or("package missing command")?;
+    let version = manifest_value(text, "version").unwrap_or("1.0");
+    let icon = manifest_value(text, "icon").unwrap_or("PK");
+    let category = manifest_value(text, "category").unwrap_or("Tools");
+    let permission = manifest_value(text, "permission").unwrap_or("user");
+    let exec_path = manifest_value(text, "exec").ok_or("package missing exec")?;
+    let aliases = manifest_value(text, "aliases").unwrap_or("");
+    let associations = manifest_value(text, "associations").unwrap_or("");
+    let dependencies = manifest_value(text, "depends")
+        .map(split_csv)
+        .unwrap_or_default();
+    let min_os_version = manifest_value(text, "min_os_version")
+        .and_then(parse_u64)
+        .unwrap_or(1);
+    if !id.starts_with("app.")
+        || !safe_token(id, true)
+        || command.contains('/')
+        || command.contains("..")
+    {
+        return Err("invalid package manifest");
+    }
+    if !exec_path.starts_with('/') || crate::vfs::vfs_kernel_read_file(exec_path).is_none() {
+        return Err("package exec not found");
+    }
+    for dep in &dependencies {
+        if !safe_token(dep, true) {
+            return Err("invalid dependency");
+        }
+    }
+    let installed_manifest = installed_manifest_text(
+        id,
+        name,
+        command,
+        version,
+        icon,
+        category,
+        permission,
+        exec_path,
+        aliases,
+        associations,
+    );
+    crate::app_metadata::validate_manifest_text(&installed_manifest)
+        .map_err(|_| "invalid package manifest")?;
+    let mut trust_manifest = installed_manifest.clone();
+    trust_manifest.push_str("depends=");
+    trust_manifest.push_str(&join_csv_field(&dependencies));
+    trust_manifest.push_str("\nmin_os_version=");
+    trust_manifest.push_str(&format!("{}", min_os_version));
+    trust_manifest.push('\n');
+    Ok(ArchiveManifest {
+        id: String::from(id),
+        name: String::from(name),
+        command: String::from(command),
+        version: String::from(version),
+        icon: String::from(icon),
+        category: String::from(category),
+        permission: String::from(permission),
+        exec_path: String::from(exec_path),
+        aliases: String::from(aliases),
+        associations: String::from(associations),
+        dependencies,
+        min_os_version,
+        trust_manifest,
+        installed_manifest,
+    })
+}
+
+fn installed_manifest_text(
+    id: &str,
+    name: &str,
+    command: &str,
+    version: &str,
+    icon: &str,
+    category: &str,
+    permission: &str,
+    exec_path: &str,
+    aliases: &str,
+    associations: &str,
+) -> String {
+    let mut manifest = String::new();
+    manifest.push_str("id=");
+    manifest.push_str(id);
+    manifest.push_str("\nname=");
+    manifest.push_str(name);
+    manifest.push_str("\ncommand=");
+    manifest.push_str(command);
+    manifest.push_str("\nversion=");
+    manifest.push_str(version);
+    manifest.push_str("\nicon=");
+    manifest.push_str(icon);
+    manifest.push_str("\ncategory=");
+    manifest.push_str(category);
+    manifest.push_str("\npermission=");
+    manifest.push_str(permission);
+    manifest.push_str("\nexec=");
+    manifest.push_str(exec_path);
+    manifest.push_str("\naliases=");
+    manifest.push_str(aliases);
+    manifest.push_str("\nassociations=");
+    manifest.push_str(associations);
+    manifest.push('\n');
+    manifest
+}
+
+fn check_archive_collision(archive: &ArchiveManifest) -> Result<(), &'static str> {
+    if crate::app_metadata::is_builtin_id(&archive.id)
+        || crate::app_metadata::app_by_id_or_command(&archive.command).is_some()
+        || crate::app_metadata::app_by_name(&archive.name).is_some()
+    {
+        return Err("package collides with built-in app");
+    }
+    Ok(())
+}
+
+fn check_dependencies(archive: &ArchiveManifest) -> Result<(), &'static str> {
+    if let Some(dep) = first_missing_dependency(&archive.dependencies) {
+        return Err(match dep.as_str() {
+            _ => "package dependency missing",
+        });
+    }
+    Ok(())
+}
+
+fn first_missing_dependency(dependencies: &[String]) -> Option<String> {
+    dependencies
+        .iter()
+        .find(|dep| !is_installed(dep))
+        .map(String::from)
+}
+
+fn check_package_downgrade(archive: &ArchiveManifest) -> Result<(), &'static str> {
+    let existing_version = crate::app_metadata::installed_manifest_by_id_or_command(&archive.id)
+        .or_else(|| crate::app_metadata::installed_manifest_by_id_or_command(&archive.command))
+        .map(|manifest| manifest.version)
+        .or_else(|| owner_record_by_id_or_command(&archive.id).map(|owner| owner.version));
+    if let Some(existing_version) = existing_version {
+        if version_rank(&archive.version) < version_rank(&existing_version) {
+            return Err("package downgrade refused");
+        }
+    }
+    Ok(())
+}
+
+fn write_owner_record(
+    source: &str,
+    archive: &ArchiveManifest,
+    verification: &PackageVerification,
+) -> Result<(), &'static str> {
+    let owner_path = owner_path(&archive.command);
+    let manifest_path = app_manifest_path(&archive.command);
+    let installed_sha = crate::update_crypto::digest_hex(archive.installed_manifest.as_bytes());
+    let mut out = String::new();
+    out.push_str("id=");
+    out.push_str(&archive.id);
+    out.push_str("\nname=");
+    out.push_str(&archive.name);
+    out.push_str("\ncommand=");
+    out.push_str(&archive.command);
+    out.push_str("\nversion=");
+    out.push_str(&archive.version);
+    out.push_str("\nsource=");
+    out.push_str(source);
+    out.push_str("\nmanifest=");
+    out.push_str(&manifest_path);
+    out.push_str("\ninstalled_sha256=");
+    out.push_str(&installed_sha);
+    out.push_str("\npackage_manifest_sha256=");
+    out.push_str(&verification.manifest_sha256);
+    out.push_str("\nverified_by=");
+    out.push_str(&verification.key);
+    out.push_str("\nalgorithm=");
+    out.push_str(&verification.algorithm);
+    out.push_str("\ndepends=");
+    out.push_str(&join_csv_field(&verification.dependencies));
+    out.push('\n');
+    safe_write(&owner_path, out.as_bytes())
+}
+
+fn owner_record_by_id_or_command(value: &str) -> Option<OwnerRecord> {
+    let dirs = crate::vfs::vfs_kernel_list_dir("/APPS")?;
+    for dir in dirs.iter().filter(|entry| entry.is_dir).take(64) {
+        let path = owner_path(&dir.name);
+        let Some(bytes) = crate::vfs::vfs_kernel_read_file(&path) else {
+            continue;
+        };
+        let Ok(text) = core::str::from_utf8(&bytes) else {
+            continue;
+        };
+        let Some(owner) = parse_owner_record(text) else {
+            continue;
+        };
+        if owner.id.eq_ignore_ascii_case(value)
+            || owner.command.eq_ignore_ascii_case(value)
+            || owner.name.eq_ignore_ascii_case(value)
+        {
+            return Some(owner);
+        }
+    }
+    None
+}
+
+fn parse_owner_record(text: &str) -> Option<OwnerRecord> {
+    Some(OwnerRecord {
+        id: String::from(manifest_value(text, "id")?),
+        name: String::from(manifest_value(text, "name").unwrap_or("Package")),
+        command: String::from(manifest_value(text, "command")?),
+        version: String::from(manifest_value(text, "version").unwrap_or("1.0")),
+        source: String::from(manifest_value(text, "source")?),
+        manifest_path: String::from(manifest_value(text, "manifest")?),
+        installed_sha256: String::from(manifest_value(text, "installed_sha256")?),
+        package_manifest_sha256: String::from(manifest_value(text, "package_manifest_sha256")?),
+        verified_by: String::from(manifest_value(text, "verified_by")?),
+        algorithm: String::from(manifest_value(text, "algorithm").unwrap_or(TRUST_ALGORITHM)),
+        dependencies: manifest_value(text, "depends")
+            .map(split_csv)
+            .unwrap_or_default(),
+    })
+}
+
+fn owner_to_manifest(owner: &OwnerRecord) -> crate::app_metadata::AppManifest {
+    crate::app_metadata::AppManifest {
+        id: owner.id.clone(),
+        name: owner.name.clone(),
+        command: owner.command.clone(),
+        version: owner.version.clone(),
+        icon: String::from("PK"),
+        category: String::from("Tools"),
+        permission: String::from("user"),
+        exec_path: String::new(),
+        aliases: Vec::new(),
+        associations: Vec::new(),
+    }
+}
+
+fn manifest_from_text(text: &str) -> Result<crate::app_metadata::AppManifest, &'static str> {
+    let id = manifest_value(text, "id").ok_or("missing id")?;
+    let name = manifest_value(text, "name").unwrap_or(id);
+    let command = manifest_value(text, "command").ok_or("missing command")?;
+    let version = manifest_value(text, "version").unwrap_or("1.0");
+    let icon = manifest_value(text, "icon").unwrap_or("PK");
+    let category = manifest_value(text, "category").unwrap_or("Tools");
+    let permission = manifest_value(text, "permission").unwrap_or("user");
+    let exec_path = manifest_value(text, "exec").ok_or("missing exec")?;
+    Ok(crate::app_metadata::AppManifest {
+        id: String::from(id),
+        name: String::from(name),
+        command: String::from(command),
+        version: String::from(version),
+        icon: String::from(icon),
+        category: String::from(category),
+        permission: String::from(permission),
+        exec_path: String::from(exec_path),
+        aliases: manifest_value(text, "aliases")
+            .map(split_csv)
+            .unwrap_or_default(),
+        associations: manifest_value(text, "associations")
+            .map(split_csv)
+            .unwrap_or_default(),
+    })
+}
+
+fn package_signature(path: &str) -> Result<PackageSignature, &'static str> {
+    let bytes = crate::vfs::vfs_kernel_read_file(path).ok_or("package is unsigned")?;
+    let text = core::str::from_utf8(&bytes).map_err(|_| "package signature is not UTF-8")?;
+    let signature = PackageSignature {
+        key: String::from(manifest_value(text, "key").unwrap_or("")),
+        algorithm: String::from(manifest_value(text, "algorithm").unwrap_or("")),
+        package_id: String::from(manifest_value(text, "package_id").unwrap_or("")),
+        package_version: String::from(manifest_value(text, "package_version").unwrap_or("")),
+        issued_epoch: manifest_value(text, "issued_epoch")
+            .and_then(parse_u64)
+            .unwrap_or(0),
+        manifest_sha256: String::from(manifest_value(text, "manifest_sha256").unwrap_or("")),
+        signature: String::from(manifest_value(text, "signature").unwrap_or("")),
+    };
+    if signature.key.is_empty()
+        || signature.algorithm.is_empty()
+        || signature.package_id.is_empty()
+        || signature.package_version.is_empty()
+        || signature.issued_epoch == 0
+        || signature.manifest_sha256.is_empty()
+        || signature.signature.is_empty()
+    {
+        return Err("package signature incomplete");
+    }
+    Ok(signature)
+}
+
+fn write_signature(
+    path: &str,
+    archive: &ArchiveManifest,
+    key_id: &str,
+) -> Result<(), &'static str> {
+    let seed = signing_seed(key_id).ok_or("signing key unavailable")?;
+    let manifest_sha256 = crate::update_crypto::digest_hex(archive.trust_manifest.as_bytes());
+    let signature = crate::update_crypto::hex(&crate::update_crypto::ed25519_sign(
+        seed,
+        archive.trust_manifest.as_bytes(),
+    ));
+    let mut out = String::from("coolOS package signature\n");
+    out.push_str("key=");
+    out.push_str(key_id);
+    out.push_str("\nalgorithm=");
+    out.push_str(TRUST_ALGORITHM);
+    out.push_str("\npackage_id=");
+    out.push_str(&archive.id);
+    out.push_str("\npackage_version=");
+    out.push_str(&archive.version);
+    out.push_str("\nissued_epoch=");
+    out.push_str(&format!("{}", CURRENT_EPOCH));
+    out.push_str("\nmanifest_sha256=");
+    out.push_str(&manifest_sha256);
+    out.push_str("\nsignature=");
+    out.push_str(&signature);
+    out.push('\n');
+    safe_write(&signature_path(path), out.as_bytes())
+}
+
+fn trusted_keys() -> Vec<TrustedKey> {
+    ensure_trust_keys_file();
+    let Some(bytes) = crate::vfs::vfs_kernel_read_file(TRUST_KEYS_PATH) else {
+        return built_in_trusted_keys();
+    };
+    let Ok(text) = core::str::from_utf8(&bytes) else {
+        return built_in_trusted_keys();
+    };
+    let mut keys = Vec::new();
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') || !line.starts_with("key=") {
+            continue;
+        }
+        let Some(id) = token_value(line, "key=") else {
+            continue;
+        };
+        let Some(public_hex) = token_value(line, "public=") else {
+            continue;
+        };
+        let Some(public_key) = crate::update_crypto::hex_to_32(public_hex) else {
+            continue;
+        };
+        keys.push(TrustedKey {
+            id: String::from(id),
+            algorithm: String::from(token_value(line, "algorithm=").unwrap_or(TRUST_ALGORITHM)),
+            status: String::from(token_value(line, "status=").unwrap_or("untrusted")),
+            public_key,
+            not_before: token_value(line, "not_before=")
+                .and_then(parse_u64)
+                .unwrap_or(1),
+            not_after: token_value(line, "not_after=")
+                .and_then(parse_u64)
+                .unwrap_or(MAX_EPOCH),
+            generation: token_value(line, "generation=")
+                .and_then(parse_u64)
+                .unwrap_or(0),
+        });
+    }
+    if keys.is_empty() {
+        built_in_trusted_keys()
+    } else {
+        keys
+    }
+}
+
+fn find_trusted_key(id: &str) -> Option<TrustedKey> {
+    trusted_keys().into_iter().find(|key| key.id == id)
+}
+
+fn built_in_trusted_keys() -> Vec<TrustedKey> {
+    alloc::vec![
+        TrustedKey {
+            id: String::from("phase69-pkg-a"),
+            algorithm: String::from(TRUST_ALGORITHM),
+            status: String::from("trusted"),
+            public_key: PKG_A_PUBLIC,
+            not_before: 1,
+            not_after: MAX_EPOCH,
+            generation: 1,
+        },
+        TrustedKey {
+            id: String::from("phase69-pkg-b"),
+            algorithm: String::from(TRUST_ALGORITHM),
+            status: String::from("trusted"),
+            public_key: PKG_B_PUBLIC,
+            not_before: 1,
+            not_after: MAX_EPOCH,
+            generation: 2,
+        },
+        TrustedKey {
+            id: String::from("phase69-pkg-revoked"),
+            algorithm: String::from(TRUST_ALGORITHM),
+            status: String::from("revoked"),
+            public_key: PKG_REVOKED_PUBLIC,
+            not_before: 1,
+            not_after: MAX_EPOCH,
+            generation: 0,
+        },
+        TrustedKey {
+            id: String::from("phase69-pkg-expired"),
+            algorithm: String::from(TRUST_ALGORITHM),
+            status: String::from("trusted"),
+            public_key: PKG_EXPIRED_PUBLIC,
+            not_before: 1,
+            not_after: 1,
+            generation: 0,
+        },
+    ]
+}
+
+fn signing_seed(key_id: &str) -> Option<&'static [u8; 32]> {
+    match key_id {
+        "phase69-pkg-a" => Some(&PKG_A_SEED),
+        "phase69-pkg-b" => Some(&PKG_B_SEED),
+        "phase69-pkg-revoked" => Some(&PKG_REVOKED_SEED),
+        "phase69-pkg-expired" => Some(&PKG_EXPIRED_SEED),
+        "phase69-pkg-unknown" => Some(&PKG_B_SEED),
+        _ => None,
+    }
+}
+
+fn ensure_layout() {
+    let _ = crate::vfs::vfs_kernel_create_dir("/APPS");
+    let _ = crate::vfs::vfs_kernel_create_dir("/CONFIG");
+    let _ = crate::vfs::vfs_kernel_create_dir("/LOGS");
+    ensure_trust_keys_file();
+}
+
+fn ensure_trust_keys_file() {
+    if let Some(bytes) = crate::vfs::vfs_kernel_read_file(TRUST_KEYS_PATH) {
+        if core::str::from_utf8(&bytes)
+            .map(|text| text.contains("key=phase69-pkg-a") && text.contains("algorithm=ed25519"))
+            .unwrap_or(false)
+        {
+            return;
+        }
+    }
+    let mut out = String::from("coolOS package trust keys\n");
+    out.push_str("# public keys only; signing seeds are not stored in this metadata file\n");
+    for key in built_in_trusted_keys() {
+        out.push_str("key=");
+        out.push_str(&key.id);
+        out.push_str(" algorithm=");
+        out.push_str(&key.algorithm);
+        out.push_str(" status=");
+        out.push_str(&key.status);
+        out.push_str(" scope=packages public=");
+        out.push_str(&crate::update_crypto::hex(&key.public_key));
+        out.push_str(" not_before=");
+        out.push_str(&format!("{}", key.not_before));
+        out.push_str(" not_after=");
+        out.push_str(&format!("{}", key.not_after));
+        out.push_str(" generation=");
+        out.push_str(&format!("{}", key.generation));
+        out.push_str(" source=built-in\n");
+    }
+    let _ = safe_write(TRUST_KEYS_PATH, out.as_bytes());
+}
+
+fn ensure_fixture_signature(path: &str) {
+    if crate::vfs::vfs_kernel_read_file(path).is_none()
+        || crate::vfs::vfs_kernel_read_file(&signature_path(path)).is_some()
+    {
+        return;
+    }
+    let _ = sign_archive(path);
+}
+
+fn append_log(action: &str, details: &[String]) {
+    ensure_layout();
+    let mut log = match crate::vfs::vfs_kernel_read_file(PACKAGE_LOG_PATH) {
+        Some(bytes) => core::str::from_utf8(&bytes)
+            .map(String::from)
+            .unwrap_or_else(|_| String::from("coolOS package journal\n")),
+        None => String::from("coolOS package journal\n"),
+    };
+    if log.len() > 8192 {
+        log = String::from("coolOS package journal\ntrimmed=true\n");
+    }
+    log.push_str(&format!(
+        "tick={} action={}\n",
+        crate::interrupts::ticks(),
+        action
+    ));
+    for detail in details {
+        log.push_str(detail);
+        log.push('\n');
+    }
+    let _ = safe_write(PACKAGE_LOG_PATH, log.as_bytes());
+}
+
+fn safe_write(path: &str, data: &[u8]) -> Result<(), &'static str> {
+    match crate::vfs::vfs_kernel_create_file(path) {
+        Ok(()) | Err(crate::fat32::FsError::AlreadyExists) => {}
+        Err(_) => return Err("create failed"),
+    }
+    crate::vfs::vfs_kernel_safe_write_file(path, data).map_err(|_| "write failed")
+}
+
 fn find_app(id_or_command: &str) -> Option<&'static crate::app_metadata::AppMetadata> {
     crate::app_metadata::APPS.iter().find(|app| {
         app.id.eq_ignore_ascii_case(id_or_command)
@@ -269,6 +1301,22 @@ fn app_manifest_path(command: &str) -> String {
     let mut path = app_dir(command);
     path.push_str("/APP.CFG");
     path
+}
+
+fn owner_path(command: &str) -> String {
+    let mut path = app_dir(command);
+    path.push_str("/OWNER.TXT");
+    path
+}
+
+fn signature_path(path: &str) -> String {
+    let mut out = String::from(path);
+    out.push_str(".sig");
+    out
+}
+
+fn is_archive_path(value: &str) -> bool {
+    value.starts_with('/') || value.to_ascii_uppercase().ends_with(".PKG")
 }
 
 fn manifest_for(app: &crate::app_metadata::AppMetadata) -> String {
@@ -374,4 +1422,96 @@ fn manifest_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
         }
     }
     None
+}
+
+fn token_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+    for token in text.split_whitespace() {
+        if let Some(value) = token.strip_prefix(key) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn split_csv(value: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for part in value.split(',') {
+        let item = part.trim();
+        if !item.is_empty() {
+            out.push(String::from(item));
+        }
+    }
+    out
+}
+
+fn join_csv(values: &[String]) -> String {
+    if values.is_empty() {
+        return String::from("none");
+    }
+    let mut out = String::new();
+    for (idx, value) in values.iter().enumerate() {
+        if idx > 0 {
+            out.push(',');
+        }
+        out.push_str(value);
+    }
+    out
+}
+
+fn join_csv_field(values: &[String]) -> String {
+    if values.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    for (idx, value) in values.iter().enumerate() {
+        if idx > 0 {
+            out.push(',');
+        }
+        out.push_str(value);
+    }
+    out
+}
+
+fn parse_u64(value: &str) -> Option<u64> {
+    let mut out = 0u64;
+    if value.is_empty() {
+        return None;
+    }
+    for byte in value.bytes() {
+        if !byte.is_ascii_digit() {
+            return None;
+        }
+        out = out.saturating_mul(10).saturating_add((byte - b'0') as u64);
+    }
+    Some(out)
+}
+
+fn version_rank(version: &str) -> u64 {
+    let mut rank = 0u64;
+    let mut parts = 0usize;
+    for part in version.split('.') {
+        if parts >= 4 {
+            break;
+        }
+        let value = parse_u64(part).unwrap_or(0).min(999);
+        rank = rank.saturating_mul(1000).saturating_add(value);
+        parts += 1;
+    }
+    while parts < 4 {
+        rank = rank.saturating_mul(1000);
+        parts += 1;
+    }
+    rank
+}
+
+fn safe_token(value: &str, allow_dot: bool) -> bool {
+    !value.is_empty()
+        && !value.contains('/')
+        && !value.contains("..")
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || byte == b'-'
+                || byte == b'_'
+                || (allow_dot && byte == b'.')
+        })
 }

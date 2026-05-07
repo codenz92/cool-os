@@ -4,7 +4,7 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–68 are complete. The current milestone gives coolOS a much more
+Phases 1–69 are complete. The current milestone gives coolOS a much more
 normal command-line and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
@@ -48,8 +48,12 @@ apply refuses unsigned or tampered payloads before taking snapshots or stopping
 services. Phase 68 replaces the local HMAC trust foundation with Ed25519
 public-key verification, multiple built-in trust keys, rotation metadata,
 revoked/expired key refusal, versioned manifests, and anti-rollback checks for
-older signed updates.
-Phases 45-68 focus on responsiveness, interactive terminal behavior, and
+older signed updates. Phase 69 extends public-key trust to installable packages:
+package archives now have detached Ed25519 sidecar signatures, package trust
+metadata under `/CONFIG/PACKAGE-KEYS.TXT`, source/owner records under `/APPS`,
+dependency and downgrade checks, package repair, and package trust diagnostics
+in Terminal, Recovery, Diagnostics, and Sysreport.
+Phases 45-69 focus on responsiveness, interactive terminal behavior, and
 desktop-browser compatibility:
 cursor-only framebuffer updates,
 input-first idle-loop ordering, adaptive 36/144 Hz frame pacing, compositor
@@ -62,7 +66,8 @@ subresource cache, script runtime, web-app API layer, main-response
 content-type routing, compatibility diagnostics, resource accounting for the
 scheduler, VMM, VFS, shared memory, and sockets, low-memory recovery, durable
 service recovery, update rollback, boot-health rollback, signed update
-verification, update key rotation, and downgrade refusal.
+verification, update key rotation, downgrade refusal, and signed package
+install/repair trust.
 
 ---
 
@@ -2041,6 +2046,44 @@ they can mutate system files.
 
 ---
 
+## ✅ Phase 69 — Package Trust and Repair
+
+**Goal:** Bring the package/app platform up to the same trust bar as system
+updates: signed package archives, inspectable trust keys, dependency metadata,
+owner records, and repair diagnostics before the OS grows more desktop
+package-manager surface.
+
+- [x] Add Ed25519 package signing and verification over a normalized package
+      trust manifest while keeping `/Packages/*.pkg` readable as UTF-8 app
+      manifests.
+- [x] Add detached `<package>.sig` sidecars with signer id, algorithm, package
+      id/version, issue epoch, manifest SHA-256, and Ed25519 signature.
+- [x] Add package trust metadata under `/CONFIG/PACKAGE-KEYS.TXT` with current,
+      rotated, revoked, expired, and unknown-key smoke coverage.
+- [x] Require valid package signatures before archive install, run-time repair,
+      or source verification; refuse unsigned, tampered, revoked, expired,
+      unknown-key, incompatible, and downgrade candidates.
+- [x] Extend package manifests with `depends=` and `min_os_version=` metadata,
+      and refuse installs/repairs when dependencies are missing.
+- [x] Write `/APPS/<command>/OWNER.TXT` owner records containing source archive,
+      signer, algorithm, installed manifest digest, package trust digest,
+      version, and dependencies.
+- [x] Extend Terminal `pkg` with `keys`, `info`, `verify`, `repair`, `history`,
+      `sign`, `sign-as`, `unsign`, `tamper`, `deps`, and `break` diagnostics.
+- [x] Surface package trust status in Recovery, Diagnostics, and Sysreport, with
+      package events journaled to `/LOGS/PACKAGES.TXT`.
+- [x] Add `make smoke-phase69-package-trust` covering valid install, rotated
+      signing key, unsigned/tampered archives, revoked/expired/unknown keys,
+      dependency refusal, owner verification, repair, removal, recovery, and
+      sysreport output, and document v7.33.
+
+**Current status:** complete. coolOS now refuses untrusted package archives
+before they can create launcher entries or run apps, records signed package
+ownership under `/APPS`, and can verify or repair installed packages from their
+trusted source archive.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -2125,4 +2168,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.29 | Phase 65 complete: System update, snapshot, and rollback |
 | v7.30 | Phase 66 complete: Boot health and last-known-good rollback |
 | v7.31 | Phase 67 complete: Signed updates and integrity verification |
-| v7.32 | Current — Phase 68 complete: Update key rotation and anti-rollback |
+| v7.32 | Phase 68 complete: Update key rotation and anti-rollback |
+| v7.33 | Current — Phase 69 complete: Package trust and repair |

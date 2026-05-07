@@ -1265,7 +1265,7 @@ impl TerminalApp {
             ("account <op>", "admin user management"),
             ("umask [mode]", "view/set file creation mask"),
             ("users", "user/security status"),
-            ("pkg <op>", "package list/install/remove/run"),
+            ("pkg <op>", "package trust/install/repair/run"),
             ("proc", "process groups and signals"),
             ("zombies", "zombie cleanup policy"),
             ("signal <pid|-pgid> <sig>", "deliver signal to task/group"),
@@ -2433,17 +2433,86 @@ impl TerminalApp {
     fn cmd_pkg(&mut self, op: Option<&str>, arg: Option<&str>, args: Vec<&str>) {
         match (op, arg) {
             (None, _) | (Some("list"), _) => self.cmd_lines("PACKAGES", crate::packages::lines()),
+            (Some("keys"), _) => self.cmd_lines("PACKAGE TRUST KEYS", crate::packages::key_lines()),
+            (Some("history"), _) => {
+                self.cmd_lines("PACKAGE HISTORY", crate::packages::history_lines())
+            }
+            (Some("info"), Some(value)) => {
+                let value = resolve_path_if_archive(&self.cwd, value);
+                self.cmd_lines("PACKAGE INFO", crate::packages::info_lines(&value));
+            }
+            (Some("verify"), Some(value)) => {
+                let value = resolve_path_if_archive(&self.cwd, value);
+                self.cmd_lines("PACKAGE VERIFY", crate::packages::verify_lines(&value));
+            }
             (Some("install"), Some(id)) => {
                 if !self.require_admin("pkg") {
                     return;
                 }
-                self.print_result("pkg", crate::packages::install(id));
+                let id = resolve_path_if_archive(&self.cwd, id);
+                self.print_result("pkg", crate::packages::install(&id));
             }
             (Some("remove"), Some(id)) | (Some("uninstall"), Some(id)) => {
                 if !self.require_admin("pkg") {
                     return;
                 }
                 self.print_result("pkg", crate::packages::uninstall(id));
+            }
+            (Some("repair"), Some(id)) => {
+                if !self.require_admin("pkg") {
+                    return;
+                }
+                self.print_result("pkg", crate::packages::repair(id));
+            }
+            (Some("sign"), Some(path)) => {
+                if !self.require_admin("pkg") {
+                    return;
+                }
+                let path = resolve_path(&self.cwd, path);
+                self.print_result("pkg", crate::packages::sign_archive(&path));
+            }
+            (Some("sign-as"), Some(path)) => {
+                if !self.require_admin("pkg") {
+                    return;
+                }
+                let Some(key) = args.first() else {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("usage: pkg sign-as <path> <key>\n");
+                    return;
+                };
+                let path = resolve_path(&self.cwd, path);
+                self.print_result("pkg", crate::packages::sign_archive_as(&path, key));
+            }
+            (Some("unsign"), Some(path)) => {
+                if !self.require_admin("pkg") {
+                    return;
+                }
+                let path = resolve_path(&self.cwd, path);
+                self.print_result("pkg", crate::packages::remove_signature(&path));
+            }
+            (Some("tamper"), Some(path)) => {
+                if !self.require_admin("pkg") {
+                    return;
+                }
+                let path = resolve_path(&self.cwd, path);
+                self.print_result("pkg", crate::packages::tamper_archive_name(&path));
+            }
+            (Some("deps"), Some(path)) => {
+                if !self.require_admin("pkg") {
+                    return;
+                }
+                let path = resolve_path(&self.cwd, path);
+                let deps = collect_words(args.iter().copied());
+                self.print_result(
+                    "pkg",
+                    crate::packages::set_archive_dependencies(&path, &deps),
+                );
+            }
+            (Some("break"), Some(id)) => {
+                if !self.require_admin("pkg") {
+                    return;
+                }
+                self.print_result("pkg", crate::packages::break_installed(id));
             }
             (Some("run"), Some(id)) | (Some("launch"), Some(id)) => {
                 match crate::packages::launch(id, &args) {
@@ -2467,7 +2536,8 @@ impl TerminalApp {
             }
             _ => {
                 self.set_fg(FG_ERROR);
-                self.print_str("usage: pkg [list|install <id>|remove <id>|run <id> [args...]]\n");
+                self.print_str("usage: pkg [list|keys|history|info <id|path>|verify <id|path>|install <id|path>|remove <id>|repair <id>|run <id> [args...]]\n");
+                self.print_str("       pkg [sign <path>|sign-as <path> <key>|unsign <path>|tamper <path>|deps <path> [ids...]|break <id>]\n");
             }
         }
     }
@@ -3653,6 +3723,14 @@ fn parse_bool_word(input: &str) -> Option<bool> {
     }
 }
 
+fn resolve_path_if_archive(cwd: &str, value: &str) -> String {
+    if value.starts_with('/') || value.to_ascii_uppercase().ends_with(".PKG") {
+        resolve_path(cwd, value)
+    } else {
+        String::from(value)
+    }
+}
+
 fn collect_words<'a, I>(words: I) -> String
 where
     I: Iterator<Item = &'a str>,
@@ -3678,6 +3756,7 @@ fn diagnostics_lines() -> Vec<String> {
     );
     push_terminal_section(&mut lines, "services", crate::services::lines());
     push_terminal_section(&mut lines, "updates", crate::updates::status_lines());
+    push_terminal_section(&mut lines, "packages", crate::packages::status_lines());
     push_terminal_section(
         &mut lines,
         "compositor",

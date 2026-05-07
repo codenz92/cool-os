@@ -20,6 +20,7 @@ pub fn lines() -> Vec<String> {
         crate::services::recovery_lines(),
     );
     push_section(&mut lines, "updates", crate::updates::status_lines());
+    push_section(&mut lines, "packages", crate::packages::status_lines());
     push_section(&mut lines, "tasks", crate::process_model::status_lines());
     push_section(
         &mut lines,
