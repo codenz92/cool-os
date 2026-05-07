@@ -25,7 +25,7 @@ const SUBTLE: u32 = 0x00_66_AA_DD;
 const MUTED: u32 = 0x00_55_7A_92;
 
 const ABOUT: &[&str] = &[
-    " coolOS v7.27",
+    " coolOS v7.28",
     " Bare-metal OS in Rust",
     "",
     " == Current Platform ==",
@@ -39,6 +39,7 @@ const ABOUT: &[&str] = &[
     " Adaptive 36/144 Hz pacing and cursor overlay smoothness",
     " Resource caps for tasks, memory, fds, shmem, and sockets",
     " Memory pressure telemetry, cache trimming, and OOM reclaim",
+    " Durable service supervision with dependency recovery",
     "",
     " == Commands ==",
     " help         - list terminal commands",
@@ -139,6 +140,11 @@ impl TextViewerApp {
         push_section(&mut lines, "services", crate::services::lines());
         push_section(
             &mut lines,
+            "service recovery",
+            crate::services::recovery_lines(),
+        );
+        push_section(
+            &mut lines,
             "filesystem",
             crate::fs_hardening::journal_lines(),
         );
@@ -162,6 +168,11 @@ impl TextViewerApp {
         );
         push_section(&mut lines, "boot watchdog", crate::boot_watchdog::lines());
         push_section(&mut lines, "services", crate::services::lines());
+        push_section(
+            &mut lines,
+            "service recovery",
+            crate::services::recovery_lines(),
+        );
         push_section(
             &mut lines,
             "compositor",

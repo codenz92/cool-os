@@ -9,6 +9,11 @@ pub fn lines() -> Vec<String> {
     push_section(&mut lines, "kernel log", crate::klog::lines());
     push_section(&mut lines, "profiler", crate::profiler::lines());
     push_section(&mut lines, "services", crate::services::lines());
+    push_section(
+        &mut lines,
+        "service recovery",
+        crate::services::recovery_lines(),
+    );
     push_section(&mut lines, "tasks", crate::process_model::status_lines());
     push_section(
         &mut lines,

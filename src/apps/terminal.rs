@@ -1266,7 +1266,7 @@ impl TerminalApp {
             ("job run|cancel|pause|resume", "manage background jobs"),
             ("fg [id|last]", "resume job in foreground"),
             ("bg [id|last]", "resume job in background"),
-            ("services <op>", "service supervisor"),
+            ("services <op>", "durable service supervisor"),
             ("crash", "crash dump summary"),
             ("abi", "kernel/user ABI version"),
             ("notify <op>", "notification history/actions"),
@@ -2328,6 +2328,12 @@ impl TerminalApp {
     fn cmd_services(&mut self, op: Option<&str>, name: Option<&str>) {
         match (op, name) {
             (None, _) | (Some("list"), _) => self.cmd_lines("SERVICES", crate::services::lines()),
+            (Some("history"), _) => {
+                self.cmd_lines("SERVICE HISTORY", crate::services::history_lines())
+            }
+            (Some("recovery"), _) | (Some("health"), _) => {
+                self.cmd_lines("SERVICE RECOVERY", crate::services::recovery_lines())
+            }
             (Some("run"), _) => {
                 if !self.require_admin("services") {
                     return;
@@ -2342,6 +2348,12 @@ impl TerminalApp {
                 }
                 self.print_bool("service", crate::services::start(name));
             }
+            (Some("restart"), Some(name)) => {
+                if !self.require_admin("services") {
+                    return;
+                }
+                self.print_bool("service", crate::services::restart(name));
+            }
             (Some("stop"), Some(name)) => {
                 if !self.require_admin("services") {
                     return;
@@ -2354,6 +2366,13 @@ impl TerminalApp {
                 }
                 self.print_bool("service", crate::services::fail(name));
             }
+            (Some("status"), Some(name)) => match crate::services::status_lines(name) {
+                Some(lines) => self.cmd_lines("SERVICE", lines),
+                None => {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("services: no such service\n");
+                }
+            },
             (Some(name), None) => match crate::services::status_lines(name) {
                 Some(lines) => self.cmd_lines("SERVICE", lines),
                 None => {
@@ -2363,9 +2382,7 @@ impl TerminalApp {
             },
             _ => {
                 self.set_fg(FG_ERROR);
-                self.print_str(
-                    "usage: services [list|run|<name>|start <name>|stop <name>|fail <name>]\n",
-                );
+                self.print_str("usage: services [list|history|recovery|run|<name>|status <name>|start <name>|restart <name>|stop <name>|fail <name>]\n");
             }
         }
     }

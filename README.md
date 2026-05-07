@@ -13,7 +13,7 @@ stdio, and IPC with pipes, shared memory, and per-task fd tables.
 
 ---
 
-# Current state — v7.27
+# Current state — v7.28
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -59,7 +59,7 @@ rename, writable file descriptors, fd-mapped child stdio, sync, and RTC time;
 `/bin/sh` now supports quoting, relative paths, redirection, and one-stage
 pipelines; `/bin` includes practical file/text/date/devkit tools; sysreport can
 write `/LOGS/SYSREPORT.TXT`; and the generated image ships `/SDK` docs and
-templates. Phases 45-63 add compositor smoothness, evented terminal work, and
+templates. Phases 45-64 add compositor smoothness, evented terminal work, and
 a richer native browser renderer:
 timer ticks now request
 paced frames instead of unconditional full redraws, mouse-only motion uses a
@@ -103,7 +103,13 @@ snapshots classify heap pressure as normal/low/critical, task memory estimates
 show user pages, shared memory, kernel stacks, fds, and sockets, the main loop
 periodically trims reclaimable CoolFS and Browser caches, large cache/task/fd
 allocations are admitted against a reserve, and a critical heap can reclaim the
-largest non-current user task through the scheduler cleanup path.
+largest non-current user task through the scheduler cleanup path. Phase 64 makes
+the kernel service supervisor durable: service desired state is persisted under
+`/CONFIG/SERVICES.CFG`, restart/history snapshots are written to
+`/LOGS/SERVICES.TXT`, services carry dependency metadata and restart backoff,
+Terminal exposes admin-gated `services start|stop|restart|fail|run` controls
+plus readable `services status|history|recovery` diagnostics, and recovery,
+sysreport, Diagnostics, and System Monitor surface degraded service state.
 
 | Context | Mode | Description |
 | :------ | :--- | :---------- |
@@ -162,7 +168,7 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **FAT32 layer** | Optional legacy import mount at `/FAT`, formatted in a separate 8 MiB-offset disk region. BPB parsing, FAT chain walking, short-name and long-filename lookup, directory traversal, cluster→sector mapping, mutation helpers, free-space stats, and `fsck` remain available without being required for CoolFS boot. |
 | **VFS** | CoolFS-root path routing, `/FAT` legacy routing, CoolFS read/write/execute permission enforcement, task-local cwd resolution, and task-local fd tables (16 slots, with explicit 0/1/2 mappings for child stdio) backed by shared file/pipe/shmem objects. `vfs_open` reads whole files into heap buffers after access checks and drops them if pressure admission fails; `vfs_open_write` buffers writable file descriptors and commits through safe CoolFS writes on close/exit; `vfs_pipe` allocates a 512-byte kernel ring buffer only when the heap reserve allows it; `vfs_read_blocking` blocks tasks on empty pipes and wakes them on write/EOF; `ipc` and `spawn_fds_args` selectively inherit pipe/file fds into child processes; `vfs_shmem_create`/`vfs_shmem_map` manage a shared memory region pool indexed by ID. |
 | **Networking** | Legacy PCI virtio-net driver for QEMU user networking, polling RX/TX virtqueues, Ethernet framing, ARP cache, IPv4, ICMP echo, UDP DNS queries, minimal TCP client sockets, userspace socket syscalls, HTTP/1.1, and verified TLS 1.3 HTTPS for the native browser/terminal path. |
-| **Kernel services** | Persistent kernel log buffer flushed to `/LOGS/KERNEL.TXT`, crash-screen log tail, sysreport generation to `/LOGS/SYSREPORT.TXT`, central device registry for PCI/USB/system devices, installable package/app manifests with file associations, networking status, ACPI power-control status foundation, and a credentialed service supervisor that restarts failed services under service uid/gid 200. |
+| **Kernel services** | Persistent kernel log buffer flushed to `/LOGS/KERNEL.TXT`, crash-screen log tail, sysreport generation to `/LOGS/SYSREPORT.TXT`, central device registry for PCI/USB/system devices, installable package/app manifests with file associations, networking status, ACPI power-control status foundation, and a credentialed durable service supervisor with dependency metadata, persisted `/CONFIG/SERVICES.CFG` desired state, `/LOGS/SERVICES.TXT` restart history, backoff, and recovery diagnostics under service uid/gid 200. |
 | **Applications** | Terminal, System Monitor, Text Viewer, Color Picker, File Manager, Web Browser, ring-3 Notes, Text Editor, Trash Bin, Screenshot, Process Demo, and GUI Demo. Text-file opens route into `/bin/editor <path>` with kernel viewer fallback, while File Manager exposes explicit Open With Editor/Viewer actions. |
 | **Disk image** | `disk-image/src/fs_image.rs` builds `fs.img` as a 64 MiB raw OS disk: native CoolFS starts at LBA 0 with root-owned system paths, user-owned writable paths, executable `/bin` ELFs, `/RECOVERY` boot/repair docs, `/SDK` devkit docs/templates, `/Packages/guidemo.pkg`, and `/Documents/package-demo.p25`; an optional FAT32 `/FAT` import region starts at 8 MiB. The Makefile attaches it to QEMU as the IDE slave. |
 
@@ -171,7 +177,7 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | App | How to open | Description |
 | :-- | :---------- | :---------- |
 | **Terminal** | Launcher / right-click | Interactive shell. Type commands, press Enter. |
-| **System Monitor** | Right-click | Live CPU vendor, heap usage and pressure state, uptime, scheduler counts, USB/input status, and userspace app lifecycle controls for close, kill, and app path. |
+| **System Monitor** | Right-click | Live CPU vendor, heap usage and pressure state, uptime, service health, scheduler counts, USB/input status, and userspace app lifecycle controls for close, kill, and app path. |
 | **Text Viewer** | Right-click | Scrollable "About" doc; `j`/`k` to scroll. |
 | **Color Picker** | Right-click | Clickable 16-colour EGA palette grid. |
 | **File Manager** | Right-click / desktop icon | Browse and mutate the CoolFS root with breadcrumbs, recursive search, sorting, multi-select, clipboard copy/cut/paste, Trash-backed delete, properties, inline text editing, Open With Editor/Viewer, and ELF launch routing. |
@@ -251,6 +257,7 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `log` | Flush and print the kernel log tail |
 | `logs` | Open the in-terminal log view |
 | `profiler` | Print boot/session profiler events |
+| `services [list\|status <name>\|history\|recovery\|run\|start <name>\|restart <name>\|stop <name>\|fail <name>]` | Inspect and control the durable service supervisor; mutating operations require an admin session |
 | `memory` | Print heap pressure, reclaim counters, OOM state, and per-task memory estimates |
 | `diagnostics` | Print kernel, profiler, service, compositor, heap, memory-pressure, resource-limit, filesystem, VFS, and crash diagnostics |
 | `sysreport [write]` | Print the generated system report or write it to `/LOGS/SYSREPORT.TXT` |
@@ -354,6 +361,7 @@ src/
                     vfs_shmem_create/vfs_shmem_map
   klog.rs          Kernel log ring buffer + /LOGS/KERNEL.TXT flushing
   sysreport.rs     System report generator for diagnostics and /LOGS/SYSREPORT.TXT
+  services.rs      Durable service supervisor with dependency/backoff policy and /CONFIG + /LOGS state
   notifications.rs Desktop notification queue used by USB/task/filesystem events
   app_lifecycle.rs Persistent app recents/settings plus runtime userspace app ownership
   clipboard.rs     Shared text/path clipboard service
@@ -516,7 +524,9 @@ The default admin session is `root` uid/gid 1000 with password `cool`, and
 umask, `login`/`logout`/`passwd`/`id`/`groups`/`umask` expose the model in the
 Terminal, package installs and service mutations require admin credentials, and
 the service supervisor reports per-service credentials and deterministic restart
-state through `services`.
+state through `services`. Phase 64 extends that supervisor with dependency
+metadata, persisted desired state in `/CONFIG/SERVICES.CFG`, restart snapshots
+in `/LOGS/SERVICES.TXT`, restart backoff, and recovery/sysreport health lines.
 
 **GUI login and lock screen (Phase 30).** The desktop now boots into a
 boot-splash-style compositor greeter instead of exposing the session
@@ -699,7 +709,9 @@ kernel selftest path, and adds `make smoke-phase62-resource-limits` to boot the
 diagnostics surface and verify the resource-limit report. Phase 63 adds the
 `memory` command, memory-pressure diagnostics, per-task memory estimates,
 clean-cache/browser-cache trimming, allocation admission checks, and
-`make smoke-phase63-memory-pressure`.
+`make smoke-phase63-memory-pressure`. Phase 64 adds durable service supervisor
+coverage with `make smoke-phase64-services`, including admin-gated mutations,
+persisted service config, restart history, recovery lines, and sysreport output.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
@@ -782,5 +794,6 @@ while kernel faults still panic.
 | 61 | Browser modern-page compatibility — raw script suppression, content-type routing, Google/Search shell, and `browser://compat` | **Done** |
 | 62 | Kernel resource limits and cleanup — task/address-space/fd/shmem/socket caps plus diagnostics and smoke coverage | **Done** |
 | 63 | Memory pressure and OOM recovery — heap pressure states, cache trimming, per-task estimates, admission checks, and OOM reclaim | **Done** |
+| 64 | Persistent service supervision and recovery — durable desired state, dependency/backoff policy, restart history, and degraded diagnostics | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

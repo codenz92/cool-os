@@ -4,7 +4,7 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–63 are complete. The current milestone gives coolOS a much more
+Phases 1–64 are complete. The current milestone gives coolOS a much more
 normal command-line and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
@@ -28,8 +28,11 @@ diagnostics in Terminal, Sysreport, and the Diagnostics viewer. Phase 63 adds
 memory-pressure recovery: heap pressure states, allocation admission reserves,
 reclaimable CoolFS/Browser cache trimming, per-task memory estimates, and an
 OOM path that reclaims the largest non-current user task when pressure remains
-critical.
-Phases 45-63 focus on responsiveness, interactive terminal behavior, and
+critical. Phase 64 makes service supervision durable with persisted desired
+state under `/CONFIG`, restart history under `/LOGS`, dependency metadata,
+restart backoff, admin-gated controls, and degraded-service diagnostics in
+Terminal, recovery, sysreport, Diagnostics, and System Monitor.
+Phases 45-64 focus on responsiveness, interactive terminal behavior, and
 desktop-browser compatibility:
 cursor-only framebuffer updates,
 input-first idle-loop ordering, adaptive 36/144 Hz frame pacing, compositor
@@ -40,7 +43,8 @@ surface with GET/POST form submission, persistent cookie/storage state, and
 bounded margin/padding/border/position/float layout plus a small Browser
 subresource cache, script runtime, web-app API layer, main-response
 content-type routing, compatibility diagnostics, resource accounting for the
-scheduler, VMM, VFS, shared memory, and sockets, and low-memory recovery.
+scheduler, VMM, VFS, shared memory, and sockets, low-memory recovery, and
+durable service recovery.
 
 ---
 
@@ -1872,6 +1876,34 @@ large allocations, and only reclaim a user task when the heap remains critical.
 
 ---
 
+## ✅ Phase 64 — Persistent Service Supervision and Recovery
+
+**Goal:** Turn the kernel service supervisor from a volatile restart loop into a
+durable operational subsystem with persisted desired state, dependency-aware
+recovery, restart history, and degraded-state diagnostics.
+
+- [x] Persist supervised service desired state to `/CONFIG/SERVICES.CFG` and
+      reload it during boot after the root filesystem is online.
+- [x] Write restart/history snapshots to `/LOGS/SERVICES.TXT`, including
+      restart policy, dependencies, failure counters, backoff, and last action.
+- [x] Add static dependency metadata for core services and gate supervisor
+      loops/restarts on dependency readiness.
+- [x] Add restart backoff for repeated failures while keeping first-failure
+      recovery immediate for deterministic smoke coverage and manual repair.
+- [x] Expand Terminal `services` with readable
+      `list`, `status`, `history`, and `recovery` diagnostics plus admin-gated
+      `run`, `start`, `restart`, `stop`, and `fail` operations.
+- [x] Surface service recovery in `/RECOVERY` status/repair reports, sysreport,
+      Diagnostics/Log Viewer, and System Monitor service health.
+- [x] Add `make smoke-phase64-services` and document v7.28.
+
+**Current status:** complete. coolOS now records service policy and recovery
+state across boots, exposes failed/degraded services in the same operational
+surfaces as filesystem and memory pressure, and keeps service mutations behind
+admin credentials.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -1951,4 +1983,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.24 | Phase 60 complete: Browser web-app APIs |
 | v7.25 | Phase 61 complete: Browser modern-page compatibility |
 | v7.26 | Phase 62 complete: Kernel resource limits and cleanup |
-| v7.27 | Current — Phase 63 complete: Memory pressure and OOM recovery |
+| v7.27 | Phase 63 complete: Memory pressure and OOM recovery |
+| v7.28 | Current — Phase 64 complete: Persistent service supervision and recovery |

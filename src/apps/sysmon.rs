@@ -152,6 +152,7 @@ impl SysMonApp {
             (sched.tasks.len(), ready, blocked, exited, sched.current)
         };
         let resource_stats = crate::scheduler::resource_stats();
+        let service_health = crate::services::health();
         let usb_lines = crate::usb::status_lines();
         let (usb_keyboard, usb_mouse) = crate::usb::input_presence();
         let usb_present = !usb_lines.is_empty();
@@ -232,6 +233,24 @@ impl SysMonApp {
         tick_line.push_u64(ticks);
         tick_line.push_str(" ticks");
         self.put_str_px(stride, 116, 146, tick_line.as_str(), MUTED);
+        let mut service_line = NumberLine::new();
+        service_line.push_str("services ");
+        service_line.push_usize(service_health.running);
+        service_line.push_str("/");
+        service_line.push_usize(service_health.total);
+        service_line.push_str(" degraded ");
+        service_line.push_usize(service_health.degraded);
+        self.put_str_px(
+            stride,
+            28,
+            158,
+            service_line.as_str(),
+            if service_health.degraded == 0 {
+                GREEN
+            } else {
+                RED
+            },
+        );
 
         self.put_str_px(stride, 280, 128, "SCHEDULER", LABEL);
         let mut task_line = NumberLine::new();
