@@ -77,7 +77,7 @@ fn main(_args: Args) -> ! {
             draw(pixels, clicks, tick);
             let _ = window.present(pixels);
         }
-        sleep_ms(50);
+        let _ = window.wait_event_ready(50);
     }
 
     println!("guidemo: done");

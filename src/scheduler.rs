@@ -387,6 +387,15 @@ impl Scheduler {
 pub static SCHEDULER: spin::Mutex<Scheduler> = spin::Mutex::new(Scheduler::empty());
 pub static CURRENT_SYSCALL_STACK_TOP: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Clone, Copy)]
+struct ChildPollWaiter {
+    parent: usize,
+    child: usize,
+    waiter: usize,
+}
+
+static CHILD_POLL_WAITERS: spin::Mutex<Vec<ChildPollWaiter>> = spin::Mutex::new(Vec::new());
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum KillError {
@@ -695,7 +704,7 @@ pub fn exit_current(code: u64) {
             task.wake_tick = None;
         }
     });
-    wake_waiting_parent(parent);
+    wake_waiting_parent(parent, task_id);
 }
 
 pub fn kill_task(task_id: usize, code: u64) -> Result<(), KillError> {
@@ -737,7 +746,7 @@ pub fn kill_task(task_id: usize, code: u64) -> Result<(), KillError> {
         task.wake_tick = None;
         (name, parent)
     };
-    wake_waiting_parent(parent);
+    wake_waiting_parent(parent, task_id);
     crate::vfs::drop_task(task_id);
     crate::wm::close_user_gui_windows_for_owner(task_id);
     crate::profiler::record_task(task_id, name, "killed");
@@ -762,7 +771,7 @@ pub fn fault_current(code: u64, reason: &'static str) -> usize {
         }
         (task_id, name, parent)
     };
-    wake_waiting_parent(parent);
+    wake_waiting_parent(parent, task_id);
     crate::vfs::drop_task(task_id);
     crate::wm::close_user_gui_windows_for_owner(task_id);
     crate::profiler::record_task(task_id, name, reason);
@@ -967,11 +976,84 @@ pub fn waitpid(parent: usize, task_id: usize) -> Result<u64, WaitError> {
     result
 }
 
-fn wake_waiting_parent(parent: Option<usize>) {
+pub fn child_exit_revents(parent: usize, child: usize) -> u64 {
+    if child == 0 {
+        return crate::evented::EVENT_ERROR;
+    }
+    let sched = SCHEDULER.lock();
+    let Some(task) = sched.tasks.get(child) else {
+        return crate::evented::EVENT_ERROR;
+    };
+    if task.parent != Some(parent) && parent != 0 {
+        return crate::evented::EVENT_ERROR;
+    }
+    match task.status {
+        TaskStatus::Exited => crate::evented::EVENT_READ | crate::evented::EVENT_CHILD,
+        TaskStatus::Reaped => crate::evented::EVENT_HANGUP,
+        _ => 0,
+    }
+}
+
+pub fn register_child_waiter(parent: usize, child: usize, waiter: usize) -> bool {
+    if child == 0 {
+        return false;
+    }
+    {
+        let sched = SCHEDULER.lock();
+        let Some(task) = sched.tasks.get(child) else {
+            return false;
+        };
+        if task.parent != Some(parent) && parent != 0 {
+            return false;
+        }
+        if task.status == TaskStatus::Reaped {
+            return false;
+        }
+    }
+
+    let mut waiters = CHILD_POLL_WAITERS.lock();
+    if !waiters
+        .iter()
+        .any(|entry| entry.parent == parent && entry.child == child && entry.waiter == waiter)
+    {
+        waiters.push(ChildPollWaiter {
+            parent,
+            child,
+            waiter,
+        });
+    }
+    true
+}
+
+pub fn unregister_child_waiter(parent: usize, child: usize, waiter: usize) {
+    CHILD_POLL_WAITERS.lock().retain(|entry| {
+        !(entry.parent == parent && entry.child == child && entry.waiter == waiter)
+    });
+}
+
+fn wake_waiting_parent(parent: Option<usize>, child: usize) {
     if let Some(parent) = parent {
         crate::wait_queue::wake("waitpid", parent);
         unblock(parent);
+        wake_child_poll_waiters(parent, child);
     }
+}
+
+fn wake_child_poll_waiters(parent: usize, child: usize) {
+    let tasks = {
+        let mut waiters = CHILD_POLL_WAITERS.lock();
+        let mut tasks = Vec::new();
+        waiters.retain(|entry| {
+            if entry.parent == parent && entry.child == child {
+                tasks.push(entry.waiter);
+                false
+            } else {
+                true
+            }
+        });
+        tasks
+    };
+    crate::evented::wake_tasks("child-exit", tasks);
 }
 
 pub fn reap_all_exited(parent: usize) -> usize {

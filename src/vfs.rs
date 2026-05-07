@@ -87,7 +87,8 @@ struct Pipe {
     len: usize,
     readers: usize,
     writers: usize,
-    waiting_reader: Option<usize>,
+    waiting_readers: Vec<usize>,
+    waiting_writers: Vec<usize>,
 }
 
 impl Pipe {
@@ -99,7 +100,8 @@ impl Pipe {
             len: 0,
             readers: 0,
             writers: 0,
-            waiting_reader: None,
+            waiting_readers: Vec::new(),
+            waiting_writers: Vec::new(),
         }
     }
 
@@ -125,6 +127,27 @@ impl Pipe {
         }
         n
     }
+
+    fn add_reader_waiter(&mut self, task_id: usize) {
+        crate::evented::add_waiter(&mut self.waiting_readers, task_id);
+    }
+
+    fn add_writer_waiter(&mut self, task_id: usize) {
+        crate::evented::add_waiter(&mut self.waiting_writers, task_id);
+    }
+
+    fn remove_waiter(&mut self, task_id: usize) {
+        crate::evented::remove_waiter(&mut self.waiting_readers, task_id);
+        crate::evented::remove_waiter(&mut self.waiting_writers, task_id);
+    }
+
+    fn take_readers(&mut self) -> Vec<usize> {
+        mem::take(&mut self.waiting_readers)
+    }
+
+    fn take_writers(&mut self) -> Vec<usize> {
+        mem::take(&mut self.waiting_writers)
+    }
 }
 
 enum PipeReadResult {
@@ -134,14 +157,14 @@ enum PipeReadResult {
 }
 
 struct ReleaseEvent {
-    wake_task: Option<usize>,
+    wake_tasks: Vec<usize>,
     commit: Option<(String, Vec<u8>)>,
 }
 
 impl ReleaseEvent {
-    const fn none() -> Self {
+    fn none() -> Self {
         Self {
-            wake_task: None,
+            wake_tasks: Vec::new(),
             commit: None,
         }
     }
@@ -280,7 +303,7 @@ impl VfsState {
     }
 
     fn release_fd(&mut self, entry: LocalFd) -> ReleaseEvent {
-        let mut wake_task = None;
+        let mut wake_tasks = Vec::new();
 
         let Some(object) = self.objects.get_mut(entry.object).and_then(Option::as_mut) else {
             return ReleaseEvent::none();
@@ -292,13 +315,14 @@ impl VfsState {
                 FdAccess::PipeRead => {
                     pipe.readers = pipe.readers.saturating_sub(1);
                     if pipe.readers == 0 {
-                        pipe.waiting_reader = None;
+                        wake_tasks.extend(pipe.take_writers());
+                        pipe.waiting_readers.clear();
                     }
                 }
                 FdAccess::PipeWrite => {
                     pipe.writers = pipe.writers.saturating_sub(1);
                     if pipe.writers == 0 {
-                        wake_task = pipe.waiting_reader.take();
+                        wake_tasks.extend(pipe.take_readers());
                     }
                 }
                 FdAccess::File => {}
@@ -330,7 +354,7 @@ impl VfsState {
             self.objects[entry.object] = None;
         }
 
-        ReleaseEvent { wake_task, commit }
+        ReleaseEvent { wake_tasks, commit }
     }
 }
 
@@ -1032,9 +1056,7 @@ pub fn drop_task(task_id: usize) {
                 let entry = vfs.task_fds[task_id].entries[fd].take();
                 if let Some(entry) = entry {
                     let event = vfs.release_fd(entry);
-                    if let Some(task) = event.wake_task {
-                        wake_tasks.push(task);
-                    }
+                    wake_tasks.extend(event.wake_tasks);
                     if let Some(commit) = event.commit {
                         commits.push(commit);
                     }
@@ -1052,10 +1074,7 @@ pub fn drop_task(task_id: usize) {
     commit_files(commits);
     release_shmem_refs(shmem_refs);
 
-    for task_id in wake_tasks {
-        crate::wait_queue::wake("pipe-read", task_id);
-        crate::scheduler::unblock(task_id);
-    }
+    crate::evented::wake_tasks("pipe", wake_tasks);
 }
 
 pub fn drop_task_shmem_refs(task_id: usize) {
@@ -1184,6 +1203,91 @@ pub fn vfs_has_fd(fd: usize) -> bool {
     VFS.lock().current_entry(task_id, fd).is_some()
 }
 
+pub fn vfs_poll_fd(fd: usize, events: u64) -> u64 {
+    let task_id = crate::scheduler::current_task_id();
+    let mut revents = 0u64;
+    let vfs = VFS.lock();
+    let Some(entry) = vfs.current_entry(task_id, fd) else {
+        return crate::evented::EVENT_ERROR;
+    };
+    let Some(object) = vfs.objects.get(entry.object).and_then(Option::as_ref) else {
+        return crate::evented::EVENT_ERROR;
+    };
+
+    match (&object.kind, entry.access) {
+        (SharedKind::File(file), FdAccess::File) => {
+            if events & crate::evented::EVENT_READ != 0 {
+                revents |= crate::evented::EVENT_READ;
+            }
+            if file.writable && events & crate::evented::EVENT_WRITE != 0 {
+                revents |= crate::evented::EVENT_WRITE;
+            }
+        }
+        (SharedKind::Pipe(pipe), FdAccess::PipeRead) => {
+            if events & crate::evented::EVENT_READ != 0 && pipe.len > 0 {
+                revents |= crate::evented::EVENT_READ;
+            }
+            if pipe.writers == 0 {
+                revents |= crate::evented::EVENT_HANGUP;
+                if events & crate::evented::EVENT_READ != 0 {
+                    revents |= crate::evented::EVENT_READ;
+                }
+            }
+        }
+        (SharedKind::Pipe(pipe), FdAccess::PipeWrite) => {
+            if pipe.readers == 0 {
+                revents |= crate::evented::EVENT_HANGUP;
+            } else if events & crate::evented::EVENT_WRITE != 0 && pipe.len < PIPE_SIZE {
+                revents |= crate::evented::EVENT_WRITE;
+            }
+        }
+        _ => revents |= crate::evented::EVENT_ERROR,
+    }
+    revents
+}
+
+pub fn vfs_register_poll_waiter(fd: usize, task_id: usize, events: u64) -> bool {
+    let owner = crate::scheduler::current_task_id();
+    let mut vfs = VFS.lock();
+    let Some(entry) = vfs.current_entry(owner, fd) else {
+        return false;
+    };
+    let Some(object) = vfs.objects.get_mut(entry.object).and_then(Option::as_mut) else {
+        return false;
+    };
+
+    match (&mut object.kind, entry.access) {
+        (SharedKind::Pipe(pipe), FdAccess::PipeRead) => {
+            if events & crate::evented::EVENT_READ != 0 {
+                pipe.add_reader_waiter(task_id);
+            }
+            true
+        }
+        (SharedKind::Pipe(pipe), FdAccess::PipeWrite) => {
+            if events & crate::evented::EVENT_WRITE != 0 {
+                pipe.add_writer_waiter(task_id);
+            }
+            true
+        }
+        (SharedKind::File(_), FdAccess::File) => true,
+        _ => false,
+    }
+}
+
+pub fn vfs_unregister_poll_waiter(fd: usize, task_id: usize) {
+    let owner = crate::scheduler::current_task_id();
+    let mut vfs = VFS.lock();
+    let Some(entry) = vfs.current_entry(owner, fd) else {
+        return;
+    };
+    let Some(object) = vfs.objects.get_mut(entry.object).and_then(Option::as_mut) else {
+        return;
+    };
+    if let SharedKind::Pipe(pipe) = &mut object.kind {
+        pipe.remove_waiter(task_id);
+    }
+}
+
 pub fn vfs_pipe() -> Option<(usize, usize)> {
     let task_id = crate::scheduler::current_task_id();
     let mut vfs = VFS.lock();
@@ -1258,7 +1362,7 @@ pub fn vfs_read(fd: usize, buf: &mut [u8], len: usize) -> usize {
 
 pub fn vfs_write(fd: usize, buf: &[u8]) -> usize {
     let task_id = crate::scheduler::current_task_id();
-    let (n, wake_task) = {
+    let (n, wake_tasks) = {
         let mut vfs = VFS.lock();
         let Some(entry) = vfs.current_entry(task_id, fd) else {
             return usize::MAX;
@@ -1282,7 +1386,7 @@ pub fn vfs_write(fd: usize, buf: &[u8]) -> usize {
                 file.data[file.offset..end].copy_from_slice(buf);
                 file.offset = end;
                 file.dirty = true;
-                (buf.len(), None)
+                (buf.len(), Vec::new())
             }
             (SharedKind::Pipe(pipe), FdAccess::PipeWrite) => {
                 if pipe.readers == 0 {
@@ -1290,27 +1394,24 @@ pub fn vfs_write(fd: usize, buf: &[u8]) -> usize {
                 }
 
                 let n = pipe.write(buf);
-                let wake_task = if n > 0 {
-                    pipe.waiting_reader.take()
+                let wake_tasks = if n > 0 {
+                    pipe.take_readers()
                 } else {
-                    None
+                    Vec::new()
                 };
-                (n, wake_task)
+                (n, wake_tasks)
             }
             _ => return usize::MAX,
         }
     };
 
-    if let Some(task_id) = wake_task {
-        crate::wait_queue::wake("pipe-read", task_id);
-        crate::scheduler::unblock(task_id);
-    }
+    crate::evented::wake_tasks("pipe-read", wake_tasks);
     n
 }
 
 pub fn vfs_read_blocking(fd: usize, buf: &mut [u8], len: usize) -> usize {
     loop {
-        let result = {
+        let (result, wake_writers) = {
             let task_id = crate::scheduler::current_task_id();
             let mut vfs = VFS.lock();
             let Some(entry) = vfs.current_entry(task_id, fd) else {
@@ -1332,13 +1433,19 @@ pub fn vfs_read_blocking(fd: usize, buf: &mut [u8], len: usize) -> usize {
                 (SharedKind::Pipe(pipe), FdAccess::PipeRead) => {
                     let result = pipe_read(pipe, buf, len);
                     if matches!(result, PipeReadResult::WouldBlock) {
-                        pipe.waiting_reader = Some(task_id);
+                        pipe.add_reader_waiter(task_id);
                     }
-                    result
+                    let wake_writers = if matches!(result, PipeReadResult::Data(n) if n > 0) {
+                        pipe.take_writers()
+                    } else {
+                        Vec::new()
+                    };
+                    (result, wake_writers)
                 }
                 _ => return usize::MAX,
             }
         };
+        crate::evented::wake_tasks("pipe-write", wake_writers);
 
         match result {
             PipeReadResult::Data(n) => return n,
@@ -1373,10 +1480,7 @@ pub fn vfs_close(fd: usize) {
     if let Some((path, data)) = event.commit {
         let _ = vfs_safe_write_file(&path, &data);
     }
-    if let Some(task_id) = event.wake_task {
-        crate::wait_queue::wake("pipe-read", task_id);
-        crate::scheduler::unblock(task_id);
-    }
+    crate::evented::wake_tasks("pipe", event.wake_tasks);
 }
 
 pub fn vfs_dup(fd: usize) -> usize {

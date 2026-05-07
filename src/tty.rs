@@ -5,7 +5,10 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::{
+    mem,
+    sync::atomic::{AtomicU64, Ordering},
+};
 use spin::Mutex;
 
 const TTY_BUFFER_SIZE: usize = 8192;
@@ -25,7 +28,7 @@ struct Tty {
     input_tail: usize,
     input_dropped: u64,
     line: Vec<u8>,
-    waiting_reader: Option<usize>,
+    waiting_readers: Vec<usize>,
     eof_pending: bool,
 }
 
@@ -47,7 +50,7 @@ impl Tty {
             input_tail: 0,
             input_dropped: 0,
             line: Vec::new(),
-            waiting_reader: None,
+            waiting_readers: Vec::new(),
             eof_pending: false,
         }
     }
@@ -106,11 +109,19 @@ impl Tty {
         }
     }
 
-    fn take_reader(&mut self) -> Option<usize> {
-        self.waiting_reader.take()
+    fn add_reader(&mut self, task_id: usize) {
+        crate::evented::add_waiter(&mut self.waiting_readers, task_id);
     }
 
-    fn flush_line(&mut self, newline: bool) -> Option<usize> {
+    fn remove_reader(&mut self, task_id: usize) {
+        crate::evented::remove_waiter(&mut self.waiting_readers, task_id);
+    }
+
+    fn take_readers(&mut self) -> Vec<usize> {
+        mem::take(&mut self.waiting_readers)
+    }
+
+    fn flush_line(&mut self, newline: bool) -> Vec<usize> {
         for idx in 0..self.line.len() {
             self.push_input_byte(self.line[idx]);
         }
@@ -118,7 +129,7 @@ impl Tty {
         if newline {
             self.push_input_byte(b'\n');
         }
-        self.take_reader()
+        self.take_readers()
     }
 
     fn remove_last_line_char(&mut self) -> bool {
@@ -164,7 +175,7 @@ pub fn write(id: u64, bytes: &[u8]) -> usize {
 pub fn submit_char(id: u64, c: char) -> bool {
     let mut encoded = [0u8; 4];
     let bytes = c.encode_utf8(&mut encoded).as_bytes();
-    let wake_task = {
+    let wake_tasks = {
         let mut ttys = TTYS.lock();
         let Some(tty) = ttys.iter_mut().find(|tty| tty.id == id) else {
             return false;
@@ -178,7 +189,7 @@ pub fn submit_char(id: u64, c: char) -> bool {
                 tty.push_byte(b' ');
                 tty.push_byte(8);
             }
-            None
+            Vec::new()
         } else if c == '\t' || !c.is_control() {
             if tty.line.len().saturating_add(bytes.len()) <= TTY_LINE_LIMIT {
                 for &byte in bytes {
@@ -186,12 +197,12 @@ pub fn submit_char(id: u64, c: char) -> bool {
                     tty.push_byte(byte);
                 }
             }
-            None
+            Vec::new()
         } else {
-            None
+            Vec::new()
         }
     };
-    wake_reader(wake_task);
+    wake_readers(wake_tasks);
     crate::wm::request_repaint();
     true
 }
@@ -205,19 +216,19 @@ pub fn submit_backspace(id: u64) -> bool {
 }
 
 pub fn submit_eof(id: u64) -> bool {
-    let wake_task = {
+    let wake_tasks = {
         let mut ttys = TTYS.lock();
         let Some(tty) = ttys.iter_mut().find(|tty| tty.id == id) else {
             return false;
         };
         if tty.line.is_empty() {
             tty.eof_pending = true;
-            tty.take_reader()
+            tty.take_readers()
         } else {
             tty.flush_line(false)
         }
     };
-    wake_reader(wake_task);
+    wake_readers(wake_tasks);
     crate::wm::request_repaint();
     true
 }
@@ -252,7 +263,7 @@ pub fn read_input_blocking(id: u64, buf: &mut [u8], len: usize) -> usize {
                 tty.eof_pending = false;
                 Some(0)
             } else {
-                tty.waiting_reader = Some(task_id);
+                tty.add_reader(task_id);
                 None
             }
         };
@@ -269,6 +280,34 @@ pub fn read_input_blocking(id: u64, buf: &mut [u8], len: usize) -> usize {
             }
         }
         x86_64::instructions::interrupts::disable();
+    }
+}
+
+pub fn input_readiness(id: u64) -> u64 {
+    let ttys = TTYS.lock();
+    let Some(tty) = ttys.iter().find(|tty| tty.id == id) else {
+        return crate::evented::EVENT_ERROR;
+    };
+    if tty.pending_input_bytes() > 0 || tty.eof_pending {
+        crate::evented::EVENT_READ
+    } else {
+        0
+    }
+}
+
+pub fn register_input_waiter(id: u64, task_id: usize) -> bool {
+    let mut ttys = TTYS.lock();
+    let Some(tty) = ttys.iter_mut().find(|tty| tty.id == id) else {
+        return false;
+    };
+    tty.add_reader(task_id);
+    true
+}
+
+pub fn unregister_input_waiter(id: u64, task_id: usize) {
+    let mut ttys = TTYS.lock();
+    if let Some(tty) = ttys.iter_mut().find(|tty| tty.id == id) {
+        tty.remove_reader(task_id);
     }
 }
 
@@ -338,9 +377,6 @@ pub fn selftest_passes() -> bool {
     passed
 }
 
-fn wake_reader(task_id: Option<usize>) {
-    if let Some(task_id) = task_id {
-        crate::wait_queue::wake(TTY_READ_QUEUE, task_id);
-        crate::scheduler::unblock(task_id);
-    }
+fn wake_readers(task_ids: Vec<usize>) {
+    crate::evented::wake_tasks(TTY_READ_QUEUE, task_ids);
 }

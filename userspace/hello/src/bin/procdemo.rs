@@ -80,11 +80,6 @@ fn main(_args: Args) -> ! {
 }
 
 fn wait_for_exit(pid: u64) -> Result<u64> {
-    for _ in 0..5000 {
-        if let Ok(code) = waitpid(pid) {
-            return Ok(code);
-        }
-        yield_now();
-    }
+    let _ = wait_child(pid, libcool::evented::TIMEOUT_FOREVER);
     waitpid(pid)
 }

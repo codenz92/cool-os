@@ -1200,6 +1200,36 @@ impl WindowManager {
         self.find_user_gui_mut(owner, handle)?.poll_event(out)
     }
 
+    pub fn user_gui_event_readiness(&self, owner: usize, handle: u64) -> Option<u64> {
+        let idx = self.find_user_gui_index(owner, handle)?;
+        match self.windows.get(idx) {
+            Some(AppWindow::UserGui(app)) if app.has_pending_event() => {
+                Some(crate::evented::EVENT_READ)
+            }
+            Some(AppWindow::UserGui(_)) => Some(0),
+            _ => None,
+        }
+    }
+
+    pub fn register_user_gui_event_waiter(
+        &mut self,
+        owner: usize,
+        handle: u64,
+        task_id: usize,
+    ) -> bool {
+        let Some(app) = self.find_user_gui_mut(owner, handle) else {
+            return false;
+        };
+        app.register_event_waiter(task_id);
+        true
+    }
+
+    pub fn unregister_user_gui_event_waiter(&mut self, owner: usize, handle: u64, task_id: usize) {
+        if let Some(app) = self.find_user_gui_mut(owner, handle) {
+            app.unregister_event_waiter(task_id);
+        }
+    }
+
     pub fn close_user_gui(&mut self, owner: usize, handle: u64) -> bool {
         let Some(idx) = self.find_user_gui_index(owner, handle) else {
             return false;

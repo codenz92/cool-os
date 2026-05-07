@@ -1,6 +1,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
+use core::mem;
 
 use crate::wm::window::{Window, TITLE_H};
 
@@ -16,6 +17,7 @@ pub struct UserGuiApp {
     owner: usize,
     handle: u64,
     events: Vec<[u8; EVENT_PACKET_SIZE]>,
+    event_waiters: Vec<usize>,
     last_content_w: u16,
     last_content_h: u16,
     close_requested_at: Option<u64>,
@@ -39,6 +41,7 @@ impl UserGuiApp {
             owner,
             handle,
             events: Vec::new(),
+            event_waiters: Vec::new(),
             last_content_w: width,
             last_content_h: height,
             close_requested_at: None,
@@ -81,6 +84,18 @@ impl UserGuiApp {
         let packet = self.events.remove(0);
         out[..EVENT_PACKET_SIZE].copy_from_slice(&packet);
         Some(EVENT_PACKET_SIZE)
+    }
+
+    pub fn has_pending_event(&self) -> bool {
+        !self.events.is_empty()
+    }
+
+    pub fn register_event_waiter(&mut self, task_id: usize) {
+        crate::evented::add_waiter(&mut self.event_waiters, task_id);
+    }
+
+    pub fn unregister_event_waiter(&mut self, task_id: usize) {
+        crate::evented::remove_waiter(&mut self.event_waiters, task_id);
     }
 
     pub fn request_close(&mut self) {
@@ -132,6 +147,7 @@ impl UserGuiApp {
             self.events.remove(0);
         }
         self.events.push(packet);
+        crate::evented::wake_tasks("gui-event", mem::take(&mut self.event_waiters));
     }
 
     fn clear_placeholder(&mut self) {

@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use libcool::{event, io, prelude::*};
+use libcool::{event, evented, io, prelude::*};
 
 libcool::entry!(main);
 
@@ -9,6 +9,7 @@ fn main(_args: Args) -> ! {
     println!("keyecho: ready");
 
     loop {
+        let _ = evented::wait_fd_read(INPUT_FD, evented::TIMEOUT_FOREVER);
         match event::read_event(INPUT_FD) {
             Ok(Some(Event::KeyChar { bytes, len })) => {
                 io::write_stdout(&bytes[..len]);

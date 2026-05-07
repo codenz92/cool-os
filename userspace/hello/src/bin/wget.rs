@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use libcool::{io, net, prelude::*};
+use libcool::{evented, io, net, prelude::*};
 
 libcool::entry!(main);
 
@@ -47,6 +47,7 @@ fn run(url: &[u8]) -> core::result::Result<(), &'static [u8]> {
 
     let mut buf = [0u8; 512];
     loop {
+        let _ = evented::wait_socket_read(sock, evented::TIMEOUT_FOREVER);
         let n = net::recv(sock, &mut buf).map_err(|_| &b"recv failed"[..])?;
         if n == 0 {
             break;

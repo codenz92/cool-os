@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use libcool::{fs, io, prelude::*};
+use libcool::{evented, fs, io, prelude::*};
 
 const MAX_LINE: usize = 256;
 const MAX_TOKENS: usize = 18;
@@ -81,6 +81,7 @@ fn main(_args: Args) -> ! {
 
     loop {
         io::write_stdout(b"$ ");
+        let _ = evented::wait_fd_read(io::STDIN, evented::TIMEOUT_FOREVER);
         let n = match io::read(io::STDIN, &mut line) {
             Ok(0) => {
                 println!("sh: eof");
@@ -555,6 +556,7 @@ fn print_status_if_failed(status: u64) {
 }
 
 fn wait_for_exit(pid: u64) -> Result<u64> {
+    let _ = evented::wait_child(pid, evented::TIMEOUT_FOREVER);
     waitpid(pid)
 }
 

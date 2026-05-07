@@ -1,6 +1,7 @@
 extern crate alloc;
 
 use alloc::{format, string::String, vec, vec::Vec};
+use core::mem;
 use spin::Mutex;
 
 const ETHERTYPE_IPV4: u16 = 0x0800;
@@ -97,6 +98,57 @@ struct TcpSocket {
     rx: Vec<u8>,
     pending_rx: Vec<TcpPendingSegment>,
     peer_closed: bool,
+    waiting_readers: Vec<usize>,
+    waiting_writers: Vec<usize>,
+}
+
+impl TcpSocket {
+    fn add_reader_waiter(&mut self, task_id: usize) {
+        crate::evented::add_waiter(&mut self.waiting_readers, task_id);
+    }
+
+    fn add_writer_waiter(&mut self, task_id: usize) {
+        crate::evented::add_waiter(&mut self.waiting_writers, task_id);
+    }
+
+    fn remove_waiter(&mut self, task_id: usize) {
+        crate::evented::remove_waiter(&mut self.waiting_readers, task_id);
+        crate::evented::remove_waiter(&mut self.waiting_writers, task_id);
+    }
+
+    fn take_readers(&mut self) -> Vec<usize> {
+        mem::take(&mut self.waiting_readers)
+    }
+
+    fn take_writers(&mut self) -> Vec<usize> {
+        mem::take(&mut self.waiting_writers)
+    }
+
+    fn take_waiters(&mut self) -> Vec<usize> {
+        let mut waiters = self.take_readers();
+        waiters.extend(self.take_writers());
+        waiters
+    }
+
+    fn revents(&self, events: u64) -> u64 {
+        let mut revents = 0u64;
+        let disconnected =
+            self.peer_closed || (self.state == TcpState::Closed && self.remote_ip != 0);
+        let readable = !self.rx.is_empty() || disconnected;
+        if events & crate::evented::EVENT_READ != 0 && readable {
+            revents |= crate::evented::EVENT_READ;
+        }
+        if events & crate::evented::EVENT_WRITE != 0
+            && matches!(self.state, TcpState::Established | TcpState::CloseWait)
+            && !self.peer_closed
+        {
+            revents |= crate::evented::EVENT_WRITE;
+        }
+        if disconnected {
+            revents |= crate::evented::EVENT_HANGUP;
+        }
+        revents
+    }
 }
 
 struct TcpPendingSegment {
@@ -1022,6 +1074,8 @@ pub fn socket_open(
         rx: Vec::new(),
         pending_rx: Vec::new(),
         peer_closed: false,
+        waiting_readers: Vec::new(),
+        waiting_writers: Vec::new(),
     };
     for (idx, slot) in state.sockets.iter_mut().enumerate() {
         if slot.is_none() {
@@ -1188,6 +1242,41 @@ pub fn socket_recv(owner: usize, socket_fd: u64, out: &mut [u8]) -> Result<usize
     Ok(0)
 }
 
+pub fn socket_poll_revents(owner: usize, socket_fd: u64, events: u64) -> u64 {
+    let state = NET_STATE.lock();
+    let Some(idx) = socket_index(socket_fd) else {
+        return crate::evented::EVENT_ERROR;
+    };
+    let Some(socket) = state.sockets.get(idx).and_then(Option::as_ref) else {
+        return crate::evented::EVENT_ERROR;
+    };
+    if socket.owner != owner {
+        return crate::evented::EVENT_ERROR;
+    }
+    socket.revents(events)
+}
+
+pub fn socket_register_waiter(owner: usize, socket_fd: u64, task_id: usize, events: u64) -> bool {
+    let mut state = NET_STATE.lock();
+    let Ok(socket) = socket_mut_locked(&mut state, owner, socket_fd) else {
+        return false;
+    };
+    if events & crate::evented::EVENT_READ != 0 {
+        socket.add_reader_waiter(task_id);
+    }
+    if events & crate::evented::EVENT_WRITE != 0 {
+        socket.add_writer_waiter(task_id);
+    }
+    true
+}
+
+pub fn socket_unregister_waiter(owner: usize, socket_fd: u64, task_id: usize) {
+    let mut state = NET_STATE.lock();
+    if let Ok(socket) = socket_mut_locked(&mut state, owner, socket_fd) {
+        socket.remove_waiter(task_id);
+    }
+}
+
 pub fn socket_peer_closed(owner: usize, socket_fd: u64) -> bool {
     let state = NET_STATE.lock();
     let Some(idx) = socket_index(socket_fd) else {
@@ -1205,12 +1294,12 @@ pub fn socket_close(owner: usize, socket_fd: u64) -> bool {
     let Some(idx) = socket_index(socket_fd) else {
         return false;
     };
-    let reply = {
+    let (reply, wake_tasks) = {
         let mut state = NET_STATE.lock();
         let Some(slot) = state.sockets.get_mut(idx) else {
             return false;
         };
-        let Some(socket) = slot.as_ref() else {
+        let Some(socket) = slot.as_mut() else {
             return false;
         };
         if socket.owner != owner {
@@ -1231,9 +1320,11 @@ pub fn socket_close(owner: usize, socket_fd: u64) -> bool {
         } else {
             None
         };
+        let wake_tasks = socket.take_waiters();
         *slot = None;
-        reply
+        (reply, wake_tasks)
     };
+    crate::evented::wake_tasks("socket", wake_tasks);
     if let Some(reply) = reply {
         let _ = send_tcp_segment(
             reply.src_port,
@@ -1415,6 +1506,7 @@ fn handle_tcp(src_ip: u32, packet: &[u8]) {
     let flags = packet[13];
     let payload = &packet[data_offset..];
     let mut reply = None;
+    let mut wake_tasks = Vec::new();
 
     {
         let mut state = NET_STATE.lock();
@@ -1438,6 +1530,7 @@ fn handle_tcp(src_ip: u32, packet: &[u8]) {
                 socket.tx_acked = ack_no;
                 socket.ack = seq.wrapping_add(1);
                 socket.state = TcpState::Established;
+                wake_tasks.extend(socket.take_writers());
                 reply = Some(TcpReply {
                     src_port: socket.local_port,
                     dst_ip: src_ip,
@@ -1455,14 +1548,18 @@ fn handle_tcp(src_ip: u32, packet: &[u8]) {
                     socket.peer_closed = true;
                     socket.state = TcpState::Closed;
                     socket.pending_rx.clear();
+                    wake_tasks.extend(socket.take_waiters());
                     break;
                 }
                 if flags & 0x10 != 0 && seq_at_or_after(ack_no, socket.tx_acked) {
                     socket.tx_acked = ack_no;
+                    wake_tasks.extend(socket.take_writers());
                 }
                 let mut should_ack = false;
                 if !payload.is_empty() {
-                    let _ = receive_tcp_payload(socket, seq, payload);
+                    if receive_tcp_payload(socket, seq, payload) {
+                        wake_tasks.extend(socket.take_readers());
+                    }
                     should_ack = true;
                 }
                 if flags & 0x01 != 0 {
@@ -1472,6 +1569,8 @@ fn handle_tcp(src_ip: u32, packet: &[u8]) {
                         socket.ack = socket.ack.wrapping_add(1);
                         socket.peer_closed = true;
                         socket.state = TcpState::CloseWait;
+                        wake_tasks.extend(socket.take_readers());
+                        wake_tasks.extend(socket.take_writers());
                     }
                 }
                 if should_ack {
@@ -1489,6 +1588,8 @@ fn handle_tcp(src_ip: u32, packet: &[u8]) {
             }
         }
     }
+
+    crate::evented::wake_tasks("socket", wake_tasks);
 
     if let Some(reply) = reply {
         let _ = send_tcp_segment(

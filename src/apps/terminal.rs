@@ -1582,7 +1582,7 @@ impl TerminalApp {
         self.cmd_lines(
             "DEVKIT",
             alloc::vec![
-                String::from("coolOS devkit ABI=8"),
+                String::from("coolOS devkit ABI=9"),
                 String::from("docs=/SDK/README.TXT"),
                 String::from("app_template=/SDK/APP_TEMPLATE.RS"),
                 String::from("package_template=/SDK/PACKAGE_TEMPLATE.PKG"),

@@ -1,11 +1,11 @@
 #![no_std]
 #![no_main]
 
-use libcool::{io, prelude::*};
+use libcool::prelude::*;
 
 libcool::entry!(main);
 
 fn main(_args: Args) -> ! {
-    io::write_stdout(b"coolOS coolOS-userspace-abi/8 x86_64\n");
+    print!("coolOS coolOS-userspace-abi/{} x86_64\n", abi_version());
     exit(0);
 }

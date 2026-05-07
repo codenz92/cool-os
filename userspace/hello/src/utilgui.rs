@@ -2,7 +2,7 @@
 
 use core::sync::atomic::{AtomicU8, Ordering};
 
-use libcool::{fs, gui, io, prelude::*};
+use libcool::{evented, fs, gui, io, prelude::*};
 
 pub const WIDTH: usize = 420;
 pub const HEIGHT: usize = 252;
@@ -140,6 +140,7 @@ pub fn run_editor(
 
     loop {
         let mut changed = false;
+        let _ = window.wait_event_ready(evented::TIMEOUT_FOREVER);
         loop {
             match window.poll_event() {
                 Ok(Some(gui::Event::Close)) => {
@@ -299,7 +300,6 @@ pub fn run_editor(
             &prompt_buf[..prompt_len],
         );
         let _ = window.present(pixels);
-        sleep_ms(25);
     }
 }
 
@@ -337,6 +337,7 @@ pub fn run_trash(args: Args, pixels: &mut [u32; PIXELS], listing: &mut [u8; LIST
 
     loop {
         let mut redraw = false;
+        let _ = window.wait_event_ready(evented::TIMEOUT_FOREVER);
         loop {
             match window.poll_event() {
                 Ok(Some(gui::Event::Close)) => {
@@ -395,7 +396,6 @@ pub fn run_trash(args: Args, pixels: &mut [u32; PIXELS], listing: &mut [u8; LIST
             draw_trash(pixels, listing, len, scroll, status);
             let _ = window.present(pixels);
         }
-        sleep_ms(40);
     }
 }
 
@@ -421,6 +421,7 @@ pub fn run_screenshot(args: Args, pixels: &mut [u32; PIXELS]) -> ! {
     }
 
     loop {
+        let _ = window.wait_event_ready(evented::TIMEOUT_FOREVER);
         loop {
             match window.poll_event() {
                 Ok(Some(gui::Event::Close)) => {
@@ -457,7 +458,6 @@ pub fn run_screenshot(args: Args, pixels: &mut [u32; PIXELS]) -> ! {
                 }
             }
         }
-        sleep_ms(40);
     }
 }
 

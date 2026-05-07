@@ -26,6 +26,7 @@ mod drivers;
 mod elf;
 mod entropy;
 mod event_bus;
+mod evented;
 mod fat32;
 mod font;
 mod framebuffer;

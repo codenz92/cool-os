@@ -4,14 +4,15 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–46 are complete. The current milestone gives coolOS a much more
+Phases 1–47 are complete. The current milestone gives coolOS a much more
 normal command-line and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
-commit, metadata and rename APIs, persistent sysreports under `/LOGS`, and an
-in-image `/SDK` with devkit templates. Phases 45-46 focus on smoothness:
-cursor-only framebuffer updates, input-first idle-loop ordering, adaptive
-36/144 Hz frame pacing, and compositor telemetry for damage, cursor overlay
-work, and frame-budget misses.
+commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
+in-image `/SDK` with devkit templates, and ABI v9 evented readiness waits.
+Phases 45-47 focus on responsiveness: cursor-only framebuffer updates,
+input-first idle-loop ordering, adaptive 36/144 Hz frame pacing, compositor
+telemetry, and `poll`-driven userspace waits for pipes, TTY stdin, sockets,
+GUI events, and child exits.
 
 ---
 
@@ -1300,7 +1301,7 @@ userspace app development.
 - [x] Wire the new devkit binary into the Makefile and disk-image builder.
 - [x] Add `make smoke-phase44-devkit`.
 
-**Current status:** complete. The boot image now carries ABI v8 SDK notes,
+**Current status:** complete. The boot image now carries current ABI SDK notes,
 starter app/package templates, and both kernel and userspace commands to find
 them.
 
@@ -1364,6 +1365,33 @@ lower Phase 45 cadence.
 
 ---
 
+## ✅ Phase 47 — Evented Userspace Runtime
+
+**Goal:** Replace spin/yield readiness loops with a kernel-backed event wait
+surface that lets ring-3 tasks block on the resources they actually care about.
+
+- [x] Add ABI v9 `poll(desc_ptr, count, timeout_ms)` with bounded descriptor
+      validation, timeout handling, and lost-wakeup-safe waiter registration.
+- [x] Support fd readiness for regular files and pipes, including pipe
+      read/write wakeups and HANGUP on closed peers.
+- [x] Support current TTY stdin readiness for canonical `read(0)` consumers.
+- [x] Support TCP socket read/write/HANGUP readiness from the network stack.
+- [x] Support userspace GUI event readiness from compositor event queues.
+- [x] Support child-exit readiness so shells and process demos can wait without
+      yield loops before calling `waitpid`.
+- [x] Add `libcool::evented::{PollDesc, poll, wait_fd_read, wait_socket_read,
+      wait_gui_event, wait_child}` and migrate representative userspace apps.
+- [x] Add `/bin/polldemo` plus `make smoke-phase47-evented-userspace`.
+- [x] Update `/SDK/README.TXT`, in-OS devkit/about text, README, and roadmap
+      docs for ABI v9.
+
+**Current status:** complete. `/bin/sh`, the event terminal, GUI utilities,
+`/bin/guidemo`, `/bin/wget`, and process demos now use event waits where the
+kernel can report readiness. `/bin/polldemo` verifies poll timeout, pipe
+readiness, and child-exit readiness under QEMU.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -1378,7 +1406,7 @@ Userspace binaries are written in `#![no_std]` Rust and link against
 `userspace/libcool`. The SDK owns `_start`, panic aborts, initial argv parsing,
 raw syscall assembly, and convenience APIs such as `println!`, `File::open`,
 `File::create`, `pipe`, `mmap`, `shmem_create`, `spawn_args`,
-`spawn_fds_args`, `read_event`, `dns_resolve`, TCP sockets, time, and
+`spawn_fds_args`, `evented::poll`, `read_event`, `dns_resolve`, TCP sockets, time, and
 filesystem utility calls plus GUI windows through `libcool::fs` and
 `libcool::gui`.
 
@@ -1426,4 +1454,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.7 | Phase 43 complete: observability and sysreport |
 | v7.8 | Phase 44 complete: developer platform and SDK devkit |
 | v7.9 | Phase 45 complete: compositor latency and smoothness |
-| v7.10 | Current — Phase 46 complete: adaptive high refresh |
+| v7.10 | Phase 46 complete: adaptive high refresh |
+| v7.11 | Current — Phase 47 complete: evented userspace runtime |

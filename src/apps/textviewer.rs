@@ -25,7 +25,7 @@ const SUBTLE: u32 = 0x00_66_AA_DD;
 const MUTED: u32 = 0x00_55_7A_92;
 
 const ABOUT: &[&str] = &[
-    " coolOS v7.10",
+    " coolOS v7.11",
     " Bare-metal OS in Rust",
     "",
     " == Current Platform ==",
@@ -34,6 +34,7 @@ const ABOUT: &[&str] = &[
     " TTY sessions, foreground jobs, and userspace /bin/sh",
     " Shell pipes, redirection, cwd, stat, rename, and sync",
     " Browser, package manifests, recovery, and diagnostics",
+    " Evented poll ABI for pipes, TTY, sockets, GUI, and child exit",
     " Adaptive 36/144 Hz pacing and cursor overlay smoothness",
     "",
     " == Commands ==",

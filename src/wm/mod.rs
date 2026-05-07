@@ -258,6 +258,26 @@ pub fn user_gui_poll_event(owner: usize, handle: u64, out: &mut [u8]) -> Option<
         .and_then(|mut wm| wm.poll_user_gui_event(owner, handle, out))
 }
 
+pub fn user_gui_event_readiness(owner: usize, handle: u64) -> Option<u64> {
+    compositor::WM.try_lock().map(|wm| {
+        wm.user_gui_event_readiness(owner, handle)
+            .unwrap_or(crate::evented::EVENT_ERROR)
+    })
+}
+
+pub fn register_user_gui_event_waiter(owner: usize, handle: u64, task_id: usize) -> bool {
+    compositor::WM
+        .try_lock()
+        .map(|mut wm| wm.register_user_gui_event_waiter(owner, handle, task_id))
+        .unwrap_or(false)
+}
+
+pub fn unregister_user_gui_event_waiter(owner: usize, handle: u64, task_id: usize) {
+    if let Some(mut wm) = compositor::WM.try_lock() {
+        wm.unregister_user_gui_event_waiter(owner, handle, task_id);
+    }
+}
+
 pub fn user_gui_close(owner: usize, handle: u64) -> bool {
     compositor::WM
         .try_lock()
