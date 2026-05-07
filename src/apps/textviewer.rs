@@ -25,7 +25,7 @@ const SUBTLE: u32 = 0x00_66_AA_DD;
 const MUTED: u32 = 0x00_55_7A_92;
 
 const ABOUT: &[&str] = &[
-    " coolOS v7.17",
+    " coolOS v7.18",
     " Bare-metal OS in Rust",
     "",
     " == Current Platform ==",
@@ -33,7 +33,7 @@ const ABOUT: &[&str] = &[
     " CoolFS root filesystem with users, modes, and VFS",
     " TTY sessions, foreground jobs, and userspace /bin/sh",
     " Shell pipes, redirection, cwd, stat, rename, and sync",
-    " Browser DOM/forms/CSS/images, packages, recovery, diagnostics",
+    " Browser DOM/forms/POST/CSS/images, packages, diagnostics",
     " Evented poll ABI for pipes, TTY, sockets, GUI, and child exit",
     " Raw TTY control, terminal geometry, and ANSI/TUI output",
     " Adaptive 36/144 Hz pacing and cursor overlay smoothness",
@@ -41,6 +41,7 @@ const ABOUT: &[&str] = &[
     " == Commands ==",
     " help         - list terminal commands",
     " sh           - start userspace shell",
+    " browser URL  - open the native Web Browser",
     " diagnostics  - combined health report",
     " sysreport    - write /LOGS/SYSREPORT.TXT",
     " devkit       - SDK paths and templates",
@@ -225,7 +226,9 @@ impl TextViewerApp {
             String::from("  Devkit           /SDK docs and package templates"),
             String::from(""),
             String::from("Useful commands"),
-            String::from("  sh, help, sysreport write, devkit, smoothness, services, jobs, fsck"),
+            String::from(
+                "  sh, browser [url], help, sysreport write, devkit, services, jobs, fsck"
+            ),
         ];
         Self::from_lines(
             x,

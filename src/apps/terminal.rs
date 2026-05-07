@@ -57,6 +57,7 @@ pub struct TerminalApp {
     tty_id: u64,
     cmd_buf: String,
     pending_key_sink_fd: Option<usize>,
+    pending_browser_url: Option<String>,
     foreground_job: Option<ForegroundJob>,
     col: usize,
     row: usize,
@@ -93,6 +94,7 @@ impl TerminalApp {
             tty_id,
             cmd_buf: String::new(),
             pending_key_sink_fd: None,
+            pending_browser_url: None,
             foreground_job: None,
             col: 0,
             row: 0,
@@ -339,6 +341,10 @@ impl TerminalApp {
 
     pub fn take_pending_key_sink(&mut self) -> Option<usize> {
         self.pending_key_sink_fd.take()
+    }
+
+    pub fn take_browser_request(&mut self) -> Option<String> {
+        self.pending_browser_url.take()
     }
 
     pub fn drain_tty_output(&mut self) {
@@ -1024,6 +1030,16 @@ impl TerminalApp {
                 }
             }
 
+            Some("browser") | Some("web") | Some("www") => {
+                let target = words.next().unwrap_or("browser://home");
+                self.pending_browser_url = Some(String::from(target));
+                self.set_fg(FG_ACCENT);
+                self.print_str("browser: opening ");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(target);
+                self.print_char('\n');
+            }
+
             Some("ipc") => match crate::vfs::vfs_pipe() {
                 Some((read_fd, write_fd)) => {
                     let r =
@@ -1159,6 +1175,7 @@ impl TerminalApp {
             ("reap", "reap all exited tasks"),
             ("exec <path>", "run ELF binary"),
             ("sh", "start userspace shell"),
+            ("browser [url]", "open URL in Web Browser"),
             ("info", "CPU, memory, and system info"),
             ("uptime", "time since boot"),
             ("usb", "USB controller status"),

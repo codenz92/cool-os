@@ -494,6 +494,10 @@ fn png_decode_roundtrip() -> bool {
         "/TMP/PHASE53.DOM.HTML",
         b"<!doctype html><html><head><title>Phase 53 DOM Forms</title><style>form{margin-left:12px}.primary{color:#0b4f71;background:#eef8ff}</style></head><body><h1>Phase 53 DOM backed form</h1><p class=\"primary\">DOM backed form controls keep live values across reflow.</p><form action=\"/find\" method=\"get\"><input type=\"hidden\" name=\"phase\" value=\"53\"><input type=\"search\" name=\"q\" value=\"cool\" placeholder=\"Search\"><input type=\"checkbox\" name=\"safe\" value=\"1\"><select name=\"mode\" aria-label=\"Mode\"><option value=\"web\">Web</option><option value=\"img\" selected>Images</option></select><textarea name=\"notes\" rows=\"3\">old notes</textarea><input type=\"submit\" name=\"go\" value=\"Go\"><input type=\"reset\" value=\"Reset\"></form><form action=\"/post\" method=\"post\"><input type=\"text\" name=\"msg\" value=\"draft\"><input type=\"submit\" name=\"post\" value=\"Post\"></form></body></html>",
     );
+    let _ = crate::vfs::vfs_safe_write_file(
+        "/TMP/PHASE54.POST.HTML",
+        b"<!doctype html><html><head><title>Phase 54 POST</title><style>form{margin-left:12px}.net{color:#063970;background:#eef7ff}</style></head><body><h1>Phase 54 POST submission</h1><p class=\"net\">POST forms now build real request bodies through the Browser network path.</p><form action=\"https://example.com/post\" method=\"post\"><input type=\"hidden\" name=\"phase\" value=\"54\"><input type=\"text\" name=\"msg\" value=\"draft\"><textarea name=\"notes\" rows=\"3\">network body</textarea><input type=\"submit\" name=\"send\" value=\"Send\"></form></body></html>",
+    );
     image.width == 2
         && image.height == 2
         && image.pixels.as_slice() == [0x00ff0000, 0x0000ff00, 0x000000ff, 0x00ffffff]
@@ -547,5 +551,29 @@ fn browser_html_render_roundtrip() -> bool {
         && interaction
             .iter()
             .any(|line| line == "POST file:///post body=msg=draft&post=Post");
-    has_heading && has_css && has_quote && has_table && has_image && has_form && has_interaction
+    let post_request = crate::net::http_request_debug_for_test(
+        "POST",
+        "https://example.com/post",
+        "msg=draft&post=Post",
+        "application/x-www-form-urlencoded",
+    );
+    let has_post_request = post_request
+        .iter()
+        .any(|line| line == "POST /post HTTP/1.1")
+        && post_request.iter().any(|line| line == "Host: example.com")
+        && post_request
+            .iter()
+            .any(|line| line == "Content-Type: application/x-www-form-urlencoded")
+        && post_request.iter().any(|line| line == "Content-Length: 19")
+        && post_request
+            .iter()
+            .any(|line| line == "msg=draft&post=Post");
+    has_heading
+        && has_css
+        && has_quote
+        && has_table
+        && has_image
+        && has_form
+        && has_interaction
+        && has_post_request
 }

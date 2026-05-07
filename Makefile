@@ -1,4 +1,4 @@
-.PHONY: run run-net run-usb run-usb-init run-smooth run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-phase31-accounts smoke-phase32-isolation smoke-phase33-process-control smoke-phase34-tty-jobs smoke-phase35-tty-input smoke-phase36-userspace-shell smoke-phase37-coreutils smoke-phase38-apps smoke-phase39-recovery smoke-phase40-shell-semantics smoke-phase41-fs-durability smoke-phase42-app-consistency smoke-phase43-observability smoke-phase44-devkit smoke-phase45-smoothness smoke-phase46-adaptive-refresh smoke-phase47-evented-userspace smoke-phase48-terminal-tui smoke-phase49-browser-engine smoke-phase50-css-layout smoke-phase51-browser-forms smoke-phase52-dom-events smoke-phase53-dom-forms smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
+.PHONY: run run-net run-usb run-usb-init run-smooth run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-phase31-accounts smoke-phase32-isolation smoke-phase33-process-control smoke-phase34-tty-jobs smoke-phase35-tty-input smoke-phase36-userspace-shell smoke-phase37-coreutils smoke-phase38-apps smoke-phase39-recovery smoke-phase40-shell-semantics smoke-phase41-fs-durability smoke-phase42-app-consistency smoke-phase43-observability smoke-phase44-devkit smoke-phase45-smoothness smoke-phase46-adaptive-refresh smoke-phase47-evented-userspace smoke-phase48-terminal-tui smoke-phase49-browser-engine smoke-phase50-css-layout smoke-phase51-browser-forms smoke-phase52-dom-events smoke-phase53-dom-forms smoke-phase54-browser-post smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -353,6 +353,7 @@ smoke-browser-png: build
 		--post-hmp-delay 2.0 \
 		--screendump "$(SMOKE_ARTIFACT_DIR)/browser-png-smoke.ppm" \
 		--expect-framebuffer-window \
+		--expect "[browser] open file:///tmp/pngtest.png" \
 		--expect "[selftest] kernel unit checks ok=27 fail=0" \
 		--expect "[boot] desktop ready"
 
@@ -370,6 +371,7 @@ smoke-browser-html: build
 		--post-hmp-delay 2.0 \
 		--screendump "$(SMOKE_ARTIFACT_DIR)/browser-html-smoke.ppm" \
 		--expect-framebuffer-window \
+		--expect "[browser] open file:///tmp/phase19.html" \
 		--expect "[selftest] kernel unit checks ok=27 fail=0" \
 		--expect "[boot] desktop ready"
 
@@ -1142,6 +1144,7 @@ smoke-phase49-browser-engine: build
 		--post-hmp-delay 2.0 \
 		--screendump "$(SMOKE_ARTIFACT_DIR)/phase49-browser-engine.ppm" \
 		--expect-framebuffer-window \
+		--expect "[browser] open file:///tmp/phase49.html" \
 		--expect "[selftest] kernel unit checks ok=27 fail=0" \
 		--expect "[boot] desktop ready"
 
@@ -1159,6 +1162,7 @@ smoke-phase50-css-layout: build
 		--post-hmp-delay 2.0 \
 		--screendump "$(SMOKE_ARTIFACT_DIR)/phase50-css-layout.ppm" \
 		--expect-framebuffer-window \
+		--expect "[browser] open file:///tmp/phase50.css.html" \
 		--expect "[selftest] kernel unit checks ok=27 fail=0" \
 		--expect "[boot] desktop ready"
 
@@ -1176,6 +1180,7 @@ smoke-phase51-browser-forms: build
 		--post-hmp-delay 2.0 \
 		--screendump "$(SMOKE_ARTIFACT_DIR)/phase51-browser-forms.ppm" \
 		--expect-framebuffer-window \
+		--expect "[browser] open file:///tmp/phase51.form.html" \
 		--expect "[selftest] kernel unit checks ok=27 fail=0" \
 		--expect "[boot] desktop ready"
 
@@ -1193,6 +1198,7 @@ smoke-phase52-dom-events: build
 		--post-hmp-delay 2.0 \
 		--screendump "$(SMOKE_ARTIFACT_DIR)/phase52-dom-events.ppm" \
 		--expect-framebuffer-window \
+		--expect "[browser] open file:///tmp/phase52.dom.html" \
 		--expect "[selftest] kernel unit checks ok=27 fail=0" \
 		--expect "[boot] desktop ready"
 
@@ -1210,6 +1216,32 @@ smoke-phase53-dom-forms: build
 		--post-hmp-delay 2.0 \
 		--screendump "$(SMOKE_ARTIFACT_DIR)/phase53-dom-forms.ppm" \
 		--expect-framebuffer-window \
+		--expect "[browser] open file:///tmp/phase53.dom.html" \
+		--expect "[selftest] kernel unit checks ok=27 fail=0" \
+		--expect "[boot] desktop ready"
+
+smoke-phase54-browser-post: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--net \
+		--usb \
+		--seconds 100 \
+		--no-auto-login \
+		--fw-cmd "browser file:///tmp/phase54.post.html" \
+		--interact-after "[browser] open file:///tmp/phase54.post.html" \
+		--hmp "sendkey tab" \
+		--hmp "sendkey ret" \
+		--post-hmp-delay 28.0 \
+		--screendump "$(SMOKE_ARTIFACT_DIR)/phase54-browser-post.ppm" \
+		--expect-framebuffer-window \
+		--expect "[net] virtio-net ready driver=virtio-net" \
+		--expect "[browser] open file:///tmp/phase54.post.html" \
+		--expect "[http] POST https://example.com/post body=" \
+		--expect "[tls-ok] https example.com/post via" \
+		--expect "verified_root=AAA Certificate Services" \
 		--expect "[selftest] kernel unit checks ok=27 fail=0" \
 		--expect "[boot] desktop ready"
 
@@ -1345,6 +1377,7 @@ smoke-net-browser-https: build
 		--screendump "$(SMOKE_ARTIFACT_DIR)/browser-https-smoke.ppm" \
 		--expect-framebuffer-window \
 		--expect "[net] virtio-net ready driver=virtio-net" \
+		--expect "[browser] open https://example.com/" \
 		--expect "[tls-ok] https example.com/ via" \
 		--expect "verified_root=AAA Certificate Services" \
 		--expect "[boot] desktop ready"
@@ -1365,6 +1398,7 @@ smoke-net-browser-google: build
 		--screendump "$(SMOKE_ARTIFACT_DIR)/browser-google-smoke.ppm" \
 		--expect-framebuffer-window \
 		--expect "[net] virtio-net ready driver=virtio-net" \
+		--expect "[browser] open https://google.com/" \
 		--expect "[tls-ok] https google.com/ via" \
 		--expect "verified_root=GTS Root R1" \
 		--expect "[boot] desktop ready"

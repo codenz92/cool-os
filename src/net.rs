@@ -25,6 +25,7 @@ const POLL_SPINS: usize = 3_000_000;
 const TCP_RETRY_SPINS: usize = POLL_SPINS / 3;
 const TCP_MAX_RETRIES: usize = 3;
 const HTTP_MAX_BYTES: usize = 512 * 1024;
+const HTTP_MAX_REQUEST_BODY: usize = 64 * 1024;
 const HTTP_MAX_REDIRECTS: usize = 5;
 const DNS_CACHE_MAX: usize = 16;
 const DNS_CACHE_TTL_TICKS: u64 = crate::interrupts::ticks_for_millis(300_000);
@@ -56,6 +57,21 @@ pub struct HttpResponse {
 struct NormalizedHttpResponse {
     text: String,
     body_bytes: Vec<u8>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HttpRequestMethod {
+    Get,
+    Post,
+}
+
+impl HttpRequestMethod {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Get => "GET",
+            Self::Post => "POST",
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -508,17 +524,107 @@ pub fn http_get(host: &str, path: &str) -> Result<String, &'static str> {
 
 pub fn web_get_response(url: &str) -> Result<HttpResponse, &'static str> {
     let (scheme, host, path) = parse_web_url(url)?;
-    http_get_response_follow(&scheme, &host, &path, 0)
+    http_request_response_follow(&scheme, &host, &path, HttpRequestMethod::Get, &[], None, 0)
+}
+
+pub fn web_post_response(
+    url: &str,
+    body: &str,
+    content_type: &str,
+) -> Result<HttpResponse, &'static str> {
+    crate::println!(
+        "[http] POST {} body={} content_type={}",
+        url,
+        body.len(),
+        content_type
+    );
+    let (scheme, host, path) = parse_web_url(url)?;
+    http_request_response_follow(
+        &scheme,
+        &host,
+        &path,
+        HttpRequestMethod::Post,
+        body.as_bytes(),
+        Some(content_type),
+        0,
+    )
 }
 
 pub fn http_get_response(host: &str, path: &str) -> Result<HttpResponse, &'static str> {
-    http_get_response_follow("http", host, path, 0)
+    http_request_response_follow("http", host, path, HttpRequestMethod::Get, &[], None, 0)
 }
 
-fn http_get_response_follow(
+pub fn http_request_debug_for_test(
+    method: &str,
+    url: &str,
+    body: &str,
+    content_type: &str,
+) -> Vec<String> {
+    let method = if method.eq_ignore_ascii_case("POST") {
+        HttpRequestMethod::Post
+    } else {
+        HttpRequestMethod::Get
+    };
+    let Ok((_scheme, host, path)) = parse_web_url(url) else {
+        return vec![String::from("parse failed")];
+    };
+    let Ok(request) = build_http_request(method, &host, &path, body.as_bytes(), Some(content_type))
+    else {
+        return vec![String::from("request failed")];
+    };
+    request
+        .lines()
+        .filter(|line| {
+            line.starts_with("GET ")
+                || line.starts_with("POST ")
+                || line.starts_with("Host:")
+                || line.starts_with("Content-Type:")
+                || line.starts_with("Content-Length:")
+                || *line == body
+        })
+        .map(String::from)
+        .collect()
+}
+
+fn build_http_request(
+    method: HttpRequestMethod,
+    host: &str,
+    path: &str,
+    body: &[u8],
+    content_type: Option<&str>,
+) -> Result<String, &'static str> {
+    if method == HttpRequestMethod::Get && !body.is_empty() {
+        return Err("GET request body unsupported");
+    }
+    if body.len() > HTTP_MAX_REQUEST_BODY {
+        return Err("HTTP request body too large");
+    }
+    let mut request = String::from(method.as_str());
+    request.push(' ');
+    request.push_str(path);
+    request.push_str(" HTTP/1.1\r\nHost: ");
+    request.push_str(host);
+    request.push_str("\r\nUser-Agent: coolOS/19\r\nAccept: text/html,text/plain,image/*,*/*\r\nAccept-Encoding: gzip, identity\r\nConnection: close");
+    if method == HttpRequestMethod::Post {
+        request.push_str("\r\nContent-Type: ");
+        request.push_str(content_type.unwrap_or("application/x-www-form-urlencoded"));
+        request.push_str("\r\nContent-Length: ");
+        push_decimal(&mut request, body.len() as u64);
+    }
+    request.push_str("\r\n\r\n");
+    if !body.is_empty() {
+        request.push_str(&String::from_utf8_lossy(body));
+    }
+    Ok(request)
+}
+
+fn http_request_response_follow(
     scheme: &str,
     host: &str,
     path: &str,
+    method: HttpRequestMethod,
+    request_body: &[u8],
+    content_type: Option<&str>,
     redirect_count: usize,
 ) -> Result<HttpResponse, &'static str> {
     let settings = crate::settings_state::snapshot();
@@ -531,11 +637,7 @@ fn http_get_response_follow(
     }
     let path = if path.is_empty() { "/" } else { path };
 
-    let mut request = String::from("GET ");
-    request.push_str(path);
-    request.push_str(" HTTP/1.1\r\nHost: ");
-    request.push_str(host);
-    request.push_str("\r\nUser-Agent: coolOS/19\r\nAccept: text/html,text/plain,image/*,*/*\r\nAccept-Encoding: gzip, identity\r\nConnection: close\r\n\r\n");
+    let request = build_http_request(method, host, path, request_body, content_type)?;
 
     if scheme == "https" {
         if !has_link() {
@@ -559,6 +661,9 @@ fn http_get_response_follow(
             Some(exchange.trust_root),
             request,
             body,
+            method,
+            request_body,
+            content_type,
         );
     }
 
@@ -568,9 +673,11 @@ fn http_get_response_follow(
     if !has_link() {
         if settings.network_offline_api {
             let body = format!(
-                "HTTP/1.1 200 OK (offline)\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\ncoolOS offline HTTP response from {} at {}",
+                "HTTP/1.1 200 OK (offline)\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\ncoolOS offline HTTP {} response from {} at {}\nrequest-body-bytes={}",
+                method.as_str(),
                 host,
-                ipv4_string(resolved_addr)
+                ipv4_string(resolved_addr),
+                request_body.len()
             );
             let body_bytes = response_body_bytes(body.as_bytes())
                 .unwrap_or_else(|| body.as_bytes())
@@ -640,6 +747,9 @@ fn http_get_response_follow(
         None,
         request,
         body,
+        method,
+        request_body,
+        content_type,
     )
 }
 
@@ -652,6 +762,9 @@ fn finish_web_response(
     tls_trust_root: Option<&'static str>,
     request: String,
     body: NormalizedHttpResponse,
+    method: HttpRequestMethod,
+    request_body: &[u8],
+    content_type: Option<&str>,
 ) -> Result<HttpResponse, &'static str> {
     let status_line = String::from(
         body.text
@@ -660,7 +773,7 @@ fn finish_web_response(
             .map(|line| line.trim_end_matches('\r'))
             .unwrap_or("HTTP response"),
     );
-    let content_type = http_header_value(&body.text, "content-type");
+    let response_content_type = http_header_value(&body.text, "content-type");
     let status = http_status_code(&status_line).unwrap_or(0);
     if is_redirect_status(status) {
         if redirect_count >= HTTP_MAX_REDIRECTS {
@@ -671,7 +784,17 @@ fn finish_web_response(
         };
         let (next_scheme, next_host, next_path) =
             resolve_web_location(scheme, host, path, &location)?;
-        return http_get_response_follow(&next_scheme, &next_host, &next_path, redirect_count + 1);
+        let (next_method, next_body, next_content_type) =
+            redirect_request_parts(status, method, request_body, content_type);
+        return http_request_response_follow(
+            &next_scheme,
+            &next_host,
+            &next_path,
+            next_method,
+            next_body,
+            next_content_type,
+            redirect_count + 1,
+        );
     }
 
     Ok(HttpResponse {
@@ -683,7 +806,7 @@ fn finish_web_response(
         tls_trust_root,
         request,
         status_line,
-        content_type,
+        content_type: response_content_type,
         body: body.text,
         body_bytes: body.body_bytes,
     })
@@ -691,6 +814,19 @@ fn finish_web_response(
 
 fn is_redirect_status(status: u16) -> bool {
     matches!(status, 301 | 302 | 303 | 307 | 308)
+}
+
+fn redirect_request_parts<'a>(
+    status: u16,
+    method: HttpRequestMethod,
+    body: &'a [u8],
+    content_type: Option<&'a str>,
+) -> (HttpRequestMethod, &'a [u8], Option<&'a str>) {
+    if method == HttpRequestMethod::Get || matches!(status, 307 | 308) {
+        (method, body, content_type)
+    } else {
+        (HttpRequestMethod::Get, &[], None)
+    }
 }
 
 fn http_status_code(status_line: &str) -> Option<u16> {

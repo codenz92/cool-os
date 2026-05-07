@@ -13,7 +13,7 @@ stdio, and IPC with pipes, shared memory, and per-task fd tables.
 
 ---
 
-# Current state — v7.17
+# Current state — v7.18
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -59,7 +59,7 @@ rename, writable file descriptors, fd-mapped child stdio, sync, and RTC time;
 `/bin/sh` now supports quoting, relative paths, redirection, and one-stage
 pipelines; `/bin` includes practical file/text/date/devkit tools; sysreport can
 write `/LOGS/SYSREPORT.TXT`; and the generated image ships `/SDK` docs and
-templates. Phases 45-53 add compositor smoothness, evented terminal work, and
+templates. Phases 45-54 add compositor smoothness, evented terminal work, and
 a richer native browser renderer:
 timer ticks now request
 paced frames instead of unconditional full redraws, mouse-only motion uses a
@@ -75,8 +75,9 @@ now has a bounded CSS cascade/layout pass for tag/class/id/inline selectors,
 CSS-derived alignment, colors, backgrounds, indentation, hidden content, image
 sizing hints, PNG/JPEG/GIF/WebP metadata handling, GET-form query construction,
 DOM-backed form controls with live value state, keyboard focus/editing, reset
-handling, staged POST bodies, and smoke fixtures for the browser engine, CSS
-layout, forms, DOM events, and DOM-backed form interaction.
+handling, real URL-encoded POST request bodies over the shared HTTP/TLS stack,
+and smoke fixtures for the browser engine, CSS layout, forms, DOM events,
+DOM-backed form interaction, and POST form pages.
 
 | Context | Mode | Description |
 | :------ | :--- | :---------- |
@@ -216,6 +217,7 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `ping <host>` | Send an ICMP echo request |
 | `http <host-or-url> [path]` | Fetch an HTTP response through the kernel network API |
 | `https <host-or-url> [path]` | Fetch an HTTPS response through the verified kernel TLS client |
+| `browser [url]` | Open the native Web Browser to a URL or `browser://home` |
 | `power [reboot\|shutdown\|sleep]` | Print or request power-control actions |
 | `log` | Flush and print the kernel log tail |
 | `logs` | Open the in-terminal log view |
@@ -591,7 +593,7 @@ movement, and screen/line clearing. `libcool::tty` exposes mode/size helpers,
 and `/bin/tuidemo` smokes raw single-key input without Enter plus ANSI-rendered
 status text.
 
-**Browser rendering phases (49-53).** The native Browser now has a more explicit
+**Browser rendering phases (49-54).** The native Browser now has a more explicit
 HTML/CSS rendering path: style blocks and inline styles are parsed into bounded
 rules for tag, class, id, and simple compound selectors; computed style drives
 hidden content, alignment, indentation, text color, backgrounds, preformatted
@@ -601,10 +603,13 @@ render text/search/email fields, checkboxes, radios, selects, textareas, and
 buttons, preserve checked/default values, and now bind rendered controls to a
 bounded DOM/form-state model. Clicks and keyboard focus edit live control values,
 checkbox/radio/select/reset controls update state across reflow, GET forms
-submit encoded live values, and POST forms show the staged request target/body
-until the network layer gains request-body submission. The fixture targets
-from `make smoke-phase49-browser-engine` through `make smoke-phase53-dom-forms`
-boot pages under `/TMP`.
+submit encoded live values, and POST forms now send
+`application/x-www-form-urlencoded` request bodies through the same HTTP/TLS
+response path used by normal page loads. The Browser can also be launched from
+Terminal with `browser [url]`. The fixture targets from `make
+smoke-phase49-browser-engine` through `make smoke-phase54-browser-post` boot
+pages under `/TMP`; the Phase 54 target submits the fixture form over HTTPS and
+expects the POST/TLS trace.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
@@ -677,5 +682,6 @@ while kernel faults still panic.
 | 51 | Browser forms — HTML5 control rendering and GET query submit URLs | **Done** |
 | 52 | DOM/event foundation — clickable link/form/button hit boxes plus browser event fixtures | **Done** |
 | 53 | DOM-backed browser forms — live control state, keyboard editing, resets, and staged POST bodies | **Done** |
+| 54 | Browser POST submission — URL-encoded request bodies through the shared HTTP/TLS loader | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

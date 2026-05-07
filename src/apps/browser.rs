@@ -524,66 +524,7 @@ impl BrowserApp {
         match parse_web_url(&url) {
             Ok((_scheme, host, path)) => match crate::net::web_get_response(&url) {
                 Ok(response) => {
-                    self.title = extract_title(&response.body).unwrap_or_else(|| host.clone());
-                    self.address = response.final_url.clone();
-                    let security = match response.tls_trust_root {
-                        Some(root) => format!("  Secure: {}", root),
-                        None => String::new(),
-                    };
-                    self.status = if is_success_status(&response.status_line) {
-                        format!("Loaded {}{}", response.final_url, security)
-                    } else if response.redirect_count > 0 {
-                        format!(
-                            "{}  {} redirect(s) -> {}{}",
-                            response.status_line,
-                            response.redirect_count,
-                            response.final_url,
-                            security
-                        )
-                    } else {
-                        format!(
-                            "{}  {}{} -> {}{}",
-                            response.status_line,
-                            response.host,
-                            response.path,
-                            crate::net::ipv4_string(response.resolved_addr),
-                            security
-                        )
-                    };
-                    self.last_page = Some(CachedPage {
-                        url: response.final_url.clone(),
-                        body: response.body.clone(),
-                        body_bytes: response.body_bytes.clone(),
-                        content_type: response.content_type.clone(),
-                    });
-                    self.lines = if is_image_content(response.content_type.as_deref()) {
-                        self.inline_images.clear();
-                        self.document = None;
-                        let preview_status = self.decode_image_preview(&response);
-                        image_response_lines(
-                            &response.final_url,
-                            response.content_type.as_deref(),
-                            response.body_bytes.len(),
-                            preview_status.as_deref(),
-                        )
-                    } else {
-                        self.image_preview = None;
-                        let images = self.set_html_document(&response.final_url, &response.body);
-                        if images > 0 {
-                            self.status.push_str(&format!("  images={}", images));
-                        }
-                        self.lines.clone()
-                    };
-                    if self.lines.is_empty() {
-                        self.lines.push(BrowserLine::new(
-                            String::from("(empty response)"),
-                            None,
-                            BrowserLineKind::Muted,
-                        ));
-                    }
-                    if add_history {
-                        self.push_history(response.final_url);
-                    }
+                    self.apply_web_response(response, add_history, "Loaded");
                 }
                 Err(err) => {
                     self.title = String::from("Load failed");
@@ -611,6 +552,71 @@ impl BrowserApp {
         self.address_focused = false;
         self.address_selected = false;
         self.render();
+    }
+
+    fn apply_web_response(
+        &mut self,
+        response: crate::net::HttpResponse,
+        add_history: bool,
+        success_label: &str,
+    ) {
+        self.title = extract_title(&response.body).unwrap_or_else(|| response.host.clone());
+        self.address = response.final_url.clone();
+        let security = match response.tls_trust_root {
+            Some(root) => format!("  Secure: {}", root),
+            None => String::new(),
+        };
+        self.status = if is_success_status(&response.status_line) {
+            format!("{} {}{}", success_label, response.final_url, security)
+        } else if response.redirect_count > 0 {
+            format!(
+                "{}  {} redirect(s) -> {}{}",
+                response.status_line, response.redirect_count, response.final_url, security
+            )
+        } else {
+            format!(
+                "{}  {}{} -> {}{}",
+                response.status_line,
+                response.host,
+                response.path,
+                crate::net::ipv4_string(response.resolved_addr),
+                security
+            )
+        };
+        self.last_page = Some(CachedPage {
+            url: response.final_url.clone(),
+            body: response.body.clone(),
+            body_bytes: response.body_bytes.clone(),
+            content_type: response.content_type.clone(),
+        });
+        self.lines = if is_image_content(response.content_type.as_deref()) {
+            self.inline_images.clear();
+            self.document = None;
+            let preview_status = self.decode_image_preview(&response);
+            image_response_lines(
+                &response.final_url,
+                response.content_type.as_deref(),
+                response.body_bytes.len(),
+                preview_status.as_deref(),
+            )
+        } else {
+            self.image_preview = None;
+            let images = self.set_html_document(&response.final_url, &response.body);
+            if images > 0 {
+                self.status.push_str(&format!("  images={}", images));
+            }
+            self.lines.clone()
+        };
+        if self.lines.is_empty() {
+            self.lines.push(BrowserLine::new(
+                String::from("(empty response)"),
+                None,
+                BrowserLineKind::Muted,
+            ));
+        }
+        if add_history {
+            self.push_history(response.final_url);
+        }
     }
 
     fn render_internal_page(&mut self, url: &str, add_history: bool) -> bool {
@@ -1003,29 +1009,68 @@ impl BrowserApp {
                 self.navigate(&url, true);
             }
             BrowserControlActivation::Post { url, body } => {
-                self.status = format!("POST form ready: {} bytes -> {}", body.len(), url);
-                self.document = None;
-                self.image_preview = None;
-                self.inline_images.clear();
-                self.lines = vec![
-                    kind_line("POST form submission", BrowserLineKind::Heading),
-                    kind_line(
-                        "Request-body submission is staged for the network layer.",
-                        BrowserLineKind::Muted,
-                    ),
-                    line(""),
-                    kind_line("Target", BrowserLineKind::Muted),
-                    line(&url),
-                    kind_line("Body", BrowserLineKind::Muted),
-                    kind_line(&body, BrowserLineKind::Code),
-                ];
-                self.render();
+                self.submit_post_form(&url, &body);
             }
             BrowserControlActivation::DomEvent(label) => {
                 self.status = format!("DOM event: {}", label);
                 self.render();
             }
         }
+    }
+
+    fn submit_post_form(&mut self, url: &str, body: &str) {
+        self.address = String::from(url);
+        self.status = format!("Submitting POST {} bytes...", body.len());
+        self.title = String::from("Submitting");
+        self.image_preview = None;
+        self.inline_images.clear();
+        self.document = None;
+        self.lines = vec![kind_line("Submitting form...", BrowserLineKind::Muted)];
+        self.scroll = 0;
+        self.render();
+
+        match parse_web_url(url) {
+            Ok((_scheme, host, path)) => {
+                match crate::net::web_post_response(url, body, "application/x-www-form-urlencoded")
+                {
+                    Ok(response) => {
+                        self.apply_web_response(response, true, "Submitted POST");
+                    }
+                    Err(err) => {
+                        self.title = String::from("POST failed");
+                        self.status = format!("Network error: {}", err);
+                        self.last_page = None;
+                        self.image_preview = None;
+                        self.inline_images.clear();
+                        self.document = None;
+                        self.lines = network_error_lines(url, &host, &path, err);
+                    }
+                }
+            }
+            Err(err) => {
+                self.title = String::from("Unsupported POST target");
+                self.status = String::from(err);
+                self.last_page = None;
+                self.image_preview = None;
+                self.inline_images.clear();
+                self.document = None;
+                self.lines = vec![
+                    kind_line("POST form target is not a web URL", BrowserLineKind::Error),
+                    kind_line(
+                        "Use an http:// or https:// form action.",
+                        BrowserLineKind::Muted,
+                    ),
+                    line(""),
+                    kind_line("Target", BrowserLineKind::Muted),
+                    line(url),
+                    kind_line("Body", BrowserLineKind::Muted),
+                    kind_line(body, BrowserLineKind::Code),
+                ];
+            }
+        }
+        self.address_focused = false;
+        self.address_selected = false;
+        self.render();
     }
 
     fn decode_image_preview(&mut self, response: &crate::net::HttpResponse) -> Option<String> {

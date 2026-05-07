@@ -939,6 +939,12 @@ impl AppWindow {
             _ => None,
         }
     }
+    pub fn take_browser_request(&mut self) -> Option<String> {
+        match self {
+            AppWindow::Terminal(term) => term.take_browser_request(),
+            _ => None,
+        }
+    }
     pub fn handle_scroll(&mut self, delta: i32) {
         match self {
             AppWindow::TextViewer(v) => v.handle_scroll(delta),
@@ -2339,6 +2345,16 @@ impl WindowManager {
         }
     }
 
+    fn launch_browser_url(&mut self, url: &str) {
+        let taskbar_y = self.shadow_height as i32 - TASKBAR_H;
+        let off = self.windows.len() as i32 * 16;
+        let wx = (32 + off).min(self.shadow_width as i32 - 260).max(8);
+        let wy = (24 + off).min(taskbar_y - 180).max(8);
+        self.add_window(AppWindow::Browser(BrowserApp::open_url(wx, wy, url)));
+        crate::println!("[browser] open {}", url);
+        crate::app_lifecycle::record_app("Web Browser");
+    }
+
     fn toggle_notification_center(&mut self) {
         self.notification_center_open = !self.notification_center_open;
         if self.notification_center_open {
@@ -3374,6 +3390,16 @@ impl WindowManager {
                     break;
                 }
             }
+        }
+
+        let mut browser_requests: Vec<String> = Vec::new();
+        for w in self.windows.iter_mut() {
+            if let Some(url) = w.take_browser_request() {
+                browser_requests.push(url);
+            }
+        }
+        for url in browser_requests {
+            self.launch_browser_url(&url);
         }
 
         // Consume deferred terminal requests to install a compositor-owned key sink.
