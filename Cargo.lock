@@ -146,6 +146,7 @@ version = "0.1.0"
 dependencies = [
  "bootloader_api",
  "der 0.8.0",
+ "ed25519-dalek",
  "embedded-io",
  "embedded-tls",
  "font8x8",

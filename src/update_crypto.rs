@@ -1,6 +1,8 @@
 extern crate alloc;
 
-use alloc::{string::String, vec::Vec};
+use alloc::string::String;
+use core::convert::TryFrom;
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 
 const H0: [u32; 8] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
@@ -47,32 +49,6 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
     out
 }
 
-pub fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
-    let mut key_block = [0u8; 64];
-    if key.len() > 64 {
-        key_block[..32].copy_from_slice(&sha256(key));
-    } else {
-        key_block[..key.len()].copy_from_slice(key);
-    }
-
-    let mut ipad = [0x36u8; 64];
-    let mut opad = [0x5cu8; 64];
-    for idx in 0..64 {
-        ipad[idx] ^= key_block[idx];
-        opad[idx] ^= key_block[idx];
-    }
-
-    let mut inner = Vec::with_capacity(64 + data.len());
-    inner.extend_from_slice(&ipad);
-    inner.extend_from_slice(data);
-    let inner_hash = sha256(&inner);
-
-    let mut outer = Vec::with_capacity(96);
-    outer.extend_from_slice(&opad);
-    outer.extend_from_slice(&inner_hash);
-    sha256(&outer)
-}
-
 pub fn digest_hex(data: &[u8]) -> String {
     hex(&sha256(data))
 }
@@ -86,7 +62,7 @@ pub fn hex(bytes: &[u8]) -> String {
 }
 
 pub fn hex_matches_digest(expected: &str, actual: &[u8; 32]) -> bool {
-    let Some(parsed) = parse_hex_32(expected) else {
+    let Some(parsed) = hex_to_32(expected) else {
         return false;
     };
     let mut diff = 0u8;
@@ -94,6 +70,39 @@ pub fn hex_matches_digest(expected: &str, actual: &[u8; 32]) -> bool {
         diff |= parsed[idx] ^ actual[idx];
     }
     diff == 0
+}
+
+pub fn hex_to_32(text: &str) -> Option<[u8; 32]> {
+    if text.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    decode_hex_into(text, &mut out)?;
+    Some(out)
+}
+
+pub fn hex_to_64(text: &str) -> Option<[u8; 64]> {
+    if text.len() != 128 {
+        return None;
+    }
+    let mut out = [0u8; 64];
+    decode_hex_into(text, &mut out)?;
+    Some(out)
+}
+
+pub fn ed25519_sign(seed: &[u8; 32], data: &[u8]) -> [u8; 64] {
+    let key = SigningKey::from_bytes(seed);
+    key.sign(data).to_bytes()
+}
+
+pub fn ed25519_verify(public_key: &[u8; 32], data: &[u8], signature: &[u8; 64]) -> bool {
+    let Ok(key) = VerifyingKey::from_bytes(public_key) else {
+        return false;
+    };
+    let Ok(signature) = Signature::try_from(signature.as_slice()) else {
+        return false;
+    };
+    key.verify_strict(data, &signature).is_ok()
 }
 
 fn compress(state: &mut [u32; 8], block: &[u8]) {
@@ -158,18 +167,17 @@ fn push_hex_byte(out: &mut String, byte: u8) {
     out.push(HEX[(byte & 0x0f) as usize] as char);
 }
 
-fn parse_hex_32(text: &str) -> Option<[u8; 32]> {
-    if text.len() != 64 {
+fn decode_hex_into(text: &str, out: &mut [u8]) -> Option<()> {
+    if text.len() != out.len() * 2 {
         return None;
     }
-    let mut out = [0u8; 32];
     let bytes = text.as_bytes();
-    for idx in 0..32 {
+    for idx in 0..out.len() {
         let hi = hex_value(bytes[idx * 2])?;
         let lo = hex_value(bytes[idx * 2 + 1])?;
         out[idx] = (hi << 4) | lo;
     }
-    Some(out)
+    Some(())
 }
 
 fn hex_value(byte: u8) -> Option<u8> {

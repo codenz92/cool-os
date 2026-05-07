@@ -1232,7 +1232,7 @@ impl TerminalApp {
             ("coolfs", "CoolFS mount status"),
             ("fsrepair", "repair standard FS dirs"),
             ("recovery [op]", "boot recovery status/repair"),
-            ("update <op>", "verify/stage/apply/rollback signed updates"),
+            ("update <op>", "verify keys/stage/apply trusted updates"),
             ("mounts", "mount/cache/journal status"),
             ("vfs", "mount table and fd tables"),
             ("path <path>", "inspect normalized VFS path"),
@@ -1851,6 +1851,26 @@ impl TerminalApp {
                     }
                 }
             }
+            ["sign-as", key] => {
+                if !self.require_admin("update") {
+                    return;
+                }
+                match crate::updates::sign_staged_as(key) {
+                    Ok(()) => {
+                        self.set_fg(FG_ACCENT);
+                        self.print_str("update: signed as ");
+                        self.print_str(key);
+                        self.print_char('\n');
+                    }
+                    Err(err) => {
+                        self.set_fg(FG_ERROR);
+                        self.print_str("update: ");
+                        self.set_fg(FG_OUTPUT);
+                        self.print_str(err);
+                        self.print_char('\n');
+                    }
+                }
+            }
             ["corrupt-payload", rest @ ..] => {
                 if !self.require_admin("update") {
                     return;
@@ -1908,6 +1928,31 @@ impl TerminalApp {
                     }
                 }
             }
+            ["stage-version", target, version, rest @ ..] => {
+                if !self.require_admin("update") {
+                    return;
+                }
+                let Some(version) = parse_u64(version) else {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("usage: update stage-version <path> <version> <text>\n");
+                    return;
+                };
+                let target = resolve_path(&self.cwd, target);
+                let text = collect_words(rest.iter().copied());
+                match crate::updates::stage_text_with_version(&target, version, &text) {
+                    Ok(()) => {
+                        self.set_fg(FG_ACCENT);
+                        self.print_str("update: staged\n");
+                    }
+                    Err(err) => {
+                        self.set_fg(FG_ERROR);
+                        self.print_str("update: ");
+                        self.set_fg(FG_OUTPUT);
+                        self.print_str(err);
+                        self.print_char('\n');
+                    }
+                }
+            }
             ["apply"] => {
                 if !self.require_admin("update") {
                     return;
@@ -1948,7 +1993,7 @@ impl TerminalApp {
             _ => {
                 self.set_fg(FG_ERROR);
                 self.print_str(
-                    "usage: update [status|verify|keys|history|sign|stage <path> <text>|apply|rollback]\n",
+                    "usage: update [status|verify|keys|history|sign|sign-as <key>|stage <path> <text>|stage-version <path> <version> <text>|apply|rollback]\n",
                 );
             }
         }

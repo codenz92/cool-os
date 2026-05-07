@@ -4,7 +4,7 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–67 are complete. The current milestone gives coolOS a much more
+Phases 1–68 are complete. The current milestone gives coolOS a much more
 normal command-line and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
@@ -45,8 +45,11 @@ staged manifests now include per-payload SHA-256 hashes, `/UPDATES/STAGED`
 carries a keyed `UPDATE.SIG`, `/CONFIG/UPDATE-KEYS.TXT` exposes trusted update
 key metadata, `update verify|keys|sign` make the trust path inspectable, and
 apply refuses unsigned or tampered payloads before taking snapshots or stopping
-services.
-Phases 45-67 focus on responsiveness, interactive terminal behavior, and
+services. Phase 68 replaces the local HMAC trust foundation with Ed25519
+public-key verification, multiple built-in trust keys, rotation metadata,
+revoked/expired key refusal, versioned manifests, and anti-rollback checks for
+older signed updates.
+Phases 45-68 focus on responsiveness, interactive terminal behavior, and
 desktop-browser compatibility:
 cursor-only framebuffer updates,
 input-first idle-loop ordering, adaptive 36/144 Hz frame pacing, compositor
@@ -58,8 +61,8 @@ bounded margin/padding/border/position/float layout plus a small Browser
 subresource cache, script runtime, web-app API layer, main-response
 content-type routing, compatibility diagnostics, resource accounting for the
 scheduler, VMM, VFS, shared memory, and sockets, low-memory recovery, durable
-service recovery, update rollback, boot-health rollback, and signed update
-verification.
+service recovery, update rollback, boot-health rollback, signed update
+verification, update key rotation, and downgrade refusal.
 
 ---
 
@@ -2002,9 +2005,39 @@ validation candidates.
       rollback flows, and document v7.31.
 
 **Current status:** complete. coolOS now refuses unsigned staged updates and
-payloads whose bytes no longer match the signed manifest. This is a built-in
-HMAC trust foundation for the current local updater, not yet a public-key vendor
-signing or multi-key rotation system.
+payloads whose bytes no longer match the signed manifest. This phase established
+the local HMAC trust gate that Phase 68 later replaced with public-key signing,
+multi-key rotation metadata, and rollback protection.
+
+---
+
+## ✅ Phase 68 — Update Key Rotation and Anti-Rollback
+
+**Goal:** Move the update trust path from a single local keyed signature to a
+public-key model that can survive key rotation and reject old signed updates.
+
+- [x] Add direct no_std `ed25519-dalek` verification/signing support and expose
+      Ed25519 helpers from `src/update_crypto.rs`.
+- [x] Replace staged update signatures with Ed25519 signatures over the staged
+      manifest while keeping SHA-256 payload and manifest hashes.
+- [x] Extend staged manifests with monotonic `version=`, `min_os_version=`, and
+      `target_os_version=` metadata.
+- [x] Expand `/CONFIG/UPDATE-KEYS.TXT` to public-key metadata with multiple
+      built-in keys, generation numbers, validity ranges, trusted, revoked, and
+      expired states.
+- [x] Enforce trusted key id, algorithm, signature version, key validity window,
+      revoked/expired key refusal, unknown-key refusal, and anti-rollback before
+      snapshot creation or service stops.
+- [x] Add Terminal diagnostics for rotated signing keys and explicit
+      `update stage-version` downgrade testing.
+- [x] Add `make smoke-phase68-update-keys` covering active-key success,
+      downgrade refusal, rotated-key success, revoked key, expired key, unknown
+      key, update history, recovery, sysreport, and docs v7.32.
+
+**Current status:** complete. coolOS now verifies staged updates with Ed25519
+public keys, accepts both current and rotated trusted keys, and refuses revoked,
+expired, unknown, unsigned, tampered, or non-monotonic update candidates before
+they can mutate system files.
 
 ---
 
@@ -2091,4 +2124,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.28 | Phase 64 complete: Persistent service supervision and recovery |
 | v7.29 | Phase 65 complete: System update, snapshot, and rollback |
 | v7.30 | Phase 66 complete: Boot health and last-known-good rollback |
-| v7.31 | Current — Phase 67 complete: Signed updates and integrity verification |
+| v7.31 | Phase 67 complete: Signed updates and integrity verification |
+| v7.32 | Current — Phase 68 complete: Update key rotation and anti-rollback |

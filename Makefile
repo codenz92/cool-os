@@ -1,4 +1,4 @@
-.PHONY: run run-net run-usb run-usb-init run-smooth run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-phase31-accounts smoke-phase32-isolation smoke-phase33-process-control smoke-phase34-tty-jobs smoke-phase35-tty-input smoke-phase36-userspace-shell smoke-phase37-coreutils smoke-phase38-apps smoke-phase39-recovery smoke-phase40-shell-semantics smoke-phase41-fs-durability smoke-phase42-app-consistency smoke-phase43-observability smoke-phase44-devkit smoke-phase45-smoothness smoke-phase46-adaptive-refresh smoke-phase47-evented-userspace smoke-phase48-terminal-tui smoke-phase49-browser-engine smoke-phase50-css-layout smoke-phase51-browser-forms smoke-phase52-dom-events smoke-phase53-dom-forms smoke-phase54-browser-post smoke-phase55-browser-session smoke-phase56-css-box-model smoke-phase57-browser-layout smoke-phase58-browser-subresources smoke-phase59-browser-js smoke-phase60-browser-webapi smoke-phase61-browser-compat smoke-phase62-resource-limits smoke-phase63-memory-pressure smoke-phase64-services smoke-phase65-update-rollback smoke-phase66-boot-health smoke-phase67-update-trust smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
+.PHONY: run run-net run-usb run-usb-init run-smooth run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-phase31-accounts smoke-phase32-isolation smoke-phase33-process-control smoke-phase34-tty-jobs smoke-phase35-tty-input smoke-phase36-userspace-shell smoke-phase37-coreutils smoke-phase38-apps smoke-phase39-recovery smoke-phase40-shell-semantics smoke-phase41-fs-durability smoke-phase42-app-consistency smoke-phase43-observability smoke-phase44-devkit smoke-phase45-smoothness smoke-phase46-adaptive-refresh smoke-phase47-evented-userspace smoke-phase48-terminal-tui smoke-phase49-browser-engine smoke-phase50-css-layout smoke-phase51-browser-forms smoke-phase52-dom-events smoke-phase53-dom-forms smoke-phase54-browser-post smoke-phase55-browser-session smoke-phase56-css-box-model smoke-phase57-browser-layout smoke-phase58-browser-subresources smoke-phase59-browser-js smoke-phase60-browser-webapi smoke-phase61-browser-compat smoke-phase62-resource-limits smoke-phase63-memory-pressure smoke-phase64-services smoke-phase65-update-rollback smoke-phase66-boot-health smoke-phase67-update-trust smoke-phase68-update-keys smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -1444,7 +1444,7 @@ smoke-phase65-update-rollback: build
 		--expect-framebuffer-window \
 		--expect "update: staged" \
 		--expect "UPDATE STATUS" \
-		--expect "staged=yes id=manual version=1 files=1 services=search-index,package-db" \
+		--expect "staged=yes id=manual version=2 files=1 services=search-index,package-db" \
 		--expect "update: applied" \
 		--expect "hash /CONFIG/PHASE65.TXT len=6 sum=627" \
 		--expect "hash /CONFIG/PHASE65.TXT len=5 sum=530" \
@@ -1516,9 +1516,10 @@ smoke-phase67-update-trust: build
 		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
 		--fw-cmd "update keys;;update stage /CONFIG/P67 ok;;update verify;;update apply;;hash /CONFIG/P67;;flush" \
 		--expect "UPDATE TRUST KEYS" \
-		--expect "key=coolos-dev algorithm=hmac-sha256 status=trusted scope=staged-updates" \
+		--expect "keys=/CONFIG/UPDATE-KEYS.TXT built_in=4 signature_required=yes rotation=yes anti_rollback=yes" \
+		--expect "key=phase68-root-a algorithm=ed25519 status=trusted scope=staged-updates" \
 		--expect "UPDATE VERIFY" \
-		--expect "trust=ok key=coolos-dev algorithm=hmac-sha256 files=1" \
+		--expect "trust=ok key=phase68-root-a algorithm=ed25519 version=1 files=1" \
 		--expect "update: applied" \
 		--expect "hash /CONFIG/P67 len=2 sum=218" \
 		--expect "flush: ok" \
@@ -1568,8 +1569,114 @@ smoke-phase67-update-trust: build
 		--expect "hash /CONFIG/P67 len=3 sum=330" \
 		--expect "update: rollback ok" \
 		--expect "hash /CONFIG/P67 len=2 sum=218" \
-		--expect "trust=ok key=coolos-dev algorithm=hmac-sha256 files=1" \
-		--expect "update_trust=ok key=coolos-dev algorithm=hmac-sha256 files=1" \
+		--expect "trust=ok key=phase68-root-a algorithm=ed25519 version=2 files=1" \
+		--expect "update_trust=ok key=phase68-root-a algorithm=ed25519 version=2 files=1" \
+		--expect "== updates ==" \
+		--expect "[selftest] kernel unit checks ok=27 fail=0" \
+		--expect "[boot] desktop ready"
+
+smoke-phase68-update-keys: build
+	mkdir -p "$(SMOKE_ARTIFACT_DIR)"
+	rm -f "$(SMOKE_ARTIFACT_DIR)/phase68-update-keys.img"
+	cp "$(FSIMG)" "$(SMOKE_ARTIFACT_DIR)/phase68-update-keys.img"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-valid-root-a" \
+		--bios "$(BIOS)" \
+		--fsimg "$(SMOKE_ARTIFACT_DIR)/phase68-update-keys.img" \
+		--fs-writable \
+		--usb \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--fw-cmd "update keys;;update stage /CONFIG/P68 one;;update verify;;update apply;;hash /CONFIG/P68;;flush" \
+		--expect "UPDATE TRUST KEYS" \
+		--expect "key=phase68-root-a algorithm=ed25519 status=trusted scope=staged-updates" \
+		--expect "key=phase68-root-b algorithm=ed25519 status=trusted scope=staged-updates" \
+		--expect "key=phase68-revoked algorithm=ed25519 status=revoked scope=staged-updates" \
+		--expect "key=phase68-expired algorithm=ed25519 status=trusted scope=staged-updates" \
+		--expect "trust=ok key=phase68-root-a algorithm=ed25519 version=1 files=1" \
+		--expect "update: applied" \
+		--expect "hash /CONFIG/P68 len=3 sum=322" \
+		--expect "flush: ok" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-downgrade" \
+		--bios "$(BIOS)" \
+		--fsimg "$(SMOKE_ARTIFACT_DIR)/phase68-update-keys.img" \
+		--fs-writable \
+		--usb \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--fw-cmd "update stage-version /CONFIG/P68 1 old;;update verify;;update apply;;hash /CONFIG/P68;;flush" \
+		--expect "trust=failed error=update version rollback" \
+		--expect "update: update version rollback" \
+		--expect "hash /CONFIG/P68 len=3 sum=322" \
+		--expect "flush: ok" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-rotated-root-b" \
+		--bios "$(BIOS)" \
+		--fsimg "$(SMOKE_ARTIFACT_DIR)/phase68-update-keys.img" \
+		--fs-writable \
+		--usb \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--fw-cmd "update stage /CONFIG/P68 two;;update sign-as phase68-root-b;;update verify;;update apply;;hash /CONFIG/P68;;cat /UPDATES/APPLIED.MF;;flush" \
+		--expect "update: signed as phase68-root-b" \
+		--expect "trust=ok key=phase68-root-b algorithm=ed25519 version=2 files=1" \
+		--expect "update: applied" \
+		--expect "hash /CONFIG/P68 len=3 sum=346" \
+		--expect "verified_by=phase68-root-b" \
+		--expect "algorithm=ed25519" \
+		--expect "flush: ok" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-revoked" \
+		--bios "$(BIOS)" \
+		--fsimg "$(SMOKE_ARTIFACT_DIR)/phase68-update-keys.img" \
+		--fs-writable \
+		--usb \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--fw-cmd "update stage /CONFIG/P68 bad;;update sign-as phase68-revoked;;update verify;;update apply;;hash /CONFIG/P68;;flush" \
+		--expect "update: signed as phase68-revoked" \
+		--expect "trust=failed error=update key revoked" \
+		--expect "update: update key revoked" \
+		--expect "hash /CONFIG/P68 len=3 sum=346" \
+		--expect "flush: ok" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-expired" \
+		--bios "$(BIOS)" \
+		--fsimg "$(SMOKE_ARTIFACT_DIR)/phase68-update-keys.img" \
+		--fs-writable \
+		--usb \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--fw-cmd "update stage /CONFIG/P68 old;;update sign-as phase68-expired;;update verify;;update apply;;hash /CONFIG/P68;;flush" \
+		--expect "update: signed as phase68-expired" \
+		--expect "trust=failed error=update key expired" \
+		--expect "update: update key expired" \
+		--expect "hash /CONFIG/P68 len=3 sum=346" \
+		--expect "flush: ok" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-unknown" \
+		--bios "$(BIOS)" \
+		--fsimg "$(SMOKE_ARTIFACT_DIR)/phase68-update-keys.img" \
+		--fs-writable \
+		--usb \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--fw-cmd "update stage /CONFIG/P68 unk;;update sign-as phase68-unknown;;update verify;;update apply;;hash /CONFIG/P68;;update history;;recovery;;sysreport" \
+		--screendump "$(SMOKE_ARTIFACT_DIR)/phase68-update-keys.ppm" \
+		--expect-framebuffer-window \
+		--expect "update: signed as phase68-unknown" \
+		--expect "trust=failed error=update key not trusted" \
+		--expect "update: update key not trusted" \
+		--expect "hash /CONFIG/P68 len=3 sum=346" \
+		--expect "UPDATE HISTORY" \
+		--expect "action=verify-failed" \
+		--expect "update_trust=failed error=update key not trusted" \
 		--expect "== updates ==" \
 		--expect "[selftest] kernel unit checks ok=27 fail=0" \
 		--expect "[boot] desktop ready"

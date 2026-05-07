@@ -13,7 +13,7 @@ stdio, and IPC with pipes, shared memory, and per-task fd tables.
 
 ---
 
-# Current state — v7.31
+# Current state — v7.32
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -59,7 +59,7 @@ rename, writable file descriptors, fd-mapped child stdio, sync, and RTC time;
 `/bin/sh` now supports quoting, relative paths, redirection, and one-stage
 pipelines; `/bin` includes practical file/text/date/devkit tools; sysreport can
 write `/LOGS/SYSREPORT.TXT`; and the generated image ships `/SDK` docs and
-templates. Phases 45-67 add compositor smoothness, evented terminal work, and
+templates. Phases 45-68 add compositor smoothness, evented terminal work, and
 a richer native browser renderer:
 timer ticks now request
 paced frames instead of unconditional full redraws, mouse-only motion uses a
@@ -122,11 +122,14 @@ and rollback decisions; update apply marks the next boot as pending validation;
 desktop-ready marks it good; and a failed validation attempt triggers automatic
 rollback from the Phase 65 snapshot on the next boot. Phase 67 adds staged
 update trust verification: staged manifests carry per-payload `sha256=` fields,
-`/UPDATES/STAGED/UPDATE.SIG` stores a keyed `hmac-sha256` manifest signature,
+`/UPDATES/STAGED/UPDATE.SIG` stores a detached manifest signature,
 `/CONFIG/UPDATE-KEYS.TXT` exposes the built-in trusted update key metadata,
 Terminal adds `update verify`, `update keys`, and admin-gated `update sign`, and
 `update apply` refuses unsigned, tampered, or hash-mismatched payloads before it
-captures a snapshot or stops services.
+captures a snapshot or stops services. Phase 68 upgrades that trust gate to
+Ed25519 public-key verification with multiple built-in keys, rotation metadata,
+revoked/expired key handling, versioned manifests, and anti-rollback refusal for
+older signed updates.
 
 | Context | Mode | Description |
 | :------ | :--- | :---------- |
@@ -186,7 +189,7 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **VFS** | CoolFS-root path routing, `/FAT` legacy routing, CoolFS read/write/execute permission enforcement, task-local cwd resolution, and task-local fd tables (16 slots, with explicit 0/1/2 mappings for child stdio) backed by shared file/pipe/shmem objects. `vfs_open` reads whole files into heap buffers after access checks and drops them if pressure admission fails; `vfs_open_write` buffers writable file descriptors and commits through safe CoolFS writes on close/exit; `vfs_pipe` allocates a 512-byte kernel ring buffer only when the heap reserve allows it; `vfs_read_blocking` blocks tasks on empty pipes and wakes them on write/EOF; `ipc` and `spawn_fds_args` selectively inherit pipe/file fds into child processes; `vfs_shmem_create`/`vfs_shmem_map` manage a shared memory region pool indexed by ID. |
 | **Networking** | Legacy PCI virtio-net driver for QEMU user networking, polling RX/TX virtqueues, Ethernet framing, ARP cache, IPv4, ICMP echo, UDP DNS queries, minimal TCP client sockets, userspace socket syscalls, HTTP/1.1, and verified TLS 1.3 HTTPS for the native browser/terminal path. |
 | **Kernel services** | Persistent kernel log buffer flushed to `/LOGS/KERNEL.TXT`, crash-screen log tail, sysreport generation to `/LOGS/SYSREPORT.TXT`, central device registry for PCI/USB/system devices, installable package/app manifests with file associations, networking status, ACPI power-control status foundation, a credentialed durable service supervisor with dependency metadata, persisted `/CONFIG/SERVICES.CFG` desired state, `/LOGS/SERVICES.TXT` restart history, backoff, and recovery diagnostics under service uid/gid 200, plus boot-health state under `/BOOT` for last-known-good validation. |
-| **Updates / rollback** | Signed staged system update manifests under `/UPDATES/STAGED`, per-payload SHA-256 verification, keyed `UPDATE.SIG` trust checks against `/CONFIG/UPDATE-KEYS.TXT`, payload snapshots under `/UPDATES/SNAPSHOTS/LAST`, update journals in `/LOGS/UPDATE.TXT`, service-aware apply/rollback operations, recovery rollback integration, and automatic rollback when a pending update fails boot validation. |
+| **Updates / rollback** | Ed25519-signed staged system update manifests under `/UPDATES/STAGED`, per-payload SHA-256 verification, public-key trust checks against `/CONFIG/UPDATE-KEYS.TXT`, multiple trusted/revoked/expired key states, anti-rollback version checks, payload snapshots under `/UPDATES/SNAPSHOTS/LAST`, update journals in `/LOGS/UPDATE.TXT`, service-aware apply/rollback operations, recovery rollback integration, and automatic rollback when a pending update fails boot validation. |
 | **Applications** | Terminal, System Monitor, Text Viewer, Color Picker, File Manager, Web Browser, ring-3 Notes, Text Editor, Trash Bin, Screenshot, Process Demo, and GUI Demo. Text-file opens route into `/bin/editor <path>` with kernel viewer fallback, while File Manager exposes explicit Open With Editor/Viewer actions. |
 | **Disk image** | `disk-image/src/fs_image.rs` builds `fs.img` as a 64 MiB raw OS disk: native CoolFS starts at LBA 0 with root-owned system paths, user-owned writable paths, executable `/bin` ELFs, `/RECOVERY` boot/repair docs, `/SDK` devkit docs/templates, `/Packages/guidemo.pkg`, and `/Documents/package-demo.p25`; an optional FAT32 `/FAT` import region starts at 8 MiB. The Makefile attaches it to QEMU as the IDE slave. |
 
@@ -277,7 +280,7 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `profiler` | Print boot/session profiler events |
 | `boot [status\|history\|mark-good\|fail-validation <id> <reason>]` | Inspect boot health, mark the current boot as last-known-good, or record a failed validation attempt for recovery testing |
 | `services [list\|status <name>\|history\|recovery\|run\|start <name>\|restart <name>\|stop <name>\|fail <name>]` | Inspect and control the durable service supervisor; mutating operations require an admin session |
-| `update [status\|verify\|keys\|history\|sign\|stage <path> <text>\|apply\|rollback]` | Stage or sign a trusted system file update, verify manifest/payload integrity, apply it with a pre-update snapshot, inspect the update journal, or roll back |
+| `update [status\|verify\|keys\|history\|sign\|sign-as <key>\|stage <path> <text>\|stage-version <path> <version> <text>\|apply\|rollback]` | Stage or sign a trusted system file update, verify manifest/payload integrity and monotonic version, apply it with a pre-update snapshot, inspect the update journal, or roll back |
 | `memory` | Print heap pressure, reclaim counters, OOM state, and per-task memory estimates |
 | `diagnostics` | Print kernel, profiler, boot-health, service, update, compositor, heap, memory-pressure, resource-limit, filesystem, VFS, and crash diagnostics |
 | `sysreport [write]` | Print the generated system report or write it to `/LOGS/SYSREPORT.TXT` |
@@ -383,7 +386,7 @@ src/
   sysreport.rs     System report generator for diagnostics and /LOGS/SYSREPORT.TXT
   boot_health.rs   Boot validation, last-known-good state, and auto rollback
   services.rs      Durable service supervisor with dependency/backoff policy and /CONFIG + /LOGS state
-  update_crypto.rs SHA-256 and HMAC-SHA256 helpers for update trust checks
+  update_crypto.rs SHA-256 and Ed25519 helpers for update trust checks
   updates.rs       Signed staged system updates, snapshots, journals, and rollback
   notifications.rs Desktop notification queue used by USB/task/filesystem events
   app_lifecycle.rs Persistent app recents/settings plus runtime userspace app ownership
@@ -559,7 +562,9 @@ reaches the desktop-ready checkpoint; otherwise the following boot restores the
 last update snapshot automatically. Phase 67 verifies staged update manifests
 and payload hashes before any snapshot/service mutation, records the trusted key
 and algorithm in the applied manifest, and exposes update trust state in
-Recovery, Diagnostics, and Sysreport.
+Recovery, Diagnostics, and Sysreport. Phase 68 moves that trust model to
+Ed25519 public keys, records update OS/version metadata, accepts rotated trusted
+keys, and rejects revoked, expired, unknown, or non-monotonic signed updates.
 
 **GUI login and lock screen (Phase 30).** The desktop now boots into a
 boot-splash-style compositor greeter instead of exposing the session
@@ -754,7 +759,10 @@ rollback after a failed pending-update validation, and
 Phase 67 adds `update verify|keys|sign`, signed manifest and payload-hash
 checks, trust diagnostics in Recovery/Sysreport, and
 `make smoke-phase67-update-trust` for valid, tampered, unsigned, and rollback
-flows.
+flows. Phase 68 adds Ed25519 public-key verification, key rotation/revocation
+metadata, anti-rollback version checks, `update sign-as` and
+`update stage-version` diagnostics, and `make smoke-phase68-update-keys` for
+active, rotated, revoked, expired, unknown, and downgrade cases.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
@@ -840,6 +848,7 @@ while kernel faults still panic.
 | 64 | Persistent service supervision and recovery — durable desired state, dependency/backoff policy, restart history, and degraded diagnostics | **Done** |
 | 65 | System update, snapshot, and rollback — staged manifests, rollback snapshots, service-aware apply, update journal, and recovery rollback | **Done** |
 | 66 | Boot health and last-known-good rollback — pending-update validation, boot history, and automatic snapshot restore | **Done** |
-| 67 | Signed updates and integrity verification — per-payload hashes, keyed manifest signatures, trust diagnostics, and apply refusal for tampered updates | **Done** |
+| 67 | Signed updates and integrity verification — per-payload hashes, signed manifest trust diagnostics, and apply refusal for tampered updates | **Done** |
+| 68 | Update key rotation and anti-rollback — Ed25519 public-key signatures, trusted/revoked/expired key states, and monotonic update versions | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

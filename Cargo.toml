@@ -26,6 +26,7 @@ embedded-io = { version = "0.7", default-features = false }
 embedded-tls = { version = "0.18", default-features = false, features = ["alloc", "rsa", "rustpki"] }
 miniz_oxide = { version = "0.9.1", default-features = false, features = ["with-alloc"] }
 rand_core = { version = "0.6", default-features = false }
+ed25519-dalek = { version = "2.2", default-features = false }
 
 [patch.crates-io]
 embedded-tls = { path = "vendor/embedded-tls-0.18.0" }

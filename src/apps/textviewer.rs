@@ -25,7 +25,7 @@ const SUBTLE: u32 = 0x00_66_AA_DD;
 const MUTED: u32 = 0x00_55_7A_92;
 
 const ABOUT: &[&str] = &[
-    " coolOS v7.31",
+    " coolOS v7.32",
     " Bare-metal OS in Rust",
     "",
     " == Current Platform ==",
@@ -40,8 +40,8 @@ const ABOUT: &[&str] = &[
     " Resource caps for tasks, memory, fds, shmem, and sockets",
     " Memory pressure telemetry, cache trimming, and OOM reclaim",
     " Durable service supervision with dependency recovery",
-    " Signed staged updates with rollback snapshots",
-    " Update trust checks for manifests and payload hashes",
+    " Ed25519 signed updates with rollback snapshots",
+    " Update key rotation, revocation, and anti-rollback",
     " Boot health with last-known-good auto rollback",
     "",
     " == Commands ==",
@@ -60,7 +60,7 @@ const ABOUT: &[&str] = &[
     " smoothness   - compositor pacing and latency telemetry",
     " boot         - boot health and last-known-good status",
     " recovery     - repair and fsck-on-boot controls",
-    " update       - verify/stage/apply/rollback signed updates",
+    " update       - verify/stage/apply/rollback trusted updates",
     "",
     " == Controls ==",
     " j / k   scroll dn/up",
