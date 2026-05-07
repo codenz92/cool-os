@@ -59,6 +59,33 @@ enum BrowserAlign {
     Right,
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct BrowserLineStyle {
+    indent_px: usize,
+    text_color: Option<u32>,
+    background: Option<u32>,
+}
+
+impl BrowserLineStyle {
+    fn is_default(self) -> bool {
+        self == Self::default()
+    }
+
+    fn merged(self, other: Self) -> Self {
+        Self {
+            indent_px: self.indent_px.saturating_add(other.indent_px).min(160),
+            text_color: other.text_color.or(self.text_color),
+            background: other.background.or(self.background),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct ImageHint {
+    width: Option<usize>,
+    height: Option<usize>,
+}
+
 #[derive(Clone)]
 enum BrowserControl {
     None,
@@ -72,15 +99,19 @@ enum BrowserControl {
     },
     Checkbox {
         label: String,
+        checked: bool,
     },
     Radio {
         label: String,
+        checked: bool,
     },
     Select {
         label: String,
+        options: usize,
     },
     TextArea {
         label: String,
+        rows: usize,
     },
 }
 
@@ -92,6 +123,8 @@ struct BrowserLine {
     image_slot: Option<usize>,
     align: BrowserAlign,
     control: BrowserControl,
+    style: BrowserLineStyle,
+    image_hint: ImageHint,
 }
 
 impl BrowserLine {
@@ -103,6 +136,8 @@ impl BrowserLine {
             image_slot: None,
             align: BrowserAlign::Left,
             control: BrowserControl::None,
+            style: BrowserLineStyle::default(),
+            image_hint: ImageHint::default(),
         }
     }
 
@@ -113,6 +148,16 @@ impl BrowserLine {
 
     fn with_control(mut self, control: BrowserControl) -> Self {
         self.control = control;
+        self
+    }
+
+    fn styled(mut self, style: BrowserLineStyle) -> Self {
+        self.style = style;
+        self
+    }
+
+    fn with_image_hint(mut self, hint: ImageHint) -> Self {
+        self.image_hint = hint;
         self
     }
 }
@@ -135,6 +180,7 @@ struct BrowserLayoutItem {
     kind: BrowserLineKind,
     control: BrowserControl,
     image_slot: Option<usize>,
+    style: BrowserLineStyle,
 }
 
 struct BrowserLayout {
@@ -296,6 +342,11 @@ impl BrowserApp {
                     && ly < hit.y.saturating_add(hit.h)
                 {
                     let resolved = resolve_url(&self.address, &hit.link);
+                    if let Some(label) = browser_event_label(&resolved) {
+                        self.status = format!("DOM event: {}", label);
+                        self.render();
+                        return;
+                    }
                     if self.open_file_url(&resolved) {
                         return;
                     }
@@ -612,7 +663,7 @@ impl BrowserApp {
             self.pending_open = Some(FileManagerOpenRequest::Dir(String::from(path)));
             self.status = format!("Opening {}", path);
         } else if let Some(bytes) = crate::vfs::vfs_read_file(path) {
-            if is_png_content(None, path) || bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+            if is_known_image_path(path) || looks_like_image_bytes(&bytes) {
                 self.show_local_image(path, bytes);
                 return true;
             }
@@ -645,26 +696,17 @@ impl BrowserApp {
         self.title = String::from("Image");
         self.status = format!("Local image {}", path);
         self.inline_images.clear();
+        let content_type = image_content_type_for(path, &bytes).unwrap_or("image/*");
         self.last_page = Some(CachedPage {
             url: url.clone(),
             body: String::new(),
             body_bytes: bytes.clone(),
-            content_type: Some(String::from("image/png")),
+            content_type: Some(String::from(content_type)),
         });
-        let preview_status = match crate::png::decode_rgb8(&bytes, MAX_INLINE_PNG_PIXELS) {
-            Ok(image) => {
-                let status = format!("PNG preview {}x{}", image.width, image.height);
-                self.image_preview = Some(image);
-                Some(status)
-            }
-            Err(err) => {
-                self.image_preview = None;
-                Some(format!("PNG preview unavailable: {}", err))
-            }
-        };
+        let preview_status = self.decode_image_preview_bytes(&bytes, Some(content_type), path);
         self.lines = image_response_lines(
             &url,
-            Some("image/png"),
+            Some(content_type),
             bytes.len(),
             preview_status.as_deref(),
         );
@@ -729,11 +771,26 @@ impl BrowserApp {
     }
 
     fn decode_image_preview(&mut self, response: &crate::net::HttpResponse) -> Option<String> {
+        self.decode_image_preview_bytes(
+            &response.body_bytes,
+            response.content_type.as_deref(),
+            &response.final_url,
+        )
+    }
+
+    fn decode_image_preview_bytes(
+        &mut self,
+        bytes: &[u8],
+        content_type: Option<&str>,
+        url: &str,
+    ) -> Option<String> {
         self.image_preview = None;
-        if !is_png_content(response.content_type.as_deref(), &response.final_url) {
-            return Some(String::from("Preview unavailable: only PNG is supported"));
+        if !is_png_content(content_type, url) {
+            let meta = image_metadata_label(bytes, content_type, url)
+                .unwrap_or_else(|| String::from("image dimensions unknown"));
+            return Some(format!("Preview unavailable: {} (PNG decoder only)", meta));
         }
-        match crate::png::decode_rgb8(&response.body_bytes, MAX_INLINE_PNG_PIXELS) {
+        match crate::png::decode_rgb8(bytes, MAX_INLINE_PNG_PIXELS) {
             Ok(image) => {
                 let status = format!("PNG preview {}x{}", image.width, image.height);
                 self.image_preview = Some(image);
@@ -957,7 +1014,21 @@ impl BrowserApp {
             }
 
             if let Some(slot) = item.image_slot {
-                if let Some(image) = self.inline_images.get(slot).map(|inline| &inline.image) {
+                if let Some(image) = self
+                    .inline_images
+                    .get(slot)
+                    .map(|inline| inline.image.clone())
+                {
+                    if let Some(bg) = item.style.background {
+                        self.fill_rect(
+                            stride,
+                            x.saturating_sub(4),
+                            y.saturating_sub(2),
+                            item.w.saturating_add(8),
+                            item.h.saturating_add(4),
+                            bg,
+                        );
+                    }
                     draw_image_preview_pixels(
                         &mut self.window.buf,
                         width,
@@ -967,12 +1038,25 @@ impl BrowserApp {
                         y,
                         item.w,
                         item.h,
-                        image,
+                        &image,
                         false,
                     );
                 }
             } else if matches!(item.control, BrowserControl::None) {
-                let color = color_for_line(item.kind, item.link.is_some());
+                if let Some(bg) = item.style.background {
+                    self.fill_rect(
+                        stride,
+                        x.saturating_sub(4),
+                        y.saturating_sub(2),
+                        item.w.saturating_add(8),
+                        item.h.saturating_add(4),
+                        bg,
+                    );
+                }
+                let color = item
+                    .style
+                    .text_color
+                    .unwrap_or_else(|| color_for_line(item.kind, item.link.is_some()));
                 let mut text = item.text.clone();
                 truncate_chars(&mut text, item.w / CHAR_W);
                 self.put_str(stride, x, y, &text, color);
@@ -983,6 +1067,16 @@ impl BrowserApp {
                     self.fill_rect(stride, x, y + 10, text.len() * CHAR_W, 1, LINK);
                 }
             } else {
+                if let Some(bg) = item.style.background {
+                    self.fill_rect(
+                        stride,
+                        x.saturating_sub(4),
+                        y.saturating_sub(2),
+                        item.w.saturating_add(8),
+                        item.h.saturating_add(4),
+                        bg,
+                    );
+                }
                 self.draw_control(stride, x, y, item.w, &item.control, item.link.is_some());
             }
 
@@ -1089,24 +1183,42 @@ impl BrowserApp {
                 let tx = x + w.saturating_sub(text_w) / 2;
                 self.put_str(stride, tx, y + 8, &text, TEXT);
             }
-            BrowserControl::Checkbox { label } | BrowserControl::Radio { label } => {
+            BrowserControl::Checkbox { label, checked } => {
                 self.fill_rect(stride, x, y + 5, 12, 12, WHITE);
                 self.draw_rect(stride, x, y + 5, 12, 12, 0x00_88_88_88);
+                if *checked {
+                    self.put_str(stride, x + 2, y + 6, "x", TEXT);
+                }
                 let mut text = label.clone();
                 truncate_chars(&mut text, w.saturating_sub(18) / CHAR_W);
                 self.put_str(stride, x + 18, y + 6, &text, TEXT);
             }
-            BrowserControl::Select { label } => {
+            BrowserControl::Radio { label, checked } => {
+                self.fill_rect(stride, x, y + 5, 12, 12, WHITE);
+                self.draw_rect(stride, x, y + 5, 12, 12, 0x00_88_88_88);
+                if *checked {
+                    self.fill_rect(stride, x + 4, y + 9, 4, 4, TEXT);
+                }
+                let mut text = label.clone();
+                truncate_chars(&mut text, w.saturating_sub(18) / CHAR_W);
+                self.put_str(stride, x + 18, y + 6, &text, TEXT);
+            }
+            BrowserControl::Select { label, options } => {
                 self.fill_rect(stride, x, y, w, CONTROL_H, WHITE);
                 self.draw_rect(stride, x, y, w, CONTROL_H, 0x00_88_88_88);
-                let mut text = label.clone();
+                let mut text = if *options > 0 {
+                    format!("{} ({} options)", label, options)
+                } else {
+                    label.clone()
+                };
                 truncate_chars(&mut text, w.saturating_sub(28) / CHAR_W);
                 self.put_str(stride, x + 7, y + 8, &text, TEXT);
                 self.put_str(stride, x + w.saturating_sub(18), y + 8, "v", MUTED);
             }
-            BrowserControl::TextArea { label } => {
-                self.fill_rect(stride, x, y, w, CONTROL_H, WHITE);
-                self.draw_rect(stride, x, y, w, CONTROL_H, 0x00_88_88_88);
+            BrowserControl::TextArea { label, rows } => {
+                let h = CONTROL_H.saturating_add(rows.saturating_sub(1).min(5) * 10);
+                self.fill_rect(stride, x, y, w, h, WHITE);
+                self.draw_rect(stride, x, y, w, h, 0x00_88_88_88);
                 let mut text = label.clone();
                 truncate_chars(&mut text, w.saturating_sub(14) / CHAR_W);
                 self.put_str(stride, x + 7, y + 8, &text, MUTED);
@@ -1246,7 +1358,11 @@ fn layout_browser_lines(
                 {
                     break;
                 }
-                let w = text_pixel_width(&next.text).min(doc_w);
+                if next.style != line.style {
+                    break;
+                }
+                let available_w = doc_w.saturating_sub(next.style.indent_px).max(1);
+                let w = text_pixel_width(&next.text).min(available_w);
                 let candidate = if group.is_empty() {
                     w
                 } else {
@@ -1260,7 +1376,11 @@ fn layout_browser_lines(
                 j += 1;
             }
             if group.len() > 1 {
-                let mut x = aligned_x(doc_w, total_w, align);
+                let available_w = doc_w.saturating_sub(line.style.indent_px).max(1);
+                let mut x =
+                    line.style
+                        .indent_px
+                        .saturating_add(aligned_x(available_w, total_w, align));
                 for (idx, w) in group {
                     let next = &lines[idx];
                     items.push(BrowserLayoutItem {
@@ -1273,6 +1393,7 @@ fn layout_browser_lines(
                         kind: next.kind,
                         control: BrowserControl::None,
                         image_slot: None,
+                        style: next.style,
                     });
                     x = x.saturating_add(w).saturating_add(CONTROL_GAP + 8);
                 }
@@ -1287,10 +1408,14 @@ fn layout_browser_lines(
             let mut total_w = 0usize;
             let mut j = i;
             while let Some(next) = lines.get(j) {
-                if next.align != align || !matches!(next.control, BrowserControl::Button { .. }) {
+                if next.align != align
+                    || next.style != line.style
+                    || !matches!(next.control, BrowserControl::Button { .. })
+                {
                     break;
                 }
-                let w = control_width(&next.control, doc_w);
+                let available_w = doc_w.saturating_sub(next.style.indent_px).max(1);
+                let w = control_width(&next.control, available_w);
                 let candidate = if group.is_empty() {
                     w
                 } else {
@@ -1303,7 +1428,11 @@ fn layout_browser_lines(
                 group.push((j, w));
                 j += 1;
             }
-            let mut x = aligned_x(doc_w, total_w, align);
+            let available_w = doc_w.saturating_sub(line.style.indent_px).max(1);
+            let mut x = line
+                .style
+                .indent_px
+                .saturating_add(aligned_x(available_w, total_w, align));
             for (idx, w) in group {
                 let next = &lines[idx];
                 items.push(BrowserLayoutItem {
@@ -1316,6 +1445,7 @@ fn layout_browser_lines(
                     kind: next.kind,
                     control: next.control.clone(),
                     image_slot: None,
+                    style: next.style,
                 });
                 x = x.saturating_add(w).saturating_add(CONTROL_GAP);
             }
@@ -1324,29 +1454,43 @@ fn layout_browser_lines(
             continue;
         }
         if !matches!(line.control, BrowserControl::None) {
-            let w = control_width(&line.control, doc_w);
+            let available_w = doc_w.saturating_sub(line.style.indent_px).max(1);
+            let w = control_width(&line.control, available_w);
+            let h = control_height(&line.control);
             items.push(BrowserLayoutItem {
-                x: aligned_x(doc_w, w, line.align),
+                x: line
+                    .style
+                    .indent_px
+                    .saturating_add(aligned_x(available_w, w, line.align)),
                 y,
                 w,
-                h: CONTROL_H,
+                h,
                 text: line.text.clone(),
                 link: line.link.clone(),
                 kind: line.kind,
                 control: line.control.clone(),
                 image_slot: None,
+                style: line.style,
             });
-            y = y.saturating_add(CONTROL_H + BLOCK_GAP);
+            y = y.saturating_add(h + BLOCK_GAP);
             i += 1;
             continue;
         }
         if let Some(slot) = line.image_slot {
             if let Some(image) = inline_images.get(slot).map(|inline| &inline.image) {
-                let max_w = doc_w.max(1);
-                let (draw_w, draw_h) =
-                    scaled_image_size(image.width, image.height, max_w, INLINE_IMAGE_MAX_H);
+                let max_w = doc_w.saturating_sub(line.style.indent_px).max(1);
+                let (draw_w, draw_h) = scaled_image_size_with_hint(
+                    image.width,
+                    image.height,
+                    line.image_hint,
+                    max_w,
+                    INLINE_IMAGE_MAX_H,
+                );
                 items.push(BrowserLayoutItem {
-                    x: aligned_x(doc_w, draw_w, line.align),
+                    x: line
+                        .style
+                        .indent_px
+                        .saturating_add(aligned_x(max_w, draw_w, line.align)),
                     y,
                     w: draw_w,
                     h: draw_h,
@@ -1355,20 +1499,25 @@ fn layout_browser_lines(
                     kind: BrowserLineKind::Image,
                     control: BrowserControl::None,
                     image_slot: Some(slot),
+                    style: line.style,
                 });
                 y = y.saturating_add(draw_h + BLOCK_GAP);
                 i += 1;
                 continue;
             }
         }
-        let w = text_pixel_width(&line.text).min(doc_w);
+        let available_w = doc_w.saturating_sub(line.style.indent_px).max(1);
+        let w = text_pixel_width(&line.text).min(available_w);
         let h = if line.kind == BrowserLineKind::Heading {
             LINE_H + 2
         } else {
             LINE_H
         };
         items.push(BrowserLayoutItem {
-            x: aligned_x(doc_w, w, line.align),
+            x: line
+                .style
+                .indent_px
+                .saturating_add(aligned_x(available_w, w, line.align)),
             y,
             w,
             h,
@@ -1377,6 +1526,7 @@ fn layout_browser_lines(
             kind: line.kind,
             control: BrowserControl::None,
             image_slot: None,
+            style: line.style,
         });
         y = y.saturating_add(h);
         i += 1;
@@ -1407,15 +1557,24 @@ fn control_width(control: &BrowserControl, doc_w: usize) -> usize {
         BrowserControl::Button { label } => {
             text_pixel_width(label).saturating_add(24).clamp(74, 220)
         }
-        BrowserControl::Checkbox { label } | BrowserControl::Radio { label } => {
+        BrowserControl::Checkbox { label, .. } | BrowserControl::Radio { label, .. } => {
             text_pixel_width(label).saturating_add(24).clamp(48, 260)
         }
-        BrowserControl::Select { label } | BrowserControl::TextArea { label } => {
+        BrowserControl::Select { label, .. } | BrowserControl::TextArea { label, .. } => {
             text_pixel_width(label).saturating_add(34).clamp(120, 360)
         }
         BrowserControl::None => 0,
     };
     w.min(doc_w)
+}
+
+fn control_height(control: &BrowserControl) -> usize {
+    match control {
+        BrowserControl::TextArea { rows, .. } => {
+            CONTROL_H.saturating_add(rows.saturating_sub(1).min(5) * 10)
+        }
+        _ => CONTROL_H,
+    }
 }
 
 fn draw_image_preview_pixels(
@@ -1695,6 +1854,37 @@ fn is_image_content(content_type: Option<&str>) -> bool {
         .unwrap_or(false)
 }
 
+fn is_known_image_path(path: &str) -> bool {
+    matches!(extension_from_path(path), "png" | "jpg" | "gif" | "webp")
+}
+
+fn looks_like_image_bytes(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+        || bytes.starts_with(b"\xff\xd8")
+        || bytes.starts_with(b"GIF87a")
+        || bytes.starts_with(b"GIF89a")
+        || (bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP")
+}
+
+fn image_content_type_for(path: &str, bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") || extension_from_path(path) == "png" {
+        Some("image/png")
+    } else if bytes.starts_with(b"\xff\xd8") || extension_from_path(path) == "jpg" {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF87a")
+        || bytes.starts_with(b"GIF89a")
+        || extension_from_path(path) == "gif"
+    {
+        Some("image/gif")
+    } else if (bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP")
+        || extension_from_path(path) == "webp"
+    {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
 fn is_png_content(content_type: Option<&str>, url: &str) -> bool {
     content_type
         .map(|value| {
@@ -1758,6 +1948,52 @@ fn scaled_image_size(image_w: usize, image_h: usize, max_w: usize, max_h: usize)
     (draw_w.min(max_w), draw_h.min(max_h))
 }
 
+fn scaled_image_size_with_hint(
+    image_w: usize,
+    image_h: usize,
+    hint: ImageHint,
+    max_w: usize,
+    max_h: usize,
+) -> (usize, usize) {
+    if image_w == 0 || image_h == 0 || max_w == 0 || max_h == 0 {
+        return (0, 0);
+    }
+    let Some(mut draw_w) = hint.width else {
+        let Some(mut draw_h) = hint.height else {
+            return scaled_image_size(image_w, image_h, max_w, max_h);
+        };
+        draw_h = draw_h.clamp(1, max_h);
+        let draw_w = image_w
+            .saturating_mul(draw_h)
+            .saturating_div(image_h)
+            .max(1);
+        return fit_box(draw_w, draw_h, max_w, max_h);
+    };
+    draw_w = draw_w.clamp(1, max_w);
+    let draw_h = hint
+        .height
+        .unwrap_or_else(|| {
+            image_h
+                .saturating_mul(draw_w)
+                .saturating_div(image_w)
+                .max(1)
+        })
+        .clamp(1, max_h);
+    fit_box(draw_w, draw_h, max_w, max_h)
+}
+
+fn fit_box(mut w: usize, mut h: usize, max_w: usize, max_h: usize) -> (usize, usize) {
+    if w > max_w {
+        h = h.saturating_mul(max_w).saturating_div(w).max(1);
+        w = max_w;
+    }
+    if h > max_h {
+        w = w.saturating_mul(max_h).saturating_div(h).max(1);
+        h = max_h;
+    }
+    (w.min(max_w), h.min(max_h))
+}
+
 fn image_alt_from_line(text: &str) -> String {
     if let Some(rest) = text.strip_prefix("[image]") {
         let label = rest.trim();
@@ -1774,6 +2010,161 @@ fn image_alt_from_line(text: &str) -> String {
         }
     }
     String::from("image")
+}
+
+fn image_metadata_label(bytes: &[u8], content_type: Option<&str>, url: &str) -> Option<String> {
+    let kind = image_kind_label(content_type, url, bytes);
+    if let Some((w, h)) = png_dimensions(bytes)
+        .or_else(|| gif_dimensions(bytes))
+        .or_else(|| jpeg_dimensions(bytes))
+        .or_else(|| webp_dimensions(bytes))
+    {
+        Some(format!("{} {}x{}", kind, w, h))
+    } else if kind != "image" {
+        Some(String::from(kind))
+    } else {
+        None
+    }
+}
+
+fn image_kind_label(content_type: Option<&str>, url: &str, bytes: &[u8]) -> &'static str {
+    let ct = content_type
+        .and_then(|value| value.split(';').next())
+        .unwrap_or("")
+        .trim();
+    if ct.eq_ignore_ascii_case("image/png") || bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "PNG"
+    } else if ct.eq_ignore_ascii_case("image/jpeg")
+        || ct.eq_ignore_ascii_case("image/jpg")
+        || bytes.starts_with(b"\xff\xd8")
+    {
+        "JPEG"
+    } else if ct.eq_ignore_ascii_case("image/gif")
+        || bytes.starts_with(b"GIF87a")
+        || bytes.starts_with(b"GIF89a")
+    {
+        "GIF"
+    } else if ct.eq_ignore_ascii_case("image/webp")
+        || (bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP")
+    {
+        "WebP"
+    } else {
+        match extension_from_path(url) {
+            "png" => "PNG",
+            "jpg" => "JPEG",
+            "gif" => "GIF",
+            "webp" => "WebP",
+            _ => "image",
+        }
+    }
+}
+
+fn png_dimensions(bytes: &[u8]) -> Option<(usize, usize)> {
+    if bytes.len() < 24 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return None;
+    }
+    let w = read_be_u32_local(bytes, 16)? as usize;
+    let h = read_be_u32_local(bytes, 20)? as usize;
+    if w == 0 || h == 0 {
+        None
+    } else {
+        Some((w, h))
+    }
+}
+
+fn gif_dimensions(bytes: &[u8]) -> Option<(usize, usize)> {
+    if bytes.len() < 10 || !(bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a")) {
+        return None;
+    }
+    let w = u16::from_le_bytes([bytes[6], bytes[7]]) as usize;
+    let h = u16::from_le_bytes([bytes[8], bytes[9]]) as usize;
+    if w == 0 || h == 0 {
+        None
+    } else {
+        Some((w, h))
+    }
+}
+
+fn jpeg_dimensions(bytes: &[u8]) -> Option<(usize, usize)> {
+    if bytes.len() < 4 || !bytes.starts_with(b"\xff\xd8") {
+        return None;
+    }
+    let mut pos = 2usize;
+    while pos + 9 < bytes.len() && pos < 4096 {
+        if bytes[pos] != 0xff {
+            pos += 1;
+            continue;
+        }
+        while pos < bytes.len() && bytes[pos] == 0xff {
+            pos += 1;
+        }
+        let marker = *bytes.get(pos)?;
+        pos += 1;
+        if matches!(marker, 0xd8 | 0xd9 | 0x01) {
+            continue;
+        }
+        let len = read_be_u16_local(bytes, pos)? as usize;
+        if len < 2 || pos + len > bytes.len() {
+            return None;
+        }
+        if matches!(
+            marker,
+            0xc0 | 0xc1
+                | 0xc2
+                | 0xc3
+                | 0xc5
+                | 0xc6
+                | 0xc7
+                | 0xc9
+                | 0xca
+                | 0xcb
+                | 0xcd
+                | 0xce
+                | 0xcf
+        ) {
+            let h = read_be_u16_local(bytes, pos + 3)? as usize;
+            let w = read_be_u16_local(bytes, pos + 5)? as usize;
+            if w > 0 && h > 0 {
+                return Some((w, h));
+            }
+            return None;
+        }
+        pos += len;
+    }
+    None
+}
+
+fn webp_dimensions(bytes: &[u8]) -> Option<(usize, usize)> {
+    if bytes.len() < 30 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WEBP" {
+        return None;
+    }
+    if &bytes[12..16] == b"VP8X" && bytes.len() >= 30 {
+        let w = 1 + read_le_u24_local(bytes, 24)? as usize;
+        let h = 1 + read_le_u24_local(bytes, 27)? as usize;
+        return Some((w, h));
+    }
+    None
+}
+
+fn read_be_u32_local(bytes: &[u8], pos: usize) -> Option<u32> {
+    Some(u32::from_be_bytes([
+        *bytes.get(pos)?,
+        *bytes.get(pos + 1)?,
+        *bytes.get(pos + 2)?,
+        *bytes.get(pos + 3)?,
+    ]))
+}
+
+fn read_be_u16_local(bytes: &[u8], pos: usize) -> Option<u16> {
+    Some(u16::from_be_bytes([*bytes.get(pos)?, *bytes.get(pos + 1)?]))
+}
+
+fn read_le_u24_local(bytes: &[u8], pos: usize) -> Option<u32> {
+    Some(
+        (*bytes.get(pos)? as u32)
+            | ((*bytes.get(pos + 1)? as u32) << 8)
+            | ((*bytes.get(pos + 2)? as u32) << 16),
+    )
 }
 
 fn fetch_png_for_browser(url: &str) -> Result<(crate::png::PngImage, String, usize), &'static str> {
@@ -2048,6 +2439,17 @@ fn decode_query(input: &str) -> String {
     out
 }
 
+fn browser_event_url(label: &str) -> String {
+    let mut out = String::from("browser://event?label=");
+    push_query_encoded(&mut out, label);
+    out
+}
+
+fn browser_event_label(url: &str) -> Option<String> {
+    let query = url.strip_prefix("browser://event?label=")?;
+    Some(decode_query(query))
+}
+
 fn hex_digit(value: u8) -> char {
     match value {
         0..=9 => (b'0' + value) as char,
@@ -2123,8 +2525,123 @@ fn extract_base_href(body: &str, fallback: &str) -> String {
     String::from(fallback)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CssDisplay {
+    Default,
+    None,
+    Block,
+    Inline,
+    ListItem,
+    Table,
+    Flex,
+    Grid,
+}
+
+impl Default for CssDisplay {
+    fn default() -> Self {
+        Self::Default
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct CssDeclarations {
+    display: Option<CssDisplay>,
+    visibility_hidden: Option<bool>,
+    align: Option<BrowserAlign>,
+    indent_px: Option<usize>,
+    color: Option<u32>,
+    background: Option<u32>,
+    width: Option<usize>,
+    height: Option<usize>,
+    preformatted: Option<bool>,
+}
+
+#[derive(Clone)]
+struct CssRule {
+    selector: String,
+    declarations: CssDeclarations,
+    specificity: u16,
+    order: usize,
+}
+
+#[derive(Clone, Copy)]
+struct CssSlot<T: Copy> {
+    value: Option<T>,
+    specificity: u16,
+    order: usize,
+}
+
+impl<T: Copy> Default for CssSlot<T> {
+    fn default() -> Self {
+        Self {
+            value: None,
+            specificity: 0,
+            order: 0,
+        }
+    }
+}
+
+impl<T: Copy> CssSlot<T> {
+    fn apply(&mut self, value: Option<T>, specificity: u16, order: usize) {
+        let Some(value) = value else {
+            return;
+        };
+        if self.value.is_none()
+            || specificity > self.specificity
+            || (specificity == self.specificity && order >= self.order)
+        {
+            self.value = Some(value);
+            self.specificity = specificity;
+            self.order = order;
+        }
+    }
+}
+
+#[derive(Default)]
+struct CssCascade {
+    display: CssSlot<CssDisplay>,
+    visibility_hidden: CssSlot<bool>,
+    align: CssSlot<BrowserAlign>,
+    indent_px: CssSlot<usize>,
+    color: CssSlot<u32>,
+    background: CssSlot<u32>,
+    width: CssSlot<usize>,
+    height: CssSlot<usize>,
+    preformatted: CssSlot<bool>,
+}
+
+impl CssCascade {
+    fn apply(&mut self, declarations: CssDeclarations, specificity: u16, order: usize) {
+        self.display.apply(declarations.display, specificity, order);
+        self.visibility_hidden
+            .apply(declarations.visibility_hidden, specificity, order);
+        self.align.apply(declarations.align, specificity, order);
+        self.indent_px
+            .apply(declarations.indent_px, specificity, order);
+        self.color.apply(declarations.color, specificity, order);
+        self.background
+            .apply(declarations.background, specificity, order);
+        self.width.apply(declarations.width, specificity, order);
+        self.height.apply(declarations.height, specificity, order);
+        self.preformatted
+            .apply(declarations.preformatted, specificity, order);
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct TagStyle {
+    hidden: bool,
+    display: CssDisplay,
+    align: Option<BrowserAlign>,
+    line: BrowserLineStyle,
+    width: Option<usize>,
+    height: Option<usize>,
+    preformatted: bool,
+}
+
 struct StyleHints {
     hidden_classes: Vec<String>,
+    rules: Vec<CssRule>,
 }
 
 impl StyleHints {
@@ -2132,6 +2649,7 @@ impl StyleHints {
         let lower = lowercase_ascii(body);
         let mut hints = Self {
             hidden_classes: Vec::new(),
+            rules: Vec::new(),
         };
         let mut i = 0usize;
         while let Some(rel) = lower[i..].find("<style") {
@@ -2159,6 +2677,35 @@ impl StyleHints {
             contains_string(&self.hidden_classes, &class)
         })
     }
+
+    fn computed_for_tag(&self, lower_tag: &str, name: &str) -> TagStyle {
+        let mut cascade = CssCascade::default();
+        for rule in &self.rules {
+            if selector_matches_tag(&rule.selector, lower_tag, name) {
+                cascade.apply(rule.declarations, rule.specificity, rule.order);
+            }
+        }
+        if let Some(style) = attr_value(lower_tag, "style") {
+            cascade.apply(parse_css_declarations(&style), 1000, usize::MAX);
+        }
+        let display = cascade.display.value.unwrap_or(CssDisplay::Default);
+        let hidden = display == CssDisplay::None
+            || cascade.visibility_hidden.value.unwrap_or(false)
+            || self.has_hidden_class(lower_tag);
+        TagStyle {
+            hidden,
+            display,
+            align: cascade.align.value,
+            line: BrowserLineStyle {
+                indent_px: cascade.indent_px.value.unwrap_or(0).min(160),
+                text_color: cascade.color.value,
+                background: cascade.background.value,
+            },
+            width: cascade.width.value,
+            height: cascade.height.value,
+            preformatted: cascade.preformatted.value.unwrap_or(false),
+        }
+    }
 }
 
 fn collect_css_hints(css: &str, hints: &mut StyleHints) {
@@ -2175,12 +2722,26 @@ fn collect_css_hints(css: &str, hints: &mut StyleHints) {
             pos = close + 1;
             continue;
         }
-        if rules.contains("display:none")
-            || rules.contains("display: none")
-            || rules.contains("visibility:hidden")
-            || rules.contains("visibility: hidden")
+        let declarations = parse_css_declarations(rules);
+        if declarations.display == Some(CssDisplay::None)
+            || declarations.visibility_hidden == Some(true)
         {
             collect_selector_classes(selectors, &mut hints.hidden_classes);
+        }
+        for selector in selectors.split(',') {
+            let selector = selector.trim();
+            if selector.is_empty() || selector.len() > 96 {
+                continue;
+            }
+            if hints.rules.len() >= 192 {
+                break;
+            }
+            hints.rules.push(CssRule {
+                selector: String::from(selector),
+                declarations,
+                specificity: selector_specificity(selector),
+                order: hints.rules.len(),
+            });
         }
         pos = close + 1;
     }
@@ -2204,6 +2765,296 @@ fn collect_selector_classes(selectors: &str, out: &mut Vec<String>) {
         }
         push_unique_class(out, &rest[..end]);
     }
+}
+
+fn parse_css_declarations(input: &str) -> CssDeclarations {
+    let mut out = CssDeclarations::default();
+    for declaration in input.split(';') {
+        let Some((name, value)) = declaration.split_once(':') else {
+            continue;
+        };
+        let name = lowercase_ascii(name.trim());
+        let value = lowercase_ascii(value.trim());
+        match name.as_str() {
+            "display" => {
+                out.display = match value.as_str() {
+                    "none" => Some(CssDisplay::None),
+                    "block" => Some(CssDisplay::Block),
+                    "inline" | "inline-block" => Some(CssDisplay::Inline),
+                    "list-item" => Some(CssDisplay::ListItem),
+                    "table" | "table-row" | "table-cell" => Some(CssDisplay::Table),
+                    "flex" | "inline-flex" => Some(CssDisplay::Flex),
+                    "grid" | "inline-grid" => Some(CssDisplay::Grid),
+                    _ => out.display,
+                };
+            }
+            "visibility" => {
+                if value == "hidden" || value == "collapse" {
+                    out.visibility_hidden = Some(true);
+                }
+            }
+            "text-align" => out.align = parse_alignment(&value),
+            "margin" => {
+                if value.contains("auto") {
+                    out.align = Some(BrowserAlign::Center);
+                } else {
+                    out.indent_px = first_css_length_px(&value).or(out.indent_px);
+                }
+            }
+            "margin-left" | "padding-left" | "text-indent" => {
+                out.indent_px = parse_css_length_px(&value).or(out.indent_px);
+            }
+            "color" => out.color = parse_css_color(&value).or(out.color),
+            "background" | "background-color" => {
+                out.background = parse_css_color(&value).or(out.background)
+            }
+            "width" | "max-width" => out.width = parse_css_length_px(&value).or(out.width),
+            "height" | "max-height" => out.height = parse_css_length_px(&value).or(out.height),
+            "white-space" => {
+                if value == "pre" || value == "pre-wrap" || value == "break-spaces" {
+                    out.preformatted = Some(true);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn first_css_length_px(value: &str) -> Option<usize> {
+    for part in value.split_whitespace() {
+        if let Some(length) = parse_css_length_px(part) {
+            return Some(length);
+        }
+    }
+    None
+}
+
+fn parse_css_length_px(value: &str) -> Option<usize> {
+    let value = value.trim();
+    if value.is_empty() || value == "auto" || value.ends_with('%') {
+        return None;
+    }
+    let mut number = 0usize;
+    let mut saw_digit = false;
+    let mut decimal = false;
+    for b in value.bytes() {
+        if b.is_ascii_digit() {
+            if !decimal {
+                number = number
+                    .saturating_mul(10)
+                    .saturating_add((b - b'0') as usize);
+            }
+            saw_digit = true;
+        } else if b == b'.' {
+            decimal = true;
+        } else {
+            break;
+        }
+    }
+    if !saw_digit || number == 0 {
+        return None;
+    }
+    if value.contains("em") || value.contains("rem") {
+        Some(number.saturating_mul(16).min(2048))
+    } else {
+        Some(number.min(2048))
+    }
+}
+
+fn parse_css_color(value: &str) -> Option<u32> {
+    let value = value.trim();
+    if let Some(hex) = value.strip_prefix('#') {
+        return parse_hex_color(hex);
+    }
+    if let Some(args) = value.strip_prefix("rgb(").and_then(|s| s.strip_suffix(')')) {
+        let mut parts = args.split(',');
+        let r = parse_css_color_component(parts.next()?)?;
+        let g = parse_css_color_component(parts.next()?)?;
+        let b = parse_css_color_component(parts.next()?)?;
+        return Some(((r as u32) << 16) | ((g as u32) << 8) | b as u32);
+    }
+    match value {
+        "black" => Some(0x00_00_00_00),
+        "white" => Some(0x00_FF_FF_FF),
+        "red" => Some(0x00_D0_22_22),
+        "green" => Some(0x00_1E_8A_3D),
+        "blue" => Some(0x00_00_4E_C4),
+        "navy" => Some(0x00_00_20_60),
+        "teal" => Some(0x00_00_7A_7A),
+        "purple" => Some(0x00_72_34_A8),
+        "gray" | "grey" => Some(0x00_70_70_70),
+        "silver" => Some(0x00_C0_C0_C0),
+        "maroon" => Some(0x00_80_20_20),
+        "orange" => Some(0x00_D9_78_00),
+        "yellow" => Some(0x00_D0_B8_00),
+        "transparent" => None,
+        _ => None,
+    }
+}
+
+fn parse_hex_color(hex: &str) -> Option<u32> {
+    let bytes = hex.as_bytes();
+    if bytes.len() == 3 {
+        let r = hex_value(bytes[0])?;
+        let g = hex_value(bytes[1])?;
+        let b = hex_value(bytes[2])?;
+        return Some(((r as u32 * 17) << 16) | ((g as u32 * 17) << 8) | (b as u32 * 17));
+    }
+    if bytes.len() == 6 {
+        let r = (hex_value(bytes[0])? << 4) | hex_value(bytes[1])?;
+        let g = (hex_value(bytes[2])? << 4) | hex_value(bytes[3])?;
+        let b = (hex_value(bytes[4])? << 4) | hex_value(bytes[5])?;
+        return Some(((r as u32) << 16) | ((g as u32) << 8) | b as u32);
+    }
+    None
+}
+
+fn parse_css_color_component(value: &str) -> Option<u8> {
+    let value = value.trim();
+    if value.ends_with('%') {
+        let pct = parse_dimension(value.trim_end_matches('%'))?.min(100);
+        Some((pct.saturating_mul(255) / 100) as u8)
+    } else {
+        Some(parse_dimension(value)?.min(255) as u8)
+    }
+}
+
+fn selector_matches_tag(selector: &str, lower_tag: &str, name: &str) -> bool {
+    let mut last = "";
+    for part in selector.split(|c: char| c.is_ascii_whitespace() || matches!(c, '>' | '+' | '~')) {
+        if !part.trim().is_empty() {
+            last = part.trim();
+        }
+    }
+    if last.is_empty() {
+        return false;
+    }
+    matches_compound_selector(last, lower_tag, name)
+}
+
+fn matches_compound_selector(selector: &str, lower_tag: &str, name: &str) -> bool {
+    let selector = selector
+        .split(':')
+        .next()
+        .unwrap_or(selector)
+        .trim_matches('/');
+    if selector == "*" {
+        return true;
+    }
+    let bytes = selector.as_bytes();
+    let mut pos = 0usize;
+    let mut required_tag = "";
+    while pos < bytes.len() && (bytes[pos].is_ascii_alphanumeric() || matches!(bytes[pos], b'-')) {
+        pos += 1;
+    }
+    if pos > 0 {
+        required_tag = &selector[..pos];
+    }
+    if !required_tag.is_empty() && required_tag != name {
+        return false;
+    }
+    while pos < bytes.len() {
+        match bytes[pos] {
+            b'.' => {
+                pos += 1;
+                let start = pos;
+                while pos < bytes.len()
+                    && (bytes[pos].is_ascii_alphanumeric() || matches!(bytes[pos], b'-' | b'_'))
+                {
+                    pos += 1;
+                }
+                if start == pos || !tag_has_class(lower_tag, &selector[start..pos]) {
+                    return false;
+                }
+            }
+            b'#' => {
+                pos += 1;
+                let start = pos;
+                while pos < bytes.len()
+                    && (bytes[pos].is_ascii_alphanumeric() || matches!(bytes[pos], b'-' | b'_'))
+                {
+                    pos += 1;
+                }
+                if start == pos || !tag_has_id(lower_tag, &selector[start..pos]) {
+                    return false;
+                }
+            }
+            b'[' => {
+                let Some(end) = selector[pos + 1..].find(']') else {
+                    return false;
+                };
+                let attr = selector[pos + 1..pos + 1 + end]
+                    .split('=')
+                    .next()
+                    .unwrap_or("")
+                    .trim();
+                if attr.is_empty() || !has_attr(lower_tag, attr) {
+                    return false;
+                }
+                pos += end + 2;
+            }
+            _ => return false,
+        }
+    }
+    !required_tag.is_empty()
+        || selector.starts_with('.')
+        || selector.starts_with('#')
+        || selector.starts_with('[')
+}
+
+fn selector_specificity(selector: &str) -> u16 {
+    let mut ids = 0u16;
+    let mut classes = 0u16;
+    let mut tags = 0u16;
+    for part in selector.split(|c: char| c.is_ascii_whitespace() || matches!(c, '>' | '+' | '~')) {
+        let part = part.split(':').next().unwrap_or(part).trim();
+        if part.is_empty() || part == "*" {
+            continue;
+        }
+        let bytes = part.as_bytes();
+        let mut pos = 0usize;
+        if bytes
+            .first()
+            .map(|b| b.is_ascii_alphabetic())
+            .unwrap_or(false)
+        {
+            tags = tags.saturating_add(1);
+            while pos < bytes.len()
+                && (bytes[pos].is_ascii_alphanumeric() || matches!(bytes[pos], b'-'))
+            {
+                pos += 1;
+            }
+        }
+        while pos < bytes.len() {
+            match bytes[pos] {
+                b'#' => {
+                    ids = ids.saturating_add(1);
+                    pos += 1;
+                }
+                b'.' | b'[' => {
+                    classes = classes.saturating_add(1);
+                    pos += 1;
+                }
+                _ => pos += 1,
+            }
+        }
+    }
+    ids.saturating_mul(100)
+        .saturating_add(classes.saturating_mul(10))
+        .saturating_add(tags)
+}
+
+fn tag_has_class(lower_tag: &str, class: &str) -> bool {
+    attr_value(lower_tag, "class")
+        .map(|classes| classes.split_whitespace().any(|value| value == class))
+        .unwrap_or(false)
+}
+
+fn tag_has_id(lower_tag: &str, id: &str) -> bool {
+    attr_value(lower_tag, "id")
+        .map(|value| lowercase_ascii(value.trim()) == id)
+        .unwrap_or(false)
 }
 
 fn push_unique_class(out: &mut Vec<String>, class: &str) {
@@ -2255,6 +3106,7 @@ fn render_document(base_url: &str, response: &str, cols: usize) -> Vec<BrowserLi
                     continue;
                 }
                 let lower_name = tag_name_of(&lower_tag);
+                let tag_style = style_hints.computed_for_tag(&lower_tag, lower_name);
                 if lower_name == "script"
                     || lower_name == "style"
                     || lower_name == "noscript"
@@ -2267,15 +3119,26 @@ fn render_document(base_url: &str, response: &str, cols: usize) -> Vec<BrowserLi
                     || lower_name == "object"
                     || lower_name == "embed"
                     || lower_name == "head"
-                    || ((tag_is_hidden(&lower_tag) || style_hints.has_hidden_class(&lower_tag))
+                    || ((tag_is_hidden(&lower_tag) || tag_style.hidden)
                         && !lower_tag.starts_with("input"))
                 {
                     flush_flow_text(&mut out, &mut text, cols, &mut state);
-                    state.skip_until = Some(closing_tag_for(&lower_tag));
+                    if !is_void_element(lower_name) {
+                        state.skip_until = Some(closing_tag_for(&lower_tag));
+                    }
                     i += end_rel + 1;
                     continue;
                 }
-                handle_tag(tag, &mut out, &mut text, &mut state, base_url, cols);
+                handle_tag(
+                    tag,
+                    &lower_tag,
+                    &style_hints,
+                    &mut out,
+                    &mut text,
+                    &mut state,
+                    base_url,
+                    cols,
+                );
                 i += end_rel + 1;
                 continue;
             }
@@ -2284,7 +3147,7 @@ fn render_document(base_url: &str, response: &str, cols: usize) -> Vec<BrowserLi
             if state.in_table_cell {
                 push_text_char(&mut state.table_cell_text, bytes[i] as char, false);
             } else {
-                push_text_char(&mut text, bytes[i] as char, state.preformatted);
+                push_text_char(&mut text, bytes[i] as char, state.is_preformatted());
             }
         }
         i += 1;
@@ -2313,11 +3176,58 @@ pub fn render_document_debug_for_test(base_url: &str, response: &str, cols: usiz
         .collect()
 }
 
+pub fn render_document_style_debug_for_test(
+    base_url: &str,
+    response: &str,
+    cols: usize,
+) -> Vec<String> {
+    render_document(base_url, response, cols)
+        .into_iter()
+        .filter(|line| !line.text.is_empty())
+        .map(|line| {
+            let mut out = line.text;
+            if line.style.indent_px > 0 {
+                out.push_str(" [indent=");
+                out.push_str(&format!("{}", line.style.indent_px));
+                out.push(']');
+            }
+            if let Some(color) = line.style.text_color {
+                out.push_str(" [color=");
+                push_hex_color(&mut out, color);
+                out.push(']');
+            }
+            if let Some(background) = line.style.background {
+                out.push_str(" [bg=");
+                push_hex_color(&mut out, background);
+                out.push(']');
+            }
+            if line.align == BrowserAlign::Center {
+                out.push_str(" [align=center]");
+            } else if line.align == BrowserAlign::Right {
+                out.push_str(" [align=right]");
+            }
+            if let Some(link) = line.link {
+                out.push_str(" -> ");
+                out.push_str(&link);
+            }
+            out
+        })
+        .collect()
+}
+
+fn push_hex_color(out: &mut String, color: u32) {
+    out.push('#');
+    for shift in [20u32, 16, 12, 8, 4, 0] {
+        out.push(hex_digit(((color >> shift) & 0x0f) as u8));
+    }
+}
+
 struct HtmlRenderState {
     link: Option<String>,
     kind: BrowserLineKind,
     pending_prefix: Option<String>,
     preformatted: bool,
+    css_pre_stack: Vec<String>,
     skip_until: Option<String>,
     quote_depth: usize,
     list_depth: usize,
@@ -2328,10 +3238,12 @@ struct HtmlRenderState {
     table_cell_text: String,
     table_row: Vec<TableCell>,
     form_action: Option<String>,
+    form_fields: Vec<FormField>,
     cell_has_form_control: bool,
     cell_form_link: Option<String>,
     cell_link: Option<String>,
     align_stack: Vec<(String, BrowserAlign)>,
+    style_stack: Vec<(String, BrowserLineStyle)>,
     table_cell_align: BrowserAlign,
 }
 
@@ -2342,6 +3254,7 @@ impl HtmlRenderState {
             kind: BrowserLineKind::Text,
             pending_prefix: None,
             preformatted: false,
+            css_pre_stack: Vec::new(),
             skip_until: None,
             quote_depth: 0,
             list_depth: 0,
@@ -2352,10 +3265,12 @@ impl HtmlRenderState {
             table_cell_text: String::new(),
             table_row: Vec::new(),
             form_action: None,
+            form_fields: Vec::new(),
             cell_has_form_control: false,
             cell_form_link: None,
             cell_link: None,
             align_stack: Vec::new(),
+            style_stack: Vec::new(),
             table_cell_align: BrowserAlign::Left,
         }
     }
@@ -2380,6 +3295,48 @@ impl HtmlRenderState {
             self.align_stack.truncate(pos);
         }
     }
+
+    fn current_line_style(&self) -> BrowserLineStyle {
+        let mut out = BrowserLineStyle::default();
+        for (_, style) in &self.style_stack {
+            out = out.merged(*style);
+        }
+        out
+    }
+
+    fn push_style(&mut self, name: &str, style: BrowserLineStyle) {
+        if !style.is_default() {
+            self.style_stack.push((String::from(name), style));
+        }
+    }
+
+    fn pop_style(&mut self, name: &str) {
+        if let Some(pos) = self
+            .style_stack
+            .iter()
+            .rposition(|(tag_name, _)| tag_name == name)
+        {
+            self.style_stack.truncate(pos);
+        }
+    }
+
+    fn push_pre_style(&mut self, name: &str) {
+        self.css_pre_stack.push(String::from(name));
+    }
+
+    fn pop_pre_style(&mut self, name: &str) {
+        if let Some(pos) = self
+            .css_pre_stack
+            .iter()
+            .rposition(|tag_name| tag_name == name)
+        {
+            self.css_pre_stack.truncate(pos);
+        }
+    }
+
+    fn is_preformatted(&self) -> bool {
+        self.preformatted || !self.css_pre_stack.is_empty()
+    }
 }
 
 struct TableCell {
@@ -2388,6 +3345,11 @@ struct TableCell {
     link: Option<String>,
     is_form_row: bool,
     align: BrowserAlign,
+}
+
+struct FormField {
+    name: String,
+    value: String,
 }
 
 fn is_inline_tag(name: &str) -> bool {
@@ -2470,6 +3432,8 @@ fn parse_alignment(value: &str) -> Option<BrowserAlign> {
 
 fn handle_tag(
     tag: &str,
+    lower_tag: &str,
+    styles: &StyleHints,
     out: &mut Vec<BrowserLine>,
     text: &mut String,
     state: &mut HtmlRenderState,
@@ -2477,9 +3441,9 @@ fn handle_tag(
     cols: usize,
 ) {
     let tag = tag.trim();
-    let lower = lowercase_ascii(tag);
-    let name = tag_name_of(&lower);
-    let closing = lower.starts_with('/');
+    let name = tag_name_of(lower_tag);
+    let closing = lower_tag.starts_with('/');
+    let tag_style = styles.computed_for_tag(lower_tag, name);
 
     if state.in_table_cell {
         handle_table_cell_tag(tag, out, state, base_url, cols, name, closing);
@@ -2487,14 +3451,45 @@ fn handle_tag(
     }
 
     if is_inline_tag(name) {
+        let has_inline_effect = tag_style.align.is_some()
+            || !tag_style.line.is_default()
+            || tag_style.preformatted
+            || tag_style.display == CssDisplay::Block;
+        if !has_inline_effect {
+            return;
+        }
+        flush_flow_text(out, text, cols, state);
+        if closing {
+            state.pop_align(name);
+            state.pop_style(name);
+            state.pop_pre_style(name);
+        } else if !is_void_element(name) {
+            if let Some(align) = tag_style.align.or_else(|| tag_alignment(tag, name)) {
+                state.push_align(name, align);
+            }
+            state.push_style(name, tag_style.line);
+            if tag_style.preformatted {
+                state.push_pre_style(name);
+            }
+        }
         return;
     }
 
     flush_flow_text(out, text, cols, state);
     if closing {
         state.pop_align(name);
-    } else if let Some(align) = tag_alignment(tag, name) {
-        state.push_align(name, align);
+        state.pop_style(name);
+        state.pop_pre_style(name);
+    } else if !is_void_element(name) {
+        if let Some(align) = tag_style.align.or_else(|| tag_alignment(tag, name)) {
+            state.push_align(name, align);
+        }
+    }
+    if !closing && !is_void_element(name) {
+        state.push_style(name, tag_style.line);
+        if tag_style.preformatted {
+            state.push_pre_style(name);
+        }
     }
 
     match name {
@@ -2568,9 +3563,11 @@ fn handle_tag(
         "form" => {
             if closing {
                 state.form_action = None;
+                state.form_fields.clear();
                 push_blank_line(out);
             } else {
                 state.form_action = form_action_url(tag, base_url);
+                state.form_fields.clear();
                 push_blank_line(out);
             }
         }
@@ -2594,7 +3591,7 @@ fn handle_tag(
                 push_named_control_line(out, "textarea", tag, state);
             }
         }
-        "img" => push_image_line(out, tag, base_url, state),
+        "img" => push_image_line(out, tag, base_url, state, tag_style),
         "table" => {
             if closing {
                 finish_table_row(out, state, cols);
@@ -2646,10 +3643,87 @@ fn form_action_url(tag: &str, base_url: &str) -> Option<String> {
     }
 }
 
-fn push_input_line(out: &mut Vec<BrowserLine>, tag: &str, state: &HtmlRenderState) {
+fn record_input_field(state: &mut HtmlRenderState, tag: &str, input_type: &str) {
+    if state.form_action.is_none() || has_attr(tag, "disabled") || state.form_fields.len() >= 64 {
+        return;
+    }
+    if matches!(input_type, "submit" | "button" | "reset" | "image" | "file") {
+        return;
+    }
+    if matches!(input_type, "checkbox" | "radio") && !has_attr(tag, "checked") {
+        return;
+    }
+    let Some(name) = attr_value(tag, "name").map(|name| clean_inline_text(&decode_entities(&name)))
+    else {
+        return;
+    };
+    if name.is_empty() {
+        return;
+    }
+    let value = if matches!(input_type, "checkbox" | "radio") {
+        attr_value(tag, "value")
+            .map(|value| clean_inline_text(&decode_entities(&value)))
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| String::from("on"))
+    } else {
+        input_value(tag)
+    };
+    state.form_fields.push(FormField { name, value });
+}
+
+fn record_named_form_field(state: &mut HtmlRenderState, tag: &str) {
+    if state.form_action.is_none() || has_attr(tag, "disabled") || state.form_fields.len() >= 64 {
+        return;
+    }
+    let Some(name) = attr_value(tag, "name").map(|name| clean_inline_text(&decode_entities(&name)))
+    else {
+        return;
+    };
+    if name.is_empty() {
+        return;
+    }
+    let value = attr_value(tag, "value")
+        .map(|value| clean_inline_text(&decode_entities(&value)))
+        .unwrap_or_else(String::new);
+    state.form_fields.push(FormField { name, value });
+}
+
+fn form_submit_url(state: &HtmlRenderState, submit_tag: Option<&str>) -> Option<String> {
+    let mut out = state.form_action.clone()?;
+    let mut wrote = out.contains('?');
+    for field in &state.form_fields {
+        append_query_param(&mut out, &mut wrote, &field.name, &field.value);
+    }
+    if let Some(tag) = submit_tag {
+        if !has_attr(tag, "disabled") {
+            if let Some(name) =
+                attr_value(tag, "name").map(|name| clean_inline_text(&decode_entities(&name)))
+            {
+                if !name.is_empty() {
+                    let value = attr_value(tag, "value")
+                        .map(|value| clean_inline_text(&decode_entities(&value)))
+                        .unwrap_or_else(String::new);
+                    append_query_param(&mut out, &mut wrote, &name, &value);
+                }
+            }
+        }
+    }
+    Some(out)
+}
+
+fn append_query_param(out: &mut String, wrote: &mut bool, name: &str, value: &str) {
+    out.push(if *wrote { '&' } else { '?' });
+    push_query_encoded(out, name);
+    out.push('=');
+    push_query_encoded(out, value);
+    *wrote = true;
+}
+
+fn push_input_line(out: &mut Vec<BrowserLine>, tag: &str, state: &mut HtmlRenderState) {
     let input_type = attr_value(tag, "type").unwrap_or_else(|| String::from("text"));
     let input_type = lowercase_ascii(input_type.trim());
     if input_type == "hidden" {
+        record_input_field(state, tag, &input_type);
         return;
     }
     let mut text = String::new();
@@ -2661,7 +3735,9 @@ fn push_input_line(out: &mut Vec<BrowserLine>, tag: &str, state: &HtmlRenderStat
             text.push_str("[button] ");
             text.push_str(&label);
             if input_type == "submit" {
-                link = state.form_action.clone();
+                link = form_submit_url(state, Some(tag));
+            } else {
+                link = Some(browser_event_url(&label));
             }
             control = BrowserControl::Button { label };
         }
@@ -2669,18 +3745,23 @@ fn push_input_line(out: &mut Vec<BrowserLine>, tag: &str, state: &HtmlRenderStat
             let label = input_field_label(tag, &input_type);
             text.push_str("[checkbox] ");
             text.push_str(&label);
-            control = BrowserControl::Checkbox { label };
+            let checked = has_attr(tag, "checked");
+            record_input_field(state, tag, &input_type);
+            control = BrowserControl::Checkbox { label, checked };
         }
         "radio" => {
             let label = input_field_label(tag, &input_type);
             text.push_str("[radio] ");
             text.push_str(&label);
-            control = BrowserControl::Radio { label };
+            let checked = has_attr(tag, "checked");
+            record_input_field(state, tag, &input_type);
+            control = BrowserControl::Radio { label, checked };
         }
         "search" => {
             let label = input_field_label(tag, &input_type);
             text.push_str("[search] ");
             text.push_str(&label);
+            record_input_field(state, tag, &input_type);
             control = BrowserControl::TextInput {
                 label: input_control_label(tag, &label),
                 value: input_value(tag),
@@ -2691,13 +3772,14 @@ fn push_input_line(out: &mut Vec<BrowserLine>, tag: &str, state: &HtmlRenderStat
             let label = form_control_label(tag, &input_type);
             text.push_str("[image button] ");
             text.push_str(&label);
-            link = state.form_action.clone();
+            link = form_submit_url(state, Some(tag));
             control = BrowserControl::Button { label };
         }
         _ => {
             let label = input_field_label(tag, &input_type);
             text.push_str("[input] ");
             text.push_str(&label);
+            record_input_field(state, tag, &input_type);
             control = BrowserControl::TextInput {
                 label: input_control_label(tag, &label),
                 value: input_value(tag),
@@ -2712,6 +3794,7 @@ fn push_input_line(out: &mut Vec<BrowserLine>, tag: &str, state: &HtmlRenderStat
             line_kind_for_link(&link, BrowserLineKind::Code),
         )
         .aligned(state.current_align())
+        .styled(state.current_line_style())
         .with_control(control),
     );
 }
@@ -2719,9 +3802,9 @@ fn push_input_line(out: &mut Vec<BrowserLine>, tag: &str, state: &HtmlRenderStat
 fn push_button_line(out: &mut Vec<BrowserLine>, tag: &str, state: &HtmlRenderState) {
     let button_type = attr_value(tag, "type").unwrap_or_else(|| String::from("submit"));
     let link = if button_type.eq_ignore_ascii_case("submit") {
-        state.form_action.clone()
+        form_submit_url(state, Some(tag))
     } else {
-        None
+        Some(browser_event_url(&form_control_label(tag, "button")))
     };
     let has_form_value = attr_value(tag, "value").is_some()
         || attr_value(tag, "name").is_some()
@@ -2737,6 +3820,7 @@ fn push_button_line(out: &mut Vec<BrowserLine>, tag: &str, state: &HtmlRenderSta
             line_kind_for_link(&link, BrowserLineKind::Code),
         )
         .aligned(state.current_align())
+        .styled(state.current_line_style())
         .with_control(BrowserControl::Button { label }),
     );
 }
@@ -2745,18 +3829,24 @@ fn push_named_control_line(
     out: &mut Vec<BrowserLine>,
     control: &str,
     tag: &str,
-    state: &HtmlRenderState,
+    state: &mut HtmlRenderState,
 ) {
     let label = form_control_label(tag, control);
     let visual = if control == "textarea" {
         BrowserControl::TextArea {
             label: label.clone(),
+            rows: attr_value(tag, "rows")
+                .and_then(|value| parse_dimension(&value))
+                .unwrap_or(3)
+                .clamp(2, 8),
         }
     } else {
         BrowserControl::Select {
             label: label.clone(),
+            options: 0,
         }
     };
+    record_named_form_field(state, tag);
     out.push(
         BrowserLine::new(
             format!("[{}] {}", control, label),
@@ -2764,6 +3854,7 @@ fn push_named_control_line(
             BrowserLineKind::Code,
         )
         .aligned(state.current_align())
+        .styled(state.current_line_style())
         .with_control(visual),
     );
 }
@@ -2869,6 +3960,7 @@ fn handle_table_cell_tag(
             let input_type = attr_value(tag, "type").unwrap_or_else(|| String::from("text"));
             let input_type = lowercase_ascii(input_type.trim());
             if input_type == "hidden" {
+                record_input_field(state, tag, &input_type);
                 return;
             }
             state.cell_has_form_control = true;
@@ -2878,7 +3970,11 @@ fn handle_table_cell_tag(
             match input_type.as_str() {
                 "submit" | "button" => {
                     if state.cell_form_link.is_none() {
-                        state.cell_form_link = state.form_action.clone();
+                        state.cell_form_link = if input_type == "submit" {
+                            form_submit_url(state, Some(tag))
+                        } else {
+                            Some(browser_event_url(&form_control_label(tag, &input_type)))
+                        };
                     }
                     let label = form_control_label(tag, &input_type);
                     state.table_cell_text.push_str("[btn:");
@@ -2886,6 +3982,7 @@ fn handle_table_cell_tag(
                     state.table_cell_text.push(']');
                 }
                 _ => {
+                    record_input_field(state, tag, &input_type);
                     // prefer placeholder/name over aria-label for field identity
                     let label = input_field_label(tag, &input_type);
                     state.table_cell_text.push_str("[field:");
@@ -2904,26 +4001,51 @@ fn handle_table_cell_tag(
     }
 }
 
-fn push_image_line(out: &mut Vec<BrowserLine>, tag: &str, base_url: &str, state: &HtmlRenderState) {
+fn push_image_line(
+    out: &mut Vec<BrowserLine>,
+    tag: &str,
+    base_url: &str,
+    state: &HtmlRenderState,
+    tag_style: TagStyle,
+) {
     let src = attr_value(tag, "src").map(|src| resolve_url(base_url, &src));
     let label = attr_value(tag, "alt")
         .map(|alt| decode_entities(&alt))
         .filter(|alt| !alt.trim().is_empty())
         .unwrap_or_else(|| src.clone().unwrap_or_else(|| String::from("image")));
+    let hint = image_hint_for_tag(tag, tag_style);
     let mut text = String::from("[image");
-    if let Some(size) = image_size_label(tag) {
+    if let Some(size) = image_size_label_for_hint(hint) {
         text.push(' ');
         text.push_str(&size);
     }
     text.push_str("] ");
     text.push_str(&label);
-    out.push(BrowserLine::new(text, src, BrowserLineKind::Image).aligned(state.current_align()));
+    out.push(
+        BrowserLine::new(text, src, BrowserLineKind::Image)
+            .aligned(state.current_align())
+            .styled(state.current_line_style().merged(tag_style.line))
+            .with_image_hint(hint),
+    );
 }
 
 fn image_size_label(tag: &str) -> Option<String> {
-    let width = attr_value(tag, "width").and_then(|value| parse_dimension(&value));
-    let height = attr_value(tag, "height").and_then(|value| parse_dimension(&value));
-    match (width, height) {
+    image_size_label_for_hint(image_hint_for_tag(tag, TagStyle::default()))
+}
+
+fn image_hint_for_tag(tag: &str, tag_style: TagStyle) -> ImageHint {
+    ImageHint {
+        width: tag_style
+            .width
+            .or_else(|| attr_value(tag, "width").and_then(|value| parse_dimension(&value))),
+        height: tag_style
+            .height
+            .or_else(|| attr_value(tag, "height").and_then(|value| parse_dimension(&value))),
+    }
+}
+
+fn image_size_label_for_hint(hint: ImageHint) -> Option<String> {
+    match (hint.width, hint.height) {
         (Some(width), Some(height)) => Some(format!("{}x{}", width, height)),
         (Some(width), None) => Some(format!("{}w", width)),
         (None, Some(height)) => Some(format!("{}h", height)),
@@ -3200,6 +4322,26 @@ fn tag_name_of(lower_tag: &str) -> &str {
         .unwrap_or("")
 }
 
+fn is_void_element(name: &str) -> bool {
+    matches!(
+        name,
+        "area"
+            | "base"
+            | "br"
+            | "col"
+            | "embed"
+            | "hr"
+            | "img"
+            | "input"
+            | "link"
+            | "meta"
+            | "param"
+            | "source"
+            | "track"
+            | "wbr"
+    )
+}
+
 fn closing_tag_for(lower_tag: &str) -> String {
     let mut out = String::from("/");
     out.push_str(tag_name_of(lower_tag));
@@ -3237,6 +4379,7 @@ fn flush_flow_text(
         kind,
         prefix,
         state.current_align(),
+        state.current_line_style(),
     );
 }
 
@@ -3248,6 +4391,7 @@ fn flush_text(
     kind: BrowserLineKind,
     prefix: Option<String>,
     align: BrowserAlign,
+    style: BrowserLineStyle,
 ) {
     let trimmed = if kind == BrowserLineKind::Code {
         text.trim_matches('\n')
@@ -3262,7 +4406,9 @@ fn flush_text(
     if let Some(prefix) = prefix {
         decoded.insert_str(0, &prefix);
     }
-    out.extend(wrap_plain_text_kind(&decoded, cols, link, kind, align));
+    out.extend(wrap_plain_text_kind(
+        &decoded, cols, link, kind, align, style,
+    ));
 }
 
 fn clean_inline_text(input: &str) -> String {
@@ -3277,7 +4423,14 @@ fn clean_inline_text(input: &str) -> String {
 }
 
 fn wrap_plain_text(text: &str, cols: usize, link: Option<String>) -> Vec<BrowserLine> {
-    wrap_plain_text_kind(text, cols, link, BrowserLineKind::Text, BrowserAlign::Left)
+    wrap_plain_text_kind(
+        text,
+        cols,
+        link,
+        BrowserLineKind::Text,
+        BrowserAlign::Left,
+        BrowserLineStyle::default(),
+    )
 }
 
 fn wrap_plain_text_kind(
@@ -3286,6 +4439,7 @@ fn wrap_plain_text_kind(
     link: Option<String>,
     kind: BrowserLineKind,
     align: BrowserAlign,
+    style: BrowserLineStyle,
 ) -> Vec<BrowserLine> {
     let cols = cols.clamp(20, 120);
     let mut out = Vec::new();
@@ -3295,7 +4449,8 @@ fn wrap_plain_text_kind(
             if !line.is_empty() {
                 out.push(
                     BrowserLine::new(line, link.clone(), line_kind_for_link(&link, kind))
-                        .aligned(align),
+                        .aligned(align)
+                        .styled(style),
                 );
                 line = String::new();
             }
@@ -3304,7 +4459,8 @@ fn wrap_plain_text_kind(
                 if chunk.len() >= cols {
                     out.push(
                         BrowserLine::new(chunk, link.clone(), line_kind_for_link(&link, kind))
-                            .aligned(align),
+                            .aligned(align)
+                            .styled(style),
                     );
                     chunk = String::new();
                 }
@@ -3319,7 +4475,8 @@ fn wrap_plain_text_kind(
         if line.len() + word.len() + extra > cols && !line.is_empty() {
             out.push(
                 BrowserLine::new(line, link.clone(), line_kind_for_link(&link, kind))
-                    .aligned(align),
+                    .aligned(align)
+                    .styled(style),
             );
             line = String::new();
         }
@@ -3330,7 +4487,11 @@ fn wrap_plain_text_kind(
     }
     if !line.is_empty() {
         let kind = line_kind_for_link(&link, kind);
-        out.push(BrowserLine::new(line, link, kind).aligned(align));
+        out.push(
+            BrowserLine::new(line, link, kind)
+                .aligned(align)
+                .styled(style),
+        );
     }
     out
 }
@@ -3582,6 +4743,54 @@ fn attr_value(tag: &str, name: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn has_attr(tag: &str, name: &str) -> bool {
+    let bytes = tag.as_bytes();
+    let name_bytes = name.as_bytes();
+    let mut pos = 0usize;
+    while pos < bytes.len() {
+        while pos < bytes.len()
+            && (bytes[pos].is_ascii_whitespace() || matches!(bytes[pos], b'/' | b'<'))
+        {
+            pos += 1;
+        }
+        let start = pos;
+        while pos < bytes.len()
+            && (bytes[pos].is_ascii_alphanumeric() || matches!(bytes[pos], b'-' | b'_'))
+        {
+            pos += 1;
+        }
+        if start == pos {
+            pos = pos.saturating_add(1);
+            continue;
+        }
+        if ascii_bytes_eq_ignore_case(&bytes[start..pos], name_bytes) {
+            return true;
+        }
+        while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+        if bytes.get(pos) == Some(&b'=') {
+            pos += 1;
+            while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+                pos += 1;
+            }
+            if matches!(bytes.get(pos), Some(b'"' | b'\'')) {
+                let quote = bytes[pos];
+                pos += 1;
+                while pos < bytes.len() && bytes[pos] != quote {
+                    pos += 1;
+                }
+                pos = pos.saturating_add(1);
+            } else {
+                while pos < bytes.len() && !bytes[pos].is_ascii_whitespace() && bytes[pos] != b'>' {
+                    pos += 1;
+                }
+            }
+        }
+    }
+    false
 }
 
 fn resolve_url(base: &str, href: &str) -> String {

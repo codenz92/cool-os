@@ -4,17 +4,22 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–48 are complete. The current milestone gives coolOS a much more
+Phases 1–52 are complete. The current milestone gives coolOS a much more
 normal command-line and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
 in-image `/SDK` with devkit templates, ABI v9 evented readiness waits, and ABI
-v10 TTY control for raw terminal-mode programs.
-Phases 45-48 focus on responsiveness and interactive terminal behavior:
+v10 TTY control for raw terminal-mode programs. The native browser now has a
+bounded HTML/CSS rendering foundation with CSS selector/cascade support,
+CSS-styled line boxes, better image metadata/sizing, form submit URL handling,
+and DOM-event hit-box fixture coverage.
+Phases 45-52 focus on responsiveness, interactive terminal behavior, and
+desktop-browser compatibility:
 cursor-only framebuffer updates,
 input-first idle-loop ordering, adaptive 36/144 Hz frame pacing, compositor
 telemetry, and `poll`-driven userspace waits for pipes, TTY stdin, sockets,
-GUI events, and child exits, plus raw TTY input and ANSI-rendered TUI output.
+GUI events, and child exits, plus raw TTY input, ANSI-rendered TUI output, and
+a richer native Browser rendering surface.
 
 ---
 
@@ -563,14 +568,14 @@ HTTPS rather than a fake port-443 passthrough.
 
 - `src/net.rs` owns HTTP redirect following and chunked transfer decoding so Terminal,
   browser, and syscall callers share one HTTP implementation.
-- `src/apps/browser.rs` remains a native no_std GUI app; it does not embed a web
-  engine. It renders a useful text view over basic HTML and exposes internal browser
-  pages for local state.
+- `src/apps/browser.rs` remains a native no_std GUI app. Phases 49-52 give it a
+  bounded browser-engine layer for HTML/CSS line boxes, images, forms, and
+  clickable document hit boxes while keeping JavaScript execution as future work.
 - `/bin/wget` now sends an HTTP/1.1 request with a coolOS user agent, keeping it as a
   raw userspace socket demo.
-- The next browser phase is richer page rendering and broader web compatibility:
-  a larger trust store, stronger hostname matching coverage, CSS/layout, images,
-  and eventually JavaScript.
+- The next browser phase after 52 is a real DOM tree plus script/runtime work:
+  incremental reflow, keyboard focus inside controls, POST bodies, and eventually
+  JavaScript.
 
 ---
 
@@ -1423,6 +1428,82 @@ prints ANSI-colored/status output through TerminalApp's VT parser.
 
 ---
 
+## ✅ Phase 49 — Browser Engine Foundation
+
+**Goal:** Move the Browser from linear HTML extraction to a bounded native
+rendering engine that can compute document style before emitting line boxes.
+
+- [x] Parse `<style>` blocks and inline `style=` declarations into bounded CSS
+      rules.
+- [x] Match tag, class, id, simple compound selectors, grouped selectors, and
+      last-part descendant selectors with source-order/specificity handling.
+- [x] Carry computed style through the renderer as line-box hints instead of
+      losing CSS before layout.
+- [x] Add `/TMP/PHASE49.HTML` and `make smoke-phase49-browser-engine`.
+
+**Current status:** complete. The native Browser computes CSS-derived hidden
+state, alignment, indentation, colors, backgrounds, whitespace, and image
+sizing hints before laying out document items.
+
+---
+
+## ✅ Phase 50 — CSS Layout Pass
+
+**Goal:** Cover the practical CSS2-style layout properties needed for readable
+desktop browsing without adding an unsafe or unbounded web engine.
+
+- [x] Apply `display:none`, `visibility:hidden`, `text-align`, `margin-left`,
+      `padding-left`, `text-indent`, `color`, `background(-color)`, `width`,
+      `height`, and `white-space`.
+- [x] Draw styled text/control/image backgrounds inside the Browser document
+      pane.
+- [x] Preserve CSS alignment in the existing line layout model and keep image
+      scaling bounded by document width and maximum preview height.
+- [x] Add `/TMP/PHASE50.CSS.HTML` and `make smoke-phase50-css-layout`.
+
+**Current status:** complete. CSS now affects visible layout, not just filtering:
+styled fixture pages render centered/right-aligned text, indented blocks,
+background colors, hidden content, and CSS-sized images.
+
+---
+
+## ✅ Phase 51 — Browser Forms
+
+**Goal:** Make HTML forms useful in the native Browser surface.
+
+- [x] Render text/search/email-style inputs, checkboxes, radio buttons, select
+      boxes, textareas, image buttons, and submit/reset/button controls.
+- [x] Preserve checked/default values and hidden fields in form state.
+- [x] Build clickable GET submit URLs from form action, field names, values, and
+      submit-button values; POST remains visibly non-clickable until the browser
+      has request-body submission.
+- [x] Add `/TMP/PHASE51.FORM.HTML` and `make smoke-phase51-browser-forms`.
+
+**Current status:** complete. Forms render as native controls in the Browser
+document pane, and submit controls route through the existing hit-box/navigation
+path with encoded query strings.
+
+---
+
+## ✅ Phase 52 — DOM/Event Foundation
+
+**Goal:** Establish the event routing foundation needed before scripting: links,
+forms, and button-like controls must be represented as clickable document
+objects with stable hit boxes.
+
+- [x] Keep link/form/button controls in the same layout item stream used for
+      hit-box generation.
+- [x] Preserve image/control box dimensions so click targets match rendered
+      output after scrolling.
+- [x] Add Browser debug rendering coverage for CSS style and form URL behavior.
+- [x] Add `/TMP/PHASE52.DOM.HTML` and `make smoke-phase52-dom-events`.
+
+**Current status:** complete. The Browser still does not execute JavaScript, but
+the native document model now has the event/hit-box substrate needed for future
+DOM activation work.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -1487,4 +1568,8 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.9 | Phase 45 complete: compositor latency and smoothness |
 | v7.10 | Phase 46 complete: adaptive high refresh |
 | v7.11 | Phase 47 complete: evented userspace runtime |
-| v7.12 | Current — Phase 48 complete: terminal/TUI platform |
+| v7.12 | Phase 48 complete: terminal/TUI platform |
+| v7.13 | Phase 49 complete: browser engine foundation |
+| v7.14 | Phase 50 complete: CSS layout pass |
+| v7.15 | Phase 51 complete: browser forms |
+| v7.16 | Current — Phase 52 complete: DOM/event foundation |

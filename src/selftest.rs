@@ -474,26 +474,56 @@ fn png_decode_roundtrip() -> bool {
         "/TMP/PHASE19.HTML",
         b"<!doctype html><html><head><title>Phase 19</title></head><body><h1>Phase 19</h1><blockquote>quoted text</blockquote><table><tr><th>Name</th><th>Status</th></tr><tr><td>PNG</td><td>ready</td></tr></table><p><img src=\"PNGTEST.PNG\" alt=\"checker\"></p></body></html>",
     );
+    let _ = crate::vfs::vfs_safe_write_file(
+        "/TMP/PHASE49.HTML",
+        b"<!doctype html><html><head><title>Phase 49 Browser Engine</title><style>.hide{display:none}.hero{text-align:center;color:#123456;background-color:#ddeeff;margin-left:16px}img.logo{width:40px;height:28px}</style></head><body><h1 class=\"hero\">Phase 49 CSS layout</h1><p class=\"hide\">hidden</p><p class=\"hero\">Styled CSS2 block with inherited layout hints.</p><img class=\"logo\" src=\"PNGTEST.PNG\" alt=\"checker\"><form action=\"/search\"><input type=\"hidden\" name=\"phase\" value=\"49\"><input type=\"search\" name=\"q\" value=\"coolos\"><input type=\"checkbox\" name=\"safe\" value=\"1\" checked><input type=\"submit\" name=\"go\" value=\"Go\"></form></body></html>",
+    );
+    let _ = crate::vfs::vfs_safe_write_file(
+        "/TMP/PHASE50.CSS.HTML",
+        b"<!doctype html><html><head><title>Phase 50 CSS2</title><style>body{color:#202020}.card{margin-left:24px;background:#f0f7ff}.right{text-align:right}.gone{visibility:hidden}</style></head><body><h1>CSS2 cascade</h1><p class=\"card\">Indented card-like block without nesting UI cards.</p><p class=\"right\">Right aligned text</p><p class=\"gone\">not rendered</p></body></html>",
+    );
+    let _ = crate::vfs::vfs_safe_write_file(
+        "/TMP/PHASE51.FORM.HTML",
+        b"<!doctype html><html><head><title>Phase 51 Forms</title></head><body><h1>HTML5 forms</h1><form action=\"/apply\"><input type=\"hidden\" name=\"source\" value=\"phase51\"><input type=\"email\" name=\"email\" value=\"user@example.com\"><input type=\"radio\" name=\"tier\" value=\"pro\" checked><textarea name=\"notes\" rows=\"4\" placeholder=\"Notes\"></textarea><input type=\"submit\" name=\"submit\" value=\"Send\"></form></body></html>",
+    );
+    let _ = crate::vfs::vfs_safe_write_file(
+        "/TMP/PHASE52.DOM.HTML",
+        b"<!doctype html><html><head><title>Phase 52 DOM Events</title><style>#target{color:blue}.event{background:#fff4cc}</style></head><body><h1>DOM event foundation</h1><p id=\"target\" class=\"event\">Clickable links and form submits route through browser hit boxes.</p><a href=\"PHASE49.HTML\">Open phase 49 fixture</a><button type=\"button\" value=\"noop\" aria-label=\"Button event\">Button event</button></body></html>",
+    );
     image.width == 2
         && image.height == 2
         && image.pixels.as_slice() == [0x00ff0000, 0x0000ff00, 0x000000ff, 0x00ffffff]
 }
 
 fn browser_html_render_roundtrip() -> bool {
-    let html = "<!doctype html><html><body><h1>Heading</h1><blockquote>Quoted words</blockquote><ul><li>First</li></ul><table><tr><th>Name</th><th>Status</th></tr><tr><td>PNG</td><td>ready</td></tr></table><form action=\"/search\"><input type=\"search\" name=\"q\" placeholder=\"Search\"><input type=\"submit\" value=\"Go\"></form><img src=\"PNGTEST.PNG\" alt=\"checker\" width=\"2\" height=\"2\"></body></html>";
+    let html = "<!doctype html><html><head><style>.hidden{display:none}.center{text-align:center}.panel{margin-left:16px;color:#123456;background-color:#ddeeff}img.logo{width:16px;height:12px}</style></head><body><h1 class=\"center\">Heading</h1><p class=\"hidden\">Hidden text</p><p class=\"panel\">Styled words</p><blockquote>Quoted words</blockquote><ul><li>First</li></ul><table><tr><th>Name</th><th>Status</th></tr><tr><td>PNG</td><td>ready</td></tr></table><form action=\"/search\"><input type=\"hidden\" name=\"token\" value=\"abc\"><input type=\"search\" name=\"q\" value=\"cool\" placeholder=\"Search\"><input type=\"checkbox\" name=\"safe\" value=\"1\" checked><input type=\"submit\" name=\"go\" value=\"Go\"></form><img class=\"logo\" src=\"PNGTEST.PNG\" alt=\"checker\"></body></html>";
     let lines =
         crate::apps::browser::render_document_debug_for_test("file:///TMP/PHASE19.HTML", html, 72);
+    let styled = crate::apps::browser::render_document_style_debug_for_test(
+        "file:///TMP/PHASE19.HTML",
+        html,
+        72,
+    );
     let has_heading = lines.iter().any(|line| line == "Heading");
+    let has_css = !lines.iter().any(|line| line.contains("Hidden text"))
+        && styled
+            .iter()
+            .any(|line| line.contains("Styled words [indent=16] [color=#123456] [bg=#DDEEFF]"))
+        && styled
+            .iter()
+            .any(|line| line.contains("Heading [align=center]"));
     let has_quote = lines.iter().any(|line| line.contains("> Quoted words"));
     let has_table = lines
         .iter()
         .any(|line| line.contains("| Name") && line.contains("Status"));
     let has_image = lines.iter().any(|line| {
-        line.contains("[image 2x2] checker") && line.contains("file:///TMP/PNGTEST.PNG")
+        line.contains("[image 16x12] checker") && line.contains("file:///TMP/PNGTEST.PNG")
     });
     let has_form = lines.iter().any(|line| line == "[search] Search")
-        && lines
-            .iter()
-            .any(|line| line.contains("[button] Go") && line.contains("file:///search"));
-    has_heading && has_quote && has_table && has_image && has_form
+        && lines.iter().any(|line| line.contains("[checkbox] safe"))
+        && lines.iter().any(|line| {
+            line.contains("[button] Go")
+                && line.contains("file:///search?token=abc&q=cool&safe=1&go=Go")
+        });
+    has_heading && has_css && has_quote && has_table && has_image && has_form
 }

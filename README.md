@@ -13,7 +13,7 @@ stdio, and IPC with pipes, shared memory, and per-task fd tables.
 
 ---
 
-# Current state — v7.12
+# Current state — v7.16
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -59,7 +59,8 @@ rename, writable file descriptors, fd-mapped child stdio, sync, and RTC time;
 `/bin/sh` now supports quoting, relative paths, redirection, and one-stage
 pipelines; `/bin` includes practical file/text/date/devkit tools; sysreport can
 write `/LOGS/SYSREPORT.TXT`; and the generated image ships `/SDK` docs and
-templates. Phases 45-48 add compositor smoothness and evented terminal work:
+templates. Phases 45-52 add compositor smoothness, evented terminal work, and
+a richer native browser renderer:
 timer ticks now request
 paced frames instead of unconditional full redraws, mouse-only motion uses a
 hardware cursor overlay fast path, active input temporarily boosts full-frame
@@ -69,7 +70,12 @@ frame source, adaptive pacing, budget, damage, and cursor overlay counters. ABI
 v9 adds `poll(desc, count, timeout_ms)` so ring-3 programs can block on pipes,
 TTY stdin, TCP sockets, GUI events, and child exit without spin/yield loops; ABI
 v10 adds `tty_control(op, arg1, arg2)` so foreground ring-3 programs can query
-terminal geometry and switch between canonical and raw TTY input.
+terminal geometry and switch between canonical and raw TTY input. The Browser
+now has a bounded CSS cascade/layout pass for tag/class/id/inline selectors,
+CSS-derived alignment, colors, backgrounds, indentation, hidden content, image
+sizing hints, PNG/JPEG/GIF/WebP metadata handling, GET-form query construction,
+and smoke fixtures for the new browser engine, CSS layout, forms, and DOM-event
+hit-box foundation.
 
 | Context | Mode | Description |
 | :------ | :--- | :---------- |
@@ -93,8 +99,10 @@ CoolFS-backed VFS. With QEMU virtio networking enabled, `exec /bin/wget
 http://example.com/` resolves DNS, opens a TCP socket, fetches the HTTP
 response, and streams it to the terminal. The native Web Browser app can open
 HTTP, HTTPS, and local HTML pages, follow redirects, decode chunked responses,
-render headings, lists, block quotes, simple tables, and bounded inline PNG
-images, and keep session history plus persistent local bookmarks. HTTPS uses a
+render headings, lists, block quotes, simple tables, CSS-styled text blocks,
+bounded inline PNG images, image dimensions/placeholders for common image
+formats, and HTML forms that submit GET query URLs, and keep session history
+plus persistent local bookmarks. HTTPS uses a
 no_std TLS 1.3 client over the kernel TCP stack with hardware RNG entropy,
 RTC-backed certificate validity checks, X.509 chain validation against the
 built-in trust roots, and SAN-first hostname validation coverage.
@@ -136,7 +144,7 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **Text Viewer** | Right-click | Scrollable "About" doc; `j`/`k` to scroll. |
 | **Color Picker** | Right-click | Clickable 16-colour EGA palette grid. |
 | **File Manager** | Right-click / desktop icon | Browse and mutate the CoolFS root with breadcrumbs, recursive search, sorting, multi-select, clipboard copy/cut/paste, Trash-backed delete, properties, inline text editing, Open With Editor/Viewer, and ELF launch routing. |
-| **Web Browser** | Launcher / desktop icon | Native HTTP/HTTPS/local-file browser with address/search bar, redirects, decoded chunked responses, headings/lists/quotes/tables, direct and HTML-sourced inline PNG previews, clickable links, session history, visible TLS trust-root status, and persistent bookmarks. |
+| **Web Browser** | Launcher / desktop icon | Native HTTP/HTTPS/local-file browser with address/search bar, redirects, decoded chunked responses, headings/lists/quotes/tables, CSS2-style cascade hints for tag/class/id/inline selectors, styled text blocks, direct and HTML-sourced inline PNG previews, image metadata/placeholders for JPEG/GIF/WebP, clickable links/forms, session history, visible TLS trust-root status, and persistent bookmarks. |
 | **Accounts** | Launcher / Display Settings Users tab | Admin account management for first-run setup, account creation, role changes, enable/disable, password reset, and deletion. |
 | **Trash Bin** | Launcher / desktop icon / `exec /bin/trash` | Ring-3 GUI utility that lists deleted items staged in `/Trash` and can permanently empty them. |
 | **Screenshot** | Launcher / desktop icon / `exec /bin/screenshot` | Ring-3 GUI utility that queues a focused-window PPM capture to `/Pictures`. |
@@ -582,6 +590,18 @@ movement, and screen/line clearing. `libcool::tty` exposes mode/size helpers,
 and `/bin/tuidemo` smokes raw single-key input without Enter plus ANSI-rendered
 status text.
 
+**Browser rendering phases (49-52).** The native Browser now has a more explicit
+HTML/CSS rendering path: style blocks and inline styles are parsed into bounded
+rules for tag, class, id, and simple compound selectors; computed style drives
+hidden content, alignment, indentation, text color, backgrounds, preformatted
+text, and image width/height hints. Image handling keeps the PNG decoder bounded
+while recognizing PNG/JPEG/GIF/WebP dimensions for previews/placeholders. Forms
+render text/search/email fields, checkboxes, radios, selects, textareas, and
+buttons, preserve checked/default values, and build GET submit URLs through the
+same clickable hit-box system used by links. `make smoke-phase49-browser-engine`,
+`make smoke-phase50-css-layout`, `make smoke-phase51-browser-forms`, and
+`make smoke-phase52-dom-events` boot fixture pages under `/TMP`.
+
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
 empty). `vmm::new_process_pml4` handles the clone; `vmm::map_page_in` / `vmm::map_region`
@@ -648,5 +668,9 @@ while kernel faults still panic.
 | 46 | Adaptive high refresh — 144 Hz active pacing, 36 Hz idle pacing, frame-budget telemetry | **Done** |
 | 47 | Evented userspace runtime — ABI v9 poll for fd/socket/GUI/child/TTY readiness | **Done** |
 | 48 | Terminal/TUI platform — ABI v10 TTY control, raw mode, ANSI rendering, `/bin/tuidemo` | **Done** |
+| 49 | Browser engine foundation — bounded CSS cascade, styled line boxes, richer HTML fixture coverage | **Done** |
+| 50 | CSS layout pass — selector specificity, colors/backgrounds, indentation, alignment, hidden content | **Done** |
+| 51 | Browser forms — HTML5 control rendering and GET query submit URLs | **Done** |
+| 52 | DOM/event foundation — clickable link/form/button hit boxes plus browser event fixtures | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).
