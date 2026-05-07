@@ -4,7 +4,7 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–52 are complete. The current milestone gives coolOS a much more
+Phases 1–53 are complete. The current milestone gives coolOS a much more
 normal command-line and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
@@ -12,14 +12,16 @@ in-image `/SDK` with devkit templates, ABI v9 evented readiness waits, and ABI
 v10 TTY control for raw terminal-mode programs. The native browser now has a
 bounded HTML/CSS rendering foundation with CSS selector/cascade support,
 CSS-styled line boxes, better image metadata/sizing, form submit URL handling,
-and DOM-event hit-box fixture coverage.
-Phases 45-52 focus on responsiveness, interactive terminal behavior, and
+DOM-event hit-box fixture coverage, and DOM-backed form controls with live
+editing, reset handling, and staged POST bodies.
+Phases 45-53 focus on responsiveness, interactive terminal behavior, and
 desktop-browser compatibility:
 cursor-only framebuffer updates,
 input-first idle-loop ordering, adaptive 36/144 Hz frame pacing, compositor
 telemetry, and `poll`-driven userspace waits for pipes, TTY stdin, sockets,
-GUI events, and child exits, plus raw TTY input, ANSI-rendered TUI output, and
-a richer native Browser rendering surface.
+GUI events, and child exits, plus raw TTY input, ANSI-rendered TUI output,
+keyboard-editable Browser controls, and a richer native Browser rendering
+surface.
 
 ---
 
@@ -568,14 +570,13 @@ HTTPS rather than a fake port-443 passthrough.
 
 - `src/net.rs` owns HTTP redirect following and chunked transfer decoding so Terminal,
   browser, and syscall callers share one HTTP implementation.
-- `src/apps/browser.rs` remains a native no_std GUI app. Phases 49-52 give it a
+- `src/apps/browser.rs` remains a native no_std GUI app. Phases 49-53 give it a
   bounded browser-engine layer for HTML/CSS line boxes, images, forms, and
-  clickable document hit boxes while keeping JavaScript execution as future work.
+  DOM-backed document controls while keeping JavaScript execution as future work.
 - `/bin/wget` now sends an HTTP/1.1 request with a coolOS user agent, keeping it as a
   raw userspace socket demo.
-- The next browser phase after 52 is a real DOM tree plus script/runtime work:
-  incremental reflow, keyboard focus inside controls, POST bodies, and eventually
-  JavaScript.
+- The next browser phase after 53 is request-body networking and script/runtime
+  work: real POST dispatch, incremental reflow hooks, and eventually JavaScript.
 
 ---
 
@@ -1504,6 +1505,36 @@ DOM activation work.
 
 ---
 
+## ✅ Phase 53 — DOM-Backed Browser Forms
+
+**Goal:** Move Browser form interaction from static rendered labels to live
+document state that can survive reflow and feed real submissions.
+
+- [x] Build a bounded DOM tree alongside the rendered document, preserving
+      element/text nodes, parent/child links, and a compact attribute set for
+      later scripting/runtime work.
+- [x] Track forms and controls as live document state: text/search/email-style
+      inputs, checkboxes, radios, selects, textareas, submit/image buttons,
+      resets, hidden values, disabled controls, default values, selected options,
+      and form method/action metadata.
+- [x] Bind rendered controls and table-flattened form controls back to stable
+      control ids so click hit boxes activate live state instead of static URLs.
+- [x] Add keyboard focus traversal/editing: Tab cycles controls, text fields and
+      textareas edit values, checkboxes/radios/selects update in place, Escape
+      clears focus, and Enter submits the focused form through its default
+      submitter when available.
+- [x] Rebuild GET submit URLs from current live control values and show staged
+      POST request targets/bodies until the network layer supports request-body
+      submission.
+- [x] Add `/TMP/PHASE53.DOM.HTML`, DOM/form debug selftest coverage, and
+      `make smoke-phase53-dom-forms`.
+
+**Current status:** complete. The Browser still has no JavaScript runtime, but
+forms now have the state and event path needed for real DOM mutation, POST
+dispatch, and later script-driven interaction.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -1572,4 +1603,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.13 | Phase 49 complete: browser engine foundation |
 | v7.14 | Phase 50 complete: CSS layout pass |
 | v7.15 | Phase 51 complete: browser forms |
-| v7.16 | Current — Phase 52 complete: DOM/event foundation |
+| v7.16 | Phase 52 complete: DOM/event foundation |
+| v7.17 | Current — Phase 53 complete: DOM-backed browser forms |

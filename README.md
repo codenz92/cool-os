@@ -13,7 +13,7 @@ stdio, and IPC with pipes, shared memory, and per-task fd tables.
 
 ---
 
-# Current state — v7.16
+# Current state — v7.17
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -59,7 +59,7 @@ rename, writable file descriptors, fd-mapped child stdio, sync, and RTC time;
 `/bin/sh` now supports quoting, relative paths, redirection, and one-stage
 pipelines; `/bin` includes practical file/text/date/devkit tools; sysreport can
 write `/LOGS/SYSREPORT.TXT`; and the generated image ships `/SDK` docs and
-templates. Phases 45-52 add compositor smoothness, evented terminal work, and
+templates. Phases 45-53 add compositor smoothness, evented terminal work, and
 a richer native browser renderer:
 timer ticks now request
 paced frames instead of unconditional full redraws, mouse-only motion uses a
@@ -74,8 +74,9 @@ terminal geometry and switch between canonical and raw TTY input. The Browser
 now has a bounded CSS cascade/layout pass for tag/class/id/inline selectors,
 CSS-derived alignment, colors, backgrounds, indentation, hidden content, image
 sizing hints, PNG/JPEG/GIF/WebP metadata handling, GET-form query construction,
-and smoke fixtures for the new browser engine, CSS layout, forms, and DOM-event
-hit-box foundation.
+DOM-backed form controls with live value state, keyboard focus/editing, reset
+handling, staged POST bodies, and smoke fixtures for the browser engine, CSS
+layout, forms, DOM events, and DOM-backed form interaction.
 
 | Context | Mode | Description |
 | :------ | :--- | :---------- |
@@ -590,17 +591,20 @@ movement, and screen/line clearing. `libcool::tty` exposes mode/size helpers,
 and `/bin/tuidemo` smokes raw single-key input without Enter plus ANSI-rendered
 status text.
 
-**Browser rendering phases (49-52).** The native Browser now has a more explicit
+**Browser rendering phases (49-53).** The native Browser now has a more explicit
 HTML/CSS rendering path: style blocks and inline styles are parsed into bounded
 rules for tag, class, id, and simple compound selectors; computed style drives
 hidden content, alignment, indentation, text color, backgrounds, preformatted
 text, and image width/height hints. Image handling keeps the PNG decoder bounded
 while recognizing PNG/JPEG/GIF/WebP dimensions for previews/placeholders. Forms
 render text/search/email fields, checkboxes, radios, selects, textareas, and
-buttons, preserve checked/default values, and build GET submit URLs through the
-same clickable hit-box system used by links. `make smoke-phase49-browser-engine`,
-`make smoke-phase50-css-layout`, `make smoke-phase51-browser-forms`, and
-`make smoke-phase52-dom-events` boot fixture pages under `/TMP`.
+buttons, preserve checked/default values, and now bind rendered controls to a
+bounded DOM/form-state model. Clicks and keyboard focus edit live control values,
+checkbox/radio/select/reset controls update state across reflow, GET forms
+submit encoded live values, and POST forms show the staged request target/body
+until the network layer gains request-body submission. The fixture targets
+from `make smoke-phase49-browser-engine` through `make smoke-phase53-dom-forms`
+boot pages under `/TMP`.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
@@ -672,5 +676,6 @@ while kernel faults still panic.
 | 50 | CSS layout pass — selector specificity, colors/backgrounds, indentation, alignment, hidden content | **Done** |
 | 51 | Browser forms — HTML5 control rendering and GET query submit URLs | **Done** |
 | 52 | DOM/event foundation — clickable link/form/button hit boxes plus browser event fixtures | **Done** |
+| 53 | DOM-backed browser forms — live control state, keyboard editing, resets, and staged POST bodies | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

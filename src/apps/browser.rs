@@ -27,6 +27,11 @@ const INLINE_IMAGE_RESERVED_ROWS: usize = 14;
 const CONTROL_H: usize = 24;
 const CONTROL_GAP: usize = 10;
 const BLOCK_GAP: usize = 6;
+const MAX_DOM_NODES: usize = 768;
+const MAX_DOM_ATTRS: usize = 8;
+const MAX_FORM_CONTROLS: usize = 96;
+const MAX_FORM_OPTIONS: usize = 16;
+const MAX_FORM_VALUE: usize = 192;
 
 const BG: u32 = 0x00_03_06_10;
 const PAGE: u32 = 0x00_F2_F6_F8;
@@ -107,10 +112,12 @@ enum BrowserControl {
     },
     Select {
         label: String,
+        value: String,
         options: usize,
     },
     TextArea {
         label: String,
+        value: String,
         rows: usize,
     },
 }
@@ -125,6 +132,7 @@ struct BrowserLine {
     control: BrowserControl,
     style: BrowserLineStyle,
     image_hint: ImageHint,
+    control_id: Option<usize>,
 }
 
 impl BrowserLine {
@@ -138,6 +146,7 @@ impl BrowserLine {
             control: BrowserControl::None,
             style: BrowserLineStyle::default(),
             image_hint: ImageHint::default(),
+            control_id: None,
         }
     }
 
@@ -160,6 +169,11 @@ impl BrowserLine {
         self.image_hint = hint;
         self
     }
+
+    fn with_control_id(mut self, control_id: Option<usize>) -> Self {
+        self.control_id = control_id;
+        self
+    }
 }
 
 struct BrowserHitBox {
@@ -167,7 +181,8 @@ struct BrowserHitBox {
     y: usize,
     w: usize,
     h: usize,
-    link: String,
+    link: Option<String>,
+    control_id: Option<usize>,
 }
 
 struct BrowserLayoutItem {
@@ -181,6 +196,7 @@ struct BrowserLayoutItem {
     control: BrowserControl,
     image_slot: Option<usize>,
     style: BrowserLineStyle,
+    control_id: Option<usize>,
 }
 
 struct BrowserLayout {
@@ -199,6 +215,94 @@ struct CachedPage {
 #[derive(Clone)]
 struct InlineImage {
     image: crate::png::PngImage,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BrowserFormMethod {
+    Get,
+    Post,
+}
+
+#[derive(Clone)]
+struct BrowserFormState {
+    action: String,
+    method: BrowserFormMethod,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BrowserFormControlKind {
+    Text,
+    Checkbox,
+    Radio,
+    Select,
+    TextArea,
+    Submit,
+    Button,
+    Reset,
+    Hidden,
+    Image,
+}
+
+#[derive(Clone)]
+struct BrowserSelectOption {
+    label: String,
+    value: String,
+}
+
+#[derive(Clone)]
+struct BrowserFormControlState {
+    form_id: Option<usize>,
+    kind: BrowserFormControlKind,
+    name: String,
+    label: String,
+    value: String,
+    default_value: String,
+    checked: bool,
+    default_checked: bool,
+    disabled: bool,
+    chars: usize,
+    rows: usize,
+    options: Vec<BrowserSelectOption>,
+    selected: usize,
+    default_selected: usize,
+}
+
+#[derive(Clone)]
+struct BrowserDomAttr {
+    name: String,
+    value: String,
+}
+
+#[derive(Clone)]
+enum BrowserDomNodeKind {
+    Element {
+        name: String,
+        attrs: Vec<BrowserDomAttr>,
+    },
+    Text(String),
+}
+
+#[derive(Clone)]
+struct BrowserDomNode {
+    parent: Option<usize>,
+    children: Vec<usize>,
+    kind: BrowserDomNodeKind,
+}
+
+#[derive(Clone)]
+struct BrowserDomDocument {
+    nodes: Vec<BrowserDomNode>,
+    root: usize,
+}
+
+#[derive(Clone)]
+struct BrowserDocumentState {
+    base_url: String,
+    source: String,
+    dom: BrowserDomDocument,
+    forms: Vec<BrowserFormState>,
+    controls: Vec<BrowserFormControlState>,
+    focused_control: Option<usize>,
 }
 
 pub struct BrowserApp {
@@ -221,6 +325,7 @@ pub struct BrowserApp {
     image_preview: Option<crate::png::PngImage>,
     inline_images: Vec<InlineImage>,
     hit_boxes: Vec<BrowserHitBox>,
+    document: Option<BrowserDocumentState>,
     pending_open: Option<FileManagerOpenRequest>,
 }
 
@@ -247,6 +352,7 @@ impl BrowserApp {
             image_preview: None,
             inline_images: Vec::new(),
             hit_boxes: Vec::new(),
+            document: None,
             pending_open: None,
         };
         app.render();
@@ -286,6 +392,10 @@ impl BrowserApp {
                 }
                 _ => {}
             }
+            return;
+        }
+
+        if self.handle_document_key(c) {
             return;
         }
 
@@ -341,17 +451,23 @@ impl BrowserApp {
                     && ly >= hit.y
                     && ly < hit.y.saturating_add(hit.h)
                 {
-                    let resolved = resolve_url(&self.address, &hit.link);
-                    if let Some(label) = browser_event_label(&resolved) {
-                        self.status = format!("DOM event: {}", label);
-                        self.render();
+                    if let Some(control_id) = hit.control_id {
+                        self.activate_document_control(control_id);
                         return;
                     }
-                    if self.open_file_url(&resolved) {
+                    if let Some(link) = hit.link.as_ref() {
+                        let resolved = resolve_url(&self.address, link);
+                        if let Some(label) = browser_event_label(&resolved) {
+                            self.status = format!("DOM event: {}", label);
+                            self.render();
+                            return;
+                        }
+                        if self.open_file_url(&resolved) {
+                            return;
+                        }
+                        self.navigate(&resolved, true);
                         return;
                     }
-                    self.navigate(&resolved, true);
-                    return;
                 }
             }
         }
@@ -396,6 +512,7 @@ impl BrowserApp {
         self.title = String::from("Loading");
         self.image_preview = None;
         self.inline_images.clear();
+        self.document = None;
         self.lines = vec![BrowserLine::new(
             format!("Loading {}", url),
             None,
@@ -441,6 +558,7 @@ impl BrowserApp {
                     });
                     self.lines = if is_image_content(response.content_type.as_deref()) {
                         self.inline_images.clear();
+                        self.document = None;
                         let preview_status = self.decode_image_preview(&response);
                         image_response_lines(
                             &response.final_url,
@@ -450,13 +568,11 @@ impl BrowserApp {
                         )
                     } else {
                         self.image_preview = None;
-                        let mut lines =
-                            render_document(&response.final_url, &response.body, self.cols.max(48));
-                        let images = self.attach_html_images(&mut lines);
+                        let images = self.set_html_document(&response.final_url, &response.body);
                         if images > 0 {
                             self.status.push_str(&format!("  images={}", images));
                         }
-                        lines
+                        self.lines.clone()
                     };
                     if self.lines.is_empty() {
                         self.lines.push(BrowserLine::new(
@@ -475,6 +591,7 @@ impl BrowserApp {
                     self.last_page = None;
                     self.image_preview = None;
                     self.inline_images.clear();
+                    self.document = None;
                     self.lines = network_error_lines(&url, &host, &path, err);
                 }
             },
@@ -484,6 +601,7 @@ impl BrowserApp {
                 self.last_page = None;
                 self.image_preview = None;
                 self.inline_images.clear();
+                self.document = None;
                 self.lines = vec![
                     line("Enter an http:// or https:// URL."),
                     link_line("Try https://example.com/", "https://example.com/"),
@@ -505,6 +623,7 @@ impl BrowserApp {
         self.last_page = None;
         self.image_preview = None;
         self.inline_images.clear();
+        self.document = None;
         if add_history {
             self.push_history(String::from(url));
         }
@@ -637,6 +756,7 @@ impl BrowserApp {
                     kind_line(&format!("{} bytes", data.len()), BrowserLineKind::Muted),
                     link_line("Open Downloads", "browser://downloads"),
                 ];
+                self.document = None;
             }
             Err(err) => {
                 self.status = format!("Save failed: {}", err.as_str());
@@ -644,6 +764,7 @@ impl BrowserApp {
         }
         self.image_preview = None;
         self.inline_images.clear();
+        self.document = None;
         self.render();
     }
 
@@ -683,6 +804,7 @@ impl BrowserApp {
             ];
             self.image_preview = None;
             self.inline_images.clear();
+            self.document = None;
         }
         self.address_focused = false;
         self.address_selected = false;
@@ -696,6 +818,7 @@ impl BrowserApp {
         self.title = String::from("Image");
         self.status = format!("Local image {}", path);
         self.inline_images.clear();
+        self.document = None;
         let content_type = image_content_type_for(path, &bytes).unwrap_or("image/*");
         self.last_page = Some(CachedPage {
             url: url.clone(),
@@ -729,15 +852,14 @@ impl BrowserApp {
             body_bytes: bytes,
             content_type: Some(String::from("text/html")),
         });
-        let mut lines = render_document(&url, &body, self.cols.max(48));
-        let images = self.attach_html_images(&mut lines);
+        let images = self.set_html_document(&url, &body);
         if images > 0 {
             self.status.push_str(&format!("  images={}", images));
         }
-        self.lines = if lines.is_empty() {
+        self.lines = if self.lines.is_empty() {
             vec![kind_line("(empty document)", BrowserLineKind::Muted)]
         } else {
-            lines
+            self.lines.clone()
         };
         self.address_focused = false;
         self.address_selected = false;
@@ -768,6 +890,142 @@ impl BrowserApp {
             }
         }
         out
+    }
+
+    fn set_html_document(&mut self, base_url: &str, body: &str) -> usize {
+        self.document = Some(BrowserDocumentState::from_html(base_url, body));
+        self.reflow_document()
+    }
+
+    fn reflow_document(&mut self) -> usize {
+        let Some(document) = self.document.as_ref() else {
+            return 0;
+        };
+        let mut lines = render_document_interactive(
+            &document.base_url,
+            &document.source,
+            self.cols.max(48),
+            document,
+        );
+        let images = self.attach_html_images(&mut lines);
+        self.lines = if lines.is_empty() {
+            vec![kind_line("(empty document)", BrowserLineKind::Muted)]
+        } else {
+            lines
+        };
+        images
+    }
+
+    fn focused_control_id(&self) -> Option<usize> {
+        self.document
+            .as_ref()
+            .and_then(|document| document.focused_control)
+    }
+
+    fn handle_document_key(&mut self, c: char) -> bool {
+        if c == '\t' {
+            if let Some(document) = self.document.as_mut() {
+                if document.focus_next_control() {
+                    self.status = String::from("Control focused");
+                    self.render();
+                    return true;
+                }
+            }
+        }
+        let Some(document) = self.document.as_mut() else {
+            return false;
+        };
+        if document.focused_control.is_none() {
+            return false;
+        }
+        if c == '\u{1b}' {
+            document.focused_control = None;
+            self.status = String::from("Control focus cleared");
+            self.render();
+            return true;
+        }
+        if c == '\n' || c == '\r' || c == ' ' {
+            let Some(id) = document.focused_control else {
+                return false;
+            };
+            let kind = document.controls.get(id).map(|control| control.kind);
+            if matches!(kind, Some(BrowserFormControlKind::Text)) && (c == '\n' || c == '\r') {
+                if let Some(submit_id) = document.default_submit_for(id) {
+                    self.activate_document_control(submit_id);
+                    return true;
+                }
+            }
+            if matches!(
+                kind,
+                Some(
+                    BrowserFormControlKind::Submit
+                        | BrowserFormControlKind::Button
+                        | BrowserFormControlKind::Reset
+                        | BrowserFormControlKind::Image
+                )
+            ) {
+                self.activate_document_control(id);
+                return true;
+            }
+        }
+        if document.edit_focused_control(c) {
+            self.status = String::from("Control edited");
+            self.reflow_document();
+            self.render();
+            return true;
+        }
+        false
+    }
+
+    fn activate_document_control(&mut self, control_id: usize) {
+        let activation = {
+            let Some(document) = self.document.as_mut() else {
+                return;
+            };
+            document.activate_control(control_id)
+        };
+        match activation {
+            BrowserControlActivation::Ignored => {
+                self.status = String::from("Control unavailable");
+                self.render();
+            }
+            BrowserControlActivation::Focused => {
+                self.status = String::from("Control focused");
+                self.render();
+            }
+            BrowserControlActivation::Changed => {
+                self.status = String::from("Control changed");
+                self.reflow_document();
+                self.render();
+            }
+            BrowserControlActivation::Navigate(url) => {
+                self.status = format!("Submitting {}", url);
+                self.navigate(&url, true);
+            }
+            BrowserControlActivation::Post { url, body } => {
+                self.status = format!("POST form ready: {} bytes -> {}", body.len(), url);
+                self.document = None;
+                self.image_preview = None;
+                self.inline_images.clear();
+                self.lines = vec![
+                    kind_line("POST form submission", BrowserLineKind::Heading),
+                    kind_line(
+                        "Request-body submission is staged for the network layer.",
+                        BrowserLineKind::Muted,
+                    ),
+                    line(""),
+                    kind_line("Target", BrowserLineKind::Muted),
+                    line(&url),
+                    kind_line("Body", BrowserLineKind::Muted),
+                    kind_line(&body, BrowserLineKind::Code),
+                ];
+                self.render();
+            }
+            BrowserControlActivation::DomEvent(label) => {
+                self.status = format!("DOM event: {}", label);
+                self.render();
+            }
+        }
     }
 
     fn decode_image_preview(&mut self, response: &crate::net::HttpResponse) -> Option<String> {
@@ -1077,16 +1335,25 @@ impl BrowserApp {
                         bg,
                     );
                 }
-                self.draw_control(stride, x, y, item.w, &item.control, item.link.is_some());
+                self.draw_control(
+                    stride,
+                    x,
+                    y,
+                    item.w,
+                    &item.control,
+                    item.link.is_some() || item.control_id.is_some(),
+                    item.control_id == self.focused_control_id(),
+                );
             }
 
-            if let Some(link) = item.link {
+            if item.link.is_some() || item.control_id.is_some() {
                 self.hit_boxes.push(BrowserHitBox {
                     x,
                     y,
                     w: item.w,
                     h: item.h.max(LINE_H),
-                    link,
+                    link: item.link,
+                    control_id: item.control_id,
                 });
             }
         }
@@ -1142,22 +1409,26 @@ impl BrowserApp {
         w: usize,
         control: &BrowserControl,
         active: bool,
+        focused: bool,
     ) {
+        let border = if focused {
+            BUTTON_HOT
+        } else if active {
+            BUTTON_HOT
+        } else {
+            0x00_96_A8_B4
+        };
         match control {
             BrowserControl::TextInput { label, value, .. } => {
                 self.fill_rect(stride, x, y, w, CONTROL_H, WHITE);
-                self.draw_rect(
-                    stride,
-                    x,
-                    y,
-                    w,
-                    CONTROL_H,
-                    if active { BUTTON_HOT } else { 0x00_96_A8_B4 },
-                );
+                self.draw_rect(stride, x, y, w, CONTROL_H, border);
                 let shown = if value.is_empty() { label } else { value };
                 if !shown.is_empty() {
                     let mut text = shown.clone();
                     truncate_chars(&mut text, w.saturating_sub(14) / CHAR_W);
+                    if focused && text.len() < w.saturating_sub(14) / CHAR_W {
+                        text.push('_');
+                    }
                     self.put_str(
                         stride,
                         x + 7,
@@ -1175,7 +1446,11 @@ impl BrowserApp {
                     y,
                     w,
                     CONTROL_H,
-                    if active { BUTTON_HOT } else { 0x00_88_88_88 },
+                    if focused || active {
+                        BUTTON_HOT
+                    } else {
+                        0x00_88_88_88
+                    },
                 );
                 let mut text = label.clone();
                 truncate_chars(&mut text, w.saturating_sub(12) / CHAR_W);
@@ -1185,7 +1460,7 @@ impl BrowserApp {
             }
             BrowserControl::Checkbox { label, checked } => {
                 self.fill_rect(stride, x, y + 5, 12, 12, WHITE);
-                self.draw_rect(stride, x, y + 5, 12, 12, 0x00_88_88_88);
+                self.draw_rect(stride, x, y + 5, 12, 12, border);
                 if *checked {
                     self.put_str(stride, x + 2, y + 6, "x", TEXT);
                 }
@@ -1195,7 +1470,7 @@ impl BrowserApp {
             }
             BrowserControl::Radio { label, checked } => {
                 self.fill_rect(stride, x, y + 5, 12, 12, WHITE);
-                self.draw_rect(stride, x, y + 5, 12, 12, 0x00_88_88_88);
+                self.draw_rect(stride, x, y + 5, 12, 12, border);
                 if *checked {
                     self.fill_rect(stride, x + 4, y + 9, 4, 4, TEXT);
                 }
@@ -1203,10 +1478,16 @@ impl BrowserApp {
                 truncate_chars(&mut text, w.saturating_sub(18) / CHAR_W);
                 self.put_str(stride, x + 18, y + 6, &text, TEXT);
             }
-            BrowserControl::Select { label, options } => {
+            BrowserControl::Select {
+                label,
+                value,
+                options,
+            } => {
                 self.fill_rect(stride, x, y, w, CONTROL_H, WHITE);
-                self.draw_rect(stride, x, y, w, CONTROL_H, 0x00_88_88_88);
-                let mut text = if *options > 0 {
+                self.draw_rect(stride, x, y, w, CONTROL_H, border);
+                let mut text = if !value.is_empty() {
+                    format!("{}: {}", label, value)
+                } else if *options > 0 {
                     format!("{} ({} options)", label, options)
                 } else {
                     label.clone()
@@ -1215,13 +1496,23 @@ impl BrowserApp {
                 self.put_str(stride, x + 7, y + 8, &text, TEXT);
                 self.put_str(stride, x + w.saturating_sub(18), y + 8, "v", MUTED);
             }
-            BrowserControl::TextArea { label, rows } => {
+            BrowserControl::TextArea { label, value, rows } => {
                 let h = CONTROL_H.saturating_add(rows.saturating_sub(1).min(5) * 10);
                 self.fill_rect(stride, x, y, w, h, WHITE);
-                self.draw_rect(stride, x, y, w, h, 0x00_88_88_88);
-                let mut text = label.clone();
+                self.draw_rect(stride, x, y, w, h, border);
+                let mut text = if value.is_empty() {
+                    label.clone()
+                } else {
+                    value.clone()
+                };
                 truncate_chars(&mut text, w.saturating_sub(14) / CHAR_W);
-                self.put_str(stride, x + 7, y + 8, &text, MUTED);
+                self.put_str(
+                    stride,
+                    x + 7,
+                    y + 8,
+                    &text,
+                    if value.is_empty() { MUTED } else { TEXT },
+                );
             }
             BrowserControl::None => {}
         }
@@ -1394,6 +1685,7 @@ fn layout_browser_lines(
                         control: BrowserControl::None,
                         image_slot: None,
                         style: next.style,
+                        control_id: next.control_id,
                     });
                     x = x.saturating_add(w).saturating_add(CONTROL_GAP + 8);
                 }
@@ -1446,6 +1738,7 @@ fn layout_browser_lines(
                     control: next.control.clone(),
                     image_slot: None,
                     style: next.style,
+                    control_id: next.control_id,
                 });
                 x = x.saturating_add(w).saturating_add(CONTROL_GAP);
             }
@@ -1471,6 +1764,7 @@ fn layout_browser_lines(
                 control: line.control.clone(),
                 image_slot: None,
                 style: line.style,
+                control_id: line.control_id,
             });
             y = y.saturating_add(h + BLOCK_GAP);
             i += 1;
@@ -1500,6 +1794,7 @@ fn layout_browser_lines(
                     control: BrowserControl::None,
                     image_slot: Some(slot),
                     style: line.style,
+                    control_id: line.control_id,
                 });
                 y = y.saturating_add(draw_h + BLOCK_GAP);
                 i += 1;
@@ -1527,6 +1822,7 @@ fn layout_browser_lines(
             control: BrowserControl::None,
             image_slot: None,
             style: line.style,
+            control_id: line.control_id,
         });
         y = y.saturating_add(h);
         i += 1;
@@ -3068,7 +3364,46 @@ fn contains_string(values: &[String], needle: &str) -> bool {
     values.iter().any(|value| value == needle)
 }
 
+struct BrowserRenderControls<'a> {
+    document: &'a BrowserDocumentState,
+    cursor: usize,
+}
+
+impl<'a> BrowserRenderControls<'a> {
+    fn new(document: &'a BrowserDocumentState) -> Self {
+        Self {
+            document,
+            cursor: 0,
+        }
+    }
+
+    fn next(&mut self) -> Option<(usize, &'a BrowserFormControlState)> {
+        let id = self.cursor;
+        self.cursor = self.cursor.saturating_add(1);
+        self.document.controls.get(id).map(|control| (id, control))
+    }
+}
+
 fn render_document(base_url: &str, response: &str, cols: usize) -> Vec<BrowserLine> {
+    render_document_core(base_url, response, cols, None)
+}
+
+fn render_document_interactive(
+    base_url: &str,
+    response: &str,
+    cols: usize,
+    document: &BrowserDocumentState,
+) -> Vec<BrowserLine> {
+    let mut controls = BrowserRenderControls::new(document);
+    render_document_core(base_url, response, cols, Some(&mut controls))
+}
+
+fn render_document_core(
+    base_url: &str,
+    response: &str,
+    cols: usize,
+    mut controls: Option<&mut BrowserRenderControls<'_>>,
+) -> Vec<BrowserLine> {
     let body = response
         .split_once("\r\n\r\n")
         .map(|(_, body)| body)
@@ -3136,6 +3471,7 @@ fn render_document(base_url: &str, response: &str, cols: usize) -> Vec<BrowserLi
                     &mut out,
                     &mut text,
                     &mut state,
+                    controls.as_deref_mut(),
                     base_url,
                     cols,
                 );
@@ -3143,7 +3479,7 @@ fn render_document(base_url: &str, response: &str, cols: usize) -> Vec<BrowserLi
                 continue;
             }
         }
-        if state.skip_until.is_none() {
+        if state.skip_until.is_none() && !state.suppresses_text() {
             if state.in_table_cell {
                 push_text_char(&mut state.table_cell_text, bytes[i] as char, false);
             } else {
@@ -3215,6 +3551,68 @@ pub fn render_document_style_debug_for_test(
         .collect()
 }
 
+pub fn document_interaction_debug_for_test(base_url: &str, response: &str) -> Vec<String> {
+    let mut document = BrowserDocumentState::from_html(base_url, response);
+    let attr_count = document
+        .dom
+        .nodes
+        .iter()
+        .map(|node| match &node.kind {
+            BrowserDomNodeKind::Element { attrs, .. } => attrs.len(),
+            BrowserDomNodeKind::Text(_) => 0,
+        })
+        .fold(0usize, |total, count| total.saturating_add(count));
+    let parent_links = document
+        .dom
+        .nodes
+        .iter()
+        .filter(|node| node.parent.is_some())
+        .count();
+    let mut out = vec![
+        format!(
+            "dom nodes={} root_children={} parents={} attrs={}",
+            document.dom.nodes.len(),
+            document
+                .dom
+                .nodes
+                .get(document.dom.root)
+                .map(|node| node.children.len())
+                .unwrap_or(0),
+            parent_links,
+            attr_count
+        ),
+        format!(
+            "dom has form={} input={} text={}",
+            document.dom_has_element("form"),
+            document.dom_has_element("input"),
+            document.dom_text_contains("DOM backed form")
+        ),
+        format!(
+            "forms={} controls={}",
+            document.forms.len(),
+            document.controls.len()
+        ),
+    ];
+    let edited = document.set_control_value_for_test("q", "edited");
+    let noted = document.set_control_value_for_test("notes", "phase 53 note");
+    let toggled = document.toggle_control_for_test("safe");
+    out.push(format!(
+        "edited={} noted={} toggled={}",
+        edited, noted, toggled
+    ));
+    out.push(
+        document
+            .submit_url_for_test("Go")
+            .unwrap_or_else(|| String::from("GET missing")),
+    );
+    out.push(
+        document
+            .submit_url_for_test("Post")
+            .unwrap_or_else(|| String::from("POST missing")),
+    );
+    out
+}
+
 fn push_hex_color(out: &mut String, color: u32) {
     out.push('#');
     for shift in [20u32, 16, 12, 8, 4, 0] {
@@ -3228,6 +3626,7 @@ struct HtmlRenderState {
     pending_prefix: Option<String>,
     preformatted: bool,
     css_pre_stack: Vec<String>,
+    suppress_text_stack: Vec<String>,
     skip_until: Option<String>,
     quote_depth: usize,
     list_depth: usize,
@@ -3242,6 +3641,7 @@ struct HtmlRenderState {
     cell_has_form_control: bool,
     cell_form_link: Option<String>,
     cell_link: Option<String>,
+    cell_controls: Vec<(usize, BrowserControl)>,
     align_stack: Vec<(String, BrowserAlign)>,
     style_stack: Vec<(String, BrowserLineStyle)>,
     table_cell_align: BrowserAlign,
@@ -3255,6 +3655,7 @@ impl HtmlRenderState {
             pending_prefix: None,
             preformatted: false,
             css_pre_stack: Vec::new(),
+            suppress_text_stack: Vec::new(),
             skip_until: None,
             quote_depth: 0,
             list_depth: 0,
@@ -3269,6 +3670,7 @@ impl HtmlRenderState {
             cell_has_form_control: false,
             cell_form_link: None,
             cell_link: None,
+            cell_controls: Vec::new(),
             align_stack: Vec::new(),
             style_stack: Vec::new(),
             table_cell_align: BrowserAlign::Left,
@@ -3334,6 +3736,24 @@ impl HtmlRenderState {
         }
     }
 
+    fn push_suppressed_text(&mut self, name: &str) {
+        self.suppress_text_stack.push(String::from(name));
+    }
+
+    fn pop_suppressed_text(&mut self, name: &str) {
+        if let Some(pos) = self
+            .suppress_text_stack
+            .iter()
+            .rposition(|tag_name| tag_name == name)
+        {
+            self.suppress_text_stack.truncate(pos);
+        }
+    }
+
+    fn suppresses_text(&self) -> bool {
+        !self.suppress_text_stack.is_empty()
+    }
+
     fn is_preformatted(&self) -> bool {
         self.preformatted || !self.css_pre_stack.is_empty()
     }
@@ -3345,11 +3765,902 @@ struct TableCell {
     link: Option<String>,
     is_form_row: bool,
     align: BrowserAlign,
+    controls: Vec<(usize, BrowserControl)>,
 }
 
 struct FormField {
     name: String,
     value: String,
+}
+
+impl BrowserDocumentState {
+    fn from_html(base_url: &str, response: &str) -> Self {
+        let body = response_body_text(response).unwrap_or(response);
+        let effective_base = extract_base_href(body, base_url);
+        let mut state = Self {
+            base_url: effective_base,
+            source: String::from(body),
+            dom: BrowserDomDocument::new(),
+            forms: Vec::new(),
+            controls: Vec::new(),
+            focused_control: None,
+        };
+        scan_dom_and_controls(body, &state.base_url.clone(), &mut state);
+        state.finalize_select_values();
+        state
+    }
+
+    fn dom_has_element(&self, wanted: &str) -> bool {
+        self.dom.nodes.iter().any(|node| {
+            matches!(
+                &node.kind,
+                BrowserDomNodeKind::Element { name, attrs }
+                    if name == wanted
+                        || attrs
+                            .iter()
+                            .any(|attr| attr.name == "id" && attr.value == wanted)
+            )
+        })
+    }
+
+    fn dom_text_contains(&self, needle: &str) -> bool {
+        self.dom.nodes.iter().any(|node| {
+            matches!(
+                &node.kind,
+                BrowserDomNodeKind::Text(text) if text.contains(needle)
+            )
+        })
+    }
+
+    fn focus_control(&mut self, id: usize) -> bool {
+        if self.controls.get(id).map(|c| c.disabled).unwrap_or(true) {
+            return false;
+        }
+        self.focused_control = Some(id);
+        true
+    }
+
+    fn focus_next_control(&mut self) -> bool {
+        if self.controls.is_empty() {
+            self.focused_control = None;
+            return false;
+        }
+        let start = self
+            .focused_control
+            .map(|id| id.saturating_add(1))
+            .unwrap_or(0);
+        for offset in 0..self.controls.len() {
+            let idx = (start + offset) % self.controls.len();
+            if self.controls[idx].is_focusable() {
+                self.focused_control = Some(idx);
+                return true;
+            }
+        }
+        false
+    }
+
+    fn edit_focused_control(&mut self, c: char) -> bool {
+        let Some(id) = self.focused_control else {
+            return false;
+        };
+        let Some(control) = self.controls.get_mut(id) else {
+            return false;
+        };
+        match control.kind {
+            BrowserFormControlKind::Text | BrowserFormControlKind::TextArea => match c {
+                '\u{8}' | '\u{7f}' => {
+                    control.value.pop();
+                    true
+                }
+                '\n' | '\r' if control.kind == BrowserFormControlKind::TextArea => {
+                    if control.value.len() < MAX_FORM_VALUE {
+                        control.value.push('\n');
+                    }
+                    true
+                }
+                _ if !c.is_control() && control.value.len() < MAX_FORM_VALUE => {
+                    control.value.push(c);
+                    true
+                }
+                _ => false,
+            },
+            BrowserFormControlKind::Checkbox if c == ' ' || c == '\n' || c == '\r' => {
+                control.checked = !control.checked;
+                true
+            }
+            BrowserFormControlKind::Radio if c == ' ' || c == '\n' || c == '\r' => {
+                self.set_radio_checked(id);
+                true
+            }
+            BrowserFormControlKind::Select if c == ' ' || c == '\n' || c == '\r' => {
+                self.select_next_option(id);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn activate_control(&mut self, id: usize) -> BrowserControlActivation {
+        if !self.focus_control(id) {
+            return BrowserControlActivation::Ignored;
+        }
+        let Some(kind) = self.controls.get(id).map(|control| control.kind) else {
+            return BrowserControlActivation::Ignored;
+        };
+        match kind {
+            BrowserFormControlKind::Checkbox => {
+                if let Some(control) = self.controls.get_mut(id) {
+                    control.checked = !control.checked;
+                }
+                BrowserControlActivation::Changed
+            }
+            BrowserFormControlKind::Radio => {
+                self.set_radio_checked(id);
+                BrowserControlActivation::Changed
+            }
+            BrowserFormControlKind::Select => {
+                self.select_next_option(id);
+                BrowserControlActivation::Changed
+            }
+            BrowserFormControlKind::Submit | BrowserFormControlKind::Image => self
+                .submission_for(id)
+                .unwrap_or(BrowserControlActivation::Ignored),
+            BrowserFormControlKind::Button => {
+                let label = self.controls[id].label.clone();
+                BrowserControlActivation::DomEvent(label)
+            }
+            BrowserFormControlKind::Reset => {
+                self.reset_form_for_control(id);
+                BrowserControlActivation::Changed
+            }
+            BrowserFormControlKind::Text | BrowserFormControlKind::TextArea => {
+                BrowserControlActivation::Focused
+            }
+            BrowserFormControlKind::Hidden => BrowserControlActivation::Ignored,
+        }
+    }
+
+    fn set_control_value_for_test(&mut self, name: &str, value: &str) -> bool {
+        let Some(control) = self
+            .controls
+            .iter_mut()
+            .find(|control| control.name == name && control.kind.accepts_text())
+        else {
+            return false;
+        };
+        control.value.clear();
+        for c in value.chars().take(MAX_FORM_VALUE) {
+            control.value.push(c);
+        }
+        true
+    }
+
+    fn toggle_control_for_test(&mut self, name: &str) -> bool {
+        let Some(id) = self.controls.iter().position(|control| {
+            control.name == name && control.kind == BrowserFormControlKind::Checkbox
+        }) else {
+            return false;
+        };
+        matches!(self.activate_control(id), BrowserControlActivation::Changed)
+    }
+
+    fn submit_url_for_test(&self, label: &str) -> Option<String> {
+        let id = self
+            .controls
+            .iter()
+            .position(|control| control.label == label && control.kind.can_submit())?;
+        match self.submission_for(id)? {
+            BrowserControlActivation::Navigate(url) => Some(url),
+            BrowserControlActivation::Post { url, body } => {
+                let mut out = String::from("POST ");
+                out.push_str(&url);
+                out.push_str(" body=");
+                out.push_str(&body);
+                Some(out)
+            }
+            _ => None,
+        }
+    }
+
+    fn default_submit_for(&self, control_id: usize) -> Option<usize> {
+        let form_id = self.controls.get(control_id)?.form_id?;
+        self.controls
+            .iter()
+            .enumerate()
+            .find(|(_, control)| {
+                control.form_id == Some(form_id) && control.kind.can_submit() && !control.disabled
+            })
+            .map(|(id, _)| id)
+    }
+
+    fn submission_for(&self, submit_id: usize) -> Option<BrowserControlActivation> {
+        let submit = self.controls.get(submit_id)?;
+        let form_id = submit.form_id?;
+        let form = self.forms.get(form_id)?;
+        let body = self.encoded_form_body(form_id, Some(submit_id));
+        match form.method {
+            BrowserFormMethod::Get => {
+                let mut url = form.action.clone();
+                if !body.is_empty() {
+                    url.push(if url.contains('?') { '&' } else { '?' });
+                    url.push_str(&body);
+                }
+                Some(BrowserControlActivation::Navigate(url))
+            }
+            BrowserFormMethod::Post => Some(BrowserControlActivation::Post {
+                url: form.action.clone(),
+                body,
+            }),
+        }
+    }
+
+    fn encoded_form_body(&self, form_id: usize, submit_id: Option<usize>) -> String {
+        let mut out = String::new();
+        let mut wrote = false;
+        for (idx, control) in self.controls.iter().enumerate() {
+            if control.form_id != Some(form_id) || !control.successful(Some(idx) == submit_id) {
+                continue;
+            }
+            if wrote {
+                out.push('&');
+            }
+            push_query_encoded(&mut out, &control.name);
+            out.push('=');
+            push_query_encoded(&mut out, &control.submit_value());
+            wrote = true;
+        }
+        out
+    }
+
+    fn set_radio_checked(&mut self, id: usize) {
+        let Some(target) = self.controls.get(id).cloned() else {
+            return;
+        };
+        for control in &mut self.controls {
+            if control.kind == BrowserFormControlKind::Radio
+                && control.form_id == target.form_id
+                && !target.name.is_empty()
+                && control.name == target.name
+            {
+                control.checked = false;
+            }
+        }
+        if let Some(control) = self.controls.get_mut(id) {
+            control.checked = true;
+        }
+    }
+
+    fn select_next_option(&mut self, id: usize) {
+        let Some(control) = self.controls.get_mut(id) else {
+            return;
+        };
+        if control.options.is_empty() {
+            return;
+        }
+        control.selected = (control.selected + 1) % control.options.len();
+        control.value = control.options[control.selected].value.clone();
+    }
+
+    fn reset_form_for_control(&mut self, id: usize) {
+        let Some(form_id) = self.controls.get(id).and_then(|control| control.form_id) else {
+            return;
+        };
+        for control in &mut self.controls {
+            if control.form_id == Some(form_id) {
+                control.reset_to_default();
+            }
+        }
+    }
+
+    fn finalize_select_values(&mut self) {
+        for control in &mut self.controls {
+            if control.kind == BrowserFormControlKind::Select && !control.options.is_empty() {
+                control.selected = control.selected.min(control.options.len() - 1);
+                control.value = control.options[control.selected].value.clone();
+            }
+        }
+    }
+}
+
+impl BrowserDomDocument {
+    fn new() -> Self {
+        Self {
+            nodes: vec![BrowserDomNode {
+                parent: None,
+                children: Vec::new(),
+                kind: BrowserDomNodeKind::Element {
+                    name: String::from("document"),
+                    attrs: Vec::new(),
+                },
+            }],
+            root: 0,
+        }
+    }
+
+    fn push_element(&mut self, parent: usize, name: &str, attrs: Vec<BrowserDomAttr>) -> usize {
+        self.push_node(
+            parent,
+            BrowserDomNodeKind::Element {
+                name: String::from(name),
+                attrs,
+            },
+        )
+    }
+
+    fn push_text(&mut self, parent: usize, text: String) {
+        if clean_inline_text(&text).is_empty() {
+            return;
+        }
+        self.push_node(parent, BrowserDomNodeKind::Text(text));
+    }
+
+    fn push_node(&mut self, parent: usize, kind: BrowserDomNodeKind) -> usize {
+        if self.nodes.len() >= MAX_DOM_NODES {
+            return parent;
+        }
+        let idx = self.nodes.len();
+        self.nodes.push(BrowserDomNode {
+            parent: Some(parent),
+            children: Vec::new(),
+            kind,
+        });
+        if let Some(parent) = self.nodes.get_mut(parent) {
+            parent.children.push(idx);
+        }
+        idx
+    }
+}
+
+impl BrowserFormControlKind {
+    fn accepts_text(self) -> bool {
+        matches!(self, Self::Text | Self::TextArea)
+    }
+
+    fn can_submit(self) -> bool {
+        matches!(self, Self::Submit | Self::Image)
+    }
+}
+
+impl BrowserFormControlState {
+    fn is_focusable(&self) -> bool {
+        !self.disabled
+            && !matches!(
+                self.kind,
+                BrowserFormControlKind::Hidden | BrowserFormControlKind::Image
+            )
+    }
+
+    fn successful(&self, is_submitter: bool) -> bool {
+        if self.disabled || self.name.is_empty() {
+            return false;
+        }
+        match self.kind {
+            BrowserFormControlKind::Hidden
+            | BrowserFormControlKind::Text
+            | BrowserFormControlKind::TextArea
+            | BrowserFormControlKind::Select => true,
+            BrowserFormControlKind::Checkbox | BrowserFormControlKind::Radio => self.checked,
+            BrowserFormControlKind::Submit | BrowserFormControlKind::Image => is_submitter,
+            BrowserFormControlKind::Button | BrowserFormControlKind::Reset => false,
+        }
+    }
+
+    fn submit_value(&self) -> String {
+        if self.kind == BrowserFormControlKind::Checkbox
+            || self.kind == BrowserFormControlKind::Radio
+        {
+            if self.value.is_empty() {
+                String::from("on")
+            } else {
+                self.value.clone()
+            }
+        } else {
+            self.value.clone()
+        }
+    }
+
+    fn reset_to_default(&mut self) {
+        match self.kind {
+            BrowserFormControlKind::Text | BrowserFormControlKind::TextArea => {
+                self.value = self.default_value.clone();
+            }
+            BrowserFormControlKind::Checkbox | BrowserFormControlKind::Radio => {
+                self.checked = self.default_checked;
+            }
+            BrowserFormControlKind::Select => {
+                self.selected = self
+                    .default_selected
+                    .min(self.options.len().saturating_sub(1));
+                if let Some(option) = self.options.first() {
+                    self.value = self
+                        .options
+                        .get(self.selected)
+                        .unwrap_or(option)
+                        .value
+                        .clone();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+enum BrowserControlActivation {
+    Ignored,
+    Focused,
+    Changed,
+    Navigate(String),
+    Post { url: String, body: String },
+    DomEvent(String),
+}
+
+struct PendingOption {
+    control_id: usize,
+    value: Option<String>,
+    label: String,
+    selected: bool,
+}
+
+fn scan_dom_and_controls(body: &str, base_url: &str, document: &mut BrowserDocumentState) {
+    let mut stack = vec![document.dom.root];
+    let mut names = vec![String::from("document")];
+    let mut form_stack: Vec<usize> = Vec::new();
+    let mut text = String::new();
+    let mut active_textarea: Option<usize> = None;
+    let mut active_button: Option<(usize, String)> = None;
+    let mut active_select: Option<usize> = None;
+    let mut pending_option: Option<PendingOption> = None;
+    let bytes = body.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'<' {
+            if body[i..].starts_with("<!--") {
+                if let Some(end_rel) = body[i + 4..].find("-->") {
+                    i += end_rel + 7;
+                } else {
+                    i += 4;
+                }
+                continue;
+            }
+            flush_dom_text(document, &stack, &mut text);
+            if let Some(end_rel) = find_tag_end(&body[i..]) {
+                let tag = body[i + 1..i + end_rel].trim();
+                let lower_tag = lowercase_ascii(tag);
+                let name = tag_name_of(&lower_tag);
+                let closing = lower_tag.starts_with('/');
+                if closing {
+                    match name {
+                        "form" => {
+                            form_stack.pop();
+                        }
+                        "textarea" => {
+                            if let Some(control_id) = active_textarea {
+                                finalize_textarea_value(document, control_id);
+                            }
+                            active_textarea = None;
+                        }
+                        "button" => {
+                            finalize_button_text(document, &mut active_button);
+                        }
+                        "select" => {
+                            active_select = None;
+                        }
+                        "option" => {
+                            finish_pending_option(document, &mut pending_option);
+                        }
+                        _ => {}
+                    }
+                    pop_dom_stack(&mut stack, &mut names, name);
+                    i += end_rel + 1;
+                    continue;
+                }
+
+                let parent = *stack.last().unwrap_or(&document.dom.root);
+                let attrs = parse_dom_attrs(tag);
+                let node = document.dom.push_element(parent, name, attrs);
+                let self_closing = lower_tag.ends_with('/') || is_void_element(name);
+                if !self_closing {
+                    stack.push(node);
+                    names.push(String::from(name));
+                }
+
+                match name {
+                    "form" => {
+                        if document.forms.len() < MAX_FORM_CONTROLS {
+                            let id = document.forms.len();
+                            document.forms.push(BrowserFormState {
+                                action: form_action_url_any(tag, base_url),
+                                method: form_method_for_tag(tag),
+                            });
+                            form_stack.push(id);
+                        }
+                    }
+                    "input" => {
+                        push_document_input_control(document, tag, form_stack.last().copied());
+                    }
+                    "button" => {
+                        active_button =
+                            push_document_button_control(document, tag, form_stack.last().copied())
+                                .map(|control_id| (control_id, String::new()));
+                    }
+                    "select" => {
+                        active_select =
+                            push_document_select_control(document, tag, form_stack.last().copied());
+                    }
+                    "textarea" => {
+                        active_textarea = push_document_textarea_control(
+                            document,
+                            tag,
+                            form_stack.last().copied(),
+                        );
+                    }
+                    "option" => {
+                        finish_pending_option(document, &mut pending_option);
+                        if let Some(control_id) = active_select {
+                            pending_option = Some(PendingOption {
+                                control_id,
+                                value: attr_value(tag, "value")
+                                    .map(|value| clean_inline_text(&decode_entities(&value))),
+                                label: String::new(),
+                                selected: has_attr(tag, "selected"),
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+                i += end_rel + 1;
+                continue;
+            }
+        }
+        let c = bytes[i] as char;
+        text.push(c);
+        if let Some(control_id) = active_textarea {
+            if let Some(control) = document.controls.get_mut(control_id) {
+                if control.value.len() < MAX_FORM_VALUE {
+                    control.value.push(c);
+                    control.default_value.push(c);
+                }
+            }
+        }
+        if let Some((_, text)) = active_button.as_mut() {
+            if text.len() < MAX_FORM_VALUE {
+                text.push(c);
+            }
+        }
+        if let Some(option) = pending_option.as_mut() {
+            option.label.push(c);
+        }
+        i += 1;
+    }
+    flush_dom_text(document, &stack, &mut text);
+    finalize_button_text(document, &mut active_button);
+    finish_pending_option(document, &mut pending_option);
+}
+
+fn flush_dom_text(document: &mut BrowserDocumentState, stack: &[usize], text: &mut String) {
+    if text.is_empty() {
+        return;
+    }
+    let parent = *stack.last().unwrap_or(&document.dom.root);
+    document.dom.push_text(parent, decode_entities(text));
+    text.clear();
+}
+
+fn pop_dom_stack(stack: &mut Vec<usize>, names: &mut Vec<String>, name: &str) {
+    if stack.len() <= 1 {
+        return;
+    }
+    if let Some(pos) = names.iter().rposition(|entry| entry == name) {
+        let keep = pos.max(1);
+        stack.truncate(keep);
+        names.truncate(keep);
+    }
+}
+
+fn parse_dom_attrs(tag: &str) -> Vec<BrowserDomAttr> {
+    let mut out = Vec::new();
+    let bytes = tag.as_bytes();
+    let mut pos = tag_name_of(&lowercase_ascii(tag)).len();
+    while pos < bytes.len() && out.len() < MAX_DOM_ATTRS {
+        while pos < bytes.len()
+            && (bytes[pos].is_ascii_whitespace() || matches!(bytes[pos], b'/' | b'<'))
+        {
+            pos += 1;
+        }
+        let start = pos;
+        while pos < bytes.len()
+            && (bytes[pos].is_ascii_alphanumeric() || matches!(bytes[pos], b'-' | b'_'))
+        {
+            pos += 1;
+        }
+        if start == pos {
+            pos = pos.saturating_add(1);
+            continue;
+        }
+        let name = lowercase_ascii(&tag[start..pos]);
+        while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+        let mut value = String::new();
+        if bytes.get(pos) == Some(&b'=') {
+            pos += 1;
+            while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+                pos += 1;
+            }
+            if matches!(bytes.get(pos), Some(b'"' | b'\'')) {
+                let quote = bytes[pos];
+                pos += 1;
+                let value_start = pos;
+                while pos < bytes.len() && bytes[pos] != quote {
+                    pos += 1;
+                }
+                value = decode_entities(&tag[value_start..pos]);
+                pos = pos.saturating_add(1);
+            } else {
+                let value_start = pos;
+                while pos < bytes.len() && !bytes[pos].is_ascii_whitespace() && bytes[pos] != b'>' {
+                    pos += 1;
+                }
+                value = decode_entities(&tag[value_start..pos]);
+            }
+        }
+        out.push(BrowserDomAttr { name, value });
+    }
+    out
+}
+
+fn form_method_for_tag(tag: &str) -> BrowserFormMethod {
+    attr_value(tag, "method")
+        .map(|method| {
+            if method.eq_ignore_ascii_case("post") {
+                BrowserFormMethod::Post
+            } else {
+                BrowserFormMethod::Get
+            }
+        })
+        .unwrap_or(BrowserFormMethod::Get)
+}
+
+fn form_action_url_any(tag: &str, base_url: &str) -> String {
+    let action = attr_value(tag, "action").unwrap_or_else(|| String::from(base_url));
+    if action.trim().is_empty() {
+        String::from(base_url)
+    } else {
+        resolve_url(base_url, &action)
+    }
+}
+
+fn push_document_input_control(
+    document: &mut BrowserDocumentState,
+    tag: &str,
+    form_id: Option<usize>,
+) -> Option<usize> {
+    let input_type = lowercase_ascii(
+        attr_value(tag, "type")
+            .unwrap_or_else(|| String::from("text"))
+            .trim(),
+    );
+    let kind = match input_type.as_str() {
+        "hidden" => BrowserFormControlKind::Hidden,
+        "checkbox" => BrowserFormControlKind::Checkbox,
+        "radio" => BrowserFormControlKind::Radio,
+        "submit" => BrowserFormControlKind::Submit,
+        "button" => BrowserFormControlKind::Button,
+        "reset" => BrowserFormControlKind::Reset,
+        "image" => BrowserFormControlKind::Image,
+        _ => BrowserFormControlKind::Text,
+    };
+    let label = if kind == BrowserFormControlKind::Text {
+        input_field_label(tag, &input_type)
+    } else {
+        form_control_label(tag, &input_type)
+    };
+    let value = input_value(tag);
+    let checked = has_attr(tag, "checked");
+    push_document_control(
+        document,
+        BrowserFormControlState {
+            form_id,
+            kind,
+            name: control_name(tag),
+            label,
+            value: value.clone(),
+            default_value: value,
+            checked,
+            default_checked: checked,
+            disabled: has_attr(tag, "disabled"),
+            chars: input_size_chars(tag),
+            rows: 1,
+            options: Vec::new(),
+            selected: 0,
+            default_selected: 0,
+        },
+    )
+}
+
+fn push_document_button_control(
+    document: &mut BrowserDocumentState,
+    tag: &str,
+    form_id: Option<usize>,
+) -> Option<usize> {
+    let button_type = attr_value(tag, "type").unwrap_or_else(|| String::from("submit"));
+    let kind = if button_type.eq_ignore_ascii_case("button") {
+        BrowserFormControlKind::Button
+    } else if button_type.eq_ignore_ascii_case("reset") {
+        BrowserFormControlKind::Reset
+    } else {
+        BrowserFormControlKind::Submit
+    };
+    let label = form_control_label(tag, "button");
+    let value = attr_value(tag, "value")
+        .map(|value| clean_inline_text(&decode_entities(&value)))
+        .unwrap_or_else(|| label.clone());
+    push_document_control(
+        document,
+        BrowserFormControlState {
+            form_id,
+            kind,
+            name: control_name(tag),
+            label,
+            value: value.clone(),
+            default_value: value,
+            checked: false,
+            default_checked: false,
+            disabled: has_attr(tag, "disabled"),
+            chars: 12,
+            rows: 1,
+            options: Vec::new(),
+            selected: 0,
+            default_selected: 0,
+        },
+    )
+}
+
+fn push_document_select_control(
+    document: &mut BrowserDocumentState,
+    tag: &str,
+    form_id: Option<usize>,
+) -> Option<usize> {
+    let label = form_control_label(tag, "select");
+    push_document_control(
+        document,
+        BrowserFormControlState {
+            form_id,
+            kind: BrowserFormControlKind::Select,
+            name: control_name(tag),
+            label,
+            value: String::new(),
+            default_value: String::new(),
+            checked: false,
+            default_checked: false,
+            disabled: has_attr(tag, "disabled"),
+            chars: 20,
+            rows: 1,
+            options: Vec::new(),
+            selected: 0,
+            default_selected: 0,
+        },
+    )
+}
+
+fn push_document_textarea_control(
+    document: &mut BrowserDocumentState,
+    tag: &str,
+    form_id: Option<usize>,
+) -> Option<usize> {
+    let label = form_control_label(tag, "textarea");
+    push_document_control(
+        document,
+        BrowserFormControlState {
+            form_id,
+            kind: BrowserFormControlKind::TextArea,
+            name: control_name(tag),
+            label,
+            value: String::new(),
+            default_value: String::new(),
+            checked: false,
+            default_checked: false,
+            disabled: has_attr(tag, "disabled"),
+            chars: input_size_chars(tag),
+            rows: attr_value(tag, "rows")
+                .and_then(|value| parse_dimension(&value))
+                .unwrap_or(3)
+                .clamp(2, 8),
+            options: Vec::new(),
+            selected: 0,
+            default_selected: 0,
+        },
+    )
+}
+
+fn push_document_control(
+    document: &mut BrowserDocumentState,
+    control: BrowserFormControlState,
+) -> Option<usize> {
+    if document.controls.len() >= MAX_FORM_CONTROLS {
+        return None;
+    }
+    let id = document.controls.len();
+    document.controls.push(control);
+    Some(id)
+}
+
+fn finish_pending_option(document: &mut BrowserDocumentState, pending: &mut Option<PendingOption>) {
+    let Some(option) = pending.take() else {
+        return;
+    };
+    let Some(control) = document.controls.get_mut(option.control_id) else {
+        return;
+    };
+    if control.options.len() >= MAX_FORM_OPTIONS {
+        return;
+    }
+    let label = clean_inline_text(&decode_entities(&option.label));
+    let label = if label.is_empty() {
+        option
+            .value
+            .clone()
+            .unwrap_or_else(|| String::from("option"))
+    } else {
+        label
+    };
+    let value = option.value.unwrap_or_else(|| label.clone());
+    if option.selected {
+        control.selected = control.options.len();
+        control.default_selected = control.selected;
+    }
+    control.options.push(BrowserSelectOption { label, value });
+}
+
+fn finalize_textarea_value(document: &mut BrowserDocumentState, control_id: usize) {
+    let Some(control) = document.controls.get_mut(control_id) else {
+        return;
+    };
+    if control.kind != BrowserFormControlKind::TextArea {
+        return;
+    }
+    control.value = decode_entities(&control.value);
+    control.default_value = control.value.clone();
+    if control.value.len() > MAX_FORM_VALUE {
+        let mut trimmed = String::new();
+        for c in control.value.chars() {
+            if trimmed.len().saturating_add(c.len_utf8()) > MAX_FORM_VALUE {
+                break;
+            }
+            trimmed.push(c);
+        }
+        control.value = trimmed;
+        control.default_value = control.value.clone();
+    }
+}
+
+fn finalize_button_text(
+    document: &mut BrowserDocumentState,
+    active_button: &mut Option<(usize, String)>,
+) {
+    let Some((control_id, text)) = active_button.take() else {
+        return;
+    };
+    let label = clean_inline_text(&decode_entities(&text));
+    if label.is_empty() {
+        return;
+    }
+    let Some(control) = document.controls.get_mut(control_id) else {
+        return;
+    };
+    if control.label == "button" {
+        control.label = label.clone();
+    }
+    if control.default_value == "button" {
+        control.value = label.clone();
+        control.default_value = label;
+    }
+}
+
+fn control_name(tag: &str) -> String {
+    attr_value(tag, "name")
+        .map(|name| clean_inline_text(&decode_entities(&name)))
+        .unwrap_or_else(String::new)
 }
 
 fn is_inline_tag(name: &str) -> bool {
@@ -3437,6 +4748,7 @@ fn handle_tag(
     out: &mut Vec<BrowserLine>,
     text: &mut String,
     state: &mut HtmlRenderState,
+    controls: Option<&mut BrowserRenderControls<'_>>,
     base_url: &str,
     cols: usize,
 ) {
@@ -3444,9 +4756,22 @@ fn handle_tag(
     let name = tag_name_of(lower_tag);
     let closing = lower_tag.starts_with('/');
     let tag_style = styles.computed_for_tag(lower_tag, name);
+    let mut controls = controls;
+    if closing {
+        state.pop_suppressed_text(name);
+    }
 
     if state.in_table_cell {
-        handle_table_cell_tag(tag, out, state, base_url, cols, name, closing);
+        handle_table_cell_tag(
+            tag,
+            out,
+            state,
+            controls.as_deref_mut(),
+            base_url,
+            cols,
+            name,
+            closing,
+        );
         return;
     }
 
@@ -3573,22 +4898,28 @@ fn handle_tag(
         }
         "input" => {
             if !closing {
-                push_input_line(out, tag, state);
+                push_input_line(out, tag, state, controls.as_deref_mut());
             }
         }
         "button" => {
             if !closing {
-                push_button_line(out, tag, state);
+                let interactive = controls.is_some();
+                push_button_line(out, tag, state, controls.as_deref_mut());
+                if interactive {
+                    state.push_suppressed_text(name);
+                }
             }
         }
         "select" => {
             if !closing {
-                push_named_control_line(out, "select", tag, state);
+                push_named_control_line(out, "select", tag, state, controls.as_deref_mut());
+                state.push_suppressed_text(name);
             }
         }
         "textarea" => {
             if !closing {
-                push_named_control_line(out, "textarea", tag, state);
+                push_named_control_line(out, "textarea", tag, state, controls.as_deref_mut());
+                state.push_suppressed_text(name);
             }
         }
         "img" => push_image_line(out, tag, base_url, state, tag_style),
@@ -3719,71 +5050,123 @@ fn append_query_param(out: &mut String, wrote: &mut bool, name: &str, value: &st
     *wrote = true;
 }
 
-fn push_input_line(out: &mut Vec<BrowserLine>, tag: &str, state: &mut HtmlRenderState) {
+fn push_input_line(
+    out: &mut Vec<BrowserLine>,
+    tag: &str,
+    state: &mut HtmlRenderState,
+    controls: Option<&mut BrowserRenderControls<'_>>,
+) {
     let input_type = attr_value(tag, "type").unwrap_or_else(|| String::from("text"));
     let input_type = lowercase_ascii(input_type.trim());
+    let interactive = controls.and_then(|controls| controls.next());
     if input_type == "hidden" {
-        record_input_field(state, tag, &input_type);
+        if interactive.is_none() {
+            record_input_field(state, tag, &input_type);
+        }
         return;
     }
     let mut text = String::new();
     let mut link = None;
     let control;
+    let control_id = interactive.map(|(id, _)| id);
+    let live = interactive.map(|(_, control)| control);
     match input_type.as_str() {
         "submit" | "button" | "reset" => {
-            let label = form_control_label(tag, &input_type);
+            let label = live
+                .map(|control| control.label.clone())
+                .unwrap_or_else(|| form_control_label(tag, &input_type));
             text.push_str("[button] ");
             text.push_str(&label);
-            if input_type == "submit" {
-                link = form_submit_url(state, Some(tag));
-            } else {
-                link = Some(browser_event_url(&label));
+            if live.is_none() {
+                link = if input_type == "submit" {
+                    form_submit_url(state, Some(tag))
+                } else {
+                    Some(browser_event_url(&label))
+                };
             }
             control = BrowserControl::Button { label };
         }
         "checkbox" => {
-            let label = input_field_label(tag, &input_type);
+            let label = live
+                .map(|control| control.label.clone())
+                .unwrap_or_else(|| input_field_label(tag, &input_type));
             text.push_str("[checkbox] ");
             text.push_str(&label);
-            let checked = has_attr(tag, "checked");
-            record_input_field(state, tag, &input_type);
+            let checked = live
+                .map(|control| control.checked)
+                .unwrap_or_else(|| has_attr(tag, "checked"));
+            if live.is_none() {
+                record_input_field(state, tag, &input_type);
+            }
             control = BrowserControl::Checkbox { label, checked };
         }
         "radio" => {
-            let label = input_field_label(tag, &input_type);
+            let label = live
+                .map(|control| control.label.clone())
+                .unwrap_or_else(|| input_field_label(tag, &input_type));
             text.push_str("[radio] ");
             text.push_str(&label);
-            let checked = has_attr(tag, "checked");
-            record_input_field(state, tag, &input_type);
+            let checked = live
+                .map(|control| control.checked)
+                .unwrap_or_else(|| has_attr(tag, "checked"));
+            if live.is_none() {
+                record_input_field(state, tag, &input_type);
+            }
             control = BrowserControl::Radio { label, checked };
         }
         "search" => {
-            let label = input_field_label(tag, &input_type);
+            let label = live
+                .map(|control| control.label.clone())
+                .unwrap_or_else(|| input_field_label(tag, &input_type));
             text.push_str("[search] ");
             text.push_str(&label);
-            record_input_field(state, tag, &input_type);
+            if live.is_none() {
+                record_input_field(state, tag, &input_type);
+            }
             control = BrowserControl::TextInput {
-                label: input_control_label(tag, &label),
-                value: input_value(tag),
-                chars: input_size_chars(tag),
+                label: live
+                    .map(|control| control.label.clone())
+                    .unwrap_or_else(|| input_control_label(tag, &label)),
+                value: live
+                    .map(|control| control.value.clone())
+                    .unwrap_or_else(|| input_value(tag)),
+                chars: live
+                    .map(|control| control.chars)
+                    .unwrap_or_else(|| input_size_chars(tag)),
             };
         }
         "image" => {
-            let label = form_control_label(tag, &input_type);
+            let label = live
+                .map(|control| control.label.clone())
+                .unwrap_or_else(|| form_control_label(tag, &input_type));
             text.push_str("[image button] ");
             text.push_str(&label);
-            link = form_submit_url(state, Some(tag));
+            link = if live.is_none() {
+                form_submit_url(state, Some(tag))
+            } else {
+                None
+            };
             control = BrowserControl::Button { label };
         }
         _ => {
-            let label = input_field_label(tag, &input_type);
+            let label = live
+                .map(|control| control.label.clone())
+                .unwrap_or_else(|| input_field_label(tag, &input_type));
             text.push_str("[input] ");
             text.push_str(&label);
-            record_input_field(state, tag, &input_type);
+            if live.is_none() {
+                record_input_field(state, tag, &input_type);
+            }
             control = BrowserControl::TextInput {
-                label: input_control_label(tag, &label),
-                value: input_value(tag),
-                chars: input_size_chars(tag),
+                label: live
+                    .map(|control| control.label.clone())
+                    .unwrap_or_else(|| input_control_label(tag, &label)),
+                value: live
+                    .map(|control| control.value.clone())
+                    .unwrap_or_else(|| input_value(tag)),
+                chars: live
+                    .map(|control| control.chars)
+                    .unwrap_or_else(|| input_size_chars(tag)),
             };
         }
     }
@@ -3795,24 +5178,37 @@ fn push_input_line(out: &mut Vec<BrowserLine>, tag: &str, state: &mut HtmlRender
         )
         .aligned(state.current_align())
         .styled(state.current_line_style())
-        .with_control(control),
+        .with_control(control)
+        .with_control_id(control_id),
     );
 }
 
-fn push_button_line(out: &mut Vec<BrowserLine>, tag: &str, state: &HtmlRenderState) {
+fn push_button_line(
+    out: &mut Vec<BrowserLine>,
+    tag: &str,
+    state: &HtmlRenderState,
+    controls: Option<&mut BrowserRenderControls<'_>>,
+) {
     let button_type = attr_value(tag, "type").unwrap_or_else(|| String::from("submit"));
-    let link = if button_type.eq_ignore_ascii_case("submit") {
+    let interactive = controls.and_then(|controls| controls.next());
+    let control_id = interactive.map(|(id, _)| id);
+    let live = interactive.map(|(_, control)| control);
+    let label = live
+        .map(|control| control.label.clone())
+        .unwrap_or_else(|| form_control_label(tag, "button"));
+    let link = if live.is_some() {
+        None
+    } else if button_type.eq_ignore_ascii_case("submit") {
         form_submit_url(state, Some(tag))
     } else {
-        Some(browser_event_url(&form_control_label(tag, "button")))
+        Some(browser_event_url(&label))
     };
     let has_form_value = attr_value(tag, "value").is_some()
         || attr_value(tag, "name").is_some()
         || attr_value(tag, "id").is_some();
-    if link.is_none() && !has_form_value {
+    if link.is_none() && control_id.is_none() && !has_form_value {
         return;
     }
-    let label = form_control_label(tag, "button");
     out.push(
         BrowserLine::new(
             format!("[button] {}", label),
@@ -3821,7 +5217,8 @@ fn push_button_line(out: &mut Vec<BrowserLine>, tag: &str, state: &HtmlRenderSta
         )
         .aligned(state.current_align())
         .styled(state.current_line_style())
-        .with_control(BrowserControl::Button { label }),
+        .with_control(BrowserControl::Button { label })
+        .with_control_id(control_id),
     );
 }
 
@@ -3830,23 +5227,37 @@ fn push_named_control_line(
     control: &str,
     tag: &str,
     state: &mut HtmlRenderState,
+    controls: Option<&mut BrowserRenderControls<'_>>,
 ) {
-    let label = form_control_label(tag, control);
+    let interactive = controls.and_then(|controls| controls.next());
+    let control_id = interactive.map(|(id, _)| id);
+    let live = interactive.map(|(_, control)| control);
+    let label = live
+        .map(|control| control.label.clone())
+        .unwrap_or_else(|| form_control_label(tag, control));
     let visual = if control == "textarea" {
         BrowserControl::TextArea {
             label: label.clone(),
-            rows: attr_value(tag, "rows")
-                .and_then(|value| parse_dimension(&value))
-                .unwrap_or(3)
-                .clamp(2, 8),
+            value: live
+                .map(|control| control.value.clone())
+                .unwrap_or_else(String::new),
+            rows: live.map(|control| control.rows).unwrap_or_else(|| {
+                attr_value(tag, "rows")
+                    .and_then(|value| parse_dimension(&value))
+                    .unwrap_or(3)
+                    .clamp(2, 8)
+            }),
         }
     } else {
         BrowserControl::Select {
             label: label.clone(),
-            options: 0,
+            value: live.map(select_display_value).unwrap_or_else(String::new),
+            options: live.map(|control| control.options.len()).unwrap_or(0),
         }
     };
-    record_named_form_field(state, tag);
+    if live.is_none() {
+        record_named_form_field(state, tag);
+    }
     out.push(
         BrowserLine::new(
             format!("[{}] {}", control, label),
@@ -3855,8 +5266,17 @@ fn push_named_control_line(
         )
         .aligned(state.current_align())
         .styled(state.current_line_style())
-        .with_control(visual),
+        .with_control(visual)
+        .with_control_id(control_id),
     );
+}
+
+fn select_display_value(control: &BrowserFormControlState) -> String {
+    control
+        .options
+        .get(control.selected)
+        .map(|option| option.label.clone())
+        .unwrap_or_else(|| control.value.clone())
 }
 
 fn form_control_label(tag: &str, fallback: &str) -> String {
@@ -3909,6 +5329,7 @@ fn handle_table_cell_tag(
     tag: &str,
     out: &mut Vec<BrowserLine>,
     state: &mut HtmlRenderState,
+    mut controls: Option<&mut BrowserRenderControls<'_>>,
     base_url: &str,
     cols: usize,
     name: &str,
@@ -3959,8 +5380,13 @@ fn handle_table_cell_tag(
         "input" if !closing => {
             let input_type = attr_value(tag, "type").unwrap_or_else(|| String::from("text"));
             let input_type = lowercase_ascii(input_type.trim());
+            let interactive = controls.as_deref_mut().and_then(|controls| controls.next());
+            let control_id = interactive.map(|(id, _)| id);
+            let live = interactive.map(|(_, control)| control);
             if input_type == "hidden" {
-                record_input_field(state, tag, &input_type);
+                if live.is_none() {
+                    record_input_field(state, tag, &input_type);
+                }
                 return;
             }
             state.cell_has_form_control = true;
@@ -3968,34 +5394,195 @@ fn handle_table_cell_tag(
                 state.table_cell_text.push(' ');
             }
             match input_type.as_str() {
-                "submit" | "button" => {
-                    if state.cell_form_link.is_none() {
-                        state.cell_form_link = if input_type == "submit" {
+                "submit" | "button" | "reset" | "image" => {
+                    let label = live
+                        .map(|control| control.label.clone())
+                        .unwrap_or_else(|| form_control_label(tag, &input_type));
+                    if live.is_none() && state.cell_form_link.is_none() {
+                        state.cell_form_link = if input_type == "submit" || input_type == "image" {
                             form_submit_url(state, Some(tag))
                         } else {
-                            Some(browser_event_url(&form_control_label(tag, &input_type)))
+                            Some(browser_event_url(&label))
                         };
                     }
-                    let label = form_control_label(tag, &input_type);
+                    if let Some(id) = control_id {
+                        state.cell_controls.push((
+                            id,
+                            BrowserControl::Button {
+                                label: label.clone(),
+                            },
+                        ));
+                    }
                     state.table_cell_text.push_str("[btn:");
                     state.table_cell_text.push_str(&label);
                     state.table_cell_text.push(']');
                 }
+                "checkbox" => {
+                    let label = live
+                        .map(|control| control.label.clone())
+                        .unwrap_or_else(|| input_field_label(tag, &input_type));
+                    let checked = live
+                        .map(|control| control.checked)
+                        .unwrap_or_else(|| has_attr(tag, "checked"));
+                    if live.is_none() {
+                        record_input_field(state, tag, &input_type);
+                    }
+                    if let Some(id) = control_id {
+                        state.cell_controls.push((
+                            id,
+                            BrowserControl::Checkbox {
+                                label: label.clone(),
+                                checked,
+                            },
+                        ));
+                    }
+                    state.table_cell_text.push_str("[checkbox:");
+                    state.table_cell_text.push_str(&label);
+                    state.table_cell_text.push(']');
+                }
+                "radio" => {
+                    let label = live
+                        .map(|control| control.label.clone())
+                        .unwrap_or_else(|| input_field_label(tag, &input_type));
+                    let checked = live
+                        .map(|control| control.checked)
+                        .unwrap_or_else(|| has_attr(tag, "checked"));
+                    if live.is_none() {
+                        record_input_field(state, tag, &input_type);
+                    }
+                    if let Some(id) = control_id {
+                        state.cell_controls.push((
+                            id,
+                            BrowserControl::Radio {
+                                label: label.clone(),
+                                checked,
+                            },
+                        ));
+                    }
+                    state.table_cell_text.push_str("[radio:");
+                    state.table_cell_text.push_str(&label);
+                    state.table_cell_text.push(']');
+                }
                 _ => {
-                    record_input_field(state, tag, &input_type);
-                    // prefer placeholder/name over aria-label for field identity
-                    let label = input_field_label(tag, &input_type);
+                    if live.is_none() {
+                        record_input_field(state, tag, &input_type);
+                    }
+                    let label = live
+                        .map(|control| control.label.clone())
+                        .unwrap_or_else(|| input_field_label(tag, &input_type));
+                    let chars = live
+                        .map(|control| control.chars)
+                        .unwrap_or_else(|| input_size_chars(tag));
+                    if let Some(id) = control_id {
+                        state.cell_controls.push((
+                            id,
+                            BrowserControl::TextInput {
+                                label: live
+                                    .map(|control| control.label.clone())
+                                    .unwrap_or_else(|| input_control_label(tag, &label)),
+                                value: live
+                                    .map(|control| control.value.clone())
+                                    .unwrap_or_else(|| input_value(tag)),
+                                chars,
+                            },
+                        ));
+                    }
                     state.table_cell_text.push_str("[field:");
-                    state
-                        .table_cell_text
-                        .push_str(&format!("{}", input_size_chars(tag)));
+                    state.table_cell_text.push_str(&format!("{}", chars));
                     state.table_cell_text.push(':');
-                    state
-                        .table_cell_text
-                        .push_str(&input_control_label(tag, &label));
+                    state.table_cell_text.push_str(&label);
                     state.table_cell_text.push(']');
                 }
             }
+        }
+        "button" if !closing => {
+            let interactive = controls.as_deref_mut().and_then(|controls| controls.next());
+            let control_id = interactive.map(|(id, _)| id);
+            let live = interactive.map(|(_, control)| control);
+            let label = live
+                .map(|control| control.label.clone())
+                .unwrap_or_else(|| form_control_label(tag, "button"));
+            if live.is_none() && state.cell_form_link.is_none() {
+                let button_type = attr_value(tag, "type").unwrap_or_else(|| String::from("submit"));
+                state.cell_form_link = if button_type.eq_ignore_ascii_case("submit") {
+                    form_submit_url(state, Some(tag))
+                } else {
+                    Some(browser_event_url(&label))
+                };
+            }
+            state.cell_has_form_control = true;
+            if !state.table_cell_text.is_empty() && !state.table_cell_text.ends_with(' ') {
+                state.table_cell_text.push(' ');
+            }
+            if let Some(id) = control_id {
+                state.cell_controls.push((
+                    id,
+                    BrowserControl::Button {
+                        label: label.clone(),
+                    },
+                ));
+            }
+            state.table_cell_text.push_str("[btn:");
+            state.table_cell_text.push_str(&label);
+            state.table_cell_text.push(']');
+        }
+        "select" if !closing => {
+            let interactive = controls.as_deref_mut().and_then(|controls| controls.next());
+            let control_id = interactive.map(|(id, _)| id);
+            let live = interactive.map(|(_, control)| control);
+            let label = live
+                .map(|control| control.label.clone())
+                .unwrap_or_else(|| form_control_label(tag, "select"));
+            if live.is_none() {
+                record_named_form_field(state, tag);
+            }
+            state.cell_has_form_control = true;
+            if !state.table_cell_text.is_empty() && !state.table_cell_text.ends_with(' ') {
+                state.table_cell_text.push(' ');
+            }
+            if let Some(id) = control_id {
+                state.cell_controls.push((
+                    id,
+                    BrowserControl::Select {
+                        label: label.clone(),
+                        value: live.map(select_display_value).unwrap_or_else(String::new),
+                        options: live.map(|control| control.options.len()).unwrap_or(0),
+                    },
+                ));
+            }
+            state.table_cell_text.push_str("[select:");
+            state.table_cell_text.push_str(&label);
+            state.table_cell_text.push(']');
+        }
+        "textarea" if !closing => {
+            let interactive = controls.as_deref_mut().and_then(|controls| controls.next());
+            let control_id = interactive.map(|(id, _)| id);
+            let live = interactive.map(|(_, control)| control);
+            let label = live
+                .map(|control| control.label.clone())
+                .unwrap_or_else(|| form_control_label(tag, "textarea"));
+            if live.is_none() {
+                record_named_form_field(state, tag);
+            }
+            state.cell_has_form_control = true;
+            if !state.table_cell_text.is_empty() && !state.table_cell_text.ends_with(' ') {
+                state.table_cell_text.push(' ');
+            }
+            if let Some(id) = control_id {
+                state.cell_controls.push((
+                    id,
+                    BrowserControl::TextArea {
+                        label: label.clone(),
+                        value: live
+                            .map(|control| control.value.clone())
+                            .unwrap_or_else(String::new),
+                        rows: live.map(|control| control.rows).unwrap_or(3),
+                    },
+                ));
+            }
+            state.table_cell_text.push_str("[textarea:");
+            state.table_cell_text.push_str(&label);
+            state.table_cell_text.push(']');
         }
         _ => {}
     }
@@ -4094,7 +5681,9 @@ fn rule_line(cols: usize) -> String {
 
 fn push_form_cell_lines(out: &mut Vec<BrowserLine>, cell: TableCell) {
     let align = cell.align;
+    let link = cell.link;
     let text = cell.text;
+    let mut controls = cell.controls.into_iter();
     let mut i = 0usize;
     let bytes = text.as_bytes();
     while i < bytes.len() {
@@ -4108,7 +5697,13 @@ fn push_form_cell_lines(out: &mut Vec<BrowserLine>, cell: TableCell) {
             if let Some(end) = text[i..].find(']') {
                 let part = &text[i..i + end + 1];
                 if let Some(label) = part.strip_prefix("[btn:").and_then(|s| s.strip_suffix(']')) {
-                    let link = cell.link.clone();
+                    let interactive = controls.next();
+                    let control_id = interactive.as_ref().map(|(id, _)| *id);
+                    let visual = interactive.map(|(_, control)| control).unwrap_or_else(|| {
+                        BrowserControl::Button {
+                            label: String::from(label),
+                        }
+                    });
                     out.push(
                         BrowserLine::new(
                             format!("[button] {}", label),
@@ -4116,9 +5711,94 @@ fn push_form_cell_lines(out: &mut Vec<BrowserLine>, cell: TableCell) {
                             line_kind_for_link(&link, BrowserLineKind::Code),
                         )
                         .aligned(align)
-                        .with_control(BrowserControl::Button {
+                        .with_control(visual)
+                        .with_control_id(control_id),
+                    );
+                } else if let Some(label) = part
+                    .strip_prefix("[checkbox:")
+                    .and_then(|s| s.strip_suffix(']'))
+                {
+                    let interactive = controls.next();
+                    let control_id = interactive.as_ref().map(|(id, _)| *id);
+                    let visual = interactive.map(|(_, control)| control).unwrap_or_else(|| {
+                        BrowserControl::Checkbox {
                             label: String::from(label),
-                        }),
+                            checked: false,
+                        }
+                    });
+                    out.push(
+                        BrowserLine::new(
+                            format!("[checkbox] {}", label),
+                            None,
+                            BrowserLineKind::Code,
+                        )
+                        .aligned(align)
+                        .with_control(visual)
+                        .with_control_id(control_id),
+                    );
+                } else if let Some(label) = part
+                    .strip_prefix("[radio:")
+                    .and_then(|s| s.strip_suffix(']'))
+                {
+                    let interactive = controls.next();
+                    let control_id = interactive.as_ref().map(|(id, _)| *id);
+                    let visual = interactive.map(|(_, control)| control).unwrap_or_else(|| {
+                        BrowserControl::Radio {
+                            label: String::from(label),
+                            checked: false,
+                        }
+                    });
+                    out.push(
+                        BrowserLine::new(format!("[radio] {}", label), None, BrowserLineKind::Code)
+                            .aligned(align)
+                            .with_control(visual)
+                            .with_control_id(control_id),
+                    );
+                } else if let Some(label) = part
+                    .strip_prefix("[select:")
+                    .and_then(|s| s.strip_suffix(']'))
+                {
+                    let interactive = controls.next();
+                    let control_id = interactive.as_ref().map(|(id, _)| *id);
+                    let visual = interactive.map(|(_, control)| control).unwrap_or_else(|| {
+                        BrowserControl::Select {
+                            label: String::from(label),
+                            value: String::new(),
+                            options: 0,
+                        }
+                    });
+                    out.push(
+                        BrowserLine::new(
+                            format!("[select] {}", label),
+                            None,
+                            BrowserLineKind::Code,
+                        )
+                        .aligned(align)
+                        .with_control(visual)
+                        .with_control_id(control_id),
+                    );
+                } else if let Some(label) = part
+                    .strip_prefix("[textarea:")
+                    .and_then(|s| s.strip_suffix(']'))
+                {
+                    let interactive = controls.next();
+                    let control_id = interactive.as_ref().map(|(id, _)| *id);
+                    let visual = interactive.map(|(_, control)| control).unwrap_or_else(|| {
+                        BrowserControl::TextArea {
+                            label: String::from(label),
+                            value: String::new(),
+                            rows: 3,
+                        }
+                    });
+                    out.push(
+                        BrowserLine::new(
+                            format!("[textarea] {}", label),
+                            None,
+                            BrowserLineKind::Code,
+                        )
+                        .aligned(align)
+                        .with_control(visual)
+                        .with_control_id(control_id),
                     );
                 } else if let Some(rest) = part
                     .strip_prefix("[field:")
@@ -4130,14 +5810,20 @@ fn push_form_cell_lines(out: &mut Vec<BrowserLine>, cell: TableCell) {
                             (parse_dimension(chars).unwrap_or(28).clamp(8, 72), label)
                         })
                         .unwrap_or((28, rest));
+                    let interactive = controls.next();
+                    let control_id = interactive.as_ref().map(|(id, _)| *id);
+                    let visual = interactive.map(|(_, control)| control).unwrap_or_else(|| {
+                        BrowserControl::TextInput {
+                            label: String::from(label),
+                            value: String::new(),
+                            chars,
+                        }
+                    });
                     out.push(
                         BrowserLine::new(format!("[input] {}", label), None, BrowserLineKind::Code)
                             .aligned(align)
-                            .with_control(BrowserControl::TextInput {
-                                label: String::from(label),
-                                value: String::new(),
-                                chars,
-                            }),
+                            .with_control(visual)
+                            .with_control_id(control_id),
                     );
                 } else {
                     out.push(
@@ -4179,6 +5865,7 @@ fn finish_table_cell(state: &mut HtmlRenderState) {
         link,
         is_form_row: state.cell_has_form_control,
         align: state.table_cell_align,
+        controls: core::mem::take(&mut state.cell_controls),
     });
     state.table_cell_text.clear();
     state.table_cell_is_header = false;
@@ -4186,6 +5873,7 @@ fn finish_table_cell(state: &mut HtmlRenderState) {
     state.cell_has_form_control = false;
     state.cell_form_link = None;
     state.cell_link = None;
+    state.cell_controls.clear();
     state.pop_align("td");
     state.pop_align("th");
     state.table_cell_align = state.current_align();

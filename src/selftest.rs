@@ -490,6 +490,10 @@ fn png_decode_roundtrip() -> bool {
         "/TMP/PHASE52.DOM.HTML",
         b"<!doctype html><html><head><title>Phase 52 DOM Events</title><style>#target{color:blue}.event{background:#fff4cc}</style></head><body><h1>DOM event foundation</h1><p id=\"target\" class=\"event\">Clickable links and form submits route through browser hit boxes.</p><a href=\"PHASE49.HTML\">Open phase 49 fixture</a><button type=\"button\" value=\"noop\" aria-label=\"Button event\">Button event</button></body></html>",
     );
+    let _ = crate::vfs::vfs_safe_write_file(
+        "/TMP/PHASE53.DOM.HTML",
+        b"<!doctype html><html><head><title>Phase 53 DOM Forms</title><style>form{margin-left:12px}.primary{color:#0b4f71;background:#eef8ff}</style></head><body><h1>Phase 53 DOM backed form</h1><p class=\"primary\">DOM backed form controls keep live values across reflow.</p><form action=\"/find\" method=\"get\"><input type=\"hidden\" name=\"phase\" value=\"53\"><input type=\"search\" name=\"q\" value=\"cool\" placeholder=\"Search\"><input type=\"checkbox\" name=\"safe\" value=\"1\"><select name=\"mode\" aria-label=\"Mode\"><option value=\"web\">Web</option><option value=\"img\" selected>Images</option></select><textarea name=\"notes\" rows=\"3\">old notes</textarea><input type=\"submit\" name=\"go\" value=\"Go\"><input type=\"reset\" value=\"Reset\"></form><form action=\"/post\" method=\"post\"><input type=\"text\" name=\"msg\" value=\"draft\"><input type=\"submit\" name=\"post\" value=\"Post\"></form></body></html>",
+    );
     image.width == 2
         && image.height == 2
         && image.pixels.as_slice() == [0x00ff0000, 0x0000ff00, 0x000000ff, 0x00ffffff]
@@ -525,5 +529,23 @@ fn browser_html_render_roundtrip() -> bool {
             line.contains("[button] Go")
                 && line.contains("file:///search?token=abc&q=cool&safe=1&go=Go")
         });
-    has_heading && has_css && has_quote && has_table && has_image && has_form
+    let phase53 = "<!doctype html><html><body><p>DOM backed form</p><form action=\"/find\" method=\"get\"><input type=\"hidden\" name=\"phase\" value=\"53\"><input type=\"search\" name=\"q\" value=\"cool\" placeholder=\"Search\"><input type=\"checkbox\" name=\"safe\" value=\"1\"><select name=\"mode\" aria-label=\"Mode\"><option value=\"web\">Web</option><option value=\"img\" selected>Images</option></select><textarea name=\"notes\" rows=\"3\">old notes</textarea><input type=\"submit\" name=\"go\" value=\"Go\"></form><form action=\"/post\" method=\"post\"><input type=\"text\" name=\"msg\" value=\"draft\"><input type=\"submit\" name=\"post\" value=\"Post\"></form></body></html>";
+    let interaction = crate::apps::browser::document_interaction_debug_for_test(
+        "file:///TMP/PHASE53.DOM.HTML",
+        phase53,
+    );
+    let has_interaction = interaction
+        .iter()
+        .any(|line| line == "dom has form=true input=true text=true")
+        && interaction.iter().any(|line| line == "forms=2 controls=8")
+        && interaction
+            .iter()
+            .any(|line| line == "edited=true noted=true toggled=true")
+        && interaction.iter().any(|line| {
+            line == "file:///find?phase=53&q=edited&safe=1&mode=img&notes=phase+53+note&go=Go"
+        })
+        && interaction
+            .iter()
+            .any(|line| line == "POST file:///post body=msg=draft&post=Post");
+    has_heading && has_css && has_quote && has_table && has_image && has_form && has_interaction
 }
