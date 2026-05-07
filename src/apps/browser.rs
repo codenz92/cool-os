@@ -21,10 +21,16 @@ const BOOKMARKS_PATH: &str = "/CONFIG/BROWSER.CFG";
 const DOWNLOADS_DIR: &str = "/Downloads";
 const SESSION_INTERNAL_URL: &str = "browser://session";
 const CACHE_INTERNAL_URL: &str = "browser://cache";
+const JS_INTERNAL_URL: &str = "browser://js";
 const MAX_BOOKMARKS: usize = 32;
 const MAX_INLINE_PNG_PIXELS: usize = 1_048_576;
 const MAX_HTML_INLINE_IMAGES: usize = 4;
 const MAX_STYLESHEET_SUBRESOURCES: usize = 8;
+const MAX_SCRIPT_SUBRESOURCES: usize = 8;
+const MAX_SCRIPT_BYTES: usize = 64 * 1024;
+const MAX_SCRIPT_STATEMENTS: usize = 192;
+const MAX_SCRIPT_EVENT_HANDLERS: usize = 64;
+const MAX_SCRIPT_RECURSION: usize = 4;
 const MAX_BROWSER_CACHE_ENTRIES: usize = 16;
 const MAX_BROWSER_RESOURCE_BYTES: usize = 512 * 1024;
 const INLINE_IMAGE_MAX_H: usize = 168;
@@ -440,6 +446,7 @@ struct CachedPage {
 enum BrowserResourceKind {
     Stylesheet,
     Image,
+    Script,
 }
 
 impl BrowserResourceKind {
@@ -447,6 +454,7 @@ impl BrowserResourceKind {
         match self {
             Self::Stylesheet => "css",
             Self::Image => "image",
+            Self::Script => "script",
         }
     }
 }
@@ -578,6 +586,71 @@ impl BrowserSubresourceStats {
     }
 }
 
+#[derive(Default, Clone, Copy)]
+struct BrowserScriptStats {
+    inline_scripts: usize,
+    external_scripts: usize,
+    external_failed: usize,
+    handlers: usize,
+    timers: usize,
+    mutations: usize,
+    errors: usize,
+    statements: usize,
+}
+
+impl BrowserScriptStats {
+    fn has_activity(self) -> bool {
+        self.inline_scripts > 0
+            || self.external_scripts > 0
+            || self.external_failed > 0
+            || self.handlers > 0
+            || self.timers > 0
+            || self.mutations > 0
+            || self.errors > 0
+            || self.statements > 0
+    }
+}
+
+#[derive(Clone)]
+struct BrowserScriptBundle {
+    sources: Vec<String>,
+    stats: BrowserScriptStats,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BrowserScriptEvent {
+    Click,
+    Change,
+    Submit,
+}
+
+impl BrowserScriptEvent {
+    fn from_attr(name: &str) -> Option<Self> {
+        match name {
+            "onclick" => Some(Self::Click),
+            "onchange" => Some(Self::Change),
+            "onsubmit" => Some(Self::Submit),
+            _ => None,
+        }
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        match lowercase_ascii(name.trim()).as_str() {
+            "click" => Some(Self::Click),
+            "change" | "input" => Some(Self::Change),
+            "submit" => Some(Self::Submit),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct BrowserScriptHandler {
+    node_id: usize,
+    event: BrowserScriptEvent,
+    code: String,
+}
+
 #[derive(Clone)]
 struct InlineImage {
     image: crate::png::PngImage,
@@ -593,6 +666,7 @@ enum BrowserFormMethod {
 struct BrowserFormState {
     action: String,
     method: BrowserFormMethod,
+    dom_node: Option<usize>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -618,6 +692,7 @@ struct BrowserSelectOption {
 #[derive(Clone)]
 struct BrowserFormControlState {
     form_id: Option<usize>,
+    dom_node: Option<usize>,
     kind: BrowserFormControlKind,
     name: String,
     label: String,
@@ -669,6 +744,8 @@ struct BrowserDocumentState {
     dom: BrowserDomDocument,
     forms: Vec<BrowserFormState>,
     controls: Vec<BrowserFormControlState>,
+    script_handlers: Vec<BrowserScriptHandler>,
+    script_stats: BrowserScriptStats,
     focused_control: Option<usize>,
 }
 
@@ -691,6 +768,7 @@ pub struct BrowserApp {
     last_page: Option<CachedPage>,
     subresource_cache: BrowserSubresourceCache,
     subresource_stats: BrowserSubresourceStats,
+    script_stats: BrowserScriptStats,
     bypass_subresource_cache: bool,
     image_preview: Option<crate::png::PngImage>,
     inline_images: Vec<InlineImage>,
@@ -721,6 +799,7 @@ impl BrowserApp {
             last_page: None,
             subresource_cache: BrowserSubresourceCache::default(),
             subresource_stats: BrowserSubresourceStats::default(),
+            script_stats: BrowserScriptStats::default(),
             bypass_subresource_cache: false,
             image_preview: None,
             inline_images: Vec::new(),
@@ -979,6 +1058,7 @@ impl BrowserApp {
             self.image_preview = None;
             self.set_html_document(&response.final_url, &response.body);
             self.append_subresource_status();
+            self.append_script_status();
             self.lines.clone()
         };
         if self.lines.is_empty() {
@@ -1045,6 +1125,11 @@ impl BrowserApp {
                     self.subresource_cache.entries().len()
                 );
                 self.lines = self.browser_cache_lines();
+            }
+            JS_INTERNAL_URL => {
+                self.title = String::from("Scripts");
+                self.status = script_stats_debug_line(self.script_stats);
+                self.lines = self.browser_script_lines();
             }
             _ if url.starts_with("browser://search?q=") => {
                 let query = decode_query(&url["browser://search?q=".len()..]);
@@ -1260,6 +1345,7 @@ impl BrowserApp {
         });
         self.set_html_document(&url, &body);
         self.append_subresource_status();
+        self.append_script_status();
         self.lines = if self.lines.is_empty() {
             vec![kind_line("(empty document)", BrowserLineKind::Muted)]
         } else {
@@ -1301,7 +1387,7 @@ impl BrowserApp {
         let mut out = vec![
             kind_line("Browser Cache", BrowserLineKind::Heading),
             kind_line(
-                "In-memory CSS and image subresources for this Browser window.",
+                "In-memory CSS, image, and script subresources for this Browser window.",
                 BrowserLineKind::Muted,
             ),
             line(""),
@@ -1362,6 +1448,41 @@ impl BrowserApp {
         out
     }
 
+    fn browser_script_lines(&self) -> Vec<BrowserLine> {
+        let stats = self.script_stats;
+        let mut out = vec![
+            kind_line("Browser Scripts", BrowserLineKind::Heading),
+            kind_line(
+                "Bounded document scripts, event handlers, timers, and DOM mutations.",
+                BrowserLineKind::Muted,
+            ),
+            line(""),
+            kind_line(&script_stats_debug_line(stats), BrowserLineKind::Muted),
+            line(""),
+            line(&format!(
+                "scripts: inline={} external={}/{}",
+                stats.inline_scripts,
+                stats.external_scripts,
+                stats.external_scripts.saturating_add(stats.external_failed)
+            )),
+            line(&format!(
+                "runtime: handlers={} timers={} statements={}",
+                stats.handlers, stats.timers, stats.statements
+            )),
+            line(&format!(
+                "dom: mutations={} errors={}",
+                stats.mutations, stats.errors
+            )),
+        ];
+        if stats.errors > 0 {
+            out.push(kind_line(
+                "Unsupported script statements were skipped by the bounded runtime.",
+                BrowserLineKind::Muted,
+            ));
+        }
+        out
+    }
+
     fn append_subresource_status(&mut self) {
         let stats = self.subresource_stats;
         if !stats.has_activity() {
@@ -1391,8 +1512,29 @@ impl BrowserApp {
         }
     }
 
+    fn append_script_status(&mut self) {
+        let stats = self.script_stats;
+        if !stats.has_activity() {
+            return;
+        }
+        let total = stats
+            .inline_scripts
+            .saturating_add(stats.external_scripts)
+            .saturating_add(stats.external_failed);
+        self.status.push_str(&format!(
+            "  js={}/{} handlers={} timers={} mut={} err={}",
+            stats.inline_scripts.saturating_add(stats.external_scripts),
+            total,
+            stats.handlers,
+            stats.timers,
+            stats.mutations,
+            stats.errors
+        ));
+    }
+
     fn set_html_document(&mut self, base_url: &str, body: &str) -> usize {
         self.subresource_stats = BrowserSubresourceStats::default();
+        self.script_stats = BrowserScriptStats::default();
         let body_text = response_body_text(body).unwrap_or(body);
         let effective_base = extract_base_href(body_text, base_url);
         let external_css = load_document_stylesheets(
@@ -1402,11 +1544,22 @@ impl BrowserApp {
             &mut self.subresource_stats,
             self.bypass_subresource_cache,
         );
-        self.document = Some(BrowserDocumentState::from_html_with_external_css(
+        let scripts = load_document_scripts(
+            &effective_base,
+            body_text,
+            &mut self.subresource_cache,
+            &mut self.subresource_stats,
+            self.bypass_subresource_cache,
+        );
+        let document = BrowserDocumentState::from_html_with_external_css_and_scripts(
             &effective_base,
             body,
             external_css,
-        ));
+            scripts.sources,
+            scripts.stats,
+        );
+        self.script_stats = document.script_stats;
+        self.document = Some(document);
         let images = self.reflow_document();
         self.bypass_subresource_cache = false;
         images
@@ -1506,6 +1659,9 @@ impl BrowserApp {
             };
             document.activate_control(control_id)
         };
+        if let Some(document) = self.document.as_ref() {
+            self.script_stats = document.script_stats;
+        }
         match activation {
             BrowserControlActivation::Ignored => {
                 self.status = String::from("Control unavailable");
@@ -1516,7 +1672,14 @@ impl BrowserApp {
                 self.render();
             }
             BrowserControlActivation::Changed => {
-                self.status = String::from("Control changed");
+                self.status = if self.script_stats.mutations > 0 {
+                    format!(
+                        "Control changed  js mut={} err={}",
+                        self.script_stats.mutations, self.script_stats.errors
+                    )
+                } else {
+                    String::from("Control changed")
+                };
                 self.reflow_document();
                 self.render();
             }
@@ -2871,6 +3034,7 @@ fn welcome_lines() -> Vec<BrowserLine> {
         link_line("Downloads", "browser://downloads"),
         link_line("Session state", SESSION_INTERNAL_URL),
         link_line("Cache state", CACHE_INTERNAL_URL),
+        link_line("Script diagnostics", JS_INTERNAL_URL),
     ]
 }
 
@@ -3145,6 +3309,92 @@ fn load_document_stylesheets(
     out
 }
 
+fn load_document_scripts(
+    base_url: &str,
+    body: &str,
+    cache: &mut BrowserSubresourceCache,
+    subresource_stats: &mut BrowserSubresourceStats,
+    bypass_cache: bool,
+) -> BrowserScriptBundle {
+    let mut bundle = BrowserScriptBundle {
+        sources: Vec::new(),
+        stats: BrowserScriptStats::default(),
+    };
+    let lower = lowercase_ascii(body);
+    let mut i = 0usize;
+    while bundle.sources.len() < MAX_SCRIPT_SUBRESOURCES {
+        let Some(rel) = lower[i..].find("<script") else {
+            break;
+        };
+        let start = i + rel;
+        let Some(tag_end_rel) = find_tag_end(&body[start..]) else {
+            break;
+        };
+        let tag_end = start + tag_end_rel;
+        let tag = &body[start + 1..tag_end];
+        let content_start = tag_end + 1;
+        let close_rel = lower[content_start..].find("</script");
+        let content_end = close_rel
+            .map(|rel| content_start + rel)
+            .unwrap_or(content_start);
+        let next_i = close_rel
+            .and_then(|rel| {
+                let close_start = content_start + rel;
+                find_tag_end(&body[close_start..]).map(|close_end| close_start + close_end + 1)
+            })
+            .unwrap_or(content_end);
+
+        if script_type_is_executable(tag) {
+            if let Some(src) = attr_value(tag, "src") {
+                let src = decode_entities(src.trim());
+                let url = resolve_url(base_url, &src);
+                if script_url_allowed(base_url, &url) {
+                    match fetch_subresource_with_cache(
+                        &url,
+                        BrowserResourceKind::Script,
+                        cache,
+                        subresource_stats,
+                        bypass_cache,
+                    ) {
+                        Ok(resource) => {
+                            if is_script_content(
+                                resource.content_type.as_deref(),
+                                &resource.final_url,
+                            ) && resource.bytes.len() <= MAX_SCRIPT_BYTES
+                            {
+                                bundle.stats.external_scripts =
+                                    bundle.stats.external_scripts.saturating_add(1);
+                                bundle
+                                    .sources
+                                    .push(String::from_utf8_lossy(&resource.bytes).into_owned());
+                            } else {
+                                bundle.stats.external_failed =
+                                    bundle.stats.external_failed.saturating_add(1);
+                            }
+                        }
+                        Err(_) => {
+                            bundle.stats.external_failed =
+                                bundle.stats.external_failed.saturating_add(1);
+                        }
+                    }
+                } else {
+                    bundle.stats.external_failed = bundle.stats.external_failed.saturating_add(1);
+                }
+            } else if content_end > content_start {
+                let script = &body[content_start..content_end];
+                if script.len() <= MAX_SCRIPT_BYTES {
+                    bundle.stats.inline_scripts = bundle.stats.inline_scripts.saturating_add(1);
+                    bundle.sources.push(String::from(script));
+                } else {
+                    bundle.stats.external_failed = bundle.stats.external_failed.saturating_add(1);
+                }
+            }
+        }
+        i = next_i;
+    }
+    bundle
+}
+
 fn stylesheet_urls(base_url: &str, body: &str) -> Vec<String> {
     let lower = lowercase_ascii(body);
     let mut out = Vec::new();
@@ -3176,6 +3426,47 @@ fn stylesheet_urls(base_url: &str, body: &str) -> Vec<String> {
         i = start + end_rel + 1;
     }
     out
+}
+
+fn script_type_is_executable(tag: &str) -> bool {
+    let Some(kind) = attr_value(tag, "type").or_else(|| attr_value(tag, "language")) else {
+        return true;
+    };
+    let kind = lowercase_ascii(kind.trim());
+    kind.is_empty()
+        || kind == "javascript"
+        || kind == "text/javascript"
+        || kind == "application/javascript"
+        || kind == "module"
+        || kind == "text/ecmascript"
+        || kind == "application/ecmascript"
+}
+
+fn script_url_allowed(base_url: &str, url: &str) -> bool {
+    if url.starts_with("file://") {
+        return base_url.starts_with("file://");
+    }
+    let Ok((scheme, host, _)) = parse_web_url(url) else {
+        return false;
+    };
+    let Ok((base_scheme, base_host, _)) = parse_web_url(base_url) else {
+        return false;
+    };
+    scheme == base_scheme && lowercase_ascii(&host) == lowercase_ascii(&base_host)
+}
+
+fn is_script_content(content_type: Option<&str>, url: &str) -> bool {
+    content_type
+        .and_then(|value| value.split(';').next())
+        .map(|value| {
+            let value = value.trim();
+            value.eq_ignore_ascii_case("application/javascript")
+                || value.eq_ignore_ascii_case("text/javascript")
+                || value.eq_ignore_ascii_case("application/ecmascript")
+                || value.eq_ignore_ascii_case("text/ecmascript")
+                || value.eq_ignore_ascii_case("text/plain")
+        })
+        .unwrap_or_else(|| extension_from_path(url).eq_ignore_ascii_case("js"))
 }
 
 fn link_rel_includes_stylesheet(tag: &str) -> bool {
@@ -3418,6 +3709,13 @@ fn browser_resource_content_type(
             }
         }
         BrowserResourceKind::Image => image_content_type_for(path, bytes).map(String::from),
+        BrowserResourceKind::Script => {
+            if extension_from_path(path).eq_ignore_ascii_case("js") {
+                Some(String::from("application/javascript"))
+            } else {
+                Some(String::from("text/plain"))
+            }
+        }
     }
 }
 
@@ -3733,6 +4031,12 @@ fn extension_for_content_type(content_type: Option<&str>) -> Option<&'static str
         Some("html")
     } else if value.eq_ignore_ascii_case("text/css") {
         Some("css")
+    } else if value.eq_ignore_ascii_case("application/javascript")
+        || value.eq_ignore_ascii_case("text/javascript")
+        || value.eq_ignore_ascii_case("application/ecmascript")
+        || value.eq_ignore_ascii_case("text/ecmascript")
+    {
+        Some("js")
     } else if value.eq_ignore_ascii_case("text/plain") {
         Some("txt")
     } else if value.eq_ignore_ascii_case("image/png") {
@@ -3755,6 +4059,8 @@ fn extension_from_path(path: &str) -> &'static str {
         "html"
     } else if lower.ends_with(".css") {
         "css"
+    } else if lower.ends_with(".js") || lower.ends_with(".mjs") {
+        "js"
     } else if lower.ends_with(".txt") {
         "txt"
     } else if lower.ends_with(".png") {
@@ -5275,6 +5581,85 @@ pub fn browser_subresource_debug_for_test(
     out
 }
 
+pub fn browser_script_debug_for_test(base_url: &str, response: &str, cols: usize) -> Vec<String> {
+    let body = response_body_text(response).unwrap_or(response);
+    let effective_base = extract_base_href(body, base_url);
+    let mut cache = BrowserSubresourceCache::default();
+    let mut subresource_stats = BrowserSubresourceStats::default();
+    let external_css = load_document_stylesheets(
+        &effective_base,
+        body,
+        &mut cache,
+        &mut subresource_stats,
+        false,
+    );
+    let scripts = load_document_scripts(
+        &effective_base,
+        body,
+        &mut cache,
+        &mut subresource_stats,
+        false,
+    );
+    let mut document = BrowserDocumentState::from_html_with_external_css_and_scripts(
+        &effective_base,
+        response,
+        external_css,
+        scripts.sources,
+        scripts.stats,
+    );
+    let mut out = vec![script_stats_debug_line(document.script_stats)];
+    out.extend(
+        render_document_interactive(&document.base_url, &document.source, cols, &document)
+            .into_iter()
+            .filter(|line| !line.text.is_empty())
+            .map(|line| line.text),
+    );
+    if let Some(run_id) = document
+        .controls
+        .iter()
+        .position(|control| control.label == "Run")
+    {
+        let activation = document.activate_control(run_id);
+        out.push(match activation {
+            BrowserControlActivation::Changed => String::from("click=changed"),
+            BrowserControlActivation::DomEvent(label) => format!("click=event {}", label),
+            BrowserControlActivation::Navigate(url) => format!("click=navigate {}", url),
+            BrowserControlActivation::Post { url, body } => {
+                format!("click=post {} {}", url, body)
+            }
+            BrowserControlActivation::Focused => String::from("click=focused"),
+            BrowserControlActivation::Ignored => String::from("click=ignored"),
+        });
+    }
+    out.push(script_stats_debug_line(document.script_stats));
+    if let Some(control) = document
+        .controls
+        .iter()
+        .find(|control| control.name == "name")
+    {
+        out.push(format!("name={}", control.value));
+    }
+    if let Some(control) = document
+        .controls
+        .iter()
+        .find(|control| control.name == "agree")
+    {
+        out.push(format!("agree={}", control.checked));
+    }
+    out.extend(
+        render_document_interactive(&document.base_url, &document.source, cols, &document)
+            .into_iter()
+            .filter(|line| !line.text.is_empty())
+            .map(|line| line.text),
+    );
+    out.push(
+        document
+            .submit_url_for_test("Send")
+            .unwrap_or_else(|| String::from("submit missing")),
+    );
+    out
+}
+
 pub fn document_interaction_debug_for_test(base_url: &str, response: &str) -> Vec<String> {
     let mut document = BrowserDocumentState::from_html(base_url, response);
     let attr_count = document
@@ -5335,6 +5720,327 @@ pub fn document_interaction_debug_for_test(base_url: &str, response: &str) -> Ve
             .unwrap_or_else(|| String::from("POST missing")),
     );
     out
+}
+
+fn script_stats_debug_line(stats: BrowserScriptStats) -> String {
+    format!(
+        "js inline={} external={}/{} handlers={} timers={} mutations={} errors={} statements={}",
+        stats.inline_scripts,
+        stats.external_scripts,
+        stats.external_scripts.saturating_add(stats.external_failed),
+        stats.handlers,
+        stats.timers,
+        stats.mutations,
+        stats.errors,
+        stats.statements
+    )
+}
+
+fn split_script_statements(input: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut quote: Option<u8> = None;
+    let mut escaped = false;
+    let mut brace_depth = 0usize;
+    let bytes = input.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() && out.len() < MAX_SCRIPT_STATEMENTS {
+        let b = bytes[i];
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match b {
+            b'\'' | b'"' => quote = Some(b),
+            b'{' => brace_depth = brace_depth.saturating_add(1),
+            b'}' => brace_depth = brace_depth.saturating_sub(1),
+            b';' if brace_depth == 0 => {
+                out.push(String::from(input[start..i].trim()));
+                start = i.saturating_add(1);
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    if start < input.len() && out.len() < MAX_SCRIPT_STATEMENTS {
+        let tail = input[start..].trim();
+        if !tail.is_empty() {
+            out.push(String::from(tail));
+        }
+    }
+    out
+}
+
+fn script_statement_is_ignorable(statement: &str) -> bool {
+    let trimmed = statement.trim();
+    trimmed.is_empty()
+        || trimmed == "\"use strict\""
+        || trimmed == "'use strict'"
+        || trimmed.starts_with("//")
+        || trimmed.starts_with("/*")
+        || trimmed.starts_with("var ")
+        || trimmed.starts_with("let ")
+        || trimmed.starts_with("const ")
+}
+
+fn compact_script_expr(input: &str) -> String {
+    let mut out = String::new();
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for c in input.chars() {
+        if let Some(q) = quote {
+            out.push(c);
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        if c == '\'' || c == '"' {
+            quote = Some(c);
+            out.push(c);
+        } else if !c.is_ascii_whitespace() {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn parse_add_event_listener(
+    statement: &str,
+) -> Option<(BrowserScriptTarget, BrowserScriptEvent, String)> {
+    let marker = ".addEventListener";
+    let pos = statement.find(marker)?;
+    let target = parse_script_target(&statement[..pos])?;
+    let args = &statement[pos + marker.len()..];
+    let open = args.find('(')?;
+    let args = &args[open + 1..];
+    let (event_name, _) = parse_script_string_literal(args)?;
+    let event = BrowserScriptEvent::from_name(&event_name)?;
+    let body = extract_script_function_body(statement)?;
+    Some((target, event, body))
+}
+
+fn split_script_assignment(statement: &str) -> Option<(&str, &str)> {
+    let bytes = statement.as_bytes();
+    let mut quote: Option<u8> = None;
+    let mut escaped = false;
+    let mut depth = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match b {
+            b'\'' | b'"' => quote = Some(b),
+            b'(' | b'[' | b'{' => depth = depth.saturating_add(1),
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b'=' if depth == 0 => {
+                let prev = i.checked_sub(1).and_then(|idx| bytes.get(idx)).copied();
+                let next = bytes.get(i + 1).copied();
+                if matches!(prev, Some(b'=' | b'!' | b'<' | b'>' | b'+') | Some(b'-'))
+                    || matches!(next, Some(b'=' | b'>'))
+                {
+                    i += 1;
+                    continue;
+                }
+                return Some((statement[..i].trim(), statement[i + 1..].trim()));
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+fn parse_script_assignment_left(
+    left: &str,
+) -> Option<(BrowserScriptTarget, BrowserScriptProperty)> {
+    let compact = compact_script_expr(left);
+    for (suffix, property) in [
+        (".textContent", BrowserScriptProperty::TextContent),
+        (".innerText", BrowserScriptProperty::TextContent),
+        (".className", BrowserScriptProperty::ClassName),
+        (".value", BrowserScriptProperty::Value),
+        (".checked", BrowserScriptProperty::Checked),
+        (".disabled", BrowserScriptProperty::Disabled),
+    ] {
+        if let Some(target) = compact.strip_suffix(suffix) {
+            return parse_script_target(target).map(|target| (target, property));
+        }
+    }
+    None
+}
+
+fn parse_script_target(input: &str) -> Option<BrowserScriptTarget> {
+    let compact = compact_script_expr(input);
+    parse_script_call_string_arg(&compact, "document.getElementById")
+        .map(BrowserScriptTarget::Id)
+        .or_else(|| {
+            parse_script_call_string_arg(&compact, "document.querySelector")
+                .map(BrowserScriptTarget::Selector)
+        })
+}
+
+fn parse_script_call_string_arg(input: &str, name: &str) -> Option<String> {
+    let rest = input.strip_prefix(name)?;
+    let args = rest.strip_prefix('(')?.strip_suffix(')')?;
+    parse_script_string_literal(args).map(|(value, _)| value)
+}
+
+fn parse_script_string_value(input: &str) -> Option<String> {
+    parse_script_string_literal(input.trim()).map(|(value, _)| truncate_script_value(&value))
+}
+
+fn parse_script_bool_value(input: &str) -> Option<bool> {
+    match lowercase_ascii(input.trim()).as_str() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+fn parse_script_string_literal(input: &str) -> Option<(String, usize)> {
+    let input = input.trim_start();
+    let bytes = input.as_bytes();
+    let quote = *bytes.first()?;
+    if quote != b'\'' && quote != b'"' {
+        return None;
+    }
+    let mut out = String::new();
+    let mut i = 1usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == quote {
+            return Some((out, i + 1));
+        }
+        if b == b'\\' && i + 1 < bytes.len() {
+            let next = bytes[i + 1];
+            match next {
+                b'n' => out.push('\n'),
+                b'r' => out.push('\r'),
+                b't' => out.push('\t'),
+                b'\'' => out.push('\''),
+                b'"' => out.push('"'),
+                b'\\' => out.push('\\'),
+                _ => out.push(next as char),
+            }
+            i += 2;
+            continue;
+        }
+        out.push(b as char);
+        i += 1;
+    }
+    None
+}
+
+fn extract_script_function_body(statement: &str) -> Option<String> {
+    let bytes = statement.as_bytes();
+    let mut open = None;
+    let mut quote: Option<u8> = None;
+    let mut escaped = false;
+    for (idx, b) in bytes.iter().copied().enumerate() {
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == q {
+                quote = None;
+            }
+            continue;
+        }
+        match b {
+            b'\'' | b'"' => quote = Some(b),
+            b'{' => {
+                open = Some(idx);
+                break;
+            }
+            _ => {}
+        }
+    }
+    let open = open?;
+    let mut depth = 0usize;
+    let mut quote: Option<u8> = None;
+    let mut escaped = false;
+    for idx in open..bytes.len() {
+        let b = bytes[idx];
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == q {
+                quote = None;
+            }
+            continue;
+        }
+        match b {
+            b'\'' | b'"' => quote = Some(b),
+            b'{' => depth = depth.saturating_add(1),
+            b'}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(String::from(&statement[open + 1..idx]));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn truncate_script_value(input: &str) -> String {
+    let mut out = String::new();
+    for c in input.chars() {
+        if out.len().saturating_add(c.len_utf8()) > MAX_FORM_VALUE {
+            break;
+        }
+        out.push(c);
+    }
+    out
+}
+
+fn push_html_text_escaped(out: &mut String, input: &str) {
+    for c in input.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            _ => out.push(c),
+        }
+    }
+}
+
+fn push_html_attr_escaped(out: &mut String, input: &str) {
+    for c in input.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '"' => out.push_str("&quot;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            _ => out.push(c),
+        }
+    }
 }
 
 fn push_hex_color(out: &mut String, color: u32) {
@@ -5558,6 +6264,22 @@ impl BrowserDocumentState {
         response: &str,
         external_css: Vec<String>,
     ) -> Self {
+        Self::from_html_with_external_css_and_scripts(
+            base_url,
+            response,
+            external_css,
+            Vec::new(),
+            BrowserScriptStats::default(),
+        )
+    }
+
+    fn from_html_with_external_css_and_scripts(
+        base_url: &str,
+        response: &str,
+        external_css: Vec<String>,
+        scripts: Vec<String>,
+        script_stats: BrowserScriptStats,
+    ) -> Self {
         let body = response_body_text(response).unwrap_or(response);
         let effective_base = extract_base_href(body, base_url);
         let mut state = Self {
@@ -5567,10 +6289,14 @@ impl BrowserDocumentState {
             dom: BrowserDomDocument::new(),
             forms: Vec::new(),
             controls: Vec::new(),
+            script_handlers: Vec::new(),
+            script_stats,
             focused_control: None,
         };
         scan_dom_and_controls(body, &state.base_url.clone(), &mut state);
         state.finalize_select_values();
+        state.collect_inline_event_handlers();
+        state.execute_script_sources(&scripts);
         state
     }
 
@@ -5630,7 +6356,7 @@ impl BrowserDocumentState {
         let Some(control) = self.controls.get_mut(id) else {
             return false;
         };
-        match control.kind {
+        let changed = match control.kind {
             BrowserFormControlKind::Text | BrowserFormControlKind::TextArea => match c {
                 '\u{8}' | '\u{7f}' => {
                     control.value.pop();
@@ -5661,7 +6387,18 @@ impl BrowserDocumentState {
                 true
             }
             _ => false,
+        };
+        if changed {
+            match self.controls.get(id).map(|control| control.kind) {
+                Some(BrowserFormControlKind::Checkbox | BrowserFormControlKind::Radio) => {
+                    self.sync_control_dom_checked(id);
+                }
+                Some(_) => self.sync_control_dom_value(id),
+                None => {}
+            }
+            self.sync_source_from_dom();
         }
+        changed
     }
 
     fn activate_control(&mut self, id: usize) -> BrowserControlActivation {
@@ -5676,25 +6413,40 @@ impl BrowserDocumentState {
                 if let Some(control) = self.controls.get_mut(id) {
                     control.checked = !control.checked;
                 }
+                self.sync_control_dom_checked(id);
+                let _ = self.run_control_event(id, BrowserScriptEvent::Change);
                 BrowserControlActivation::Changed
             }
             BrowserFormControlKind::Radio => {
                 self.set_radio_checked(id);
+                self.sync_control_dom_checked(id);
+                let _ = self.run_control_event(id, BrowserScriptEvent::Change);
                 BrowserControlActivation::Changed
             }
             BrowserFormControlKind::Select => {
                 self.select_next_option(id);
+                self.sync_control_dom_value(id);
+                let _ = self.run_control_event(id, BrowserScriptEvent::Change);
                 BrowserControlActivation::Changed
             }
-            BrowserFormControlKind::Submit | BrowserFormControlKind::Image => self
-                .submission_for(id)
-                .unwrap_or(BrowserControlActivation::Ignored),
+            BrowserFormControlKind::Submit | BrowserFormControlKind::Image => {
+                let _ = self.run_control_event(id, BrowserScriptEvent::Click);
+                let _ = self.run_control_event(id, BrowserScriptEvent::Submit);
+                self.submission_for(id)
+                    .unwrap_or(BrowserControlActivation::Ignored)
+            }
             BrowserFormControlKind::Button => {
+                let mutated = self.run_control_event(id, BrowserScriptEvent::Click);
+                if mutated {
+                    return BrowserControlActivation::Changed;
+                }
                 let label = self.controls[id].label.clone();
                 BrowserControlActivation::DomEvent(label)
             }
             BrowserFormControlKind::Reset => {
+                let _ = self.run_control_event(id, BrowserScriptEvent::Click);
                 self.reset_form_for_control(id);
+                self.sync_source_from_dom();
                 BrowserControlActivation::Changed
             }
             BrowserFormControlKind::Text | BrowserFormControlKind::TextArea => {
@@ -5800,17 +6552,25 @@ impl BrowserDocumentState {
         let Some(target) = self.controls.get(id).cloned() else {
             return;
         };
-        for control in &mut self.controls {
+        let mut affected = Vec::new();
+        for (idx, control) in self.controls.iter_mut().enumerate() {
             if control.kind == BrowserFormControlKind::Radio
                 && control.form_id == target.form_id
                 && !target.name.is_empty()
                 && control.name == target.name
             {
                 control.checked = false;
+                affected.push(idx);
             }
         }
         if let Some(control) = self.controls.get_mut(id) {
             control.checked = true;
+            if !affected.iter().any(|idx| *idx == id) {
+                affected.push(id);
+            }
+        }
+        for idx in affected {
+            self.sync_control_dom_checked(idx);
         }
     }
 
@@ -5843,6 +6603,482 @@ impl BrowserDocumentState {
                 control.value = control.options[control.selected].value.clone();
             }
         }
+    }
+
+    fn collect_inline_event_handlers(&mut self) {
+        let mut handlers = Vec::new();
+        for (node_id, node) in self.dom.nodes.iter().enumerate() {
+            let BrowserDomNodeKind::Element { attrs, .. } = &node.kind else {
+                continue;
+            };
+            for attr in attrs {
+                let Some(event) = BrowserScriptEvent::from_attr(&attr.name) else {
+                    continue;
+                };
+                if attr.value.trim().is_empty() || handlers.len() >= MAX_SCRIPT_EVENT_HANDLERS {
+                    continue;
+                }
+                handlers.push(BrowserScriptHandler {
+                    node_id,
+                    event,
+                    code: attr.value.clone(),
+                });
+            }
+        }
+        for handler in handlers {
+            self.add_script_handler(handler.node_id, handler.event, handler.code);
+        }
+    }
+
+    fn add_script_handler(&mut self, node_id: usize, event: BrowserScriptEvent, code: String) {
+        if self.script_handlers.len() >= MAX_SCRIPT_EVENT_HANDLERS {
+            self.script_stats.errors = self.script_stats.errors.saturating_add(1);
+            return;
+        }
+        self.script_handlers.push(BrowserScriptHandler {
+            node_id,
+            event,
+            code,
+        });
+        self.script_stats.handlers = self.script_stats.handlers.saturating_add(1);
+    }
+
+    fn execute_script_sources(&mut self, scripts: &[String]) {
+        let before = self.script_stats.mutations;
+        for script in scripts.iter().take(MAX_SCRIPT_SUBRESOURCES) {
+            self.execute_script(script, 0);
+        }
+        if self.script_stats.mutations != before {
+            self.sync_source_from_dom();
+        }
+    }
+
+    fn execute_script(&mut self, code: &str, depth: usize) {
+        if depth > MAX_SCRIPT_RECURSION {
+            self.script_stats.errors = self.script_stats.errors.saturating_add(1);
+            return;
+        }
+        let statements = split_script_statements(code);
+        for statement in statements.into_iter().take(MAX_SCRIPT_STATEMENTS) {
+            if self.script_stats.statements >= MAX_SCRIPT_STATEMENTS {
+                self.script_stats.errors = self.script_stats.errors.saturating_add(1);
+                break;
+            }
+            let statement = statement.trim();
+            if statement.is_empty() || script_statement_is_ignorable(statement) {
+                continue;
+            }
+            self.script_stats.statements = self.script_stats.statements.saturating_add(1);
+            if self.execute_script_statement(statement, depth) {
+                continue;
+            }
+            self.script_stats.errors = self.script_stats.errors.saturating_add(1);
+        }
+    }
+
+    fn execute_script_statement(&mut self, statement: &str, depth: usize) -> bool {
+        let compact = compact_script_expr(statement);
+        if compact.starts_with("setTimeout(") || compact.starts_with("window.setTimeout(") {
+            let Some(body) = extract_script_function_body(statement) else {
+                return false;
+            };
+            self.script_stats.timers = self.script_stats.timers.saturating_add(1);
+            self.execute_script(&body, depth.saturating_add(1));
+            return true;
+        }
+        if let Some((target, event, body)) = parse_add_event_listener(statement) {
+            let Some(node_id) = self.resolve_script_target(&target) else {
+                return false;
+            };
+            self.add_script_handler(node_id, event, body);
+            return true;
+        }
+        if let Some((left, right)) = split_script_assignment(statement) {
+            let Some((target, property)) = parse_script_assignment_left(left) else {
+                return false;
+            };
+            let Some(node_id) = self.resolve_script_target(&target) else {
+                return false;
+            };
+            return self.apply_script_property(node_id, property, right);
+        }
+        false
+    }
+
+    fn resolve_script_target(&self, target: &BrowserScriptTarget) -> Option<usize> {
+        match target {
+            BrowserScriptTarget::Id(id) => self.find_node_by_id(id),
+            BrowserScriptTarget::Selector(selector) => self.query_selector(selector),
+        }
+    }
+
+    fn find_node_by_id(&self, wanted: &str) -> Option<usize> {
+        self.dom
+            .nodes
+            .iter()
+            .enumerate()
+            .find_map(|(node_id, node)| {
+                let BrowserDomNodeKind::Element { attrs, .. } = &node.kind else {
+                    return None;
+                };
+                attrs
+                    .iter()
+                    .any(|attr| attr.name == "id" && attr.value == wanted)
+                    .then_some(node_id)
+            })
+    }
+
+    fn query_selector(&self, selector: &str) -> Option<usize> {
+        let selector = selector.trim();
+        if selector.is_empty() {
+            return None;
+        }
+        if let Some(id) = selector.strip_prefix('#') {
+            return self.find_node_by_id(id);
+        }
+        if let Some(class) = selector.strip_prefix('.') {
+            return self
+                .dom
+                .nodes
+                .iter()
+                .enumerate()
+                .find_map(|(node_id, node)| {
+                    let BrowserDomNodeKind::Element { attrs, .. } = &node.kind else {
+                        return None;
+                    };
+                    attrs
+                        .iter()
+                        .find(|attr| attr.name == "class")
+                        .map(|attr| attr.value.split_whitespace().any(|value| value == class))
+                        .unwrap_or(false)
+                        .then_some(node_id)
+                });
+        }
+        let wanted = lowercase_ascii(selector);
+        self.dom
+            .nodes
+            .iter()
+            .enumerate()
+            .find_map(|(node_id, node)| {
+                matches!(
+                    &node.kind,
+                    BrowserDomNodeKind::Element { name, .. } if name == &wanted
+                )
+                .then_some(node_id)
+            })
+    }
+
+    fn apply_script_property(
+        &mut self,
+        node_id: usize,
+        property: BrowserScriptProperty,
+        value: &str,
+    ) -> bool {
+        match property {
+            BrowserScriptProperty::TextContent => {
+                let Some(text) = parse_script_string_value(value) else {
+                    return false;
+                };
+                if self.set_node_text_content(node_id, &text) {
+                    self.note_script_mutation();
+                    return true;
+                }
+            }
+            BrowserScriptProperty::ClassName => {
+                let Some(class_name) = parse_script_string_value(value) else {
+                    return false;
+                };
+                if self.set_node_attr(node_id, "class", &class_name) {
+                    self.note_script_mutation();
+                    return true;
+                }
+            }
+            BrowserScriptProperty::Value => {
+                let Some(value) = parse_script_string_value(value) else {
+                    return false;
+                };
+                if self.set_node_value(node_id, &value) {
+                    self.note_script_mutation();
+                    return true;
+                }
+            }
+            BrowserScriptProperty::Checked => {
+                let Some(checked) = parse_script_bool_value(value) else {
+                    return false;
+                };
+                if self.set_node_checked(node_id, checked) {
+                    self.note_script_mutation();
+                    return true;
+                }
+            }
+            BrowserScriptProperty::Disabled => {
+                let Some(disabled) = parse_script_bool_value(value) else {
+                    return false;
+                };
+                if self.set_node_disabled(node_id, disabled) {
+                    self.note_script_mutation();
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn note_script_mutation(&mut self) {
+        self.script_stats.mutations = self.script_stats.mutations.saturating_add(1);
+    }
+
+    fn set_node_text_content(&mut self, node_id: usize, text: &str) -> bool {
+        if node_id >= self.dom.nodes.len() {
+            return false;
+        }
+        let text = truncate_script_value(text);
+        let first_text_child = self.dom.nodes[node_id]
+            .children
+            .iter()
+            .copied()
+            .find(|child| {
+                matches!(
+                    self.dom.nodes.get(*child).map(|node| &node.kind),
+                    Some(BrowserDomNodeKind::Text(_))
+                )
+            });
+        if let Some(child) = first_text_child {
+            if let Some(BrowserDomNode {
+                kind: BrowserDomNodeKind::Text(existing),
+                ..
+            }) = self.dom.nodes.get_mut(child)
+            {
+                *existing = text;
+            }
+            if let Some(node) = self.dom.nodes.get_mut(node_id) {
+                node.children.clear();
+                node.children.push(child);
+            }
+            return true;
+        }
+        if self.dom.nodes.len() >= MAX_DOM_NODES {
+            return false;
+        }
+        if let Some(node) = self.dom.nodes.get_mut(node_id) {
+            node.children.clear();
+        }
+        self.dom.push_text_raw(node_id, text);
+        true
+    }
+
+    fn set_node_value(&mut self, node_id: usize, value: &str) -> bool {
+        let value = truncate_script_value(value);
+        if let Some(control_id) = self.control_for_node(node_id) {
+            self.set_control_value(control_id, &value);
+            return true;
+        }
+        self.set_node_attr(node_id, "value", &value)
+    }
+
+    fn set_node_checked(&mut self, node_id: usize, checked: bool) -> bool {
+        let Some(control_id) = self.control_for_node(node_id) else {
+            if checked {
+                return self.set_node_attr(node_id, "checked", "");
+            }
+            return self.remove_node_attr(node_id, "checked");
+        };
+        if checked
+            && self
+                .controls
+                .get(control_id)
+                .map(|control| control.kind == BrowserFormControlKind::Radio)
+                .unwrap_or(false)
+        {
+            self.set_radio_checked(control_id);
+        } else if let Some(control) = self.controls.get_mut(control_id) {
+            control.checked = checked;
+        }
+        self.sync_control_dom_checked(control_id);
+        true
+    }
+
+    fn set_node_disabled(&mut self, node_id: usize, disabled: bool) -> bool {
+        if let Some(control_id) = self.control_for_node(node_id) {
+            if let Some(control) = self.controls.get_mut(control_id) {
+                control.disabled = disabled;
+            }
+        }
+        if disabled {
+            self.set_node_attr(node_id, "disabled", "")
+        } else {
+            self.remove_node_attr(node_id, "disabled")
+        }
+    }
+
+    fn set_node_attr(&mut self, node_id: usize, name: &str, value: &str) -> bool {
+        let Some(BrowserDomNode {
+            kind: BrowserDomNodeKind::Element { attrs, .. },
+            ..
+        }) = self.dom.nodes.get_mut(node_id)
+        else {
+            return false;
+        };
+        if let Some(attr) = attrs.iter_mut().find(|attr| attr.name == name) {
+            attr.value = String::from(value);
+            return true;
+        }
+        if attrs.len() >= MAX_DOM_ATTRS {
+            return false;
+        }
+        attrs.push(BrowserDomAttr {
+            name: String::from(name),
+            value: String::from(value),
+        });
+        true
+    }
+
+    fn remove_node_attr(&mut self, node_id: usize, name: &str) -> bool {
+        let Some(BrowserDomNode {
+            kind: BrowserDomNodeKind::Element { attrs, .. },
+            ..
+        }) = self.dom.nodes.get_mut(node_id)
+        else {
+            return false;
+        };
+        if let Some(pos) = attrs.iter().position(|attr| attr.name == name) {
+            attrs.remove(pos);
+        }
+        true
+    }
+
+    fn control_for_node(&self, node_id: usize) -> Option<usize> {
+        self.controls
+            .iter()
+            .position(|control| control.dom_node == Some(node_id))
+    }
+
+    fn set_control_value(&mut self, control_id: usize, value: &str) {
+        let Some(control) = self.controls.get_mut(control_id) else {
+            return;
+        };
+        control.value = truncate_script_value(value);
+        if control.kind == BrowserFormControlKind::Select {
+            if let Some(pos) = control
+                .options
+                .iter()
+                .position(|option| option.value == control.value || option.label == control.value)
+            {
+                control.selected = pos;
+            }
+        }
+        self.sync_control_dom_value(control_id);
+    }
+
+    fn sync_control_dom_value(&mut self, control_id: usize) {
+        let Some(control) = self.controls.get(control_id).cloned() else {
+            return;
+        };
+        let Some(node_id) = control.dom_node else {
+            return;
+        };
+        match control.kind {
+            BrowserFormControlKind::Text
+            | BrowserFormControlKind::Hidden
+            | BrowserFormControlKind::Submit
+            | BrowserFormControlKind::Button
+            | BrowserFormControlKind::Reset
+            | BrowserFormControlKind::Image
+            | BrowserFormControlKind::Checkbox
+            | BrowserFormControlKind::Radio => {
+                let _ = self.set_node_attr(node_id, "value", &control.value);
+            }
+            BrowserFormControlKind::TextArea => {
+                let _ = self.set_node_text_content(node_id, &control.value);
+            }
+            BrowserFormControlKind::Select => {
+                for (idx, option_node) in self
+                    .option_nodes_for_select(node_id)
+                    .into_iter()
+                    .enumerate()
+                {
+                    if idx == control.selected {
+                        let _ = self.set_node_attr(option_node, "selected", "");
+                    } else {
+                        let _ = self.remove_node_attr(option_node, "selected");
+                    }
+                }
+            }
+        }
+    }
+
+    fn sync_control_dom_checked(&mut self, control_id: usize) {
+        let Some(control) = self.controls.get(control_id).cloned() else {
+            return;
+        };
+        let Some(node_id) = control.dom_node else {
+            return;
+        };
+        if control.checked {
+            let _ = self.set_node_attr(node_id, "checked", "");
+        } else {
+            let _ = self.remove_node_attr(node_id, "checked");
+        }
+    }
+
+    fn option_nodes_for_select(&self, select_node: usize) -> Vec<usize> {
+        let mut out = Vec::new();
+        let Some(node) = self.dom.nodes.get(select_node) else {
+            return out;
+        };
+        for child in &node.children {
+            if matches!(
+                self.dom.nodes.get(*child).map(|node| &node.kind),
+                Some(BrowserDomNodeKind::Element { name, .. }) if name == "option"
+            ) {
+                out.push(*child);
+            }
+        }
+        out
+    }
+
+    fn run_control_event(&mut self, control_id: usize, event: BrowserScriptEvent) -> bool {
+        let before = self.script_stats.mutations;
+        if let Some(node_id) = self
+            .controls
+            .get(control_id)
+            .and_then(|control| control.dom_node)
+        {
+            self.run_event_handlers(node_id, event);
+        }
+        if event == BrowserScriptEvent::Submit {
+            if let Some(form_node) = self
+                .controls
+                .get(control_id)
+                .and_then(|control| control.form_id)
+                .and_then(|form_id| self.forms.get(form_id))
+                .and_then(|form| form.dom_node)
+            {
+                self.run_event_handlers(form_node, event);
+            }
+        }
+        if self.script_stats.mutations != before {
+            self.sync_source_from_dom();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn run_event_handlers(&mut self, node_id: usize, event: BrowserScriptEvent) {
+        let handlers: Vec<String> = self
+            .script_handlers
+            .iter()
+            .filter(|handler| handler.node_id == node_id && handler.event == event)
+            .map(|handler| handler.code.clone())
+            .collect();
+        for code in handlers {
+            self.execute_script(&code, 1);
+        }
+    }
+
+    fn sync_source_from_dom(&mut self) {
+        self.source = self.dom.to_html();
     }
 }
 
@@ -5878,6 +7114,10 @@ impl BrowserDomDocument {
         self.push_node(parent, BrowserDomNodeKind::Text(text));
     }
 
+    fn push_text_raw(&mut self, parent: usize, text: String) {
+        self.push_node(parent, BrowserDomNodeKind::Text(text));
+    }
+
     fn push_node(&mut self, parent: usize, kind: BrowserDomNodeKind) -> usize {
         if self.nodes.len() >= MAX_DOM_NODES {
             return parent;
@@ -5892,6 +7132,48 @@ impl BrowserDomDocument {
             parent.children.push(idx);
         }
         idx
+    }
+
+    fn to_html(&self) -> String {
+        let mut out = String::new();
+        if let Some(root) = self.nodes.get(self.root) {
+            for child in &root.children {
+                self.push_node_html(*child, &mut out);
+            }
+        }
+        out
+    }
+
+    fn push_node_html(&self, node_id: usize, out: &mut String) {
+        let Some(node) = self.nodes.get(node_id) else {
+            return;
+        };
+        match &node.kind {
+            BrowserDomNodeKind::Text(text) => push_html_text_escaped(out, text),
+            BrowserDomNodeKind::Element { name, attrs } => {
+                out.push('<');
+                out.push_str(name);
+                for attr in attrs.iter().take(MAX_DOM_ATTRS) {
+                    out.push(' ');
+                    out.push_str(&attr.name);
+                    if !attr.value.is_empty() {
+                        out.push_str("=\"");
+                        push_html_attr_escaped(out, &attr.value);
+                        out.push('"');
+                    }
+                }
+                out.push('>');
+                if is_void_element(name) {
+                    return;
+                }
+                for child in &node.children {
+                    self.push_node_html(*child, out);
+                }
+                out.push_str("</");
+                out.push_str(name);
+                out.push('>');
+            }
+        }
     }
 }
 
@@ -5978,6 +7260,20 @@ enum BrowserControlActivation {
     DomEvent(String),
 }
 
+enum BrowserScriptTarget {
+    Id(String),
+    Selector(String),
+}
+
+#[derive(Clone, Copy)]
+enum BrowserScriptProperty {
+    TextContent,
+    ClassName,
+    Value,
+    Checked,
+    Disabled,
+}
+
 struct PendingOption {
     control_id: usize,
     value: Option<String>,
@@ -6056,27 +7352,42 @@ fn scan_dom_and_controls(body: &str, base_url: &str, document: &mut BrowserDocum
                             document.forms.push(BrowserFormState {
                                 action: form_action_url_any(tag, base_url),
                                 method: form_method_for_tag(tag),
+                                dom_node: Some(node),
                             });
                             form_stack.push(id);
                         }
                     }
                     "input" => {
-                        push_document_input_control(document, tag, form_stack.last().copied());
+                        push_document_input_control(
+                            document,
+                            tag,
+                            form_stack.last().copied(),
+                            Some(node),
+                        );
                     }
                     "button" => {
-                        active_button =
-                            push_document_button_control(document, tag, form_stack.last().copied())
-                                .map(|control_id| (control_id, String::new()));
+                        active_button = push_document_button_control(
+                            document,
+                            tag,
+                            form_stack.last().copied(),
+                            Some(node),
+                        )
+                        .map(|control_id| (control_id, String::new()));
                     }
                     "select" => {
-                        active_select =
-                            push_document_select_control(document, tag, form_stack.last().copied());
+                        active_select = push_document_select_control(
+                            document,
+                            tag,
+                            form_stack.last().copied(),
+                            Some(node),
+                        );
                     }
                     "textarea" => {
                         active_textarea = push_document_textarea_control(
                             document,
                             tag,
                             form_stack.last().copied(),
+                            Some(node),
                         );
                     }
                     "option" => {
@@ -6261,6 +7572,7 @@ fn push_document_input_control(
     document: &mut BrowserDocumentState,
     tag: &str,
     form_id: Option<usize>,
+    dom_node: Option<usize>,
 ) -> Option<usize> {
     let input_type = lowercase_ascii(
         attr_value(tag, "type")
@@ -6288,6 +7600,7 @@ fn push_document_input_control(
         document,
         BrowserFormControlState {
             form_id,
+            dom_node,
             kind,
             name: control_name(tag),
             label,
@@ -6309,6 +7622,7 @@ fn push_document_button_control(
     document: &mut BrowserDocumentState,
     tag: &str,
     form_id: Option<usize>,
+    dom_node: Option<usize>,
 ) -> Option<usize> {
     let button_type = attr_value(tag, "type").unwrap_or_else(|| String::from("submit"));
     let kind = if button_type.eq_ignore_ascii_case("button") {
@@ -6326,6 +7640,7 @@ fn push_document_button_control(
         document,
         BrowserFormControlState {
             form_id,
+            dom_node,
             kind,
             name: control_name(tag),
             label,
@@ -6347,12 +7662,14 @@ fn push_document_select_control(
     document: &mut BrowserDocumentState,
     tag: &str,
     form_id: Option<usize>,
+    dom_node: Option<usize>,
 ) -> Option<usize> {
     let label = form_control_label(tag, "select");
     push_document_control(
         document,
         BrowserFormControlState {
             form_id,
+            dom_node,
             kind: BrowserFormControlKind::Select,
             name: control_name(tag),
             label,
@@ -6374,12 +7691,14 @@ fn push_document_textarea_control(
     document: &mut BrowserDocumentState,
     tag: &str,
     form_id: Option<usize>,
+    dom_node: Option<usize>,
 ) -> Option<usize> {
     let label = form_control_label(tag, "textarea");
     push_document_control(
         document,
         BrowserFormControlState {
             form_id,
+            dom_node,
             kind: BrowserFormControlKind::TextArea,
             name: control_name(tag),
             label,
@@ -6475,10 +7794,10 @@ fn finalize_button_text(
     let Some(control) = document.controls.get_mut(control_id) else {
         return;
     };
-    if control.label == "button" {
-        control.label = label.clone();
-    }
-    if control.default_value == "button" {
+    let fallback_value =
+        control.default_value == control.label || control.default_value == "button";
+    control.label = label.clone();
+    if fallback_value {
         control.value = label.clone();
         control.default_value = label;
     }

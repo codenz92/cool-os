@@ -4,7 +4,7 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–58 are complete. The current milestone gives coolOS a much more
+Phases 1–59 are complete. The current milestone gives coolOS a much more
 normal command-line and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
@@ -16,9 +16,9 @@ DOM-event hit-box fixture coverage, and DOM-backed form controls with live
 editing, reset handling, real URL-encoded POST request bodies, persistent
 cookie/session state, CSS2 box-model layout, positioned/floating boxes, z-index
 paint order, improved table/list layout, and parser repair for common implied
-HTML closes plus external stylesheet/image subresource loading with bounded
-cache metadata.
-Phases 45-58 focus on responsiveness, interactive terminal behavior, and
+HTML closes plus external stylesheet/image/script subresource loading with
+bounded cache metadata and a small JavaScript/DOM mutation runtime.
+Phases 45-59 focus on responsiveness, interactive terminal behavior, and
 desktop-browser compatibility:
 cursor-only framebuffer updates,
 input-first idle-loop ordering, adaptive 36/144 Hz frame pacing, compositor
@@ -27,7 +27,7 @@ GUI events, and child exits, plus raw TTY input, ANSI-rendered TUI output,
 keyboard-editable Browser controls, and a richer native Browser rendering
 surface with GET/POST form submission, a persistent cookie jar, and bounded
 margin/padding/border/position/float layout plus a small Browser subresource
-cache.
+cache and script runtime.
 
 ---
 
@@ -576,17 +576,17 @@ HTTPS rather than a fake port-443 passthrough.
 
 - `src/net.rs` owns HTTP redirect following and chunked transfer decoding so Terminal,
   browser, and syscall callers share one HTTP implementation.
-- `src/apps/browser.rs` remains a native no_std GUI app. Phases 49-58 give it a
+- `src/apps/browser.rs` remains a native no_std GUI app. Phases 49-59 give it a
   bounded browser-engine layer for HTML/CSS line boxes, images, forms, and
   DOM-backed document controls, persistent cookie/session state, CSS2 box-model
   layout, positioning/floats, z-index paint order, table/list improvements, and
   implied-close parser repair plus external stylesheet/image subresources and
-  cache metadata while keeping JavaScript execution as future work.
+  cache metadata plus a small bounded JavaScript/DOM runtime.
 - `/bin/wget` now sends an HTTP/1.1 request with a coolOS user agent, keeping it as a
   raw userspace socket demo.
-- The next browser phase after 58 is a small JavaScript/DOM runtime: script
-  loading policy, event dispatch hooks, bounded timers, and DOM mutation enough
-  for simple interactive pages.
+- Phase 59 adds the small JavaScript/DOM runtime planned after the subresource
+  layer: same-origin script loading, event dispatch hooks, bounded timers, and
+  DOM mutation enough for simple interactive pages.
 
 ---
 
@@ -1509,9 +1509,8 @@ objects with stable hit boxes.
 - [x] Add Browser debug rendering coverage for CSS style and form URL behavior.
 - [x] Add `/TMP/PHASE52.DOM.HTML` and `make smoke-phase52-dom-events`.
 
-**Current status:** complete. The Browser still does not execute JavaScript, but
-the native document model now has the event/hit-box substrate needed for future
-DOM activation work.
+**Current status:** complete. The native document model established here now
+feeds the bounded script event hooks added in Phase 59.
 
 ---
 
@@ -1539,9 +1538,8 @@ document state that can survive reflow and feed real submissions.
 - [x] Add `/TMP/PHASE53.DOM.HTML`, DOM/form debug selftest coverage, and
       `make smoke-phase53-dom-forms`.
 
-**Current status:** complete. The Browser still has no JavaScript runtime, but
-forms now have the state and event path needed for real DOM mutation, POST
-dispatch, and later script-driven interaction.
+**Current status:** complete. Forms now have the state and event path that later
+phases use for real POST dispatch and Phase 59 script-driven interaction.
 
 ---
 
@@ -1567,8 +1565,8 @@ network submissions through the shared Browser loader.
       smoke-phase54-browser-post` with a keyboard-submitted HTTPS POST.
 
 **Current status:** complete. Browser forms can now send live DOM values as real
-URL-encoded POST request bodies; JavaScript and richer cache state remain
-future browser-engine work.
+URL-encoded POST request bodies; later phases add richer cache state and a
+bounded JavaScript runtime.
 
 ---
 
@@ -1598,8 +1596,8 @@ browser.
 
 **Current status:** complete. The Browser now persists cookies across page
 loads, applies scope/path/secure matching when building requests, and exposes a
-redacted session-state page. JavaScript execution, HTTP cache behavior, and a
-richer layout/runtime stack remain future browser-engine work.
+redacted session-state page. Later phases add HTTP cache behavior, deeper
+layout/runtime fidelity, and bounded JavaScript execution.
 
 ---
 
@@ -1658,7 +1656,7 @@ and malformed-but-common HTML structure.
 layer for ordinary desktop web pages: positioned and floating boxes, z-ordered
 painting and hit testing, better list/table output, and parser recovery for
 common omitted closing tags. External CSS/image subresources and cache semantics
-moved into Phase 58; JavaScript remains future browser-engine work.
+moved into Phase 58, followed by bounded JavaScript execution in Phase 59.
 
 ---
 
@@ -1685,8 +1683,41 @@ cache state.
 **Current status:** complete. The Browser now has the first practical
 subresource layer for desktop pages: external CSS affects layout, inline PNGs
 reuse cached bytes across reflow/reload, non-PNG images keep useful metadata
-placeholders, and the cache can be inspected from inside the OS. JavaScript,
-script loading policy, and DOM mutation remain future browser-engine work.
+placeholders, and the cache can be inspected from inside the OS. The script
+loading policy and DOM mutation runtime are now covered by Phase 59.
+
+---
+
+## ✅ Phase 59 — Browser JavaScript and DOM Runtime
+
+**Goal:** Let simple interactive desktop pages run bounded scripts without
+pretending coolOS has a full modern JS engine yet.
+
+- [x] Discover bounded inline `<script>` blocks and same-origin local/HTTP/HTTPS
+      external scripts, load external JavaScript through the Browser subresource
+      cache, and reject unsupported cross-origin or oversized scripts.
+- [x] Add a small statement runtime for practical DOM operations:
+      `document.getElementById(...)`, `document.querySelector(...)`,
+      `textContent` / `innerText`, `className`, form `value`, `checked`, and
+      `disabled` mutations.
+- [x] Bind script mutations back into the existing DOM/form state, serialize the
+      mutated DOM before reflow, and keep live form submissions using script-set
+      values.
+- [x] Support inline `onclick` / `onchange` / `onsubmit` handlers plus
+      `addEventListener("click" | "change" | "submit", function(){...})` on
+      bounded DOM targets.
+- [x] Add bounded `setTimeout(function(){...}, ms)` execution for simple delayed
+      page initialization while keeping recursion and statement limits explicit.
+- [x] Add `browser://js`, JS status text, script debug selftest coverage,
+      `/TMP/PHASE59.JS.HTML`, `/TMP/PHASE59.JS`, and
+      `make smoke-phase59-browser-js`.
+
+**Current status:** complete. The Browser now has the first useful script layer:
+simple pages can initialize text, classes, and form values, respond to button
+clicks, and inspect script runtime counts from inside coolOS. This is still a
+bounded compatibility layer rather than a full ECMAScript engine; storage APIs,
+XHR/fetch, layout-query APIs, and broader JS semantics remain future browser
+engine work.
 
 ---
 
@@ -1764,4 +1795,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.19 | Phase 55 complete: Browser session state |
 | v7.20 | Phase 56 complete: CSS2 box model and reflow |
 | v7.21 | Phase 57 complete: Browser layout and parser fidelity |
-| v7.22 | Current — Phase 58 complete: Browser subresources and cache |
+| v7.22 | Phase 58 complete: Browser subresources and cache |
+| v7.23 | Current — Phase 59 complete: Browser JavaScript and DOM runtime |

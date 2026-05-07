@@ -519,6 +519,14 @@ fn png_decode_roundtrip() -> bool {
         "/TMP/PHASE58.SUBRESOURCES.HTML",
         b"<!doctype html><html><head><title>Phase 58 Subresources</title><link rel=\"stylesheet\" href=\"PHASE58.CSS\"></head><body><h1>Phase 58 subresources</h1><p class=\"external\">External stylesheet panel</p><p class=\"quiet\">Hidden external text</p><img class=\"hero-img\" src=\"PNGTEST.PNG\" alt=\"cached png\"><img src=\"PHASE58.GIF\" alt=\"metadata gif\"><a href=\"browser://cache\">Open cache state</a></body></html>",
     );
+    let _ = crate::vfs::vfs_safe_write_file(
+        "/TMP/PHASE59.JS",
+        b"document.getElementById('external').textContent='External script ran';document.getElementById('name').value='scripted';document.getElementById('go').addEventListener('click',function(){document.getElementById('status').textContent='Clicked';document.getElementById('name').value='clicked';document.getElementById('agree').checked=true;});",
+    );
+    let _ = crate::vfs::vfs_safe_write_file(
+        "/TMP/PHASE59.JS.HTML",
+        b"<!doctype html><html><head><title>Phase 59 Browser JS</title><script src=\"PHASE59.JS\"></script><script>document.getElementById('status').textContent='Inline script ran';document.querySelector('.phase').className='phase ready';setTimeout(function(){document.getElementById('timer').textContent='Timer fired';},1);</script><style>.ready{color:#165a72;background:#eaf7ef}</style></head><body><h1>Phase 59 Browser JS</h1><p id=\"status\">Initial</p><p id=\"external\">External pending</p><p id=\"timer\">Timer pending</p><p class=\"phase\">Class pending</p><form action=\"/phase59\"><input id=\"name\" name=\"name\" value=\"initial\"><input id=\"agree\" type=\"checkbox\" name=\"agree\" value=\"1\"><button id=\"go\" type=\"button\">Run</button><input type=\"submit\" name=\"send\" value=\"Send\"></form><a href=\"browser://js\">Script diagnostics</a></body></html>",
+    );
     image.width == 2
         && image.height == 2
         && image.pixels.as_slice() == [0x00ff0000, 0x0000ff00, 0x000000ff, 0x00ffffff]
@@ -732,6 +740,29 @@ fn browser_html_render_roundtrip() -> bool {
             && line.contains("GIF 16x8")
             && line.contains("preview unavailable cached")
     });
+    let phase59 = "<!doctype html><html><head><script src=\"PHASE59.JS\"></script><script>document.getElementById('status').textContent='Inline script ran';document.querySelector('.phase').className='phase ready';setTimeout(function(){document.getElementById('timer').textContent='Timer fired';},1);</script><style>.ready{color:#165a72;background:#eaf7ef}</style></head><body><p id=\"status\">Initial</p><p id=\"external\">External pending</p><p id=\"timer\">Timer pending</p><p class=\"phase\">Class pending</p><form action=\"/phase59\"><input id=\"name\" name=\"name\" value=\"initial\"><input id=\"agree\" type=\"checkbox\" name=\"agree\" value=\"1\"><button id=\"go\" type=\"button\">Run</button><input type=\"submit\" name=\"send\" value=\"Send\"></form></body></html>";
+    let phase59_debug = crate::apps::browser::browser_script_debug_for_test(
+        "file:///TMP/PHASE59.JS.HTML",
+        phase59,
+        72,
+    );
+    let has_phase59_stats = phase59_debug.iter().any(|line| {
+        line.contains("js inline=1 external=1/1")
+            && line.contains("handlers=1")
+            && line.contains("timers=1")
+            && line.contains("errors=0")
+    }) && phase59_debug.iter().any(|line| line == "click=changed")
+        && phase59_debug.iter().any(|line| line == "name=clicked")
+        && phase59_debug.iter().any(|line| line == "agree=true");
+    let has_phase59_dom = phase59_debug.iter().any(|line| line == "Inline script ran")
+        && phase59_debug
+            .iter()
+            .any(|line| line == "External script ran")
+        && phase59_debug.iter().any(|line| line == "Timer fired")
+        && phase59_debug.iter().any(|line| line == "Clicked")
+        && phase59_debug
+            .iter()
+            .any(|line| line == "file:///phase59?name=clicked&agree=1&send=Send");
     has_heading
         && has_css
         && has_quote
@@ -750,4 +781,6 @@ fn browser_html_render_roundtrip() -> bool {
         && has_phase58_stats
         && has_phase58_css
         && has_phase58_images
+        && has_phase59_stats
+        && has_phase59_dom
 }

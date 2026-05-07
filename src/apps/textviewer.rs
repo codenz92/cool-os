@@ -25,7 +25,7 @@ const SUBTLE: u32 = 0x00_66_AA_DD;
 const MUTED: u32 = 0x00_55_7A_92;
 
 const ABOUT: &[&str] = &[
-    " coolOS v7.22",
+    " coolOS v7.23",
     " Bare-metal OS in Rust",
     "",
     " == Current Platform ==",
@@ -33,7 +33,7 @@ const ABOUT: &[&str] = &[
     " CoolFS root filesystem with users, modes, and VFS",
     " TTY sessions, foreground jobs, and userspace /bin/sh",
     " Shell pipes, redirection, cwd, stat, rename, and sync",
-    " Browser subresources/cache/CSS boxes/DOM/forms/cookies",
+    " Browser JS/DOM/forms/CSS boxes/subresources/cookies",
     " Evented poll ABI for pipes, TTY, sockets, GUI, and child exit",
     " Raw TTY control, terminal geometry, and ANSI/TUI output",
     " Adaptive 36/144 Hz pacing and cursor overlay smoothness",
@@ -44,6 +44,7 @@ const ABOUT: &[&str] = &[
     " browser URL  - open the native Web Browser",
     " browser://session shows Browser cookie/session state",
     " browser://cache shows Browser subresource cache state",
+    " browser://js shows Browser script runtime state",
     " diagnostics  - combined health report",
     " sysreport    - write /LOGS/SYSREPORT.TXT",
     " devkit       - SDK paths and templates",
