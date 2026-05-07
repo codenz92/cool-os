@@ -4,7 +4,7 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–59 are complete. The current milestone gives coolOS a much more
+Phases 1–61 are complete. The current milestone gives coolOS a much more
 normal command-line and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
@@ -19,8 +19,10 @@ paint order, improved table/list layout, and parser repair for common implied
 HTML closes plus external stylesheet/image/script subresource loading with
 bounded cache metadata, a small JavaScript/DOM mutation runtime, and bounded
 web-app APIs for storage, cookies, location/history, attributes/classes/styles,
-and same-origin fetch callbacks.
-Phases 45-60 focus on responsiveness, interactive terminal behavior, and
+same-origin fetch callbacks, plus a modern-page compatibility foundation that
+keeps raw script bundles out of rendered text and provides a bounded
+Google/Search compatibility shell.
+Phases 45-61 focus on responsiveness, interactive terminal behavior, and
 desktop-browser compatibility:
 cursor-only framebuffer updates,
 input-first idle-loop ordering, adaptive 36/144 Hz frame pacing, compositor
@@ -29,7 +31,8 @@ GUI events, and child exits, plus raw TTY input, ANSI-rendered TUI output,
 keyboard-editable Browser controls, and a richer native Browser rendering
 surface with GET/POST form submission, persistent cookie/storage state, and
 bounded margin/padding/border/position/float layout plus a small Browser
-subresource cache, script runtime, and web-app API layer.
+subresource cache, script runtime, web-app API layer, main-response
+content-type routing, and compatibility diagnostics.
 
 ---
 
@@ -578,16 +581,17 @@ HTTPS rather than a fake port-443 passthrough.
 
 - `src/net.rs` owns HTTP redirect following and chunked transfer decoding so Terminal,
   browser, and syscall callers share one HTTP implementation.
-- `src/apps/browser.rs` remains a native no_std GUI app. Phases 49-60 give it a
+- `src/apps/browser.rs` remains a native no_std GUI app. Phases 49-61 give it a
   bounded browser-engine layer for HTML/CSS line boxes, images, forms, and
   DOM-backed document controls, persistent cookie/session state, CSS2 box-model
   layout, positioning/floats, z-index paint order, table/list improvements, and
   implied-close parser repair plus external stylesheet/image subresources and
   cache metadata plus a small bounded JavaScript/DOM runtime and web-app API
-  layer.
+  layer, content-type-aware main-resource handling, and a Google/Search
+  compatibility profile.
 - `/bin/wget` now sends an HTTP/1.1 request with a coolOS user agent, keeping it as a
   raw userspace socket demo.
-- Phases 59-60 add the small JavaScript/DOM runtime planned after the
+- Phases 59-61 add the small JavaScript/DOM runtime planned after the
   subresource layer: same-origin script loading, event dispatch hooks, bounded
   timers, DOM mutation, storage/cookie APIs, location/history hooks, and
   same-origin fetch enough for simple interactive pages.
@@ -1762,6 +1766,40 @@ future work.
 
 ---
 
+## ✅ Phase 61 — Browser Modern-Page Compatibility
+
+**Goal:** Stop modern script-heavy pages from rendering JavaScript as page text,
+make main-resource type handling explicit, and provide a usable Google/Search
+compatibility surface while the native engine continues to grow.
+
+- [x] Harden raw-element parsing for `<head>`, `<script>`, `<style>`,
+      `<noscript>`, `<template>`, SVG/canvas/media/embed/object blocks, and
+      iframe content by jumping directly to the matching closing tag before
+      layout or DOM text serialization.
+- [x] Add main-response content-type routing: HTML enters the renderer, images
+      stay on the preview/metadata path, and JavaScript/CSS/JSON/other non-HTML
+      resources show bounded source/resource diagnostics instead of being
+      interpreted as markup.
+- [x] Add a Google/Search compatibility profile for `google.*` home/search
+      pages. It detects the script-heavy Google shell, replaces it with a small
+      native search form, and submits real GET searches to
+      `https://www.google.com/search`.
+- [x] Add `browser://compat` to explain whether the last page used native
+      rendering, source diagnostics, or the Google compatibility shell.
+- [x] Add `/TMP/PHASE61.GOOGLE.HTML`, selftest coverage for Closure-script
+      suppression and the Google compatibility shell, plus
+      `make smoke-phase61-browser-compat`.
+
+**Current status:** complete. `https://www.google.com/` no longer exposes raw
+Closure JavaScript as the rendered page body. It renders a bounded native
+Google search shell in coolOS and keeps the status bar honest with
+`compat=google-search`. This is not a full modern browser engine yet: complete
+CSSOM/layout, full ECMAScript, Promise/event-loop semantics, canvas/media, web
+components, accessibility tree parity, and multi-process site isolation remain
+future work.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -1838,4 +1876,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.21 | Phase 57 complete: Browser layout and parser fidelity |
 | v7.22 | Phase 58 complete: Browser subresources and cache |
 | v7.23 | Phase 59 complete: Browser JavaScript and DOM runtime |
-| v7.24 | Current — Phase 60 complete: Browser web-app APIs |
+| v7.24 | Phase 60 complete: Browser web-app APIs |
+| v7.25 | Current — Phase 61 complete: Browser modern-page compatibility |

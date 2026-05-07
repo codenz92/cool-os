@@ -532,6 +532,10 @@ fn png_decode_roundtrip() -> bool {
         "/TMP/PHASE60.WEBAPP.HTML",
         b"<!doctype html><html><head><title>Phase 60 Browser Web APIs</title><style>.ready{color:#165a72;background:#eaf7ef;border:1px solid #226644;padding:4px}</style><script>localStorage.setItem('phase60','local ready');sessionStorage.setItem('phase60','session ready');document.getElementById('local').textContent=localStorage.getItem('phase60');document.getElementById('session').textContent=sessionStorage.getItem('phase60');document.querySelectorAll('.item')[1].textContent='Second item updated';document.querySelector('#card').classList.add('ready');document.getElementById('card').setAttribute('data-state','attribute ready');document.getElementById('attr').textContent=document.getElementById('card').getAttribute('data-state');document.getElementById('card').style.backgroundColor='#eaf7ef';history.pushState({},'','?phase=60');document.getElementById('query').textContent=location.search;fetch('PHASE60.DATA').then(function(text){document.getElementById('fetch').textContent=text;});</script></head><body><h1>Phase 60 Browser Web APIs</h1><div id=\"card\"><p id=\"local\">local pending</p><p id=\"session\">session pending</p><p id=\"attr\">attr pending</p><p id=\"query\">query pending</p><p id=\"fetch\">fetch pending</p><p class=\"item\">First item</p><p class=\"item\">Second item</p></div><a href=\"browser://storage\">Storage diagnostics</a></body></html>",
     );
+    let _ = crate::vfs::vfs_safe_write_file(
+        "/TMP/PHASE61.GOOGLE.HTML",
+        b"<!doctype html><html><head><base href=\"https://www.google.com/\"><title>Google</title><script nonce=\"phase61\">var window=this;try{if(a<b&&c>d){throw Error(String(b));}}catch(e){}/* Copyright The Closure Library Authors. */function g(){return '<div class=\"raw\">not page text</div>';}</script></head><body><h1>Original Google fallback</h1><form action=\"/search\"><input type=\"search\" name=\"q\" value=\"coolOS\"><input type=\"submit\" value=\"Google Search\"></form></body></html>",
+    );
     image.width == 2
         && image.height == 2
         && image.pixels.as_slice() == [0x00ff0000, 0x0000ff00, 0x000000ff, 0x00ffffff]
@@ -819,6 +823,37 @@ fn browser_html_render_roundtrip() -> bool {
             .iter()
             .any(|line| line == "local_removed=true")
         && storage_debug.iter().any(|line| line == "local_after=-");
+    let phase61_raw = "<!doctype html><html><head><title>Raw skip</title><script>var window=this;try{if(a<b&&c>d){throw Error(String(b));}}catch(e){}/* Copyright The Closure Library Authors. */function g(){return '<p>not visible</p>';}</script></head><body><p>Visible body after raw script</p></body></html>";
+    let phase61_raw_lines = crate::apps::browser::render_document_debug_for_test(
+        "https://example.com/",
+        phase61_raw,
+        72,
+    );
+    let phase61_google = "<!doctype html><html><head><base href=\"https://www.google.com/search?q=coolOS\"><title>Google</title><script>var window=this;/* Copyright The Closure Library Authors. */function g(){return '<div>raw</div>';}</script></head><body><h1>Original Google fallback</h1><form action=\"/search\"><input type=\"search\" name=\"q\" value=\"coolOS\"><input type=\"submit\" value=\"Google Search\"></form></body></html>";
+    let phase61_compat = crate::apps::browser::browser_compat_debug_for_test(
+        "file:///TMP/PHASE61.GOOGLE.HTML",
+        phase61_google,
+        72,
+    );
+    let has_phase61_raw_skip = phase61_raw_lines
+        .iter()
+        .any(|line| line == "Visible body after raw script")
+        && !phase61_raw_lines
+            .iter()
+            .any(|line| line.contains("Closure Library") || line.contains("not visible"));
+    let has_phase61_google_compat = phase61_compat
+        .iter()
+        .any(|line| line == "mode=google-search")
+        && phase61_compat.iter().any(|line| line == "Google")
+        && phase61_compat
+            .iter()
+            .any(|line| line.contains("Google Search"))
+        && phase61_compat
+            .iter()
+            .any(|line| line.contains("Compatibility diagnostics"))
+        && !phase61_compat
+            .iter()
+            .any(|line| line.contains("Closure Library") || line.contains("Original Google"));
     has_heading
         && has_css
         && has_quote
@@ -841,4 +876,6 @@ fn browser_html_render_roundtrip() -> bool {
         && has_phase59_dom
         && has_phase60_stats
         && has_phase60_dom
+        && has_phase61_raw_skip
+        && has_phase61_google_compat
 }

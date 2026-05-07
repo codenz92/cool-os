@@ -23,6 +23,7 @@ const SESSION_INTERNAL_URL: &str = "browser://session";
 const CACHE_INTERNAL_URL: &str = "browser://cache";
 const JS_INTERNAL_URL: &str = "browser://js";
 const STORAGE_INTERNAL_URL: &str = "browser://storage";
+const COMPAT_INTERNAL_URL: &str = "browser://compat";
 const MAX_BOOKMARKS: usize = 32;
 const MAX_INLINE_PNG_PIXELS: usize = 1_048_576;
 const MAX_HTML_INLINE_IMAGES: usize = 4;
@@ -35,6 +36,7 @@ const MAX_SCRIPT_RECURSION: usize = 4;
 const MAX_SCRIPT_VARS: usize = 8;
 const MAX_SCRIPT_FETCH_BYTES: usize = 64 * 1024;
 const MAX_SESSION_STORAGE_ENTRIES: usize = 32;
+const MAX_COMPAT_NOTES: usize = 8;
 const MAX_BROWSER_CACHE_ENTRIES: usize = 16;
 const MAX_BROWSER_RESOURCE_BYTES: usize = 512 * 1024;
 const INLINE_IMAGE_MAX_H: usize = 168;
@@ -780,6 +782,67 @@ struct BrowserDocumentState {
     focused_control: Option<usize>,
 }
 
+#[derive(Clone)]
+struct BrowserCompatState {
+    mode: String,
+    url: String,
+    reason: String,
+    notes: Vec<String>,
+}
+
+impl BrowserCompatState {
+    fn native(url: &str) -> Self {
+        Self {
+            mode: String::from("native"),
+            url: String::from(url),
+            reason: String::from("Rendered by the built-in coolOS HTML/CSS pipeline."),
+            notes: Vec::new(),
+        }
+    }
+
+    fn google_search(url: &str) -> Self {
+        let mut state = Self {
+            mode: String::from("google-search"),
+            url: String::from(url),
+            reason: String::from(
+                "Script-heavy Google markup was replaced with a native search compatibility shell.",
+            ),
+            notes: Vec::new(),
+        };
+        state.add_note("Raw Closure scripts are skipped before layout and DOM sync.");
+        state.add_note("The shell submits real GET requests to https://www.google.com/search.");
+        state.add_note(
+            "Search-result ranking and interactive widgets still require a full JS engine.",
+        );
+        state
+    }
+
+    fn source(url: &str, content_type: Option<&str>) -> Self {
+        let mut state = Self {
+            mode: String::from("source"),
+            url: String::from(url),
+            reason: String::from("Non-HTML main resource shown as source instead of a document."),
+            notes: Vec::new(),
+        };
+        if let Some(content_type) = content_type {
+            state.add_note(&format!("Content-Type: {}", content_type));
+        }
+        state
+    }
+
+    fn add_note(&mut self, note: &str) {
+        if self.notes.len() < MAX_COMPAT_NOTES {
+            self.notes.push(String::from(note));
+        }
+    }
+}
+
+impl Default for BrowserCompatState {
+    fn default() -> Self {
+        Self::native("browser://home")
+    }
+}
+
 pub struct BrowserApp {
     pub window: Window,
     address: String,
@@ -805,6 +868,7 @@ pub struct BrowserApp {
     inline_images: Vec<InlineImage>,
     hit_boxes: Vec<BrowserHitBox>,
     document: Option<BrowserDocumentState>,
+    compat_state: BrowserCompatState,
     pending_open: Option<FileManagerOpenRequest>,
 }
 
@@ -836,6 +900,7 @@ impl BrowserApp {
             inline_images: Vec::new(),
             hit_boxes: Vec::new(),
             document: None,
+            compat_state: BrowserCompatState::default(),
             pending_open: None,
         };
         app.render();
@@ -1075,22 +1140,41 @@ impl BrowserApp {
             body_bytes: response.body_bytes.clone(),
             content_type: response.content_type.clone(),
         });
-        self.lines = if is_image_content(response.content_type.as_deref()) {
+        let content_type = response.content_type.as_deref();
+        self.lines = if is_image_content(content_type) {
             self.inline_images.clear();
             self.document = None;
+            self.compat_state = BrowserCompatState::native(&response.final_url);
             let preview_status = self.decode_image_preview(&response);
             image_response_lines(
                 &response.final_url,
-                response.content_type.as_deref(),
+                content_type,
                 response.body_bytes.len(),
                 preview_status.as_deref(),
             )
-        } else {
+        } else if is_html_main_content(content_type, &response.final_url, &response.body_bytes) {
             self.image_preview = None;
             self.set_html_document(&response.final_url, &response.body);
             self.append_subresource_status();
             self.append_script_status();
+            self.append_compat_status();
             self.lines.clone()
+        } else {
+            self.image_preview = None;
+            self.inline_images.clear();
+            self.document = None;
+            self.subresource_stats = BrowserSubresourceStats::default();
+            self.script_stats = BrowserScriptStats::default();
+            self.compat_state = BrowserCompatState::source(&response.final_url, content_type);
+            self.title = source_title_for_content(content_type, &response.final_url);
+            self.append_compat_status();
+            source_response_lines(
+                &response.final_url,
+                content_type,
+                &response.body,
+                response.body_bytes.len(),
+                self.cols.max(48),
+            )
         };
         if self.lines.is_empty() {
             self.lines.push(BrowserLine::new(
@@ -1156,6 +1240,11 @@ impl BrowserApp {
                     self.subresource_cache.entries().len()
                 );
                 self.lines = self.browser_cache_lines();
+            }
+            COMPAT_INTERNAL_URL => {
+                self.title = String::from("Compatibility");
+                self.status = format!("mode={}", self.compat_state.mode);
+                self.lines = self.browser_compat_lines();
             }
             JS_INTERNAL_URL => {
                 self.title = String::from("Scripts");
@@ -1382,6 +1471,7 @@ impl BrowserApp {
         self.set_html_document(&url, &body);
         self.append_subresource_status();
         self.append_script_status();
+        self.append_compat_status();
         self.lines = if self.lines.is_empty() {
             vec![kind_line("(empty document)", BrowserLineKind::Muted)]
         } else {
@@ -1481,6 +1571,33 @@ impl BrowserApp {
                 ));
             }
         }
+        out
+    }
+
+    fn browser_compat_lines(&self) -> Vec<BrowserLine> {
+        let compat = &self.compat_state;
+        let mut out = vec![
+            kind_line("Browser Compatibility", BrowserLineKind::Heading),
+            kind_line(
+                "Current handling path for the last loaded main resource.",
+                BrowserLineKind::Muted,
+            ),
+            line(""),
+            line(&format!("Mode: {}", compat.mode)),
+            line(&format!("URL: {}", compat.url)),
+            line(&format!("Reason: {}", compat.reason)),
+        ];
+        if !compat.notes.is_empty() {
+            out.push(line(""));
+            out.push(kind_line("Notes", BrowserLineKind::Muted));
+            for note in compat.notes.iter() {
+                out.push(line(&format!("- {}", note)));
+            }
+        }
+        out.push(line(""));
+        out.push(link_line("Home", "browser://home"));
+        out.push(link_line("Script diagnostics", JS_INTERNAL_URL));
+        out.push(link_line("Cache state", CACHE_INTERNAL_URL));
         out
     }
 
@@ -1584,28 +1701,42 @@ impl BrowserApp {
         ));
     }
 
+    fn append_compat_status(&mut self) {
+        if self.compat_state.mode != "native" {
+            self.status
+                .push_str(&format!("  compat={}", self.compat_state.mode));
+        }
+    }
+
     fn set_html_document(&mut self, base_url: &str, body: &str) -> usize {
         self.subresource_stats = BrowserSubresourceStats::default();
         self.script_stats = BrowserScriptStats::default();
         let body_text = response_body_text(body).unwrap_or(body);
         let effective_base = extract_base_href(body_text, base_url);
+        let compat_body = google_search_compat_document(&effective_base, body_text);
+        let render_body = compat_body.as_deref().unwrap_or(body_text);
+        self.compat_state = if compat_body.is_some() {
+            BrowserCompatState::google_search(&effective_base)
+        } else {
+            BrowserCompatState::native(&effective_base)
+        };
         let external_css = load_document_stylesheets(
             &effective_base,
-            body_text,
+            render_body,
             &mut self.subresource_cache,
             &mut self.subresource_stats,
             self.bypass_subresource_cache,
         );
         let scripts = load_document_scripts(
             &effective_base,
-            body_text,
+            render_body,
             &mut self.subresource_cache,
             &mut self.subresource_stats,
             self.bypass_subresource_cache,
         );
         let document = BrowserDocumentState::from_html_with_external_css_and_scripts(
             &effective_base,
-            body,
+            render_body,
             external_css,
             scripts.sources,
             scripts.stats,
@@ -3097,6 +3228,7 @@ fn welcome_lines() -> Vec<BrowserLine> {
         link_line("Cache state", CACHE_INTERNAL_URL),
         link_line("Script diagnostics", JS_INTERNAL_URL),
         link_line("Web storage", STORAGE_INTERNAL_URL),
+        link_line("Compatibility", COMPAT_INTERNAL_URL),
     ]
 }
 
@@ -3296,6 +3428,209 @@ fn is_image_content(content_type: Option<&str>) -> bool {
     content_type
         .map(|value| value.trim().to_ascii_lowercase().starts_with("image/"))
         .unwrap_or(false)
+}
+
+fn is_html_main_content(content_type: Option<&str>, url: &str, bytes: &[u8]) -> bool {
+    if let Some(value) = content_type.and_then(|value| value.split(';').next()) {
+        let value = value.trim();
+        if value.eq_ignore_ascii_case("text/html")
+            || value.eq_ignore_ascii_case("application/xhtml+xml")
+        {
+            return true;
+        }
+        if value.eq_ignore_ascii_case("text/plain") {
+            return looks_like_html_bytes(bytes);
+        }
+        return false;
+    }
+    extension_from_path(url).eq_ignore_ascii_case("html") || looks_like_html_bytes(bytes)
+}
+
+fn source_title_for_content(content_type: Option<&str>, url: &str) -> String {
+    let mime = content_type
+        .and_then(|value| value.split(';').next())
+        .unwrap_or("")
+        .trim();
+    if is_main_script_content(content_type, url) {
+        String::from("JavaScript Source")
+    } else if mime.eq_ignore_ascii_case("text/css") || extension_from_path(url) == "css" {
+        String::from("CSS Source")
+    } else if mime.eq_ignore_ascii_case("application/json") || extension_from_path(url) == "json" {
+        String::from("JSON Source")
+    } else if mime.starts_with("text/") {
+        String::from("Text Source")
+    } else {
+        String::from("Resource")
+    }
+}
+
+fn source_response_lines(
+    url: &str,
+    content_type: Option<&str>,
+    body: &str,
+    byte_len: usize,
+    cols: usize,
+) -> Vec<BrowserLine> {
+    let title = source_title_for_content(content_type, url);
+    let mut out = vec![
+        kind_line(&title, BrowserLineKind::Heading),
+        kind_line(
+            content_type.unwrap_or("application/octet-stream"),
+            BrowserLineKind::Muted,
+        ),
+        kind_line(
+            &format!("{} bytes received", byte_len),
+            BrowserLineKind::Muted,
+        ),
+        link_line("Resource URL", url),
+        line(""),
+        kind_line("Source preview", BrowserLineKind::Muted),
+    ];
+    let mut shown = 0usize;
+    for raw in body.lines() {
+        if shown >= 28 {
+            out.push(kind_line(
+                "... preview truncated ...",
+                BrowserLineKind::Muted,
+            ));
+            break;
+        }
+        let mut line_text = clean_inline_text(raw);
+        if line_text.len() > cols {
+            line_text = truncate_text_for_source(&line_text, cols);
+        }
+        out.push(kind_line(&line_text, BrowserLineKind::Code));
+        shown += 1;
+    }
+    if shown == 0 {
+        out.push(kind_line("(empty resource)", BrowserLineKind::Muted));
+    }
+    out
+}
+
+fn truncate_text_for_source(input: &str, max_len: usize) -> String {
+    let mut out = String::new();
+    for c in input.chars() {
+        if out.len().saturating_add(c.len_utf8()).saturating_add(3) > max_len {
+            out.push_str("...");
+            return out;
+        }
+        out.push(c);
+    }
+    out
+}
+
+fn google_search_compat_document(base_url: &str, body: &str) -> Option<String> {
+    let Ok((_scheme, host, path)) = parse_web_url(base_url) else {
+        return None;
+    };
+    if !is_google_host(&host) {
+        return None;
+    }
+    let path_only = path_without_query_fragment(&path);
+    if !matches!(
+        path_only.as_str(),
+        "/" | "/webhp" | "/search" | "/imghp" | "/advanced_search"
+    ) {
+        return None;
+    }
+    let lower = lowercase_ascii(body);
+    let looks_like_google = lower.contains("<title>google")
+        || lower.contains("name=\"q\"")
+        || lower.contains("name='q'")
+        || lower.contains("name=q")
+        || lower.contains("closure library authors")
+        || lower.contains("this.gbar_");
+    if !looks_like_google {
+        return None;
+    }
+    Some(build_google_search_compat_document(
+        google_query_from_url(base_url).as_deref().unwrap_or(""),
+        path_only == "/search",
+    ))
+}
+
+fn build_google_search_compat_document(query: &str, is_results_url: bool) -> String {
+    let query_value = escape_html(query);
+    let mut out = String::from(
+        "<!doctype html><html><head><title>Google</title><style>\
+body{font-family:sans-serif;background:#fff;color:#202124;text-align:center}\
+.logo{font-size:48px;margin-top:36px;margin-bottom:18px;color:#4285f4}\
+form{margin:0 auto 16px auto;width:70%;padding:10px;border:1px solid #dadce0;background:#fff}\
+input{margin:4px;padding:6px;border:1px solid #dadce0}\
+.note{color:#5f6368;font-size:12px}\
+</style></head><body><h1 class=\"logo\">Google</h1>",
+    );
+    out.push_str("<form action=\"https://www.google.com/search\" method=\"get\">");
+    out.push_str("<input type=\"search\" name=\"q\" value=\"");
+    out.push_str(&query_value);
+    out.push_str("\" placeholder=\"Search Google\">");
+    out.push_str("<input type=\"submit\" name=\"btnG\" value=\"Google Search\">");
+    out.push_str("</form>");
+    if is_results_url && !query.is_empty() {
+        out.push_str("<p>Search: ");
+        out.push_str(&query_value);
+        out.push_str("</p>");
+        out.push_str(
+            "<p class=\"note\">Results pages need a modern JavaScript and layout engine; \
+this shell keeps search submission usable.</p>",
+        );
+    } else {
+        out.push_str(
+            "<p class=\"note\">Compatibility mode keeps the Google search form usable while \
+coolOS grows a fuller browser engine.</p>",
+        );
+    }
+    out.push_str("<p><a href=\"browser://compat\">Compatibility diagnostics</a></p>");
+    out.push_str("</body></html>");
+    out
+}
+
+fn is_google_host(host: &str) -> bool {
+    let host = lowercase_ascii(host);
+    host.starts_with("google.") || host.contains(".google.")
+}
+
+fn path_without_query_fragment(path: &str) -> String {
+    let end = path
+        .find('?')
+        .or_else(|| path.find('#'))
+        .unwrap_or(path.len());
+    String::from(&path[..end])
+}
+
+fn google_query_from_url(url: &str) -> Option<String> {
+    query_param_from_url(url, "q")
+}
+
+fn query_param_from_url(url: &str, wanted: &str) -> Option<String> {
+    let start = url.find('?')?.saturating_add(1);
+    let end = url[start..]
+        .find('#')
+        .map(|rel| start + rel)
+        .unwrap_or(url.len());
+    for pair in url[start..end].split('&') {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if decode_query(key) == wanted {
+            return Some(decode_query(value));
+        }
+    }
+    None
+}
+
+fn escape_html(input: &str) -> String {
+    let mut out = String::new();
+    for c in input.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 fn is_known_image_path(path: &str) -> bool {
@@ -3551,6 +3886,23 @@ fn is_script_content(content_type: Option<&str>, url: &str) -> bool {
                 || value.eq_ignore_ascii_case("text/plain")
         })
         .unwrap_or_else(|| extension_from_path(url).eq_ignore_ascii_case("js"))
+}
+
+fn is_main_script_content(content_type: Option<&str>, url: &str) -> bool {
+    content_type
+        .and_then(|value| value.split(';').next())
+        .map(|value| {
+            let value = value.trim();
+            value.eq_ignore_ascii_case("application/javascript")
+                || value.eq_ignore_ascii_case("text/javascript")
+                || value.eq_ignore_ascii_case("application/ecmascript")
+                || value.eq_ignore_ascii_case("text/ecmascript")
+                || value.eq_ignore_ascii_case("application/x-javascript")
+        })
+        .unwrap_or_else(|| {
+            let ext = extension_from_path(url);
+            ext.eq_ignore_ascii_case("js") || ext.eq_ignore_ascii_case("mjs")
+        })
 }
 
 fn link_rel_includes_stylesheet(tag: &str) -> bool {
@@ -5286,6 +5638,7 @@ fn render_document_core(
     let effective_base = extract_base_href(body, base_url);
     let base_url: &str = &effective_base;
     let style_hints = StyleHints::from_document_with_external_css(body, external_css);
+    let lower_body = lowercase_ascii(body);
     let mut out = Vec::new();
     let mut text = String::new();
     let mut state = HtmlRenderState::new();
@@ -5313,23 +5666,16 @@ fn render_document_core(
                 }
                 let lower_name = tag_name_of(&lower_tag);
                 let tag_style = style_hints.computed_for_tag(&lower_tag, lower_name);
-                if lower_name == "script"
-                    || lower_name == "style"
-                    || lower_name == "noscript"
-                    || lower_name == "svg"
-                    || lower_name == "canvas"
-                    || lower_name == "template"
-                    || lower_name == "iframe"
-                    || lower_name == "video"
-                    || lower_name == "audio"
-                    || lower_name == "object"
-                    || lower_name == "embed"
-                    || lower_name == "head"
+                let suppress_raw = is_raw_text_suppressed_element(lower_name);
+                if suppress_raw
                     || ((tag_is_hidden(&lower_tag) || tag_style.hidden)
                         && !lower_tag.starts_with("input"))
                 {
                     flush_flow_text(&mut out, &mut text, cols, &mut state);
-                    if !is_void_element(lower_name) {
+                    if suppress_raw && !lower_tag.starts_with('/') {
+                        i = skip_raw_text_element(body, &lower_body, i + end_rel + 1, lower_name);
+                        continue;
+                    } else if !is_void_element(lower_name) {
                         state.skip_until = Some(closing_tag_for(&lower_tag));
                     }
                     i += end_rel + 1;
@@ -5780,6 +6126,37 @@ pub fn browser_web_api_debug_for_test(base_url: &str, response: &str, cols: usiz
                 .clone()
                 .unwrap_or_else(|| String::from("-"))
         ),
+    ];
+    out.extend(
+        render_document_interactive(&document.base_url, &document.source, cols, &document)
+            .into_iter()
+            .filter(|line| !line.text.is_empty())
+            .map(|line| line.text),
+    );
+    out
+}
+
+pub fn browser_compat_debug_for_test(base_url: &str, response: &str, cols: usize) -> Vec<String> {
+    let body = response_body_text(response).unwrap_or(response);
+    let effective_base = extract_base_href(body, base_url);
+    if let Some(compat_body) = google_search_compat_document(&effective_base, body) {
+        let document = BrowserDocumentState::from_html(&effective_base, &compat_body);
+        let mut out = vec![
+            String::from("mode=google-search"),
+            format!("base={}", document.base_url),
+        ];
+        out.extend(
+            render_document_interactive(&document.base_url, &document.source, cols, &document)
+                .into_iter()
+                .filter(|line| !line.text.is_empty())
+                .map(|line| line.text),
+        );
+        return out;
+    }
+    let document = BrowserDocumentState::from_html(&effective_base, response);
+    let mut out = vec![
+        String::from("mode=native"),
+        format!("base={}", document.base_url),
     ];
     out.extend(
         render_document_interactive(&document.base_url, &document.source, cols, &document)
@@ -8512,6 +8889,7 @@ fn scan_dom_and_controls(body: &str, base_url: &str, document: &mut BrowserDocum
     let mut active_select: Option<usize> = None;
     let mut pending_option: Option<PendingOption> = None;
     let bytes = body.as_bytes();
+    let lower_body = lowercase_ascii(body);
     let mut i = 0usize;
     while i < bytes.len() {
         if bytes[i] == b'<' {
@@ -8553,6 +8931,11 @@ fn scan_dom_and_controls(body: &str, base_url: &str, document: &mut BrowserDocum
                     }
                     pop_dom_stack(&mut stack, &mut names, name);
                     i += end_rel + 1;
+                    continue;
+                }
+
+                if is_raw_text_suppressed_element(name) {
+                    i = skip_raw_text_element(body, &lower_body, i + end_rel + 1, name);
                     continue;
                 }
 
@@ -10567,6 +10950,40 @@ fn is_void_element(name: &str) -> bool {
             | "track"
             | "wbr"
     )
+}
+
+fn is_raw_text_suppressed_element(name: &str) -> bool {
+    matches!(
+        name,
+        "script"
+            | "style"
+            | "noscript"
+            | "svg"
+            | "canvas"
+            | "template"
+            | "iframe"
+            | "video"
+            | "audio"
+            | "object"
+            | "embed"
+            | "head"
+    )
+}
+
+fn skip_raw_text_element(body: &str, lower_body: &str, content_start: usize, name: &str) -> usize {
+    if is_void_element(name) {
+        return content_start;
+    }
+    let mut close = String::from("</");
+    close.push_str(name);
+    if let Some(close_rel) = lower_body[content_start..].find(&close) {
+        let close_start = content_start + close_rel;
+        find_tag_end(&body[close_start..])
+            .map(|close_end| close_start + close_end + 1)
+            .unwrap_or(body.len())
+    } else {
+        body.len()
+    }
 }
 
 fn closing_tag_for(lower_tag: &str) -> String {
