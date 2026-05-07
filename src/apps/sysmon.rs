@@ -149,6 +149,7 @@ impl SysMonApp {
             }
             (sched.tasks.len(), ready, blocked, exited, sched.current)
         };
+        let resource_stats = crate::scheduler::resource_stats();
         let usb_lines = crate::usb::status_lines();
         let (usb_keyboard, usb_mouse) = crate::usb::input_presence();
         let usb_present = !usb_lines.is_empty();
@@ -229,9 +230,14 @@ impl SysMonApp {
         task_line.push_str("pid ");
         task_line.push_usize(current_pid);
         task_line.push_str("  tasks ");
-        task_line.push_usize(task_count);
+        task_line.push_usize(resource_stats.active_tasks);
+        task_line.push_str("/");
+        task_line.push_usize(resource_stats.max_active_tasks);
         self.put_str_px(stride, 280, 144, task_line.as_str(), LIGHT_CYAN);
         let mut state_line = NumberLine::new();
+        state_line.push_str("slots ");
+        state_line.push_usize(task_count);
+        state_line.push_str(" ");
         state_line.push_str("ready ");
         state_line.push_usize(ready_count);
         state_line.push_str(" blocked ");

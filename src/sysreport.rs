@@ -10,6 +10,11 @@ pub fn lines() -> Vec<String> {
     push_section(&mut lines, "profiler", crate::profiler::lines());
     push_section(&mut lines, "services", crate::services::lines());
     push_section(&mut lines, "tasks", crate::process_model::status_lines());
+    push_section(
+        &mut lines,
+        "resource limits",
+        crate::resource_limits::lines(),
+    );
     push_section(&mut lines, "wait queues", crate::wait_queue::lines());
     push_section(&mut lines, "vfs", crate::vfs::mount_lines());
     push_section(&mut lines, "writeback", crate::writeback::lines());

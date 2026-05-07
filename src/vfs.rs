@@ -9,8 +9,20 @@ use core::{arch::asm, mem};
 use spin::Mutex;
 use x86_64::structures::paging::PhysFrame;
 
-const MAX_FDS: usize = 16;
+pub const MAX_FDS: usize = 16;
 const PIPE_SIZE: usize = 512;
+
+#[derive(Clone, Copy)]
+pub struct VfsResourceStats {
+    pub task_tables: usize,
+    pub max_fds_per_task: usize,
+    pub open_fds: usize,
+    pub shared_objects: usize,
+    pub file_objects: usize,
+    pub pipe_objects: usize,
+    pub shmem_regions: usize,
+    pub shmem_frames: usize,
+}
 
 #[derive(Clone, Copy)]
 pub struct MountInfo {
@@ -239,6 +251,17 @@ impl TaskFdTable {
         self.entries[fd] = Some(entry);
         true
     }
+
+    fn free_slots(&self) -> usize {
+        self.entries[3..]
+            .iter()
+            .filter(|entry| entry.is_none())
+            .count()
+    }
+
+    fn open_count(&self) -> usize {
+        self.entries.iter().filter(|entry| entry.is_some()).count()
+    }
 }
 
 struct VfsState {
@@ -398,6 +421,50 @@ pub fn mount_lines() -> Vec<String> {
         MAX_FDS
     ));
     lines
+}
+
+pub fn max_fds_per_task() -> usize {
+    MAX_FDS
+}
+
+pub fn resource_stats() -> VfsResourceStats {
+    let vfs = VFS.lock();
+    let task_tables = vfs.task_fds.len();
+    let open_fds = vfs
+        .task_fds
+        .iter()
+        .map(TaskFdTable::open_count)
+        .fold(0usize, |total, count| total.saturating_add(count));
+    let mut shared_objects = 0usize;
+    let mut file_objects = 0usize;
+    let mut pipe_objects = 0usize;
+    for object in vfs.objects.iter().flatten() {
+        shared_objects = shared_objects.saturating_add(1);
+        match &object.kind {
+            SharedKind::File(_) => file_objects = file_objects.saturating_add(1),
+            SharedKind::Pipe(_) => pipe_objects = pipe_objects.saturating_add(1),
+        }
+    }
+    drop(vfs);
+
+    let regions = SHMEM_REGIONS.lock();
+    let mut shmem_regions = 0usize;
+    let mut shmem_frames = 0usize;
+    for region in regions.iter().flatten() {
+        shmem_regions = shmem_regions.saturating_add(1);
+        shmem_frames = shmem_frames.saturating_add(region.frames.len());
+    }
+
+    VfsResourceStats {
+        task_tables,
+        max_fds_per_task: MAX_FDS,
+        open_fds,
+        shared_objects,
+        file_objects,
+        pipe_objects,
+        shmem_regions,
+        shmem_frames,
+    }
 }
 
 pub fn inspect_path(path: &str) -> PathInfo {
@@ -1139,6 +1206,9 @@ pub fn vfs_open(path: &str) -> usize {
     let task_id = crate::scheduler::current_task_id();
     let mut vfs = VFS.lock();
     vfs.ensure_task(task_id);
+    if vfs.task_fds[task_id].free_slots() == 0 {
+        return usize::MAX;
+    }
 
     let object = vfs.alloc_object(SharedKind::File(OpenFile {
         path: None,
@@ -1173,6 +1243,9 @@ pub fn vfs_open_write(path: &str) -> usize {
     let task_id = crate::scheduler::current_task_id();
     let mut vfs = VFS.lock();
     vfs.ensure_task(task_id);
+    if vfs.task_fds[task_id].free_slots() == 0 {
+        return usize::MAX;
+    }
 
     let object = vfs.alloc_object(SharedKind::File(OpenFile {
         path: Some(path),
@@ -1292,6 +1365,9 @@ pub fn vfs_pipe() -> Option<(usize, usize)> {
     let task_id = crate::scheduler::current_task_id();
     let mut vfs = VFS.lock();
     vfs.ensure_task(task_id);
+    if vfs.task_fds[task_id].free_slots() < 2 {
+        return None;
+    }
 
     let object = vfs.alloc_object(SharedKind::Pipe(Pipe::new()));
     let read_entry = LocalFd {
@@ -1487,6 +1563,9 @@ pub fn vfs_dup(fd: usize) -> usize {
     let task_id = crate::scheduler::current_task_id();
     let mut vfs = VFS.lock();
     vfs.ensure_task(task_id);
+    if vfs.task_fds[task_id].free_slots() == 0 {
+        return usize::MAX;
+    }
 
     let Some(entry) = vfs.current_entry(task_id, fd) else {
         return usize::MAX;
@@ -1515,8 +1594,20 @@ fn pipe_read(pipe: &mut Pipe, buf: &mut [u8], len: usize) -> PipeReadResult {
 }
 
 pub fn vfs_shmem_create(len: usize) -> usize {
-    let pages = (len + 4095) / 4096;
+    if len == 0 || len > crate::resource_limits::MAX_SHMEM_REGION_BYTES {
+        return usize::MAX;
+    }
+    let Some(pages) = len.checked_add(4095).map(|value| value / 4096) else {
+        return usize::MAX;
+    };
+    let task_id = crate::scheduler::current_task_id();
+    if !task_can_add_shmem_pages(task_id, pages) {
+        return usize::MAX;
+    }
     let mut frames: Vec<PhysFrame> = Vec::new();
+    if frames.try_reserve_exact(pages).is_err() {
+        return usize::MAX;
+    }
     for _ in 0..pages {
         let frame = match crate::vmm::alloc_zeroed_frame() {
             Some(f) => f,
@@ -1545,7 +1636,7 @@ pub fn vfs_shmem_create(len: usize) -> usize {
         regions[id] = Some(SharedMemRegion::new(frames));
     }
 
-    retain_task_shmem_ref(crate::scheduler::current_task_id(), id);
+    retain_task_shmem_ref(task_id, id);
     id
 }
 
@@ -1567,6 +1658,10 @@ pub fn vfs_shmem_map(id: usize, pml4: PhysFrame) -> u64 {
         };
         region.frames.clone()
     };
+    let task_id = crate::scheduler::current_task_id();
+    if !task_can_add_shmem_pages(task_id, frames.len()) {
+        return u64::MAX;
+    }
 
     let flags = x86_64::structures::paging::PageTableFlags::PRESENT
         | x86_64::structures::paging::PageTableFlags::WRITABLE
@@ -1591,9 +1686,35 @@ pub fn vfs_shmem_map(id: usize, pml4: PhysFrame) -> u64 {
         };
         region.refcount += 1;
     }
-    retain_task_shmem_ref(crate::scheduler::current_task_id(), id);
+    retain_task_shmem_ref(task_id, id);
 
     addr
+}
+
+fn task_can_add_shmem_pages(task_id: usize, additional_pages: usize) -> bool {
+    let current_pages = task_shmem_pages(task_id);
+    current_pages
+        .saturating_add(additional_pages)
+        .saturating_mul(4096)
+        <= crate::resource_limits::MAX_SHMEM_BYTES_PER_TASK
+}
+
+pub fn task_shmem_pages(task_id: usize) -> usize {
+    let refs = {
+        let vfs = VFS.lock();
+        vfs.task_shmem_refs
+            .get(task_id)
+            .cloned()
+            .unwrap_or_else(Vec::new)
+    };
+    if refs.is_empty() {
+        return 0;
+    }
+    let regions = SHMEM_REGIONS.lock();
+    refs.into_iter()
+        .filter_map(|id| regions.get(id).and_then(Option::as_ref))
+        .map(|region| region.frames.len())
+        .fold(0usize, |total, count| total.saturating_add(count))
 }
 
 fn retain_task_shmem_ref(task_id: usize, id: usize) {

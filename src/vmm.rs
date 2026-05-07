@@ -39,6 +39,13 @@ struct AddressSpaceFrames {
     leaf_frames: Vec<PhysFrame>,
 }
 
+#[derive(Clone, Copy)]
+pub struct VmmResourceStats {
+    pub address_spaces: usize,
+    pub page_table_pages: usize,
+    pub owned_leaf_pages: usize,
+}
+
 struct TrackingFrameAllocator<'a> {
     inner: &'a mut BootInfoFrameAllocator,
     allocated: Vec<PhysFrame>,
@@ -246,6 +253,9 @@ pub fn map_owned_frame_in(
     phys_frame: PhysFrame,
     flags: PageTableFlags,
 ) -> Result<(), &'static str> {
+    if !can_add_owned_pages(pml4_frame, 1) {
+        return Err("address space resource limit");
+    }
     map_page_in(pml4_frame, virt, phys_frame, flags)?;
     record_leaf_frame(pml4_frame, phys_frame);
     Ok(())
@@ -259,6 +269,10 @@ pub fn map_region(
     len: u64,
     flags: PageTableFlags,
 ) -> Result<(), &'static str> {
+    let pages = len.saturating_add(4095).saturating_div(4096) as usize;
+    if !can_add_owned_pages(pml4_frame, pages) {
+        return Err("address space resource limit");
+    }
     let mut offset = 0u64;
     while offset < len {
         let frame = alloc_zeroed_frame().ok_or("out of frames")?;
@@ -269,6 +283,35 @@ pub fn map_region(
         offset += 4096;
     }
     Ok(())
+}
+
+pub fn owned_leaf_pages(pml4_frame: PhysFrame) -> usize {
+    let spaces = ADDRESS_SPACES.lock();
+    spaces
+        .iter()
+        .find(|space| space.pml4 == pml4_frame)
+        .map(|space| space.leaf_frames.len())
+        .unwrap_or(0)
+}
+
+pub fn can_add_owned_pages(pml4_frame: PhysFrame, additional_pages: usize) -> bool {
+    owned_leaf_pages(pml4_frame).saturating_add(additional_pages)
+        <= crate::resource_limits::MAX_USER_ADDRESS_SPACE_PAGES
+}
+
+pub fn resource_stats() -> VmmResourceStats {
+    let spaces = ADDRESS_SPACES.lock();
+    let mut page_table_pages = 0usize;
+    let mut owned_leaf_pages = 0usize;
+    for space in spaces.iter() {
+        page_table_pages = page_table_pages.saturating_add(space.table_frames.len());
+        owned_leaf_pages = owned_leaf_pages.saturating_add(space.leaf_frames.len());
+    }
+    VmmResourceStats {
+        address_spaces: spaces.len(),
+        page_table_pages,
+        owned_leaf_pages,
+    }
 }
 
 /// Free all frames owned by a non-current user address space.

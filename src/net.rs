@@ -30,6 +30,15 @@ const HTTP_MAX_REDIRECTS: usize = 5;
 const DNS_CACHE_MAX: usize = 16;
 const DNS_CACHE_TTL_TICKS: u64 = crate::interrupts::ticks_for_millis(300_000);
 
+#[derive(Clone, Copy)]
+pub struct NetResourceStats {
+    pub open_sockets: usize,
+    pub socket_slots: usize,
+    pub kernel_owned_sockets: usize,
+    pub max_sockets_per_task: usize,
+    pub max_sockets_total: usize,
+}
+
 #[derive(Clone)]
 pub struct NetAdapter {
     pub location: String,
@@ -411,6 +420,25 @@ pub fn protocol_lines() -> Vec<String> {
         String::from("TLS: TLS 1.3 over kernel TCP with verified certificate chains"),
         String::from("Socket syscalls: socket/connect/send/recv exposed as 19-22"),
     ]
+}
+
+pub fn resource_stats() -> NetResourceStats {
+    let state = NET_STATE.lock();
+    let mut open_sockets = 0usize;
+    let mut kernel_owned_sockets = 0usize;
+    for socket in state.sockets.iter().flatten() {
+        open_sockets = open_sockets.saturating_add(1);
+        if socket.owner == KERNEL_SOCKET_OWNER {
+            kernel_owned_sockets = kernel_owned_sockets.saturating_add(1);
+        }
+    }
+    NetResourceStats {
+        open_sockets,
+        socket_slots: state.sockets.len(),
+        kernel_owned_sockets,
+        max_sockets_per_task: crate::resource_limits::MAX_SOCKETS_PER_TASK,
+        max_sockets_total: crate::resource_limits::MAX_SOCKETS_TOTAL,
+    }
 }
 
 pub fn poll() {
@@ -1344,6 +1372,21 @@ pub fn socket_open(
         return Err("only TCP stream sockets are supported");
     }
     let mut state = NET_STATE.lock();
+    let total_open = state.sockets.iter().filter(|slot| slot.is_some()).count();
+    if total_open >= crate::resource_limits::MAX_SOCKETS_TOTAL {
+        return Err("socket table full");
+    }
+    if owner != KERNEL_SOCKET_OWNER {
+        let owner_open = state
+            .sockets
+            .iter()
+            .flatten()
+            .filter(|socket| socket.owner == owner)
+            .count();
+        if owner_open >= crate::resource_limits::MAX_SOCKETS_PER_TASK {
+            return Err("task socket limit reached");
+        }
+    }
     let local_port = state.alloc_port_locked();
     let socket = TcpSocket {
         owner,
@@ -1621,6 +1664,54 @@ pub fn socket_close(owner: usize, socket_fd: u64) -> bool {
         );
     }
     true
+}
+
+pub fn close_owner_sockets(owner: usize) -> usize {
+    let (replies, wake_tasks, closed) = {
+        let mut state = NET_STATE.lock();
+        let mut replies = Vec::new();
+        let mut wake_tasks = Vec::new();
+        let mut closed = 0usize;
+        for slot in state.sockets.iter_mut() {
+            let Some(socket) = slot.as_mut() else {
+                continue;
+            };
+            if socket.owner != owner {
+                continue;
+            }
+            if socket.remote_ip != 0
+                && (socket.state == TcpState::Established || socket.state == TcpState::CloseWait)
+            {
+                replies.push(TcpReply {
+                    src_port: socket.local_port,
+                    dst_ip: socket.remote_ip,
+                    dst_port: socket.remote_port,
+                    seq: socket.seq,
+                    ack: socket.ack,
+                    flags: 0x11,
+                    window: tcp_receive_window(socket),
+                });
+            }
+            wake_tasks.extend(socket.take_waiters());
+            *slot = None;
+            closed = closed.saturating_add(1);
+        }
+        (replies, wake_tasks, closed)
+    };
+    crate::evented::wake_tasks("socket-owner-close", wake_tasks);
+    for reply in replies {
+        let _ = send_tcp_segment(
+            reply.src_port,
+            reply.dst_ip,
+            reply.dst_port,
+            reply.seq,
+            reply.ack,
+            reply.flags,
+            reply.window,
+            &[],
+        );
+    }
+    closed
 }
 
 pub fn ipv4_string(addr: u32) -> String {

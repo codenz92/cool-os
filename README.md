@@ -13,7 +13,7 @@ stdio, and IPC with pipes, shared memory, and per-task fd tables.
 
 ---
 
-# Current state — v7.25
+# Current state — v7.26
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -59,7 +59,7 @@ rename, writable file descriptors, fd-mapped child stdio, sync, and RTC time;
 `/bin/sh` now supports quoting, relative paths, redirection, and one-stage
 pipelines; `/bin` includes practical file/text/date/devkit tools; sysreport can
 write `/LOGS/SYSREPORT.TXT`; and the generated image ships `/SDK` docs and
-templates. Phases 45-61 add compositor smoothness, evented terminal work, and
+templates. Phases 45-62 add compositor smoothness, evented terminal work, and
 a richer native browser renderer:
 timer ticks now request
 paced frames instead of unconditional full redraws, mouse-only motion uses a
@@ -93,7 +93,12 @@ modern script-heavy pages, main-resource content-type routing so JavaScript and
 non-HTML resources show source diagnostics instead of being laid out as HTML,
 a Google/Search compatibility shell that keeps the search form usable on
 `https://www.google.com/`, and `browser://js`, `browser://storage`, and
-`browser://compat` diagnostics.
+`browser://compat` diagnostics. Phase 62 shifts back to core OS hardening:
+active user tasks are capped, user address spaces and individual `mmap` calls
+are bounded, fd allocation preflights before object allocation, shared-memory
+and socket quotas are enforced per task and globally, task exit/fault paths
+close owned sockets and file tables, and diagnostics/sysreport expose a
+resource-limits section.
 
 | Context | Mode | Description |
 | :------ | :--- | :---------- |
@@ -241,7 +246,7 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `log` | Flush and print the kernel log tail |
 | `logs` | Open the in-terminal log view |
 | `profiler` | Print boot/session profiler events |
-| `diagnostics` | Print kernel, profiler, service, compositor, heap, filesystem, VFS, and crash diagnostics |
+| `diagnostics` | Print kernel, profiler, service, compositor, heap, resource-limit, filesystem, VFS, and crash diagnostics |
 | `sysreport [write]` | Print the generated system report or write it to `/LOGS/SYSREPORT.TXT` |
 | `devkit` | Print SDK paths, ABI version, and userspace template locations |
 | `compositor` | Print FPS, frame pacing, frame budget, damage, and cursor overlay telemetry |
@@ -682,7 +687,10 @@ fixture, Phase 58 renders the external CSS/image/cache fixture, and Phase 59
 renders the script/DOM mutation fixture, and Phase 60 renders the storage,
 cookie, history/location, attribute/style/class, and fetch fixture. Phase 61
 renders the Google/Search compatibility fixture and verifies that Closure script
-source does not appear as page text.
+source does not appear as page text. Phase 62 adds scheduler, VMM, VFS, shared
+memory, and socket quota diagnostics, folds the resource-limit checks into the
+kernel selftest path, and adds `make smoke-phase62-resource-limits` to boot the
+diagnostics surface and verify the resource-limit report.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
@@ -762,5 +770,7 @@ while kernel faults still panic.
 | 58 | Browser subresources and cache — external CSS, cached images, metadata placeholders, and `browser://cache` | **Done** |
 | 59 | Browser JavaScript and DOM runtime — bounded script loading, handlers, timers, mutations, and `browser://js` | **Done** |
 | 60 | Browser web-app APIs — storage, cookies, location/history, class/attribute/style DOM APIs, fetch, and `browser://storage` | **Done** |
+| 61 | Browser modern-page compatibility — raw script suppression, content-type routing, Google/Search shell, and `browser://compat` | **Done** |
+| 62 | Kernel resource limits and cleanup — task/address-space/fd/shmem/socket caps plus diagnostics and smoke coverage | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

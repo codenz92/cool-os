@@ -4,7 +4,7 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–61 are complete. The current milestone gives coolOS a much more
+Phases 1–62 are complete. The current milestone gives coolOS a much more
 normal command-line and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
@@ -21,8 +21,11 @@ bounded cache metadata, a small JavaScript/DOM mutation runtime, and bounded
 web-app APIs for storage, cookies, location/history, attributes/classes/styles,
 same-origin fetch callbacks, plus a modern-page compatibility foundation that
 keeps raw script bundles out of rendered text and provides a bounded
-Google/Search compatibility shell.
-Phases 45-61 focus on responsiveness, interactive terminal behavior, and
+Google/Search compatibility shell. Phase 62 adds kernel resource limits for
+task creation, user address spaces, mmap calls, file descriptors, shared
+memory, and sockets, with cleanup on task exit/fault and resource-limit
+diagnostics in Terminal, Sysreport, and the Diagnostics viewer.
+Phases 45-62 focus on responsiveness, interactive terminal behavior, and
 desktop-browser compatibility:
 cursor-only framebuffer updates,
 input-first idle-loop ordering, adaptive 36/144 Hz frame pacing, compositor
@@ -32,7 +35,8 @@ keyboard-editable Browser controls, and a richer native Browser rendering
 surface with GET/POST form submission, persistent cookie/storage state, and
 bounded margin/padding/border/position/float layout plus a small Browser
 subresource cache, script runtime, web-app API layer, main-response
-content-type routing, and compatibility diagnostics.
+content-type routing, compatibility diagnostics, and resource accounting for
+the scheduler, VMM, VFS, shared memory, and sockets.
 
 ---
 
@@ -1800,6 +1804,39 @@ future work.
 
 ---
 
+## ✅ Phase 62 — Kernel Resource Limits and Cleanup
+
+**Goal:** Keep core OS resources bounded so task floods, runaway mappings,
+descriptor churn, shared-memory growth, and socket leaks fail cleanly instead
+of exhausting the kernel heap.
+
+- [x] Add central resource-limit constants and diagnostics for active tasks,
+      user address-space pages, per-call mmap bytes, per-task fd slots,
+      shared-memory region/task bytes, and socket ownership/global counts.
+- [x] Make task creation allocation-aware: user task spawn checks the active
+      task cap, preflights scheduler/task-stack allocation, and reports the cap
+      through `info`, System Monitor, Sysreport, Terminal diagnostics, and the
+      Diagnostics viewer.
+- [x] Bound user memory growth by rejecting over-large `mmap` calls and refusing
+      mappings that would exceed the per-task owned-page ceiling.
+- [x] Preflight VFS fd allocation before opening files, duplicating fds, or
+      creating pipes; enforce shared-memory region and per-task shared-memory
+      quotas before allocating or mapping frames.
+- [x] Enforce per-task and global socket limits, and close sockets owned by a
+      task when it exits, is killed, or faults.
+- [x] Fold resource-limit invariants into the kernel selftest path and add
+      `make smoke-phase62-resource-limits` to boot Diagnostics, mirror the
+      resource-limit report, and verify the bounded-resource telemetry.
+
+**Current status:** complete. coolOS now has explicit kernel-side ceilings for
+the resources most likely to turn a desktop OS into an unbounded heap consumer:
+tasks, address-space pages, mmap calls, descriptors, shared memory, and sockets.
+The limits are intentionally simple and conservative until the kernel grows
+per-user accounting and paging; denial paths fail the syscall/spawn request
+without tearing down the machine.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -1877,4 +1914,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.22 | Phase 58 complete: Browser subresources and cache |
 | v7.23 | Phase 59 complete: Browser JavaScript and DOM runtime |
 | v7.24 | Phase 60 complete: Browser web-app APIs |
-| v7.25 | Current — Phase 61 complete: Browser modern-page compatibility |
+| v7.25 | Phase 61 complete: Browser modern-page compatibility |
+| v7.26 | Current — Phase 62 complete: Kernel resource limits and cleanup |

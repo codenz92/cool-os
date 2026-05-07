@@ -42,6 +42,15 @@ pub static BACKGROUND_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Size of each task's private kernel stack (64 KiB).
 const STACK_SIZE: usize = 64 * 1024;
 
+#[derive(Clone, Copy)]
+pub struct SchedulerResourceStats {
+    pub active_tasks: usize,
+    pub max_active_tasks: usize,
+    pub task_slots: usize,
+    pub reaped_tasks: usize,
+    pub user_tasks: usize,
+}
+
 // ── TaskStatus ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,9 +145,15 @@ impl Scheduler {
         rsp: Option<u64>,
         ss: u64,
         pml4: Option<PhysFrame>,
-    ) -> usize {
+    ) -> Option<usize> {
+        if self.tasks.try_reserve_exact(1).is_err() {
+            return None;
+        }
         // Allocate and zero-initialise the stack buffer.
         let mut stack: Vec<u8> = Vec::new();
+        if stack.try_reserve_exact(STACK_SIZE).is_err() {
+            return None;
+        }
         stack.resize(STACK_SIZE, 0u8);
         crate::slab::record_alloc("task-stack", STACK_SIZE);
 
@@ -209,7 +224,7 @@ impl Scheduler {
         });
         let task_id = self.tasks.len() - 1;
         crate::vfs::init_task(task_id);
-        task_id
+        Some(task_id)
     }
 
     /// Allocate a 64 KiB kernel stack for a new task, pre-populate its saved
@@ -237,7 +252,7 @@ impl Scheduler {
             core::arch::asm!("mov {0:x}, cs", out(reg) cs);
             core::arch::asm!("mov {0:x}, ss", out(reg) ss);
         }
-        self.spawn_context(name, entry as usize as u64, cs, None, ss, pml4);
+        let _ = self.spawn_context(name, entry as usize as u64, cs, None, ss, pml4);
     }
 
     /// Spawn a ring-3 task that will enter at `entry` with the given user stack.
@@ -268,10 +283,19 @@ impl Scheduler {
         inherited_fds: &[(usize, usize)],
         credentials: Option<crate::security::Credentials>,
     ) -> bool {
+        if self.active_task_count() >= crate::resource_limits::MAX_ACTIVE_TASKS {
+            crate::vmm::free_address_space(pml4);
+            return false;
+        }
         let user_cs = crate::gdt::user_code_selector().0 as u64;
         let user_ss = crate::gdt::user_data_selector().0 as u64;
         let parent = self.current;
-        let task_id = self.spawn_context(name, entry, user_cs, Some(user_rsp), user_ss, Some(pml4));
+        let Some(task_id) =
+            self.spawn_context(name, entry, user_cs, Some(user_rsp), user_ss, Some(pml4))
+        else {
+            crate::vmm::free_address_space(pml4);
+            return false;
+        };
         if let Some(credentials) = credentials {
             if let Some(task) = self.tasks.get_mut(task_id) {
                 task.credentials = credentials;
@@ -285,6 +309,14 @@ impl Scheduler {
             crate::vmm::free_address_space(pml4);
             false
         }
+    }
+
+    fn active_task_count(&self) -> usize {
+        self.tasks
+            .iter()
+            .enumerate()
+            .filter(|(idx, task)| *idx != 0 && task.status != TaskStatus::Reaped)
+            .count()
     }
 
     /// Core round-robin scheduling decision.
@@ -386,6 +418,33 @@ impl Scheduler {
 
 pub static SCHEDULER: spin::Mutex<Scheduler> = spin::Mutex::new(Scheduler::empty());
 pub static CURRENT_SYSCALL_STACK_TOP: AtomicU64 = AtomicU64::new(0);
+
+pub fn can_spawn_user_task() -> bool {
+    let sched = SCHEDULER.lock();
+    sched.active_task_count() < crate::resource_limits::MAX_ACTIVE_TASKS
+}
+
+pub fn resource_stats() -> SchedulerResourceStats {
+    let sched = SCHEDULER.lock();
+    let active_tasks = sched.active_task_count();
+    let reaped_tasks = sched
+        .tasks
+        .iter()
+        .filter(|task| task.status == TaskStatus::Reaped)
+        .count();
+    let user_tasks = sched
+        .tasks
+        .iter()
+        .filter(|task| task.pml4.is_some() && task.status != TaskStatus::Reaped)
+        .count();
+    SchedulerResourceStats {
+        active_tasks,
+        max_active_tasks: crate::resource_limits::MAX_ACTIVE_TASKS,
+        task_slots: sched.tasks.len(),
+        reaped_tasks,
+        user_tasks,
+    }
+}
 
 #[derive(Clone, Copy)]
 struct ChildPollWaiter {
@@ -687,7 +746,7 @@ pub fn exit_current(code: u64) {
     // Keep the exiting task schedulable while cleanup may allocate or take
     // locks. If it is marked Exited first, a timer tick can switch it out
     // permanently in the middle of cleanup and strand a held lock.
-    crate::vfs::drop_task(task_id);
+    cleanup_task_resources(task_id);
     crate::wm::close_user_gui_windows_for_owner(task_id);
     crate::profiler::record_task(task_id, name, "exited");
     crate::crashdump::record_task_report(task_id, "task exited");
@@ -747,7 +806,7 @@ pub fn kill_task(task_id: usize, code: u64) -> Result<(), KillError> {
         (name, parent)
     };
     wake_waiting_parent(parent, task_id);
-    crate::vfs::drop_task(task_id);
+    cleanup_task_resources(task_id);
     crate::wm::close_user_gui_windows_for_owner(task_id);
     crate::profiler::record_task(task_id, name, "killed");
     crate::crashdump::record_task_report(task_id, "task killed");
@@ -772,7 +831,7 @@ pub fn fault_current(code: u64, reason: &'static str) -> usize {
         (task_id, name, parent)
     };
     wake_waiting_parent(parent, task_id);
-    crate::vfs::drop_task(task_id);
+    cleanup_task_resources(task_id);
     crate::wm::close_user_gui_windows_for_owner(task_id);
     crate::profiler::record_task(task_id, name, reason);
     crate::crashdump::record_task_report(task_id, reason);
@@ -939,6 +998,11 @@ fn signal_error_from_kill(err: KillError) -> SignalError {
         KillError::PermissionDenied => SignalError::PermissionDenied,
         KillError::CannotKillCurrent | KillError::NotChild => SignalError::InvalidTask,
     }
+}
+
+fn cleanup_task_resources(task_id: usize) {
+    crate::vfs::drop_task(task_id);
+    crate::net::close_owner_sockets(task_id);
 }
 
 pub fn waitpid(parent: usize, task_id: usize) -> Result<u64, WaitError> {

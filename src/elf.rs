@@ -65,6 +65,7 @@ pub enum ExecError {
     MapFailed(&'static str),
     FdInstallFailed,
     SchedulerBusy,
+    ResourceLimit,
 }
 
 impl ExecError {
@@ -77,6 +78,7 @@ impl ExecError {
             ExecError::MapFailed(msg) => msg,
             ExecError::FdInstallFailed => "fd install failed",
             ExecError::SchedulerBusy => "scheduler busy",
+            ExecError::ResourceLimit => "resource limit",
         }
     }
 }
@@ -140,6 +142,9 @@ fn spawn_elf_process_with_fds_and_credentials_inner(
     });
     if !scheduler_ready {
         return Err(ExecError::SchedulerBusy);
+    }
+    if !crate::scheduler::can_spawn_user_task() {
+        return Err(ExecError::ResourceLimit);
     }
 
     let image = load_elf_image_with_args(path, args)?;

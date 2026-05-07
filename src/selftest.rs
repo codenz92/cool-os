@@ -317,8 +317,14 @@ fn process_kernel_supervisor_only() -> bool {
         false
     };
 
+    let resource_limits_ok = crate::resource_limits::selftest_passes()
+        && !crate::vmm::can_add_owned_pages(
+            pml4,
+            crate::resource_limits::MAX_USER_ADDRESS_SPACE_PAGES + 1,
+        );
+
     crate::vmm::free_address_space(pml4);
-    kernel_blocked && user_page_ok
+    kernel_blocked && user_page_ok && resource_limits_ok
 }
 
 fn coolfs_permission_roundtrip() -> bool {

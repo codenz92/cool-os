@@ -348,6 +348,9 @@ fn sys_mmap(addr: u64, len: u64, flags: u64) -> u64 {
     {
         return u64::MAX;
     }
+    if len_aligned > crate::resource_limits::MAX_USER_MMAP_BYTES_PER_CALL {
+        return u64::MAX;
+    }
 
     let mut pte_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
     if flags & 1 != 0 {
@@ -357,6 +360,10 @@ fn sys_mmap(addr: u64, len: u64, flags: u64) -> u64 {
 
     // Determine the current process's PML4.
     let pml4 = crate::vmm::current_pml4();
+    let pages = len_aligned.saturating_div(4096) as usize;
+    if !crate::vmm::can_add_owned_pages(pml4, pages) {
+        return u64::MAX;
+    }
 
     match crate::vmm::map_region(pml4, VirtAddr::new(addr), len_aligned, pte_flags) {
         Ok(()) => addr,
@@ -1444,6 +1451,9 @@ fn sys_dup(fd: u64) -> u64 {
 
 fn sys_shmem_create(len: u64) -> u64 {
     if len == 0 {
+        return u64::MAX;
+    }
+    if len > crate::resource_limits::MAX_SHMEM_REGION_BYTES as u64 {
         return u64::MAX;
     }
     let id = crate::vfs::vfs_shmem_create(len as usize);

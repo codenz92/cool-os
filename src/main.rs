@@ -49,6 +49,7 @@ mod png;
 mod process_model;
 mod profiler;
 mod recovery;
+mod resource_limits;
 mod rtc;
 mod scheduler;
 mod search_index;

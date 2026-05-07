@@ -2735,7 +2735,7 @@ impl TerminalApp {
     fn cmd_info(&mut self) {
         let heap_used = crate::allocator::heap_used();
         let heap_total = crate::allocator::HEAP_SIZE;
-        let task_count = crate::scheduler::SCHEDULER.lock().tasks.len();
+        let task_stats = crate::scheduler::resource_stats();
 
         self.set_fg(FG_ACCENT);
         self.print_str("Heap  : ");
@@ -2750,7 +2750,13 @@ impl TerminalApp {
         self.set_fg(FG_ACCENT);
         self.print_str("Tasks : ");
         self.set_fg(FG_OUTPUT);
-        self.print_u64(task_count as u64);
+        self.print_u64(task_stats.active_tasks as u64);
+        self.set_fg(FG_DIM);
+        self.print_str(" / ");
+        self.set_fg(FG_OUTPUT);
+        self.print_u64(task_stats.max_active_tasks as u64);
+        self.set_fg(FG_DIM);
+        self.print_str(" active");
         self.print_char('\n');
 
         let cpuid = raw_cpuid::CpuId::new();
@@ -3394,6 +3400,11 @@ fn diagnostics_lines() -> Vec<String> {
         crate::wm::compositor::compositor_lines(),
     );
     push_terminal_section(&mut lines, "heap", crate::allocator::heap_lines());
+    push_terminal_section(
+        &mut lines,
+        "resource limits",
+        crate::resource_limits::lines(),
+    );
     push_terminal_section(&mut lines, "slab", crate::slab::lines());
     push_terminal_section(
         &mut lines,
