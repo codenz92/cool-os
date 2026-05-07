@@ -8,6 +8,11 @@ pub fn lines() -> Vec<String> {
     let mut lines = Vec::new();
     push_section(&mut lines, "kernel log", crate::klog::lines());
     push_section(&mut lines, "profiler", crate::profiler::lines());
+    push_section(
+        &mut lines,
+        "boot health",
+        crate::boot_health::status_lines(),
+    );
     push_section(&mut lines, "services", crate::services::lines());
     push_section(
         &mut lines,

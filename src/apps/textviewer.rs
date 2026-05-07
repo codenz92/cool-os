@@ -25,7 +25,7 @@ const SUBTLE: u32 = 0x00_66_AA_DD;
 const MUTED: u32 = 0x00_55_7A_92;
 
 const ABOUT: &[&str] = &[
-    " coolOS v7.29",
+    " coolOS v7.30",
     " Bare-metal OS in Rust",
     "",
     " == Current Platform ==",
@@ -41,6 +41,7 @@ const ABOUT: &[&str] = &[
     " Memory pressure telemetry, cache trimming, and OOM reclaim",
     " Durable service supervision with dependency recovery",
     " Staged system updates with rollback snapshots",
+    " Boot health with last-known-good auto rollback",
     "",
     " == Commands ==",
     " help         - list terminal commands",
@@ -56,6 +57,7 @@ const ABOUT: &[&str] = &[
     " sysreport    - write /LOGS/SYSREPORT.TXT",
     " devkit       - SDK paths and templates",
     " smoothness   - compositor pacing and latency telemetry",
+    " boot         - boot health and last-known-good status",
     " recovery     - repair and fsck-on-boot controls",
     " update       - stage/apply/rollback system updates",
     "",
@@ -139,6 +141,11 @@ impl TextViewerApp {
             "boot/session profiler",
             crate::profiler::lines(),
         );
+        push_section(
+            &mut lines,
+            "boot health",
+            crate::boot_health::status_lines(),
+        );
         push_section(&mut lines, "services", crate::services::lines());
         push_section(
             &mut lines,
@@ -170,6 +177,11 @@ impl TextViewerApp {
             crate::profiler::lines(),
         );
         push_section(&mut lines, "boot watchdog", crate::boot_watchdog::lines());
+        push_section(
+            &mut lines,
+            "boot health",
+            crate::boot_health::status_lines(),
+        );
         push_section(&mut lines, "services", crate::services::lines());
         push_section(
             &mut lines,
@@ -221,7 +233,7 @@ impl TextViewerApp {
             x,
             y,
             "Diagnostics",
-            "logs, profiler, services, updates, filesystem, memory, shell, and compositor telemetry",
+            "logs, boot health, services, updates, filesystem, memory, shell, and compositor telemetry",
             lines,
         );
         app.window.title = "Diagnostics";

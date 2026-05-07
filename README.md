@@ -13,7 +13,7 @@ stdio, and IPC with pipes, shared memory, and per-task fd tables.
 
 ---
 
-# Current state — v7.29
+# Current state — v7.30
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -59,7 +59,7 @@ rename, writable file descriptors, fd-mapped child stdio, sync, and RTC time;
 `/bin/sh` now supports quoting, relative paths, redirection, and one-stage
 pipelines; `/bin` includes practical file/text/date/devkit tools; sysreport can
 write `/LOGS/SYSREPORT.TXT`; and the generated image ships `/SDK` docs and
-templates. Phases 45-65 add compositor smoothness, evented terminal work, and
+templates. Phases 45-66 add compositor smoothness, evented terminal work, and
 a richer native browser renderer:
 timer ticks now request
 paced frames instead of unconditional full redraws, mouse-only motion uses a
@@ -115,7 +115,12 @@ describes staged file payloads, `/UPDATES/SNAPSHOTS/LAST/MANIFEST.TXT` records
 pre-apply rollback snapshots, `/LOGS/UPDATE.TXT` journals stage/apply/rollback
 events, affected services are stopped and restarted around update writes, and
 Terminal plus Recovery expose `update apply`, `update rollback`, and
-`recovery rollback`.
+`recovery rollback`. Phase 66 adds boot health and last-known-good recovery:
+`/BOOT/STATE.TXT` tracks boot validation attempts, pending update ids, and the
+last healthy desktop boot; `/BOOT/HISTORY.TXT` audits boot-start, validation,
+and rollback decisions; update apply marks the next boot as pending validation;
+desktop-ready marks it good; and a failed validation attempt triggers automatic
+rollback from the Phase 65 snapshot on the next boot.
 
 | Context | Mode | Description |
 | :------ | :--- | :---------- |
@@ -174,8 +179,8 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **FAT32 layer** | Optional legacy import mount at `/FAT`, formatted in a separate 8 MiB-offset disk region. BPB parsing, FAT chain walking, short-name and long-filename lookup, directory traversal, cluster→sector mapping, mutation helpers, free-space stats, and `fsck` remain available without being required for CoolFS boot. |
 | **VFS** | CoolFS-root path routing, `/FAT` legacy routing, CoolFS read/write/execute permission enforcement, task-local cwd resolution, and task-local fd tables (16 slots, with explicit 0/1/2 mappings for child stdio) backed by shared file/pipe/shmem objects. `vfs_open` reads whole files into heap buffers after access checks and drops them if pressure admission fails; `vfs_open_write` buffers writable file descriptors and commits through safe CoolFS writes on close/exit; `vfs_pipe` allocates a 512-byte kernel ring buffer only when the heap reserve allows it; `vfs_read_blocking` blocks tasks on empty pipes and wakes them on write/EOF; `ipc` and `spawn_fds_args` selectively inherit pipe/file fds into child processes; `vfs_shmem_create`/`vfs_shmem_map` manage a shared memory region pool indexed by ID. |
 | **Networking** | Legacy PCI virtio-net driver for QEMU user networking, polling RX/TX virtqueues, Ethernet framing, ARP cache, IPv4, ICMP echo, UDP DNS queries, minimal TCP client sockets, userspace socket syscalls, HTTP/1.1, and verified TLS 1.3 HTTPS for the native browser/terminal path. |
-| **Kernel services** | Persistent kernel log buffer flushed to `/LOGS/KERNEL.TXT`, crash-screen log tail, sysreport generation to `/LOGS/SYSREPORT.TXT`, central device registry for PCI/USB/system devices, installable package/app manifests with file associations, networking status, ACPI power-control status foundation, and a credentialed durable service supervisor with dependency metadata, persisted `/CONFIG/SERVICES.CFG` desired state, `/LOGS/SERVICES.TXT` restart history, backoff, and recovery diagnostics under service uid/gid 200. |
-| **Updates / rollback** | Staged system update manifests under `/UPDATES/STAGED`, payload snapshots under `/UPDATES/SNAPSHOTS/LAST`, update journals in `/LOGS/UPDATE.TXT`, service-aware apply/rollback operations, and recovery rollback integration. |
+| **Kernel services** | Persistent kernel log buffer flushed to `/LOGS/KERNEL.TXT`, crash-screen log tail, sysreport generation to `/LOGS/SYSREPORT.TXT`, central device registry for PCI/USB/system devices, installable package/app manifests with file associations, networking status, ACPI power-control status foundation, a credentialed durable service supervisor with dependency metadata, persisted `/CONFIG/SERVICES.CFG` desired state, `/LOGS/SERVICES.TXT` restart history, backoff, and recovery diagnostics under service uid/gid 200, plus boot-health state under `/BOOT` for last-known-good validation. |
+| **Updates / rollback** | Staged system update manifests under `/UPDATES/STAGED`, payload snapshots under `/UPDATES/SNAPSHOTS/LAST`, update journals in `/LOGS/UPDATE.TXT`, service-aware apply/rollback operations, recovery rollback integration, and automatic rollback when a pending update fails boot validation. |
 | **Applications** | Terminal, System Monitor, Text Viewer, Color Picker, File Manager, Web Browser, ring-3 Notes, Text Editor, Trash Bin, Screenshot, Process Demo, and GUI Demo. Text-file opens route into `/bin/editor <path>` with kernel viewer fallback, while File Manager exposes explicit Open With Editor/Viewer actions. |
 | **Disk image** | `disk-image/src/fs_image.rs` builds `fs.img` as a 64 MiB raw OS disk: native CoolFS starts at LBA 0 with root-owned system paths, user-owned writable paths, executable `/bin` ELFs, `/RECOVERY` boot/repair docs, `/SDK` devkit docs/templates, `/Packages/guidemo.pkg`, and `/Documents/package-demo.p25`; an optional FAT32 `/FAT` import region starts at 8 MiB. The Makefile attaches it to QEMU as the IDE slave. |
 
@@ -264,16 +269,17 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `log` | Flush and print the kernel log tail |
 | `logs` | Open the in-terminal log view |
 | `profiler` | Print boot/session profiler events |
+| `boot [status\|history\|mark-good\|fail-validation <id> <reason>]` | Inspect boot health, mark the current boot as last-known-good, or record a failed validation attempt for recovery testing |
 | `services [list\|status <name>\|history\|recovery\|run\|start <name>\|restart <name>\|stop <name>\|fail <name>]` | Inspect and control the durable service supervisor; mutating operations require an admin session |
 | `update [status\|history\|stage <path> <text>\|apply\|rollback]` | Stage a system file update, apply it with a pre-update snapshot, inspect the update journal, or roll back |
 | `memory` | Print heap pressure, reclaim counters, OOM state, and per-task memory estimates |
-| `diagnostics` | Print kernel, profiler, service, update, compositor, heap, memory-pressure, resource-limit, filesystem, VFS, and crash diagnostics |
+| `diagnostics` | Print kernel, profiler, boot-health, service, update, compositor, heap, memory-pressure, resource-limit, filesystem, VFS, and crash diagnostics |
 | `sysreport [write]` | Print the generated system report or write it to `/LOGS/SYSREPORT.TXT` |
 | `devkit` | Print SDK paths, ABI version, and userspace template locations |
 | `compositor` | Print FPS, frame pacing, frame budget, damage, and cursor overlay telemetry |
 | `smoothness` | Alias for compositor pacing/latency telemetry |
 | `fsck` | Print CoolFS-root consistency plus optional legacy FAT32 import summary |
-| `recovery [repair\|rollback\|fsck-on-boot on\|fsck-on-boot off]` | Show recovery status, write a repair report, roll back the last update, or toggle boot fsck |
+| `recovery [repair\|rollback\|fsck-on-boot on\|fsck-on-boot off]` | Show recovery and boot-health status, write a repair report, roll back the last update, or toggle boot fsck |
 | `coolfs` | Print CoolFS root mount and inode/block usage |
 | `df` | Print CoolFS `/` and optional FAT32 `/FAT` used/free/total space |
 | `pkg [list\|install <path-or-id>\|remove <id>\|run <id> [args...]]` | Manage built-in and manifest-installed packages. |
@@ -369,6 +375,7 @@ src/
                     vfs_shmem_create/vfs_shmem_map
   klog.rs          Kernel log ring buffer + /LOGS/KERNEL.TXT flushing
   sysreport.rs     System report generator for diagnostics and /LOGS/SYSREPORT.TXT
+  boot_health.rs   Boot validation, last-known-good state, and auto rollback
   services.rs      Durable service supervisor with dependency/backoff policy and /CONFIG + /LOGS state
   updates.rs       Staged system updates, snapshots, journals, and rollback
   notifications.rs Desktop notification queue used by USB/task/filesystem events
@@ -539,6 +546,10 @@ in `/LOGS/SERVICES.TXT`, restart backoff, and recovery/sysreport health lines.
 Phase 65 layers update safety on top of that: staged updates can declare
 affected services, apply stops/restarts them around safe file writes, and
 rollback uses the captured snapshot manifest from `/UPDATES/SNAPSHOTS/LAST`.
+Phase 66 adds `/BOOT/STATE.TXT`, `/BOOT/HISTORY.TXT`, and
+`/BOOT/LAST-GOOD.TXT` so an applied update is only accepted after the next boot
+reaches the desktop-ready checkpoint; otherwise the following boot restores the
+last update snapshot automatically.
 
 **GUI login and lock screen (Phase 30).** The desktop now boots into a
 boot-splash-style compositor greeter instead of exposing the session
@@ -726,7 +737,10 @@ coverage with `make smoke-phase64-services`, including admin-gated mutations,
 persisted service config, restart history, recovery lines, and sysreport output.
 Phase 65 adds `update status|stage|apply|history|rollback`, Recovery
 `rollback`, update diagnostics in sysreport, and
-`make smoke-phase65-update-rollback`.
+`make smoke-phase65-update-rollback`. Phase 66 adds `boot status|history`,
+last-known-good health state in Recovery/Diagnostics/Sysreport, automatic
+rollback after a failed pending-update validation, and
+`make smoke-phase66-boot-health` with a writable two-boot recovery image.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
@@ -811,5 +825,6 @@ while kernel faults still panic.
 | 63 | Memory pressure and OOM recovery — heap pressure states, cache trimming, per-task estimates, admission checks, and OOM reclaim | **Done** |
 | 64 | Persistent service supervision and recovery — durable desired state, dependency/backoff policy, restart history, and degraded diagnostics | **Done** |
 | 65 | System update, snapshot, and rollback — staged manifests, rollback snapshots, service-aware apply, update journal, and recovery rollback | **Done** |
+| 66 | Boot health and last-known-good rollback — pending-update validation, boot history, and automatic snapshot restore | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

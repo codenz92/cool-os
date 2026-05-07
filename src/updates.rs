@@ -95,6 +95,7 @@ pub fn apply() -> Result<(), &'static str> {
         "apply-ok",
         &[format!("id={} files={}", plan.id, plan.files.len())],
     );
+    crate::boot_health::mark_update_pending(&plan.id);
     crate::event_bus::emit("updates", "apply", &plan.id);
     let _ = crate::writeback::barrier();
     Ok(())

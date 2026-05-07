@@ -4,7 +4,7 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–65 are complete. The current milestone gives coolOS a much more
+Phases 1–66 are complete. The current milestone gives coolOS a much more
 normal command-line and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
@@ -36,8 +36,12 @@ Phase 65 adds a service-aware staged update and rollback path: update manifests
 live under `/UPDATES/STAGED`, pre-apply file snapshots live under
 `/UPDATES/SNAPSHOTS/LAST`, `/LOGS/UPDATE.TXT` records stage/apply/rollback
 events, and `update rollback` plus `recovery rollback` can restore the previous
-file state.
-Phases 45-65 focus on responsiveness, interactive terminal behavior, and
+file state. Phase 66 adds boot-health validation on top of that update path:
+`/BOOT/STATE.TXT` tracks pending update ids and validation attempts,
+`/BOOT/LAST-GOOD.TXT` records the last desktop-ready boot, and a pending update
+that fails to reach the healthy checkpoint is automatically rolled back from the
+Phase 65 snapshot on the next boot.
+Phases 45-66 focus on responsiveness, interactive terminal behavior, and
 desktop-browser compatibility:
 cursor-only framebuffer updates,
 input-first idle-loop ordering, adaptive 36/144 Hz frame pacing, compositor
@@ -1939,6 +1943,36 @@ normal update command or the recovery surface.
 
 ---
 
+## ✅ Phase 66 — Boot Health and Last-Known-Good Rollback
+
+**Goal:** Turn Phase 65 rollback into a boot-time safety net: updates are only
+accepted after the next boot reaches a known-good desktop checkpoint, and a
+failed validation boot restores the previous snapshot automatically.
+
+- [x] Add `src/boot_health.rs` with `/BOOT/STATE.TXT`,
+      `/BOOT/HISTORY.TXT`, and `/BOOT/LAST-GOOD.TXT` layout management.
+- [x] Record boot-start attempts durably during early boot, mark the desktop
+      ready checkpoint as last-known-good, and audit state transitions.
+- [x] Mark successful `update apply` operations as pending validation instead
+      of immediately accepting them as healthy.
+- [x] Detect a prior failed pending-update validation on the next boot and
+      invoke the Phase 65 snapshot rollback path automatically before the
+      desktop is marked healthy.
+- [x] Add Terminal `boot status`, `boot history`, `boot mark-good`, and
+      admin-gated `boot fail-validation <id> <reason>` for diagnostics and
+      deterministic recovery smoke coverage.
+- [x] Surface boot health in Recovery, Sysreport, Diagnostics, Log Viewer, and
+      the in-OS About/help text.
+- [x] Add `make smoke-phase66-boot-health` with a writable two-boot image and
+      document v7.30.
+
+**Current status:** complete. coolOS now tracks whether a staged update has
+survived a full desktop boot, keeps a persistent boot-health history, and can
+restore the last-known-good snapshot automatically when the recorded validation
+attempt failed before the healthy checkpoint.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -2020,4 +2054,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.26 | Phase 62 complete: Kernel resource limits and cleanup |
 | v7.27 | Phase 63 complete: Memory pressure and OOM recovery |
 | v7.28 | Phase 64 complete: Persistent service supervision and recovery |
-| v7.29 | Current — Phase 65 complete: System update, snapshot, and rollback |
+| v7.29 | Phase 65 complete: System update, snapshot, and rollback |
+| v7.30 | Current — Phase 66 complete: Boot health and last-known-good rollback |

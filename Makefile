@@ -1,4 +1,4 @@
-.PHONY: run run-net run-usb run-usb-init run-smooth run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-phase31-accounts smoke-phase32-isolation smoke-phase33-process-control smoke-phase34-tty-jobs smoke-phase35-tty-input smoke-phase36-userspace-shell smoke-phase37-coreutils smoke-phase38-apps smoke-phase39-recovery smoke-phase40-shell-semantics smoke-phase41-fs-durability smoke-phase42-app-consistency smoke-phase43-observability smoke-phase44-devkit smoke-phase45-smoothness smoke-phase46-adaptive-refresh smoke-phase47-evented-userspace smoke-phase48-terminal-tui smoke-phase49-browser-engine smoke-phase50-css-layout smoke-phase51-browser-forms smoke-phase52-dom-events smoke-phase53-dom-forms smoke-phase54-browser-post smoke-phase55-browser-session smoke-phase56-css-box-model smoke-phase57-browser-layout smoke-phase58-browser-subresources smoke-phase59-browser-js smoke-phase60-browser-webapi smoke-phase61-browser-compat smoke-phase62-resource-limits smoke-phase63-memory-pressure smoke-phase64-services smoke-phase65-update-rollback smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
+.PHONY: run run-net run-usb run-usb-init run-smooth run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-phase31-accounts smoke-phase32-isolation smoke-phase33-process-control smoke-phase34-tty-jobs smoke-phase35-tty-input smoke-phase36-userspace-shell smoke-phase37-coreutils smoke-phase38-apps smoke-phase39-recovery smoke-phase40-shell-semantics smoke-phase41-fs-durability smoke-phase42-app-consistency smoke-phase43-observability smoke-phase44-devkit smoke-phase45-smoothness smoke-phase46-adaptive-refresh smoke-phase47-evented-userspace smoke-phase48-terminal-tui smoke-phase49-browser-engine smoke-phase50-css-layout smoke-phase51-browser-forms smoke-phase52-dom-events smoke-phase53-dom-forms smoke-phase54-browser-post smoke-phase55-browser-session smoke-phase56-css-box-model smoke-phase57-browser-layout smoke-phase58-browser-subresources smoke-phase59-browser-js smoke-phase60-browser-webapi smoke-phase61-browser-compat smoke-phase62-resource-limits smoke-phase63-memory-pressure smoke-phase64-services smoke-phase65-update-rollback smoke-phase66-boot-health smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -1454,6 +1454,51 @@ smoke-phase65-update-rollback: build
 		--expect "update rollback ok" \
 		--expect "action=rollback-ok" \
 		--expect "== updates ==" \
+		--expect "[selftest] kernel unit checks ok=27 fail=0" \
+		--expect "[boot] desktop ready"
+
+smoke-phase66-boot-health: build
+	mkdir -p "$(SMOKE_ARTIFACT_DIR)"
+	rm -f "$(SMOKE_ARTIFACT_DIR)/phase66-boot-health.img"
+	cp "$(FSIMG)" "$(SMOKE_ARTIFACT_DIR)/phase66-boot-health.img"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-arm" \
+		--bios "$(BIOS)" \
+		--fsimg "$(SMOKE_ARTIFACT_DIR)/phase66-boot-health.img" \
+		--fs-writable \
+		--usb \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--fw-cmd "update stage /CONFIG/PHASE66.TXT before;;update apply;;boot mark-good;;update stage /CONFIG/PHASE66.TXT after;;update apply;;boot fail-validation manual smoke;;boot status;;hash /CONFIG/PHASE66.TXT;;flush" \
+		--expect "update: applied" \
+		--expect "boot: marked good" \
+		--expect "boot: validation failure recorded" \
+		--expect "status=validating pending_update=manual attempts=1" \
+		--expect "hash /CONFIG/PHASE66.TXT len=5 sum=530" \
+		--expect "flush: ok" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-recover" \
+		--bios "$(BIOS)" \
+		--fsimg "$(SMOKE_ARTIFACT_DIR)/phase66-boot-health.img" \
+		--fs-writable \
+		--usb \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--fw-cmd "boot status;;hash /CONFIG/PHASE66.TXT;;boot history;;update history;;recovery;;sysreport" \
+		--screendump "$(SMOKE_ARTIFACT_DIR)/phase66-boot-health.ppm" \
+		--expect-framebuffer-window \
+		--expect "[boot-health] auto rollback ok id=manual" \
+		--expect "BOOT HEALTH" \
+		--expect "status=healthy pending_update=none attempts=0" \
+		--expect "last_auto_rollback=manual" \
+		--expect "hash /CONFIG/PHASE66.TXT len=6 sum=627" \
+		--expect "BOOT HISTORY" \
+		--expect "action=auto-rollback-ok" \
+		--expect "UPDATE HISTORY" \
+		--expect "action=rollback-ok" \
+		--expect "boot_health status=healthy pending_update=none attempts=0" \
+		--expect "== boot health ==" \
 		--expect "[selftest] kernel unit checks ok=27 fail=0" \
 		--expect "[boot] desktop ready"
 

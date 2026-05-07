@@ -12,6 +12,7 @@ mod app_lifecycle;
 mod app_metadata;
 mod apps;
 mod ata;
+mod boot_health;
 mod boot_splash;
 mod boot_watchdog;
 mod branding;
@@ -193,6 +194,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     );
     services::init();
     updates::init();
+    boot_health::init();
     deferred::enqueue(deferred::DeferredWork::RefreshSearchIndex);
     deferred::enqueue(deferred::DeferredWork::FlushWriteback);
 
@@ -269,6 +271,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     println!("[boot] desktop ready");
     profiler::record_boot_stage("desktop ready", boot_splash::BOOT_PROGRESS_TOTAL);
     boot_watchdog::complete();
+    boot_health::mark_good("desktop ready");
     let smoke_commands = fw_cfg::smoke_commands();
     if !smoke_commands.is_empty() {
         apps::terminal::set_debug_mirror(true);

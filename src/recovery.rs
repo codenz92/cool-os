@@ -7,7 +7,7 @@ const README_PATH: &str = "/RECOVERY/README.TXT";
 const BOOT_CFG_PATH: &str = "/RECOVERY/BOOT.CFG";
 const LAST_REPAIR_PATH: &str = "/RECOVERY/LAST-REPAIR.TXT";
 
-const README: &[u8] = b"coolOS recovery\n\nCommands:\n  recovery\n  recovery repair\n  recovery fsck-on-boot on\n  recovery fsck-on-boot off\n\nThe normal boot path is BIOS VBE framebuffer + IDE CoolFS root. Keep this directory on the root filesystem so recovery instructions survive package and user changes.\n";
+const README: &[u8] = b"coolOS recovery\n\nCommands:\n  recovery\n  recovery repair\n  recovery rollback\n  recovery fsck-on-boot on\n  recovery fsck-on-boot off\n\nThe normal boot path is BIOS VBE framebuffer + IDE CoolFS root. Keep this directory on the root filesystem so recovery instructions survive package, update, and user changes.\n";
 
 const BOOT_CFG: &[u8] = b"boot=normal\nroot=/\nrootfs=coolfs\nvideo=bios-vbe\nstorage=ide1\nrecovery_command=recovery repair\n";
 
@@ -32,6 +32,7 @@ pub fn status_lines() -> Vec<String> {
         ));
     }
     lines.extend(crate::fs_hardening::status_lines());
+    lines.extend(crate::boot_health::recovery_lines());
     lines.extend(crate::services::recovery_lines());
     lines.extend(crate::updates::recovery_lines());
     lines
@@ -40,11 +41,16 @@ pub fn status_lines() -> Vec<String> {
 pub fn repair_lines() -> Vec<String> {
     ensure_layout();
     let repair = crate::fs_hardening::repair();
+    let boot_recovery = crate::boot_health::recovery_lines();
     let service_recovery = crate::services::recovery_lines();
     let update_recovery = crate::updates::recovery_lines();
     let mut report = String::from("coolOS recovery repair report\n");
     report.push_str("boot=BIOS/VBE root=/ type=coolfs\n");
     for line in &repair {
+        report.push_str(line);
+        report.push('\n');
+    }
+    for line in &boot_recovery {
         report.push_str(line);
         report.push('\n');
     }
@@ -63,6 +69,7 @@ pub fn repair_lines() -> Vec<String> {
         format!("layout={}", RECOVERY_DIR),
     ];
     lines.extend(repair);
+    lines.extend(boot_recovery);
     lines.extend(service_recovery);
     lines.extend(update_recovery);
     match write_result {

@@ -714,6 +714,7 @@ impl TerminalApp {
             Some("profiler") => {
                 let mut lines = crate::profiler::lines();
                 lines.extend(crate::boot_watchdog::lines());
+                lines.extend(crate::boot_health::status_lines());
                 lines.extend(crate::deferred::lines());
                 self.cmd_lines("BOOT/SESSION PROFILER", lines);
             }
@@ -757,6 +758,8 @@ impl TerminalApp {
             Some("recovery") => self.cmd_recovery(words.collect()),
 
             Some("update") => self.cmd_update(words.collect()),
+
+            Some("boot") => self.cmd_boot(words.collect()),
 
             Some("mounts") => self.cmd_lines("MOUNTS", crate::fs_hardening::status_lines()),
 
@@ -1210,6 +1213,7 @@ impl TerminalApp {
             ("sysreport [write]", "combined diagnostics report"),
             ("devkit", "SDK docs and app templates"),
             ("profiler", "boot/service/task timing"),
+            ("boot <op>", "boot health and last-known-good state"),
             (
                 "compositor",
                 "FPS, pacing, budget, damage, and cursor telemetry",
@@ -1705,6 +1709,48 @@ impl TerminalApp {
         }
     }
 
+    fn cmd_boot(&mut self, args: Vec<&str>) {
+        match args.as_slice() {
+            [] | ["status"] => self.cmd_lines("BOOT HEALTH", crate::boot_health::status_lines()),
+            ["history"] | ["log"] => {
+                self.cmd_lines("BOOT HISTORY", crate::boot_health::history_lines())
+            }
+            ["mark-good"] => {
+                if !self.require_admin("boot") {
+                    return;
+                }
+                crate::boot_health::mark_good("manual mark-good");
+                self.set_fg(FG_ACCENT);
+                self.print_str("boot: marked good\n");
+            }
+            ["fail-validation", update_id, rest @ ..] => {
+                if !self.require_admin("boot") {
+                    return;
+                }
+                let reason = collect_words(rest.iter().copied());
+                match crate::boot_health::record_failed_validation(update_id, &reason) {
+                    Ok(()) => {
+                        self.set_fg(FG_ACCENT);
+                        self.print_str("boot: validation failure recorded\n");
+                    }
+                    Err(err) => {
+                        self.set_fg(FG_ERROR);
+                        self.print_str("boot: ");
+                        self.set_fg(FG_OUTPUT);
+                        self.print_str(err);
+                        self.print_char('\n');
+                    }
+                }
+            }
+            _ => {
+                self.set_fg(FG_ERROR);
+                self.print_str(
+                    "usage: boot [status|history|mark-good|fail-validation <update-id> <reason>]\n",
+                );
+            }
+        }
+    }
+
     fn cmd_devkit(&mut self) {
         self.cmd_lines(
             "DEVKIT",
@@ -1743,8 +1789,10 @@ impl TerminalApp {
                 }
                 match crate::updates::rollback() {
                     Ok(()) => {
+                        crate::boot_health::mark_manual_rollback("recovery rollback");
                         let mut lines = alloc::vec![String::from("update rollback ok")];
                         lines.extend(crate::updates::status_lines());
+                        lines.extend(crate::boot_health::status_lines());
                         self.cmd_lines("RECOVERY ROLLBACK", lines);
                     }
                     Err(err) => {
@@ -1827,6 +1875,7 @@ impl TerminalApp {
                 }
                 match crate::updates::rollback() {
                     Ok(()) => {
+                        crate::boot_health::mark_manual_rollback("manual update rollback");
                         self.set_fg(FG_ACCENT);
                         self.print_str("update: rollback ok\n");
                     }
@@ -3520,6 +3569,11 @@ fn diagnostics_lines() -> Vec<String> {
     let mut lines = Vec::new();
     push_terminal_section(&mut lines, "kernel", crate::klog::lines());
     push_terminal_section(&mut lines, "profiler", crate::profiler::lines());
+    push_terminal_section(
+        &mut lines,
+        "boot health",
+        crate::boot_health::status_lines(),
+    );
     push_terminal_section(&mut lines, "services", crate::services::lines());
     push_terminal_section(&mut lines, "updates", crate::updates::status_lines());
     push_terminal_section(
