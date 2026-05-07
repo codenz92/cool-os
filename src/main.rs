@@ -66,6 +66,7 @@ mod task_snapshot;
 mod tls;
 mod tls_roots;
 mod tty;
+mod updates;
 mod usb;
 mod userspace;
 mod vfs;
@@ -191,6 +192,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         phys_mem_offset.as_u64(),
     );
     services::init();
+    updates::init();
     deferred::enqueue(deferred::DeferredWork::RefreshSearchIndex);
     deferred::enqueue(deferred::DeferredWork::FlushWriteback);
 

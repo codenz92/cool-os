@@ -33,6 +33,7 @@ pub fn status_lines() -> Vec<String> {
     }
     lines.extend(crate::fs_hardening::status_lines());
     lines.extend(crate::services::recovery_lines());
+    lines.extend(crate::updates::recovery_lines());
     lines
 }
 
@@ -40,6 +41,7 @@ pub fn repair_lines() -> Vec<String> {
     ensure_layout();
     let repair = crate::fs_hardening::repair();
     let service_recovery = crate::services::recovery_lines();
+    let update_recovery = crate::updates::recovery_lines();
     let mut report = String::from("coolOS recovery repair report\n");
     report.push_str("boot=BIOS/VBE root=/ type=coolfs\n");
     for line in &repair {
@@ -47,6 +49,10 @@ pub fn repair_lines() -> Vec<String> {
         report.push('\n');
     }
     for line in &service_recovery {
+        report.push_str(line);
+        report.push('\n');
+    }
+    for line in &update_recovery {
         report.push_str(line);
         report.push('\n');
     }
@@ -58,6 +64,7 @@ pub fn repair_lines() -> Vec<String> {
     ];
     lines.extend(repair);
     lines.extend(service_recovery);
+    lines.extend(update_recovery);
     match write_result {
         Ok(()) => lines.push(format!("wrote {}", LAST_REPAIR_PATH)),
         Err(err) => lines.push(format!("write {}: {}", LAST_REPAIR_PATH, err.as_str())),

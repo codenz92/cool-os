@@ -756,6 +756,8 @@ impl TerminalApp {
 
             Some("recovery") => self.cmd_recovery(words.collect()),
 
+            Some("update") => self.cmd_update(words.collect()),
+
             Some("mounts") => self.cmd_lines("MOUNTS", crate::fs_hardening::status_lines()),
 
             Some("vfs") => self.cmd_lines("VFS", crate::vfs::mount_lines()),
@@ -1201,7 +1203,10 @@ impl TerminalApp {
             ("power <op>", "ACPI power status"),
             ("log", "kernel log tail"),
             ("logs", "open combined log summary"),
-            ("diagnostics", "combined logs/profiler/fs/memory status"),
+            (
+                "diagnostics",
+                "combined logs/profiler/update/fs/memory status",
+            ),
             ("sysreport [write]", "combined diagnostics report"),
             ("devkit", "SDK docs and app templates"),
             ("profiler", "boot/service/task timing"),
@@ -1223,6 +1228,7 @@ impl TerminalApp {
             ("coolfs", "CoolFS mount status"),
             ("fsrepair", "repair standard FS dirs"),
             ("recovery [op]", "boot recovery status/repair"),
+            ("update <op>", "stage/apply/rollback system updates"),
             ("mounts", "mount/cache/journal status"),
             ("vfs", "mount table and fd tables"),
             ("path <path>", "inspect normalized VFS path"),
@@ -1731,6 +1737,25 @@ impl TerminalApp {
     fn cmd_recovery(&mut self, args: Vec<&str>) {
         match args.as_slice() {
             ["repair"] => self.cmd_lines("RECOVERY REPAIR", crate::recovery::repair_lines()),
+            ["rollback"] => {
+                if !self.require_admin("recovery") {
+                    return;
+                }
+                match crate::updates::rollback() {
+                    Ok(()) => {
+                        let mut lines = alloc::vec![String::from("update rollback ok")];
+                        lines.extend(crate::updates::status_lines());
+                        self.cmd_lines("RECOVERY ROLLBACK", lines);
+                    }
+                    Err(err) => {
+                        self.set_fg(FG_ERROR);
+                        self.print_str("recovery rollback: ");
+                        self.set_fg(FG_OUTPUT);
+                        self.print_str(err);
+                        self.print_char('\n');
+                    }
+                }
+            }
             ["fsck-on-boot", "on"] | ["on"] => {
                 self.cmd_lines("RECOVERY", crate::recovery::set_fsck_on_boot(true))
             }
@@ -1749,6 +1774,77 @@ impl TerminalApp {
                 self.print_char('\n');
             }
             [] => self.cmd_lines("RECOVERY", crate::recovery::status_lines()),
+        }
+    }
+
+    fn cmd_update(&mut self, args: Vec<&str>) {
+        match args.as_slice() {
+            [] | ["status"] => self.cmd_lines("UPDATE STATUS", crate::updates::status_lines()),
+            ["history"] | ["log"] => {
+                self.cmd_lines("UPDATE HISTORY", crate::updates::history_lines())
+            }
+            ["stage", target, rest @ ..] => {
+                if !self.require_admin("update") {
+                    return;
+                }
+                let target = resolve_path(&self.cwd, target);
+                let text = collect_words(rest.iter().copied());
+                match crate::updates::stage_text(&target, &text) {
+                    Ok(()) => {
+                        self.set_fg(FG_ACCENT);
+                        self.print_str("update: staged\n");
+                    }
+                    Err(err) => {
+                        self.set_fg(FG_ERROR);
+                        self.print_str("update: ");
+                        self.set_fg(FG_OUTPUT);
+                        self.print_str(err);
+                        self.print_char('\n');
+                    }
+                }
+            }
+            ["apply"] => {
+                if !self.require_admin("update") {
+                    return;
+                }
+                match crate::updates::apply() {
+                    Ok(()) => {
+                        self.set_fg(FG_ACCENT);
+                        self.print_str("update: applied\n");
+                    }
+                    Err(err) => {
+                        self.set_fg(FG_ERROR);
+                        self.print_str("update: ");
+                        self.set_fg(FG_OUTPUT);
+                        self.print_str(err);
+                        self.print_char('\n');
+                    }
+                }
+            }
+            ["rollback"] => {
+                if !self.require_admin("update") {
+                    return;
+                }
+                match crate::updates::rollback() {
+                    Ok(()) => {
+                        self.set_fg(FG_ACCENT);
+                        self.print_str("update: rollback ok\n");
+                    }
+                    Err(err) => {
+                        self.set_fg(FG_ERROR);
+                        self.print_str("update: ");
+                        self.set_fg(FG_OUTPUT);
+                        self.print_str(err);
+                        self.print_char('\n');
+                    }
+                }
+            }
+            _ => {
+                self.set_fg(FG_ERROR);
+                self.print_str(
+                    "usage: update [status|history|stage <path> <text>|apply|rollback]\n",
+                );
+            }
         }
     }
 
@@ -3425,6 +3521,7 @@ fn diagnostics_lines() -> Vec<String> {
     push_terminal_section(&mut lines, "kernel", crate::klog::lines());
     push_terminal_section(&mut lines, "profiler", crate::profiler::lines());
     push_terminal_section(&mut lines, "services", crate::services::lines());
+    push_terminal_section(&mut lines, "updates", crate::updates::status_lines());
     push_terminal_section(
         &mut lines,
         "compositor",

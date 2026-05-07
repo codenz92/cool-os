@@ -25,7 +25,7 @@ const SUBTLE: u32 = 0x00_66_AA_DD;
 const MUTED: u32 = 0x00_55_7A_92;
 
 const ABOUT: &[&str] = &[
-    " coolOS v7.28",
+    " coolOS v7.29",
     " Bare-metal OS in Rust",
     "",
     " == Current Platform ==",
@@ -40,6 +40,7 @@ const ABOUT: &[&str] = &[
     " Resource caps for tasks, memory, fds, shmem, and sockets",
     " Memory pressure telemetry, cache trimming, and OOM reclaim",
     " Durable service supervision with dependency recovery",
+    " Staged system updates with rollback snapshots",
     "",
     " == Commands ==",
     " help         - list terminal commands",
@@ -56,6 +57,7 @@ const ABOUT: &[&str] = &[
     " devkit       - SDK paths and templates",
     " smoothness   - compositor pacing and latency telemetry",
     " recovery     - repair and fsck-on-boot controls",
+    " update       - stage/apply/rollback system updates",
     "",
     " == Controls ==",
     " j / k   scroll dn/up",
@@ -143,6 +145,7 @@ impl TextViewerApp {
             "service recovery",
             crate::services::recovery_lines(),
         );
+        push_section(&mut lines, "updates", crate::updates::status_lines());
         push_section(
             &mut lines,
             "filesystem",
@@ -153,7 +156,7 @@ impl TextViewerApp {
             x,
             y,
             "Log Viewer",
-            "kernel, boot, services, filesystem, and app logs",
+            "kernel, boot, services, updates, filesystem, and app logs",
             lines,
         )
     }
@@ -173,6 +176,7 @@ impl TextViewerApp {
             "service recovery",
             crate::services::recovery_lines(),
         );
+        push_section(&mut lines, "updates", crate::updates::status_lines());
         push_section(
             &mut lines,
             "compositor",
@@ -217,7 +221,7 @@ impl TextViewerApp {
             x,
             y,
             "Diagnostics",
-            "logs, profiler, services, filesystem, memory, shell, and compositor telemetry",
+            "logs, profiler, services, updates, filesystem, memory, shell, and compositor telemetry",
             lines,
         );
         app.window.title = "Diagnostics";

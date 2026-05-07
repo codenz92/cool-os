@@ -4,7 +4,7 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–64 are complete. The current milestone gives coolOS a much more
+Phases 1–65 are complete. The current milestone gives coolOS a much more
 normal command-line and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
@@ -32,7 +32,12 @@ critical. Phase 64 makes service supervision durable with persisted desired
 state under `/CONFIG`, restart history under `/LOGS`, dependency metadata,
 restart backoff, admin-gated controls, and degraded-service diagnostics in
 Terminal, recovery, sysreport, Diagnostics, and System Monitor.
-Phases 45-64 focus on responsiveness, interactive terminal behavior, and
+Phase 65 adds a service-aware staged update and rollback path: update manifests
+live under `/UPDATES/STAGED`, pre-apply file snapshots live under
+`/UPDATES/SNAPSHOTS/LAST`, `/LOGS/UPDATE.TXT` records stage/apply/rollback
+events, and `update rollback` plus `recovery rollback` can restore the previous
+file state.
+Phases 45-65 focus on responsiveness, interactive terminal behavior, and
 desktop-browser compatibility:
 cursor-only framebuffer updates,
 input-first idle-loop ordering, adaptive 36/144 Hz frame pacing, compositor
@@ -44,7 +49,7 @@ bounded margin/padding/border/position/float layout plus a small Browser
 subresource cache, script runtime, web-app API layer, main-response
 content-type routing, compatibility diagnostics, resource accounting for the
 scheduler, VMM, VFS, shared memory, and sockets, low-memory recovery, and
-durable service recovery.
+durable service recovery, and update rollback.
 
 ---
 
@@ -1904,6 +1909,36 @@ admin credentials.
 
 ---
 
+## ✅ Phase 65 — System Update, Snapshot, and Rollback
+
+**Goal:** Give coolOS a safe local update workflow so system files can be staged,
+applied, audited, and rolled back without relying on ad hoc manual file edits.
+
+- [x] Add `src/updates.rs` with `/UPDATES`, `/UPDATES/STAGED`,
+      `/UPDATES/SNAPSHOTS/LAST`, `/UPDATES/APPLIED.MF`, and
+      `/LOGS/UPDATE.TXT` layout management.
+- [x] Add staged update manifests at `/UPDATES/STAGED/UPDATE.MF` with payload
+      paths, target paths, version/id metadata, and affected service lists.
+- [x] Capture rollback snapshots before applying updates and write
+      `/UPDATES/SNAPSHOTS/LAST/MANIFEST.TXT` with target/snapshot/missing-file
+      state.
+- [x] Apply updates through kernel safe writes, stop affected services before
+      file replacement, restart them after apply or rollback, and flush through
+      the writeback barrier.
+- [x] Add Terminal `update status`, `update stage`, `update apply`,
+      `update history`, and `update rollback`; mutating operations require an
+      admin session.
+- [x] Add `recovery rollback` plus update status in Recovery, Diagnostics,
+      Sysreport, and the in-OS log/diagnostics viewer.
+- [x] Add `make smoke-phase65-update-rollback` and document v7.29.
+
+**Current status:** complete. coolOS can now stage a system file update, snapshot
+the previous state, apply the staged payload with service coordination, audit the
+operation through `/LOGS/UPDATE.TXT`, and restore the snapshot through either the
+normal update command or the recovery surface.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -1984,4 +2019,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.25 | Phase 61 complete: Browser modern-page compatibility |
 | v7.26 | Phase 62 complete: Kernel resource limits and cleanup |
 | v7.27 | Phase 63 complete: Memory pressure and OOM recovery |
-| v7.28 | Current — Phase 64 complete: Persistent service supervision and recovery |
+| v7.28 | Phase 64 complete: Persistent service supervision and recovery |
+| v7.29 | Current — Phase 65 complete: System update, snapshot, and rollback |
