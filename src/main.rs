@@ -45,6 +45,7 @@ mod pci;
 mod png;
 mod process_model;
 mod profiler;
+mod recovery;
 mod rtc;
 mod scheduler;
 mod search_index;

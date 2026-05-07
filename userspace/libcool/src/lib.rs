@@ -3,7 +3,7 @@
 use core::arch::asm;
 
 pub const SDK_VERSION: u64 = 1;
-pub const ABI_VERSION: u64 = 6;
+pub const ABI_VERSION: u64 = 7;
 pub const U64_MAX: u64 = u64::MAX;
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -64,6 +64,7 @@ pub mod sys {
     pub const SETPGID: u64 = 33;
     pub const GETPGID: u64 = 34;
     pub const SIGNAL_GROUP: u64 = 35;
+    pub const SPAWN_ARGS: u64 = 36;
 
     #[inline]
     pub unsafe fn syscall0(nr: u64) -> u64 {
@@ -72,11 +73,13 @@ pub mod sys {
             "syscall",
             inlateout("rax") nr => ret,
             lateout("rcx") _,
+            lateout("rdi") _,
+            lateout("rsi") _,
+            lateout("rdx") _,
             lateout("r8") _,
             lateout("r9") _,
             lateout("r10") _,
             lateout("r11") _,
-            options(nostack),
         );
         ret
     }
@@ -89,11 +92,12 @@ pub mod sys {
             inlateout("rax") nr => ret,
             inlateout("rdi") a1 => _,
             lateout("rcx") _,
+            lateout("rsi") _,
+            lateout("rdx") _,
             lateout("r8") _,
             lateout("r9") _,
             lateout("r10") _,
             lateout("r11") _,
-            options(nostack),
         );
         ret
     }
@@ -107,11 +111,11 @@ pub mod sys {
             inlateout("rdi") a1 => _,
             inlateout("rsi") a2 => _,
             lateout("rcx") _,
+            lateout("rdx") _,
             lateout("r8") _,
             lateout("r9") _,
             lateout("r10") _,
             lateout("r11") _,
-            options(nostack),
         );
         ret
     }
@@ -130,7 +134,6 @@ pub mod sys {
             lateout("r9") _,
             lateout("r10") _,
             lateout("r11") _,
-            options(nostack),
         );
         ret
     }
@@ -267,6 +270,26 @@ pub mod process {
         Error::from_ret(ret)
     }
 
+    pub fn spawn_args(path: &[u8], args: &[&[u8]]) -> Result<u64> {
+        const MAX_ARGS: usize = 7;
+        if args.len() > MAX_ARGS {
+            return Err(Error::Invalid);
+        }
+        let mut pairs = [0u64; MAX_ARGS * 2];
+        for (idx, arg) in args.iter().enumerate() {
+            pairs[idx * 2] = arg.as_ptr() as u64;
+            pairs[idx * 2 + 1] = arg.len() as u64;
+        }
+        let desc = [
+            path.as_ptr() as u64,
+            path.len() as u64,
+            pairs.as_ptr() as u64,
+            args.len() as u64,
+        ];
+        let ret = unsafe { sys::syscall1(sys::SPAWN_ARGS, desc.as_ptr() as u64) };
+        Error::from_ret(ret)
+    }
+
     pub fn waitpid(pid: u64) -> Result<u64> {
         let mut status = 0u64;
         let ret = unsafe { sys::syscall2(sys::WAITPID, pid, &mut status as *mut u64 as u64) };
@@ -311,6 +334,7 @@ pub mod io {
 
     use super::{sys, Error, Result};
 
+    pub const STDIN: u64 = 0;
     pub const STDOUT: u64 = 1;
     pub const STDERR: u64 = 2;
 
@@ -921,7 +945,7 @@ pub mod prelude {
     pub use crate::memory::mmap;
     pub use crate::process::{
         abi_version, exit, get_process_group, getpid, set_process_group, signal, signal_group,
-        sleep_ms, spawn, waitpid, yield_now, Signal,
+        sleep_ms, spawn, spawn_args, waitpid, yield_now, Signal,
     };
     pub use crate::{entry, print, println, Error, Result, ABI_VERSION, SDK_VERSION};
 }
@@ -954,6 +978,9 @@ macro_rules! entry {
         pub extern "C" fn _start() -> ! {
             core::arch::naked_asm!(
                 "mov rdi, rsp",
+                // __libcool_entry is a normal SysV function. Enter it with the
+                // same 16-byte stack alignment it would see after a call.
+                "sub rsp, 8",
                 "jmp {entry}",
                 entry = sym __libcool_entry,
             );

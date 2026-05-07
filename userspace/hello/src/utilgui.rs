@@ -91,7 +91,17 @@ pub fn run_editor(
             status = b"smoke text inserted";
         }
         match fs::write_file(&path_buf[..path_len], &text[..len]) {
-            Ok(()) => log_path(label, b"saved", &path_buf[..path_len]),
+            Ok(()) => {
+                log_path(label, b"saved", &path_buf[..path_len]);
+                if verify_saved_file(&path_buf[..path_len], seed, text, &mut len) {
+                    cursor = len;
+                    status = b"verified";
+                    log_path(label, b"verified", &path_buf[..path_len]);
+                } else {
+                    status = b"verify failed";
+                    log_path(label, b"verify failed", &path_buf[..path_len]);
+                }
+            }
             Err(_) => log_path(label, b"save failed", &path_buf[..path_len]),
         }
         ensure_cursor_visible(text, len, cursor, &mut scroll);
@@ -312,6 +322,11 @@ pub fn run_trash(args: Args, pixels: &mut [u32; PIXELS], listing: &mut [u8; LIST
         draw_trash(pixels, listing, len, scroll, b"empty");
         let _ = window.present(pixels);
         log(b"trash", b"empty ok");
+        if len == 0 {
+            log(b"trash", b"verified empty");
+        } else {
+            log(b"trash", b"verify failed");
+        }
         sleep_ms(250);
         let _ = window.close();
         exit(0);
@@ -393,7 +408,13 @@ pub fn run_screenshot(args: Args, pixels: &mut [u32; PIXELS]) -> ! {
     let _ = window.present(pixels);
 
     if smoke_mode() {
-        queue_screenshot(b"/Pictures/SMOKE.PPM");
+        let path = b"/Pictures/SMOKE.PPM";
+        queue_screenshot(path);
+        if wait_for_file_magic(path, b"P6") {
+            log_path(b"screenshot", b"saved", path);
+        } else {
+            log_path(b"screenshot", b"verify failed", path);
+        }
         sleep_ms(150);
         let _ = window.close();
         exit(0);
@@ -468,8 +489,24 @@ fn draw_editor(
     let mut canvas = gui::Canvas::new(&mut pixels[..], WIDTH, HEIGHT);
     draw_base(&mut canvas, title, path);
     button(&mut canvas, BTN_NEW_X, BUTTON_Y, 48, BUTTON_H, "New", CYAN);
-    button(&mut canvas, BTN_OPEN_X, BUTTON_Y, 58, BUTTON_H, "Open", CYAN);
-    button(&mut canvas, BTN_SAVE_X, BUTTON_Y, 58, BUTTON_H, "Save", GREEN);
+    button(
+        &mut canvas,
+        BTN_OPEN_X,
+        BUTTON_Y,
+        58,
+        BUTTON_H,
+        "Open",
+        CYAN,
+    );
+    button(
+        &mut canvas,
+        BTN_SAVE_X,
+        BUTTON_Y,
+        58,
+        BUTTON_H,
+        "Save",
+        GREEN,
+    );
     button(
         &mut canvas,
         BTN_SAVE_AS_X,
@@ -880,6 +917,66 @@ fn queue_screenshot(path: &[u8]) {
         }
         Err(_) => log(b"screenshot", b"queue failed"),
     }
+}
+
+fn wait_for_file_magic(path: &[u8], magic: &[u8]) -> bool {
+    let mut buf = [0u8; 8];
+    for _ in 0..20 {
+        if let Ok(n) = fs::read_file(path, &mut buf) {
+            if n >= magic.len() && &buf[..magic.len()] == magic {
+                return true;
+            }
+        }
+        sleep_ms(25);
+    }
+    false
+}
+
+fn verify_saved_file(path: &[u8], seed: &[u8], text: &mut [u8], len: &mut usize) -> bool {
+    if let Ok(read_len) = fs::read_file(path, text) {
+        if read_len >= seed.len() && &text[..seed.len()] == seed {
+            *len = read_len;
+            return true;
+        }
+    }
+    let Some((parent, name)) = split_path(path) else {
+        return false;
+    };
+    let mut listing = [0u8; 1024];
+    match fs::list_dir(parent, &mut listing) {
+        Ok(n) => contains_subslice(&listing[..n], name),
+        Err(_) => false,
+    }
+}
+
+fn split_path(path: &[u8]) -> Option<(&[u8], &[u8])> {
+    let mut slash = None;
+    for idx in 0..path.len() {
+        if path[idx] == b'/' {
+            slash = Some(idx);
+        }
+    }
+    let slash = slash?;
+    if slash + 1 >= path.len() {
+        return None;
+    }
+    if slash == 0 {
+        Some((&path[..1], &path[1..]))
+    } else {
+        Some((&path[..slash], &path[slash + 1..]))
+    }
+}
+
+fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return false;
+    }
+    for start in 0..=haystack.len() - needle.len() {
+        if &haystack[start..start + needle.len()] == needle {
+            return true;
+        }
+    }
+    false
 }
 
 fn hit(x: u16, y: u16, bx: i32, by: i32, bw: i32, bh: i32) -> bool {

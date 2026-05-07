@@ -13,7 +13,7 @@ memory, and per-task fd tables.
 
 ---
 
-# Current state — v6.8
+# Current state — v7.3
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -26,7 +26,7 @@ Accounts settings, File Manager
 drag/drop/open-with actions, a shared clipboard, notification center, userspace
 app lifecycle tracking with System Monitor close/kill/path controls, and
 desktop settings that persist to the CoolFS root.
-A preemptive round-robin scheduler is driven by the PIT timer at **100 Hz**;
+A preemptive round-robin scheduler is driven by the PIT timer at **288 Hz**;
 the kernel boot stack remains the idle/window-manager context, the boot path
 performs a synchronous CoolFS read check, and the terminal can also spawn
 additional ring-3 ELF tasks from disk with `exec`. The shell also has a real
@@ -50,7 +50,10 @@ v6: userspace can signal tasks and process groups, STOP/CONT changes scheduler
 eligibility, and Terminal jobs can bind to real processes. Phase 34 adds
 per-terminal TTY ownership, routes userspace stdout/stderr back to the launching
 terminal, and gives the shell foreground process groups with Ctrl+C/Ctrl+Z,
-`fg`, `bg`, and prompt blocking until foreground work stops or exits.
+`fg`, `bg`, and prompt blocking until foreground work stops or exits. Phases
+35-39 add canonical TTY stdin for `read(0)`, a real `/bin/sh` userspace shell,
+ABI v7 `spawn_args`, coreutils-style `/bin` tools, verified utility-app save
+paths, and a `/RECOVERY` repair/report surface.
 
 | Context | Mode | Description |
 | :------ | :--- | :---------- |
@@ -91,13 +94,13 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **Heap** | `LockedHeap` allocator — `String`, `Vec`, `Box` all work. 32 MiB heap to accommodate large shadow and window buffers. |
 | **Paging / VMM** | 4-level `OffsetPageTable` + global `BootInfoFrameAllocator`. Per-process PML4 cloned from kernel upper half; private user-space mappings in lower half. `vmm::` module exposes `new_process_pml4`, `map_page_in`, `map_region`, `switch_to`. |
 | **IDT** | Breakpoint, Double Fault, Page Fault with user-task termination/crashdump handling for invalid ring-3 accesses, General Protection Fault, Invalid Opcode, Timer (IRQ0), Keyboard (IRQ1), Mouse (IRQ12). |
-| **Scheduler** | Preemptive round-robin at 100 Hz. Each task carries `pml4: Option<PhysFrame>` plus `uid`, `gid`, capability credentials, process group, controlling TTY, and pending signal state; the scheduler calls `vmm::switch_to` on context switch when `Some`. 64 KiB heap-allocated kernel stack per task. Task lifecycle now distinguishes ready/running/blocked/stopped/exited/reaped states, records parents and exit codes, supports `waitpid`/reaping, supports kernel-side task termination, and backs blocking pipe reads with `block_current` / `unblock(id)`. |
-| **TTY sessions** | Each Terminal owns a kernel TTY with a dedicated output queue and foreground process group. Userspace stdout/stderr routes to the task's controlling TTY, `exec` blocks the prompt as a foreground job, background jobs keep their terminal output route, and Ctrl+C/Ctrl+Z signal the foreground group. |
+| **Scheduler** | Preemptive round-robin at 288 Hz. Each task carries `pml4: Option<PhysFrame>` plus `uid`, `gid`, capability credentials, process group, controlling TTY, pending signal state, and a private 64 KiB kernel stack. The scheduler switches CR3 when needed and updates TSS RSP0 to the selected task's stack so ring-3 IRQ frames never share one global stack. Task lifecycle now distinguishes ready/running/blocked/stopped/exited/reaped states, records parents and exit codes, supports blocking `waitpid`/reaping, supports kernel-side task termination, and backs blocking pipe/TTY reads with `block_current` / `unblock(id)`. |
+| **TTY sessions** | Each Terminal owns a kernel TTY with canonical stdin, a dedicated output queue, and a foreground process group. Userspace `read(0)` plus stdout/stderr route through the task's controlling TTY, `exec` blocks the prompt as a foreground job, background jobs keep their terminal output route, and Ctrl+C/Ctrl+Z signal the foreground group. |
 | **Process isolation** | Two user processes share the same user-stack virtual address (`0x7FFF_0010_0000`) but map it to different physical frames. Guard pages (kernel-only) sit below each stack. |
-| **GDT + TSS** | Four segments (kernel code/data ring 0, user code/data ring 3) + TSS with RSP0 pointing to a dedicated 64 KiB ISR stack used when an IRQ fires during ring-3 execution. |
+| **GDT + TSS** | Four segments (kernel code/data ring 0, user code/data ring 3) + TSS. RSP0 starts on a fallback ISR stack and is updated on every context switch to the selected task's private kernel stack for ring-3 IRQ entry. |
 | **SYSCALL/SYSRET** | EFER.SCE enabled. STAR/LSTAR/SFMASK MSRs configured. Naked `syscall_entry` saves context, switches to the currently scheduled task's private kernel stack top, dispatches on rax, restores context, and executes `sysretq`. |
-| **Syscall table** | `0 exit`, `1 write`, `2 yield`, `3 getpid`, `4 mmap(addr, len, flags)`, `5 open(path, len)`, `6 read(fd, buf, len)`, `7 close(fd)`, `8 exec(path, len)`, `9 pipe(fds_ptr)`, `10 dup(fd)`, `11 shmem_create(len)`, `12 shmem_map(id)`, `13 waitpid(pid, status_ptr)`, `14 spawn(path, len)`, `15 sleep_ms(ms)`, `16 abi_version()`, `17 dns_resolve(host, len)`, `18 http_get(host, len)`, `19 socket(domain, type, proto)`, `20 connect(socket, ipv4, port)`, `21 send(socket, buf, len)`, `22 recv(socket, buf, len)`, `23 gui_open(title, len, dims)`, `24 gui_present(handle, pixels, len)`, `25 gui_poll_event(handle, packet, len)`, `26 gui_close(handle)`, `27 fs_write_file(desc)`, `28 fs_create_dir(path, len)`, `29 fs_delete_tree(path, len)`, `30 fs_list_dir(desc)`, `31 screenshot(path, len, flags)`, `32 signal(pid, signal)`, `33 setpgid(pid, pgid)`, `34 getpgid(pid)`, `35 signal_group(pgid, signal)`. `sys_write` writes stdout/stderr to the current task's controlling TTY, falls back to the compositor ring for orphaned output, or writes pipe/file descriptors through the VFS fd table. |
-| **Userspace** | Ring-3 code can run either as the original isolation stubs or as real ELF64 binaries loaded from `/bin`. The `libcool` SDK crate now provides no_std entry/argv setup plus process, signal/process-group, file, pipe, mmap, shared-memory, event, DNS/HTTP, TCP socket, filesystem utility, screenshot, and userspace GUI wrappers. `sys_exec` replaces the current userspace image in-place by swapping CR3 and rewriting the saved syscall return frame. `keydemo` relays fixed-size key and click event packets into a userspace child over a pipe. Shared memory (`sys_shmem_create`/`sys_shmem_map`) maps a region of physical frames into the caller's address space at a fixed VA. |
+| **Syscall table** | `0 exit`, `1 write`, `2 yield`, `3 getpid`, `4 mmap(addr, len, flags)`, `5 open(path, len)`, `6 read(fd, buf, len)`, `7 close(fd)`, `8 exec(path, len)`, `9 pipe(fds_ptr)`, `10 dup(fd)`, `11 shmem_create(len)`, `12 shmem_map(id)`, `13 waitpid(pid, status_ptr)`, `14 spawn(path, len)`, `15 sleep_ms(ms)`, `16 abi_version()`, `17 dns_resolve(host, len)`, `18 http_get(host, len)`, `19 socket(domain, type, proto)`, `20 connect(socket, ipv4, port)`, `21 send(socket, buf, len)`, `22 recv(socket, buf, len)`, `23 gui_open(title, len, dims)`, `24 gui_present(handle, pixels, len)`, `25 gui_poll_event(handle, packet, len)`, `26 gui_close(handle)`, `27 fs_write_file(desc)`, `28 fs_create_dir(path, len)`, `29 fs_delete_tree(path, len)`, `30 fs_list_dir(desc)`, `31 screenshot(path, len, flags)`, `32 signal(pid, signal)`, `33 setpgid(pid, pgid)`, `34 getpgid(pid)`, `35 signal_group(pgid, signal)`, `36 spawn_args(desc)`. `sys_read(0)` reads from the current task's controlling TTY when assigned; `sys_write` writes stdout/stderr to that TTY, falls back to the compositor ring for orphaned output, or writes pipe/file descriptors through the VFS fd table. |
+| **Userspace** | Ring-3 code can run either as the original isolation stubs or as real ELF64 binaries loaded from `/bin`. The `libcool` SDK crate now provides no_std entry/argv setup plus process, signal/process-group, file, pipe, mmap, shared-memory, event, DNS/HTTP, TCP socket, filesystem utility, screenshot, and userspace GUI wrappers. `/bin/sh` reads stdin from the TTY and can launch argv-capable children with `spawn_args`; `/bin/ls`, `/bin/cat`, `/bin/echo`, `/bin/pwd`, `/bin/mkdir`, `/bin/touch`, `/bin/rm`, and `/bin/writefile` cover basic file and text workflows. `sys_exec` replaces the current userspace image in-place by swapping CR3 and rewriting the saved syscall return frame. Shared memory (`sys_shmem_create`/`sys_shmem_map`) maps a region of physical frames into the caller's address space at a fixed VA. |
 | **ELF loader** | Validates ELF64 headers, maps `PT_LOAD` segments into a fresh address space, allocates a private user stack, builds an initial `argc/argv/envp` stack frame, and can either spawn a new task or prepare an image for `sys_exec`. |
 | **ATA PIO driver** | Primary-bus slave device (QEMU `if=ide,index=1`). LBA28 PIO reads/writes, BSY/DRQ polling with bounded retries and software reset recovery, nIEN=1 (device interrupts disabled). Wrapped in `without_interrupts` to prevent preemption mid-transfer. |
 | **CoolFS layer** | Native coolOS root filesystem mounted at `/`, stored directly at LBA 0 of the attached OS disk. It has a CoolFS superblock, fixed inode table with durable `uid`/`gid`/mode metadata, block bitmap, 4 KiB blocks, direct plus indirect data blocks, directory records, a 64-slot block cache with dirty 4 KiB writeback, VFS read/write/create/rename/delete/copy routing, stats, and boot self-tests. |
@@ -106,7 +109,7 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **Networking** | Legacy PCI virtio-net driver for QEMU user networking, polling RX/TX virtqueues, Ethernet framing, ARP cache, IPv4, ICMP echo, UDP DNS queries, minimal TCP client sockets, userspace socket syscalls, HTTP/1.1, and verified TLS 1.3 HTTPS for the native browser/terminal path. |
 | **Kernel services** | Persistent kernel log buffer flushed to `/LOGS/KERNEL.TXT`, crash-screen log tail, central device registry for PCI/USB/system devices, installable package/app manifests with file associations, networking status, ACPI power-control status foundation, and a credentialed service supervisor that restarts failed services under service uid/gid 200. |
 | **Applications** | Terminal, System Monitor, Text Viewer, Color Picker, File Manager, Web Browser, ring-3 Notes, Text Editor, Trash Bin, Screenshot, Process Demo, and GUI Demo. Text-file opens route into `/bin/editor <path>` with kernel viewer fallback, while File Manager exposes explicit Open With Editor/Viewer actions. |
-| **Disk image** | `disk-image/src/fs_image.rs` builds `fs.img` as a 64 MiB raw OS disk: native CoolFS starts at LBA 0 with root-owned system paths, user-owned writable paths, executable `/bin` ELFs, `/Packages/guidemo.pkg`, and `/Documents/package-demo.p25`; an optional FAT32 `/FAT` import region starts at 8 MiB. The Makefile attaches it to QEMU as the IDE slave. |
+| **Disk image** | `disk-image/src/fs_image.rs` builds `fs.img` as a 64 MiB raw OS disk: native CoolFS starts at LBA 0 with root-owned system paths, user-owned writable paths, executable `/bin` ELFs, `/RECOVERY` boot/repair docs, `/Packages/guidemo.pkg`, and `/Documents/package-demo.p25`; an optional FAT32 `/FAT` import region starts at 8 MiB. The Makefile attaches it to QEMU as the IDE slave. |
 
 ### Applications
 
@@ -163,6 +166,7 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `chmod <mode> <path>` | Change a CoolFS inode mode |
 | `chown <uid>[:gid] <path>` | Change a CoolFS inode owner/group |
 | `exec <path> [args...]` | Run a userspace ELF as the terminal's foreground job |
+| `sh` | Start `/bin/sh` as a foreground userspace shell on the terminal TTY |
 | `ps` | List scheduler tasks, uid, ring, status, and exit codes |
 | `kill <pid>` | Terminate a non-idle task and mark it exited |
 | `wait <pid>` | Reap an exited task and print its exit code |
@@ -190,6 +194,7 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `power [reboot\|shutdown\|sleep]` | Print or request power-control actions |
 | `log` | Flush and print the kernel log tail |
 | `fsck` | Print CoolFS-root consistency plus optional legacy FAT32 import summary |
+| `recovery [repair\|fsck-on-boot on\|fsck-on-boot off]` | Show recovery status, write a repair report, or toggle boot fsck |
 | `coolfs` | Print CoolFS root mount and inode/block usage |
 | `df` | Print CoolFS `/` and optional FAT32 `/FAT` used/free/total space |
 | `pkg [list\|install <path-or-id>\|remove <id>\|run <id> [args...]]` | Manage built-in and manifest-installed packages. |
@@ -246,7 +251,7 @@ disk-image/
 src/
   main.rs          Kernel entry point — framebuffer init, GDT, heap, scheduler, main loop
   gdt.rs           GDT (ring-0/ring-3 segments) + TSS (RSP0 for ring-3 IRQ entry)
-  interrupts.rs    IDT, PIC, PIT (100 Hz), IRQ masking, keyboard/timer(naked)/mouse/fault handlers
+  interrupts.rs    IDT, PIC, PIT (288 Hz), IRQ masking, keyboard/timer(naked)/mouse/fault handlers
   syscall.rs       SYSCALL/SYSRET — naked entry, dispatcher, lock-free output buffer,
                    jump_to_userspace (iretq trampoline); syscalls including
                    open/read/write/close/exec/pipe/signal/process groups
@@ -370,8 +375,8 @@ instead of relying on one shared syscall stack.
 
 **Ring-3 userspace (Phase 9).** The GDT now has four segments (kernel code
 0x08, kernel data 0x10, user data 0x18, user code 0x20) plus a TSS whose RSP0
-points to a dedicated 64 KiB ISR stack used when an IRQ fires during ring-3
-execution. SYSCALL/SYSRET is enabled via EFER.SCE; STAR is set so that
+starts on a fallback ISR stack and is updated to the scheduled task's private
+kernel stack for ring-3 IRQ entry. SYSCALL/SYSRET is enabled via EFER.SCE; STAR is set so that
 SYSCALL enters kernel CS=0x08/SS=0x10 and SYSRET returns to user
 CS=0x20/SS=0x18. The naked `syscall_entry` stub saves user RSP in r10,
 switches to the currently scheduled task's private kernel stack top, builds a
@@ -462,6 +467,19 @@ that foreground group exits or stops. Background `job run` processes keep their
 TTY binding for output, while `tty`, `fg`, `bg`, Ctrl+C, and Ctrl+Z expose the
 job-control surface interactively.
 
+**Userspace shell, core tools, and recovery (Phases 35-39).** The TTY now has a
+canonical input queue, so foreground ring-3 programs can block in `read(0)` and
+receive typed lines with echo, backspace, enter, and EOF behavior. `/bin/sh`
+runs as a normal foreground userspace process on that TTY, and ABI v7 adds
+`spawn_args` so it can launch children with argv. `/bin/ls`, `/bin/cat`,
+`/bin/echo`, `/bin/pwd`, `/bin/mkdir`, `/bin/touch`, `/bin/rm`, and
+`/bin/writefile` provide basic external file/text commands. Utility app smokes
+now verify editor saves, Trash emptying, and Screenshot output by reading files
+back from CoolFS. The disk image also carries `/RECOVERY/README.TXT` and
+`/RECOVERY/BOOT.CFG`; the `recovery` command reports boot/recovery state,
+recreates standard directories, writes `/RECOVERY/LAST-REPAIR.TXT`, and toggles
+`storage.fsck_on_boot`.
+
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
 empty). `vmm::new_process_pml4` handles the clone; `vmm::map_page_in` / `vmm::map_region`
@@ -487,7 +505,7 @@ while kernel faults still panic.
 | 5 | Applications — system monitor, text viewer, color picker | **Done** |
 | 6 | High-resolution framebuffer via `bootloader 0.11` (1280×720) | **Done** |
 | 7 | Input lag fixes — lock-free keyboard queue, scratch-buffer blit, release build | **Done** |
-| 8 | Preemptive scheduler + context switching (100 Hz PIT) | **Done** |
+| 8 | Preemptive scheduler + context switching (288 Hz PIT) | **Done** |
 | 9 | Ring-3 userspace + SYSCALL/SYSRET interface | **Done** |
 | 10 | Per-process virtual memory + isolation | **Done** |
 | 11 | Filesystem (FAT32) + VFS + disk driver | **Done** |
@@ -514,5 +532,10 @@ while kernel faults still panic.
 | 32 | User/kernel isolation hardening — supervisor kernel mappings, checked user pointers, user-fault crashdumps | **Done** |
 | 33 | Process control and jobs — signals, process groups, STOP/CONT, process-bound jobs | **Done** |
 | 34 | TTY sessions and foreground job control — per-terminal output routing, foreground pgids, Ctrl+C/Ctrl+Z, `fg`/`bg` | **Done** |
+| 35 | Real TTY stdin — canonical `read(0)` input for foreground userspace processes | **Done** |
+| 36 | Userspace shell — `/bin/sh` on the controlling TTY with argv-capable child launch | **Done** |
+| 37 | Coreutils command set — external `/bin` file/text commands driven by `/bin/sh` | **Done** |
+| 38 | Utility reliability — editor, Trash, and Screenshot smokes verify persisted output | **Done** |
+| 39 | Recovery path — `/RECOVERY`, repair reports, and fsck-on-boot controls | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

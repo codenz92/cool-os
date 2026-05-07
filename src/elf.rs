@@ -323,6 +323,10 @@ fn build_initial_stack(top_frame: PhysFrame, argv0: &str, args: &[&str]) -> Resu
     }
 
     rsp &= !0xf;
+    if (argv.len() + 3) % 2 != 0 {
+        rsp -= 8;
+        write_u64(page, stack_page_base, rsp, 0); // alignment padding
+    }
     rsp -= 8;
     write_u64(page, stack_page_base, rsp, 0); // envp[0] = NULL
     rsp -= 8;

@@ -1205,7 +1205,7 @@ pub fn vfs_read_blocking(fd: usize, buf: &mut [u8], len: usize) -> usize {
                 crate::scheduler::block_current();
                 while crate::scheduler::current_task_blocked() {
                     unsafe {
-                        asm!("sti; hlt", options(nomem, nostack));
+                        asm!("sti; hlt; cli", options(nomem, nostack));
                     }
                 }
                 x86_64::instructions::interrupts::disable();

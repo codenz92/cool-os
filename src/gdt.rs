@@ -19,27 +19,22 @@ use x86_64::{
     VirtAddr,
 };
 
-// 64 KiB dedicated ring-0 stack used by the CPU on IRQ/exception entry from ring 3.
+// Fallback ring-0 stack for early IRQ/exception entry before the scheduler has
+// selected a task-private stack.
 const ISR_STACK_SIZE: usize = 64 * 1024;
 static mut ISR_STACK: [u8; ISR_STACK_SIZE] = [0; ISR_STACK_SIZE];
+static mut TSS: TaskStateSegment = TaskStateSegment::new();
 
 lazy_static! {
-    static ref TSS: TaskStateSegment = {
-        let mut tss = TaskStateSegment::new();
-        // RSP0: kernel stack the CPU switches to on interrupt/exception from ring 3.
-        tss.privilege_stack_table[0] = VirtAddr::new(
-            core::ptr::addr_of!(ISR_STACK) as u64 + ISR_STACK_SIZE as u64
-        );
-        tss
-    };
-
     static ref GDT: (GlobalDescriptorTable, Selectors) = {
         let mut gdt = GlobalDescriptorTable::new();
         let kernel_code = gdt.add_entry(Descriptor::kernel_code_segment()); // 0x08
         let kernel_data = gdt.add_entry(Descriptor::kernel_data_segment()); // 0x10
         let user_data   = gdt.add_entry(Descriptor::user_data_segment());   // 0x18
         let user_code   = gdt.add_entry(Descriptor::user_code_segment());   // 0x20
-        let tss_sel     = gdt.add_entry(Descriptor::tss_segment(&TSS));     // 0x28
+        let tss_sel     = gdt.add_entry(Descriptor::tss_segment(unsafe {
+            &*core::ptr::addr_of!(TSS)
+        })); // 0x28
         (gdt, Selectors { kernel_code, kernel_data, user_data, user_code, tss: tss_sel })
     };
 }
@@ -56,6 +51,7 @@ pub fn init() {
     use x86_64::instructions::segmentation::{Segment, CS, SS};
     use x86_64::instructions::tables::load_tss;
 
+    set_privilege_stack_top(default_privilege_stack_top());
     GDT.0.load();
     unsafe {
         CS::set_reg(GDT.1.kernel_code);
@@ -69,4 +65,14 @@ pub fn user_code_selector() -> SegmentSelector {
 }
 pub fn user_data_selector() -> SegmentSelector {
     GDT.1.user_data
+}
+
+pub fn default_privilege_stack_top() -> u64 {
+    core::ptr::addr_of!(ISR_STACK) as u64 + ISR_STACK_SIZE as u64
+}
+
+pub fn set_privilege_stack_top(top: u64) {
+    unsafe {
+        (*core::ptr::addr_of_mut!(TSS)).privilege_stack_table[0] = VirtAddr::new(top);
+    }
 }

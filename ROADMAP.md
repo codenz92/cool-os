@@ -4,11 +4,10 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–34 are complete. Phase 34 gives Terminal sessions real TTY ownership:
-userspace writes route back to the terminal that launched the task, foreground
-process groups hold the prompt until they stop or exit, Ctrl+C/Ctrl+Z deliver
-INT/STOP to the foreground group, and smoke coverage proves foreground plus
-background job control.
+Phases 1–39 are complete. The current milestone gives coolOS real terminal
+stdin, a foreground userspace shell, argv-capable userspace child spawning,
+external coreutils-style `/bin` commands, verified utility app persistence, and
+an in-OS recovery command that writes repair reports under `/RECOVERY`.
 
 ---
 
@@ -23,7 +22,7 @@ background job control.
 | 5 | Four built-in apps running as kernel-mode modules |
 | 6 | High-res linear framebuffer via `bootloader 0.11` — 1280×720, 3/4bpp |
 | 7 | Fluid input — lock-free keyboard queue, scratch-buffer blit, release build |
-| 8 | Preemptive scheduler — naked timer ISR, round-robin context switching, 100 Hz PIT |
+| 8 | Preemptive scheduler — naked timer ISR, round-robin context switching, 288 Hz PIT |
 | 9 | Ring-3 userspace — GDT + TSS, SYSCALL/SYSRET, syscall table, iretq trampoline |
 
 ### Phase 7 implementation notes
@@ -172,8 +171,9 @@ userspace generates a #PF that the kernel handles without crashing.
   and the user stack is a kernel static; making all pages user-accessible lets ring-3
   code execute and access data without a #PF. Phase 10 replaces this with per-process
   page tables.
-- PIT reprogrammed to 100 Hz (`init_pit(100)` in `interrupts.rs`) as part of Phase 8
-  fix: divisor = 1,193,180 / 100 = 11,931. Renders go from ~9 fps to ~50 fps.
+- PIT reprogrammed during Phase 8 and now runs at 288 Hz
+  (`TIMER_HZ` in `interrupts.rs`) so the scheduler and compositor get frequent
+  ticks without relying on the BIOS-era ~18 Hz default.
 
 ---
 
@@ -1108,6 +1108,103 @@ INT/STOP delivery to coexist on the desktop.
 
 ---
 
+## ✅ Phase 35 — TTY Stdin and Line Discipline
+
+**Goal:** Make foreground userspace programs able to read real terminal input
+instead of relying on kernel-side command buffers or pipe demos.
+
+- [x] Add a canonical TTY input queue with echo, backspace, enter, and EOF
+      handling.
+- [x] Route `read(0, ...)` through the current task's controlling TTY when one
+      is assigned, while keeping VFS reads for files and pipes.
+- [x] Forward Terminal keyboard input to the foreground process group instead
+      of dropping it while a foreground job is active.
+- [x] Add `/bin/ttyread` as a ring-3 proof program and
+      `make smoke-phase35-tty-input`.
+
+**Current status:** complete. A foreground ELF process can block in `read(0)`,
+receive a typed line from its Terminal, echo through the same TTY, and exit
+cleanly.
+
+---
+
+## ✅ Phase 36 — Userspace Shell Foundation
+
+**Goal:** Move interactive command interpretation into a normal ring-3 process
+that uses the same stdin/stdout contract as other programs.
+
+- [x] Add ABI v7 `spawn_args(desc)` so userspace can launch child programs with
+      argv rather than path-only spawn.
+- [x] Add `libcool::process::spawn_args` and expose it through the userspace
+      prelude.
+- [x] Add `/bin/sh`, a no_std userspace shell that reads stdin, runs builtins,
+      launches child processes, and waits for them.
+- [x] Add a Terminal `sh` command that starts `/bin/sh` as the foreground job.
+- [x] Add `make smoke-phase36-userspace-shell`.
+
+**Current status:** complete. `/bin/sh` is a real foreground userspace process
+on the controlling TTY and can run filesystem commands and child processes.
+
+---
+
+## ✅ Phase 37 — Coreutils Command Set
+
+**Goal:** Provide basic external userspace tools so the shell is not just a
+collection of builtins.
+
+- [x] Add `/bin/ls`, `/bin/cat`, `/bin/echo`, `/bin/pwd`, `/bin/mkdir`,
+      `/bin/touch`, `/bin/rm`, and `/bin/writefile`.
+- [x] Teach the disk-image builder to install extra `/bin` ELFs by filename so
+      future userspace tools do not need one-off host-side wiring.
+- [x] Make `waitpid` block in the kernel, wake parents on child exit/fault/kill,
+      and update TSS RSP0 per scheduled task so ring-3 IRQ frames land on the
+      owning task's private kernel stack.
+- [x] Add `make smoke-phase37-coreutils` to exercise external commands, argv,
+      file creation, reading, touching, and removal through `/bin/sh`.
+
+**Current status:** complete. The system now has a useful ring-3 command-line
+workflow: a userspace shell invoking external userspace tools over the kernel
+VFS and TTY contracts.
+
+---
+
+## ✅ Phase 38 — Utility App Dependability
+
+**Goal:** Make the existing ring-3 utility apps prove their durable side
+effects instead of only proving that windows open.
+
+- [x] Make Text Editor smoke mode verify its saved document by reading back from
+      CoolFS or confirming the resulting directory entry.
+- [x] Make Trash smoke mode verify that the Trash listing is empty after
+      permanent deletion.
+- [x] Make Screenshot smoke mode verify that `/Pictures/SMOKE.PPM` exists and
+      has PPM magic after queuing capture.
+- [x] Add `make smoke-phase38-apps` with separate editor, Trash, and Screenshot
+      QEMU runs.
+
+**Current status:** complete. Utility app smokes now cover persisted outcomes,
+not just GUI launch paths.
+
+---
+
+## ✅ Phase 39 — Recovery and Repair Path
+
+**Goal:** Give coolOS a discoverable in-OS recovery surface that can explain the
+boot target, recreate standard directories, and leave a repair report on disk.
+
+- [x] Add `/RECOVERY/README.TXT` and `/RECOVERY/BOOT.CFG` to the generated
+      CoolFS image.
+- [x] Add a `recovery` kernel module and Terminal command for status,
+      `recovery repair`, and `recovery fsck-on-boot on|off`.
+- [x] Make `recovery repair` call the filesystem hardening repair path and write
+      `/RECOVERY/LAST-REPAIR.TXT`.
+- [x] Add `make smoke-phase39-recovery`.
+
+**Current status:** complete. The OS now exposes a recovery report path from the
+running desktop and can persist an fsck-on-boot setting for the next boot.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -1121,9 +1218,9 @@ yielding — preemption is what makes the OS real.
 Userspace binaries are written in `#![no_std]` Rust and link against
 `userspace/libcool`. The SDK owns `_start`, panic aborts, initial argv parsing,
 raw syscall assembly, and convenience APIs such as `println!`, `File::open`,
-`pipe`, `mmap`, `shmem_create`, `read_event`, `dns_resolve`, TCP sockets, and
-filesystem utility calls plus GUI windows through `libcool::fs` and
-`libcool::gui`.
+`pipe`, `mmap`, `shmem_create`, `spawn_args`, `read_event`, `dns_resolve`, TCP
+sockets, and filesystem utility calls plus GUI windows through `libcool::fs`
+and `libcool::gui`.
 
 ### Real hardware vs QEMU
 
@@ -1157,4 +1254,9 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v6.5 | Phase 31 complete: first-run setup and account management |
 | v6.6 | Phase 32 complete: user/kernel isolation hardening |
 | v6.7 | Phase 33 complete: process control and jobs |
-| v6.8 | Current — Phase 34 complete: TTY sessions and foreground job control |
+| v6.8 | Phase 34 complete: TTY sessions and foreground job control |
+| v6.9 | Phase 35 complete: real TTY stdin and line discipline |
+| v7.0 | Phase 36 complete: userspace shell foundation |
+| v7.1 | Phase 37 complete: coreutils command set |
+| v7.2 | Phase 38 complete: utility app dependability |
+| v7.3 | Current — Phase 39 complete: recovery and repair path |

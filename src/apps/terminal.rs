@@ -172,8 +172,56 @@ impl TerminalApp {
                 _ => {}
             }
         }
+        if self.foreground_job.is_some() {
+            self.forward_foreground_input(input);
+            return;
+        }
         if let Some(c) = input.legacy_char() {
             self.handle_key(c);
+        }
+    }
+
+    fn forward_foreground_input(&mut self, input: KeyInput) {
+        if input.has_ctrl() && !input.has_alt() {
+            match input.key {
+                Key::Character('d') | Key::Character('D') => {
+                    let _ = crate::tty::submit_eof(self.tty_id);
+                }
+                _ => {}
+            }
+            return;
+        }
+        if input.has_alt() {
+            return;
+        }
+        match input.key {
+            Key::Character(c) => {
+                let _ = crate::tty::submit_char(self.tty_id, c);
+            }
+            Key::Space => {
+                let _ = crate::tty::submit_char(self.tty_id, ' ');
+            }
+            Key::Tab => {
+                let _ = crate::tty::submit_char(self.tty_id, '\t');
+            }
+            Key::Enter => {
+                let _ = crate::tty::submit_enter(self.tty_id);
+            }
+            Key::Backspace | Key::Delete => {
+                let _ = crate::tty::submit_backspace(self.tty_id);
+            }
+            Key::Escape
+            | Key::ArrowUp
+            | Key::ArrowDown
+            | Key::ArrowLeft
+            | Key::ArrowRight
+            | Key::Home
+            | Key::End
+            | Key::PageUp
+            | Key::PageDown
+            | Key::F2
+            | Key::F4
+            | Key::F5 => {}
         }
     }
 
@@ -593,6 +641,8 @@ impl TerminalApp {
 
             Some("fsrepair") => self.cmd_lines("FS REPAIR", crate::fs_hardening::repair()),
 
+            Some("recovery") => self.cmd_recovery(words.collect()),
+
             Some("mounts") => self.cmd_lines("MOUNTS", crate::fs_hardening::status_lines()),
 
             Some("vfs") => self.cmd_lines("VFS", crate::vfs::mount_lines()),
@@ -856,6 +906,27 @@ impl TerminalApp {
                 }
             },
 
+            Some("sh") | Some("shell") => {
+                let abs = "/bin/sh";
+                match crate::elf::spawn_elf_process_suspended_with_args(abs, &[]) {
+                    Ok(pid) => {
+                        if self.configure_process_tty(pid, pid) {
+                            self.begin_foreground(pid, pid, None, abs);
+                            crate::scheduler::unblock(pid);
+                        } else {
+                            let _ = crate::scheduler::kill_task(pid, 143);
+                        }
+                    }
+                    Err(err) => {
+                        self.set_fg(FG_ERROR);
+                        self.print_str("sh: ");
+                        self.set_fg(FG_OUTPUT);
+                        self.print_str(err.as_str());
+                        self.print_char('\n');
+                    }
+                }
+            }
+
             Some("ipc") => match crate::vfs::vfs_pipe() {
                 Some((read_fd, write_fd)) => {
                     let r =
@@ -990,6 +1061,7 @@ impl TerminalApp {
             ("wait <pid>", "reap an exited child"),
             ("reap", "reap all exited tasks"),
             ("exec <path>", "run ELF binary"),
+            ("sh", "start userspace shell"),
             ("info", "CPU, memory, and system info"),
             ("uptime", "time since boot"),
             ("usb", "USB controller status"),
@@ -1019,6 +1091,7 @@ impl TerminalApp {
             ("fsck", "filesystem check summary"),
             ("coolfs", "CoolFS mount status"),
             ("fsrepair", "repair standard FS dirs"),
+            ("recovery [op]", "boot recovery status/repair"),
             ("mounts", "mount/cache/journal status"),
             ("vfs", "mount table and fd tables"),
             ("path <path>", "inspect normalized VFS path"),
@@ -1486,6 +1559,30 @@ impl TerminalApp {
             self.set_fg(FG_OUTPUT);
             self.print_str(&line);
             self.print_char('\n');
+        }
+    }
+
+    fn cmd_recovery(&mut self, args: Vec<&str>) {
+        match args.as_slice() {
+            ["repair"] => self.cmd_lines("RECOVERY REPAIR", crate::recovery::repair_lines()),
+            ["fsck-on-boot", "on"] | ["on"] => {
+                self.cmd_lines("RECOVERY", crate::recovery::set_fsck_on_boot(true))
+            }
+            ["fsck-on-boot", "off"] | ["off"] => {
+                self.cmd_lines("RECOVERY", crate::recovery::set_fsck_on_boot(false))
+            }
+            ["fsck-on-boot"] => {
+                self.set_fg(FG_ERROR);
+                self.print_str("usage: recovery fsck-on-boot <on|off>\n");
+            }
+            [other, ..] => {
+                self.set_fg(FG_ERROR);
+                self.print_str("recovery: unknown op ");
+                self.set_fg(FG_OUTPUT);
+                self.print_str(other);
+                self.print_char('\n');
+            }
+            [] => self.cmd_lines("RECOVERY", crate::recovery::status_lines()),
         }
     }
 
@@ -2557,9 +2654,30 @@ impl TerminalApp {
     pub fn print_char(&mut self, c: char) {
         mirror_debug_char(c);
         self.refresh_layout();
+        if c == '\r' {
+            self.col = 0;
+            return;
+        }
         if c == '\n' {
             self.col = 0;
             self.advance_row();
+            return;
+        }
+        if c == '\u{0008}' {
+            if self.col > 0 {
+                self.col -= 1;
+                self.draw_char_at(self.col, self.row, ' ');
+            }
+            return;
+        }
+        if c == '\t' {
+            let spaces = 4 - (self.col % 4);
+            for _ in 0..spaces {
+                self.print_char(' ');
+            }
+            return;
+        }
+        if c.is_control() {
             return;
         }
         if self.col >= self.cols {

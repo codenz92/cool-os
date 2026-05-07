@@ -2,9 +2,10 @@
 /// CoolFS starts at LBA 0 and is the root filesystem. A FAT32 compatibility
 /// region is still formatted at 8 MiB for the optional `/FAT` import mount.
 ///
-/// Usage: fs-image <output-path> [hello-elf] [exec-elf] [pipe-elf] [read-elf] [piperd-elf] [pipewr-elf] [keyecho-elf] [terminal-elf] [netdemo-elf] [wget-elf] [sdkdemo-elf] [guidemo-elf] [notes-elf] [editor-elf] [trash-elf] [screenshot-elf] [procdemo-elf] [procsleep-elf] [sentinel-elf] [badptr-elf] [badwrite-elf] [badmmap-elf] [badexec-elf] [baduserread-elf]
+/// Usage: fs-image <output-path> [hello-elf] [exec-elf] [pipe-elf] [read-elf] [piperd-elf] [pipewr-elf] [keyecho-elf] [terminal-elf] [ttyread-elf] [netdemo-elf] [wget-elf] [sdkdemo-elf] [guidemo-elf] [notes-elf] [editor-elf] [trash-elf] [screenshot-elf] [procdemo-elf] [procsleep-elf] [sentinel-elf] [badptr-elf] [badwrite-elf] [badmmap-elf] [badexec-elf] [baduserread-elf] [extra-bin-elf...]
 /// Output: a 64 MiB raw OS disk image ready to attach as a QEMU IDE drive.
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::Path;
 
 const IMAGE_SIZE: u64 = 64 * 1024 * 1024; // 64 MiB
 const LEGACY_FAT_OFFSET: u64 = 8 * 1024 * 1024; // 8 MiB
@@ -21,6 +22,7 @@ fn main() {
     let pipewr_elf = args.next();
     let keyecho_elf = args.next();
     let terminal_elf = args.next();
+    let ttyread_elf = args.next();
     let netdemo_elf = args.next();
     let wget_elf = args.next();
     let sdkdemo_elf = args.next();
@@ -37,6 +39,7 @@ fn main() {
     let badmmap_elf = args.next();
     let badexec_elf = args.next();
     let baduserread_elf = args.next();
+    let extra_bin_elfs: Vec<String> = args.collect();
 
     // Create or truncate the file, set it to the desired size.
     let mut file = std::fs::OpenOptions::new()
@@ -87,6 +90,7 @@ fn main() {
         "Downloads",
         "Packages",
         "FONTS",
+        "RECOVERY",
     ] {
         root.create_dir(dir)
             .unwrap_or_else(|e| panic!("failed to create /{}: {}", dir, e));
@@ -123,6 +127,10 @@ fn main() {
 
     let users_db = default_users_db();
     coolfs.create_file("/CONFIG/USERS.DB", users_db.as_bytes());
+    let recovery_readme = b"coolOS recovery\n\nBoot target: BIOS VBE framebuffer, IDE disk index 1, CoolFS root at /.\nRun `recovery` for status and `recovery repair` to recreate standard system directories and write /RECOVERY/LAST-REPAIR.TXT.\n";
+    coolfs.create_file("/RECOVERY/README.TXT", recovery_readme);
+    let recovery_boot_cfg = b"boot=normal\nroot=/\nrootfs=coolfs\nvideo=bios-vbe\nstorage=ide1\n";
+    coolfs.create_file("/RECOVERY/BOOT.CFG", recovery_boot_cfg);
 
     if let Some(hello_path) = hello_elf {
         let hello_bytes = std::fs::read(&hello_path)
@@ -214,6 +222,19 @@ fn main() {
             .write_all(&terminal_bytes)
             .expect("failed to write terminal");
         coolfs.create_file("/bin/terminal", &terminal_bytes);
+    }
+
+    if let Some(ttyread_path) = ttyread_elf {
+        let ttyread_bytes = std::fs::read(&ttyread_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {}", ttyread_path, e));
+        let mut ttyread_bin = bin
+            .create_file("ttyread")
+            .expect("failed to create ttyread");
+        ttyread_bin.truncate().unwrap();
+        ttyread_bin
+            .write_all(&ttyread_bytes)
+            .expect("failed to write ttyread");
+        coolfs.create_file("/bin/ttyread", &ttyread_bytes);
     }
 
     if let Some(netdemo_path) = netdemo_elf {
@@ -412,6 +433,23 @@ fn main() {
             .write_all(&baduserread_bytes)
             .expect("failed to write baduserread");
         coolfs.create_file("/bin/baduserread", &baduserread_bytes);
+    }
+
+    for extra_path in extra_bin_elfs {
+        let name = Path::new(&extra_path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_else(|| panic!("invalid extra binary path {}", extra_path));
+        let bytes = std::fs::read(&extra_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {}", extra_path, e));
+        let mut fat_bin = bin
+            .create_file(name)
+            .unwrap_or_else(|e| panic!("failed to create {}: {}", name, e));
+        fat_bin.truncate().unwrap();
+        fat_bin
+            .write_all(&bytes)
+            .unwrap_or_else(|e| panic!("failed to write {}: {}", name, e));
+        coolfs.create_file(&format!("/bin/{}", name), &bytes);
     }
 
     let packages = root.open_dir("Packages").expect("failed to open /Packages");

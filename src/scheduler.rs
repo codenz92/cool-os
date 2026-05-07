@@ -123,6 +123,7 @@ impl Scheduler {
         });
         crate::vfs::init_task(0);
         CURRENT_SYSCALL_STACK_TOP.store(0, Ordering::Relaxed);
+        crate::gdt::set_privilege_stack_top(crate::gdt::default_privilege_stack_top());
     }
 
     fn spawn_context(
@@ -356,6 +357,12 @@ impl Scheduler {
         self.current = next;
         CURRENT_SYSCALL_STACK_TOP
             .store(self.tasks[next].syscall_stack_top as u64, Ordering::Relaxed);
+        let privilege_stack_top = if self.tasks[next].syscall_stack_top == 0 {
+            crate::gdt::default_privilege_stack_top()
+        } else {
+            self.tasks[next].syscall_stack_top as u64
+        };
+        crate::gdt::set_privilege_stack_top(privilege_stack_top);
 
         // Switch address space: load the winning task's PML4, or restore the
         // boot PML4 for kernel tasks (pml4=None) so they never run with a
@@ -636,15 +643,13 @@ pub fn unblock(task_id: usize) {
 }
 
 pub fn exit_current(code: u64) {
-    let (task_id, name) = {
+    let (task_id, name, parent) = {
         let sched = SCHEDULER.lock();
         let task_id = sched.current;
-        let name = sched
-            .tasks
-            .get(task_id)
-            .map(|task| task.name)
-            .unwrap_or("task");
-        (task_id, name)
+        let task = sched.tasks.get(task_id);
+        let name = task.map(|task| task.name).unwrap_or("task");
+        let parent = task.and_then(|task| task.parent);
+        (task_id, name, parent)
     };
 
     // Keep the exiting task schedulable while cleanup may allocate or take
@@ -667,6 +672,7 @@ pub fn exit_current(code: u64) {
             task.wake_tick = None;
         }
     });
+    wake_waiting_parent(parent);
 }
 
 pub fn kill_task(task_id: usize, code: u64) -> Result<(), KillError> {
@@ -698,15 +704,17 @@ pub fn kill_task(task_id: usize, code: u64) -> Result<(), KillError> {
         }
     }
 
-    let name = {
+    let (name, parent) = {
         let mut sched = SCHEDULER.lock();
         let task = sched.tasks.get_mut(task_id).ok_or(KillError::InvalidTask)?;
         let name = task.name;
+        let parent = task.parent;
         task.status = TaskStatus::Exited;
         task.exit_code = Some(code);
         task.wake_tick = None;
-        name
+        (name, parent)
     };
+    wake_waiting_parent(parent);
     crate::vfs::drop_task(task_id);
     crate::wm::close_user_gui_windows_for_owner(task_id);
     crate::profiler::record_task(task_id, name, "killed");
@@ -719,20 +727,19 @@ pub fn kill_task(task_id: usize, code: u64) -> Result<(), KillError> {
 }
 
 pub fn fault_current(code: u64, reason: &'static str) -> usize {
-    let (task_id, name) = {
+    let (task_id, name, parent) = {
         let mut sched = SCHEDULER.lock();
         let task_id = sched.current;
-        let name = sched
-            .tasks
-            .get(task_id)
-            .map(|task| task.name)
-            .unwrap_or("task");
+        let task = sched.tasks.get(task_id);
+        let name = task.map(|task| task.name).unwrap_or("task");
+        let parent = task.and_then(|task| task.parent);
         if let Some(task) = sched.tasks.get_mut(task_id) {
             task.status = TaskStatus::Exited;
             task.exit_code = Some(code);
         }
-        (task_id, name)
+        (task_id, name, parent)
     };
+    wake_waiting_parent(parent);
     crate::vfs::drop_task(task_id);
     crate::wm::close_user_gui_windows_for_owner(task_id);
     crate::profiler::record_task(task_id, name, reason);
@@ -935,6 +942,13 @@ pub fn waitpid(parent: usize, task_id: usize) -> Result<u64, WaitError> {
         crate::deferred::enqueue(crate::deferred::DeferredWork::PersistTaskSnapshot);
     }
     result
+}
+
+fn wake_waiting_parent(parent: Option<usize>) {
+    if let Some(parent) = parent {
+        crate::wait_queue::wake("waitpid", parent);
+        unblock(parent);
+    }
 }
 
 pub fn reap_all_exited(parent: usize) -> usize {

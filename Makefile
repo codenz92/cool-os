@@ -1,4 +1,4 @@
-.PHONY: run run-net run-usb run-usb-init run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-phase31-accounts smoke-phase32-isolation smoke-phase33-process-control smoke-phase34-tty-jobs smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
+.PHONY: run run-net run-usb run-usb-init run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-phase31-accounts smoke-phase32-isolation smoke-phase33-process-control smoke-phase34-tty-jobs smoke-phase35-tty-input smoke-phase36-userspace-shell smoke-phase37-coreutils smoke-phase38-apps smoke-phase39-recovery smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -17,6 +17,16 @@ USER_PIPERD_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/relea
 USER_PIPEWR_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/pipewr
 USER_KEYECHO_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/keyecho
 USER_TERMINAL_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/terminal
+USER_TTYREAD_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/ttyread
+USER_SH_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/sh
+USER_LS_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/ls
+USER_CAT_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/cat
+USER_ECHO_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/echo
+USER_PWD_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/pwd
+USER_MKDIR_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/mkdir
+USER_TOUCH_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/touch
+USER_RM_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/rm
+USER_WRITEFILE_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/writefile
 USER_NETDEMO_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/netdemo
 USER_WGET_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/wget
 USER_SDKDEMO_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/sdkdemo
@@ -432,7 +442,7 @@ smoke-userspace-sdk: build
 		--pre-type-delay $(SMOKE_PRE_TYPE_DELAY) \
 		--type-text "exec /bin/sdkdemo alpha\n" \
 		--post-hmp-delay 2.0 \
-		--expect "sdkdemo: libcool sdk=1 abi=5" \
+		--expect "sdkdemo: libcool sdk=1 abi=7" \
 		--expect "sdkdemo: argv [0]=/bin/sdkdemo [1]=alpha" \
 		--expect "sdkdemo: sdk pipe ok" \
 		--expect "sdkdemo: mmap ok" \
@@ -689,7 +699,7 @@ smoke-phase32-isolation: build
 		--usb \
 		--seconds 45 \
 		--retries $(SMOKE_RETRIES) \
-		--fw-cmd "exec /bin/badptr;;exec /bin/badwrite;;exec /bin/badmmap;;exec /bin/badexec;;exec /bin/baduserread;;crash" \
+		--fw-cmd "job run /bin/badptr;;job run /bin/badwrite;;job run /bin/badmmap;;job run /bin/badexec;;exec /bin/baduserread;;crash" \
 		--expect "[selftest] kernel unit checks ok=27 fail=0" \
 		--expect "badptr: denied" \
 		--expect "badwrite: denied" \
@@ -768,6 +778,135 @@ smoke-phase34-tty-jobs: build
 		--expect "paused" \
 		--expect "background job #" \
 		--expect "cancelled" \
+		--expect "[boot] desktop ready"
+
+smoke-phase35-tty-input: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds 45 \
+		--retries $(SMOKE_RETRIES) \
+		--fw-cmd "exec /bin/ttyread" \
+		--no-auto-login \
+		--interact-after "ttyread: ready" \
+		--type-text "hello from tty\n" \
+		--expect "[selftest] kernel unit checks ok=27 fail=0" \
+		--expect "foreground /bin/ttyread" \
+		--expect "ttyread: ready" \
+		--expect "ttyread: got hello from tty" \
+		--expect "[fg done] /bin/ttyread" \
+		--expect "[boot] desktop ready"
+
+smoke-phase36-userspace-shell: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds 50 \
+		--retries $(SMOKE_RETRIES) \
+		--fw-cmd "sh" \
+		--no-auto-login \
+		--interact-after "sh: ready abi=7" \
+		--type-text "pwd\nls /bin\ncat /bin/hello.txt\necho userspace shell ok\nexit\n" \
+		--expect "[selftest] kernel unit checks ok=27 fail=0" \
+		--expect "foreground /bin/sh" \
+		--expect "sh: ready abi=7" \
+		--expect "Hello from /bin/hello.txt!" \
+		--expect "userspace shell ok" \
+		--expect "[fg done] /bin/sh pid=3 exit=0" \
+		--expect "[boot] desktop ready"
+
+smoke-phase37-coreutils: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds 55 \
+		--retries $(SMOKE_RETRIES) \
+		--fw-cmd "sh" \
+		--no-auto-login \
+		--interact-after "sh: ready abi=7" \
+		--type-text "run /bin/pwd\nrun /bin/echo external coreutils ok\nrun /bin/ls /bin\nrun /bin/cat /bin/hello.txt\nrun /bin/mkdir /TMP/PH37\nrun /bin/writefile /TMP/PH37/NOTE coreutils file ok\nrun /bin/cat /TMP/PH37/NOTE\nrun /bin/touch /TMP/PH37/EMPTY\nrun /bin/rm /TMP/PH37/EMPTY\nrun /bin/rm /TMP/PH37\nexit\n" \
+		--expect "[selftest] kernel unit checks ok=27 fail=0" \
+		--expect "foreground /bin/sh" \
+		--expect "sh: ready abi=7" \
+		--expect "external coreutils ok" \
+		--expect "F	ls" \
+		--expect "Hello from /bin/hello.txt!" \
+		--expect "coreutils file ok" \
+		--expect "[fg done] /bin/sh pid=3 exit=0" \
+		--expect "[boot] desktop ready"
+
+smoke-phase38-apps: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-editor" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds 60 \
+		--retries $(SMOKE_RETRIES) \
+		--fw-cmd "exec /bin/editor /documents/phase38-editor.txt smoke" \
+		--expect "[selftest] kernel unit checks ok=27 fail=0" \
+		--expect "editor: window opened" \
+		--expect "editor: saved /documents/phase38-editor.txt" \
+		--expect "editor: verified /documents/phase38-editor.txt" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-trash" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds 45 \
+		--retries $(SMOKE_RETRIES) \
+		--fw-cmd "exec /bin/trash smoke" \
+		--expect "[selftest] kernel unit checks ok=27 fail=0" \
+		--expect "trash: window opened" \
+		--expect "trash: listed" \
+		--expect "trash: empty ok" \
+		--expect "trash: verified empty" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-screenshot" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds 45 \
+		--retries $(SMOKE_RETRIES) \
+		--fw-cmd "exec /bin/screenshot smoke" \
+		--expect "[selftest] kernel unit checks ok=27 fail=0" \
+		--expect "screenshot: window opened" \
+		--expect "screenshot: queued /Pictures/SMOKE.PPM" \
+		--expect "screenshot: saved /Pictures/SMOKE.PPM" \
+		--expect "[boot] desktop ready"
+
+smoke-phase39-recovery: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds 45 \
+		--retries $(SMOKE_RETRIES) \
+		--fw-cmd "recovery;;recovery repair;;cat /RECOVERY/LAST-REPAIR.TXT;;recovery fsck-on-boot on;;recovery" \
+		--expect "[selftest] kernel unit checks ok=27 fail=0" \
+		--expect "RECOVERY" \
+		--expect "mode=normal recovery=available" \
+		--expect "boot=BIOS/VBE root=/ type=coolfs" \
+		--expect "wrote /RECOVERY/LAST-REPAIR.TXT" \
+		--expect "coolOS recovery repair report" \
+		--expect "storage.fsck_on_boot=true saved" \
+		--expect "fsck_on_boot=true" \
 		--expect "[boot] desktop ready"
 
 smoke-coolfs-native: build
@@ -1006,7 +1145,7 @@ build:
 		--target-dir $(CURDIR)/target/userspace/hello \
 		-Z build-std=core,compiler_builtins
 	(cd disk-image && cargo run --bin disk-image -- "$(KERNEL)")
-	(cd disk-image && cargo run --bin fs-image -- "$(FSIMG)" "$(USER_TARGET)" "$(USER_EXEC_TARGET)" "$(USER_PIPE_TARGET)" "$(USER_READ_TARGET)" "$(USER_PIPERD_TARGET)" "$(USER_PIPEWR_TARGET)" "$(USER_KEYECHO_TARGET)" "$(USER_TERMINAL_TARGET)" "$(USER_NETDEMO_TARGET)" "$(USER_WGET_TARGET)" "$(USER_SDKDEMO_TARGET)" "$(USER_GUIDEMO_TARGET)" "$(USER_NOTES_TARGET)" "$(USER_EDITOR_TARGET)" "$(USER_TRASH_TARGET)" "$(USER_SCREENSHOT_TARGET)" "$(USER_PROCDEMO_TARGET)" "$(USER_PROCSLEEP_TARGET)" "$(USER_SENTINEL_TARGET)" "$(USER_BADPTR_TARGET)" "$(USER_BADWRITE_TARGET)" "$(USER_BADMMAP_TARGET)" "$(USER_BADEXEC_TARGET)" "$(USER_BADUSERREAD_TARGET)")
+	(cd disk-image && cargo run --bin fs-image -- "$(FSIMG)" "$(USER_TARGET)" "$(USER_EXEC_TARGET)" "$(USER_PIPE_TARGET)" "$(USER_READ_TARGET)" "$(USER_PIPERD_TARGET)" "$(USER_PIPEWR_TARGET)" "$(USER_KEYECHO_TARGET)" "$(USER_TERMINAL_TARGET)" "$(USER_TTYREAD_TARGET)" "$(USER_NETDEMO_TARGET)" "$(USER_WGET_TARGET)" "$(USER_SDKDEMO_TARGET)" "$(USER_GUIDEMO_TARGET)" "$(USER_NOTES_TARGET)" "$(USER_EDITOR_TARGET)" "$(USER_TRASH_TARGET)" "$(USER_SCREENSHOT_TARGET)" "$(USER_PROCDEMO_TARGET)" "$(USER_PROCSLEEP_TARGET)" "$(USER_SENTINEL_TARGET)" "$(USER_BADPTR_TARGET)" "$(USER_BADWRITE_TARGET)" "$(USER_BADMMAP_TARGET)" "$(USER_BADEXEC_TARGET)" "$(USER_BADUSERREAD_TARGET)" "$(USER_SH_TARGET)" "$(USER_LS_TARGET)" "$(USER_CAT_TARGET)" "$(USER_ECHO_TARGET)" "$(USER_PWD_TARGET)" "$(USER_MKDIR_TARGET)" "$(USER_TOUCH_TARGET)" "$(USER_RM_TARGET)" "$(USER_WRITEFILE_TARGET)")
 
 build-usb-init: build
 

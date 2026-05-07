@@ -14,6 +14,7 @@
 ///   4  mmap(addr, len, flags) → addr on success, u64::MAX on failure
 ///   5  open(path_ptr, path_len) → fd on success, u64::MAX on failure
 ///   6  read(fd, buf_ptr, len) → bytes read, u64::MAX on error
+///      fd 0 reads from the current task's controlling TTY when one is assigned
 ///   7  close(fd) → 0
 ///   8  exec(path_ptr, path_len) → 0 on success, u64::MAX on error
 ///   9  pipe(fds_ptr) → 0 on success, u64::MAX on failure
@@ -43,6 +44,7 @@
 ///   33 setpgid(pid, pgid) → 0 on success
 ///   34 getpgid(pid) → pgid on success
 ///   35 signal_group(pgid, signal) → delivered count on success
+///   36 spawn_args(desc_ptr) → pid on success, u64::MAX on failure
 ///
 /// Output path: sys_write routes bytes to the current task's controlling TTY
 /// when one is assigned, then falls back to SYSCALL_OUTPUT for early boot and
@@ -258,6 +260,7 @@ extern "C" fn syscall_dispatch(
         33 => sys_setpgid(a1, a2),
         34 => sys_getpgid(a1),
         35 => sys_signal_group(a1, a2),
+        36 => sys_spawn_args(a1 as *const u8),
         _ => u64::MAX,
     }
 }
@@ -380,7 +383,15 @@ fn sys_read(fd: u64, buf_ptr: *mut u8, len: u64) -> u64 {
     }
     kernel_buf.resize(len as usize, 0);
 
-    let n = crate::vfs::vfs_read_blocking(fd as usize, &mut kernel_buf, len as usize);
+    let n = if fd == 0 {
+        if let Some(tty) = crate::scheduler::current_tty() {
+            crate::tty::read_input_blocking(tty, &mut kernel_buf, len as usize)
+        } else {
+            crate::vfs::vfs_read_blocking(fd as usize, &mut kernel_buf, len as usize)
+        }
+    } else {
+        crate::vfs::vfs_read_blocking(fd as usize, &mut kernel_buf, len as usize)
+    };
     if n == usize::MAX {
         u64::MAX
     } else {
@@ -630,14 +641,33 @@ fn sys_waitpid(pid: u64, status_ptr: *mut u64) -> u64 {
         return u64::MAX;
     }
     let parent = crate::scheduler::current_task_id();
-    match crate::scheduler::waitpid(parent, pid as usize) {
-        Ok(code) => unsafe {
-            if !status_ptr.is_null() {
-                *status_ptr = code;
+    loop {
+        match crate::scheduler::waitpid(parent, pid as usize) {
+            Ok(code) => unsafe {
+                if !status_ptr.is_null() {
+                    *status_ptr = code;
+                }
+                return pid;
+            },
+            Err(crate::scheduler::WaitError::NotExited) => {
+                crate::wait_queue::wait("waitpid", parent);
+                crate::scheduler::block_current();
+                while crate::scheduler::current_task_blocked() {
+                    if crate::scheduler::current_has_pending_signal() {
+                        break;
+                    }
+                    unsafe {
+                        core::arch::asm!("sti; hlt; cli", options(nomem, nostack));
+                    }
+                }
+                crate::wait_queue::wake("waitpid", parent);
+                x86_64::instructions::interrupts::disable();
+                if crate::scheduler::current_has_pending_signal() {
+                    return u64::MAX;
+                }
             }
-            pid
-        },
-        Err(_) => u64::MAX,
+            Err(_) => return u64::MAX,
+        }
     }
 }
 
@@ -651,6 +681,67 @@ fn sys_spawn(path_ptr: *const u8, path_len: u64) -> u64 {
     };
     let path = String::from(path);
     match crate::elf::spawn_elf_process_with_args(&path, &[]) {
+        Ok(pid) => pid as u64,
+        Err(_) => u64::MAX,
+    }
+}
+
+fn sys_spawn_args(desc_ptr: *const u8) -> u64 {
+    const MAX_ARGC: u64 = 7;
+    let Some(desc) = user_descriptor4(desc_ptr) else {
+        return u64::MAX;
+    };
+    let Some(path) = user_path(desc[0] as *const u8, desc[1]) else {
+        return u64::MAX;
+    };
+    let argc = desc[3];
+    if argc > MAX_ARGC {
+        return u64::MAX;
+    }
+
+    let arg_pairs = if argc == 0 {
+        &[][..]
+    } else {
+        let pair_bytes = argc.saturating_mul(16);
+        let Some(bytes) = user_slice(desc[2] as *const u8, pair_bytes, MAX_ARGC * 16) else {
+            return u64::MAX;
+        };
+        bytes
+    };
+
+    let mut arg_strings = Vec::new();
+    if arg_strings.try_reserve_exact(argc as usize).is_err() {
+        return u64::MAX;
+    }
+    for idx in 0..argc as usize {
+        let base = idx * 16;
+        let ptr = u64::from_le_bytes(match arg_pairs[base..base + 8].try_into() {
+            Ok(bytes) => bytes,
+            Err(_) => return u64::MAX,
+        });
+        let len = u64::from_le_bytes(match arg_pairs[base + 8..base + 16].try_into() {
+            Ok(bytes) => bytes,
+            Err(_) => return u64::MAX,
+        });
+        let Some(bytes) = user_slice(ptr as *const u8, len, MAX_USER_STRING) else {
+            return u64::MAX;
+        };
+        let Ok(arg) = core::str::from_utf8(bytes) else {
+            return u64::MAX;
+        };
+        arg_strings.push(String::from(arg));
+    }
+
+    let path = String::from(path);
+    let mut arg_refs = Vec::new();
+    if arg_refs.try_reserve_exact(arg_strings.len()).is_err() {
+        return u64::MAX;
+    }
+    for arg in &arg_strings {
+        arg_refs.push(arg.as_str());
+    }
+
+    match crate::elf::spawn_elf_process_with_args(&path, &arg_refs) {
         Ok(pid) => pid as u64,
         Err(_) => u64::MAX,
     }
@@ -731,7 +822,7 @@ fn sys_sleep_ms(ms: u64) {
             break;
         }
         unsafe {
-            core::arch::asm!("sti; hlt", options(nomem, nostack));
+            core::arch::asm!("sti; hlt; cli", options(nomem, nostack));
         }
     }
     crate::wait_queue::wake("timer-sleep", crate::scheduler::current_task_id());
