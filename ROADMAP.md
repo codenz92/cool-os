@@ -4,7 +4,7 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–70 are complete. The current milestone gives coolOS a much more
+Phases 1–71 are complete. The current milestone gives coolOS a much more
 normal command-line and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
@@ -57,8 +57,15 @@ installs copy real payload files transactionally: manifests can declare
 payload target/source/hash/mode entries, installs verify and write those
 payloads, owner records pin the installed payload table, repair restores payload
 files, remove deletes owned payloads, and `/LOGS/PACKAGE-TXN.TXT` records clean
-or rolled-back install/repair/remove state.
-Phases 45-70 focus on responsiveness, interactive terminal behavior, and
+or rolled-back install/repair/remove state. Phase 71 pivots modern browser work
+from incremental native-parser growth to a real engine port track: WPE WebKit is
+the selected target, the native browser remains the fallback/debug renderer,
+`src/browser_engine.rs` exposes a browser engine port ABI/readiness model,
+`/CONFIG/BROWSER-ENGINE.CFG` records preferred/fallback engine policy,
+`/SDK/BROWSER_ENGINE_PORT.TXT` documents the host contract and blockers, and
+Terminal, Browser, Recovery, Diagnostics, and Sysreport expose the WPE readiness
+surface.
+Phases 45-71 focus on responsiveness, interactive terminal behavior, and
 desktop-browser compatibility:
 cursor-only framebuffer updates,
 input-first idle-loop ordering, adaptive 36/144 Hz frame pacing, compositor
@@ -72,7 +79,8 @@ content-type routing, compatibility diagnostics, resource accounting for the
 scheduler, VMM, VFS, shared memory, and sockets, low-memory recovery, durable
 service recovery, update rollback, boot-health rollback, signed update
 verification, update key rotation, downgrade refusal, signed package
-install/repair trust, and package payload transactions.
+install/repair trust, package payload transactions, and the first explicit
+WPE WebKit port ABI for a future full browser engine.
 
 ---
 
@@ -2128,6 +2136,45 @@ an install is rolled back.
 
 ---
 
+## ✅ Phase 71 — Browser Engine Port ABI
+
+**Goal:** Stop treating the native HTML/CSS renderer as the path to Chrome-class
+compatibility and create the first real host boundary for a mature embeddable
+engine, with WPE WebKit selected as the primary target and the existing native
+browser kept as a small fallback/debug renderer.
+
+- [x] Add `src/browser_engine.rs` with browser engine port ABI v1, WPE WebKit
+      target metadata, native fallback selection, backend readiness probing, and
+      a requirement table for process isolation, surfaces, input, networking,
+      filesystem, mmap, timers, fonts, threads/futexes, dynamic linking, JIT
+      policy, and GPU acceleration.
+- [x] Persist default engine policy under `/CONFIG/BROWSER-ENGINE.CFG` and a
+      boot-readable engine port log under `/LOGS/BROWSER-ENGINE.TXT`.
+- [x] Reserve `/SYSTEM/BROWSER-ENGINE` and define
+      `/SYSTEM/BROWSER-ENGINE/WPE.READY` as the future backend-ready probe.
+- [x] Add Terminal `engine`, `engine abi`, `engine requirements`,
+      `engine config`, `engine log`, and `engine recovery` diagnostics.
+- [x] Add `browser://engine` and link it from the Browser home/compatibility
+      pages so the GUI exposes the same WPE readiness state.
+- [x] Include browser-engine readiness in Recovery, Diagnostics, Sysreport,
+      ABI output, config-store diagnostics, and in-OS About/Diagnostics text.
+- [x] Generate `/SDK/BROWSER_ENGINE_PORT.TXT` and extend `/SDK/README.TXT`,
+      Terminal `devkit`, and `/bin/devkit` so engine-port work has a discoverable
+      host-contract document.
+- [x] Add `make smoke-phase71-browser-engine-port` covering Terminal engine
+      diagnostics, ABI manifest output, requirement blockers, browser launch
+      routing to `browser://engine`, sysreport/recovery lines, and SDK docs.
+- [x] Update README, Roadmap, and in-OS text for v7.35.
+
+**Current status:** complete. coolOS now has an explicit WPE WebKit port target
+and an inspectable browser engine host contract. A real WebKit backend is not
+booting yet; the readiness surface deliberately identifies the remaining OS
+work: userspace threads/futexes, dynamic linking/C runtime support, larger/file
+backed mappings, JavaScriptCore JIT/interpreter policy, richer POSIX socket/file
+semantics, scalable fonts/text shaping, and eventually graphics acceleration.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -2214,4 +2261,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.31 | Phase 67 complete: Signed updates and integrity verification |
 | v7.32 | Phase 68 complete: Update key rotation and anti-rollback |
 | v7.33 | Phase 69 complete: Package trust and repair |
-| v7.34 | Current — Phase 70 complete: Package payloads and transactional installs |
+| v7.34 | Phase 70 complete: Package payloads and transactional installs |
+| v7.35 | Current — Phase 71 complete: Browser engine port ABI |

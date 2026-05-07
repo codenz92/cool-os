@@ -21,6 +21,11 @@ pub fn lines() -> Vec<String> {
     );
     push_section(&mut lines, "updates", crate::updates::status_lines());
     push_section(&mut lines, "packages", crate::packages::status_lines());
+    push_section(
+        &mut lines,
+        "browser engine",
+        crate::browser_engine::status_lines(),
+    );
     push_section(&mut lines, "tasks", crate::process_model::status_lines());
     push_section(
         &mut lines,

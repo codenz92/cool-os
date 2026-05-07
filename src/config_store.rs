@@ -67,6 +67,7 @@ pub fn lines() -> Vec<String> {
         "/CONFIG/APPS.CFG",
         "/CONFIG/ACCESS.CFG",
         "/CONFIG/BROWSER.CFG",
+        "/CONFIG/BROWSER-ENGINE.CFG",
         "/CONFIG/BROWSER.COOKIES",
         "/CONFIG/BROWSER.STORAGE",
         "/CONFIG/SHORTCUT.CFG",

@@ -1,4 +1,4 @@
-.PHONY: run run-net run-usb run-usb-init run-smooth run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-phase31-accounts smoke-phase32-isolation smoke-phase33-process-control smoke-phase34-tty-jobs smoke-phase35-tty-input smoke-phase36-userspace-shell smoke-phase37-coreutils smoke-phase38-apps smoke-phase39-recovery smoke-phase40-shell-semantics smoke-phase41-fs-durability smoke-phase42-app-consistency smoke-phase43-observability smoke-phase44-devkit smoke-phase45-smoothness smoke-phase46-adaptive-refresh smoke-phase47-evented-userspace smoke-phase48-terminal-tui smoke-phase49-browser-engine smoke-phase50-css-layout smoke-phase51-browser-forms smoke-phase52-dom-events smoke-phase53-dom-forms smoke-phase54-browser-post smoke-phase55-browser-session smoke-phase56-css-box-model smoke-phase57-browser-layout smoke-phase58-browser-subresources smoke-phase59-browser-js smoke-phase60-browser-webapi smoke-phase61-browser-compat smoke-phase62-resource-limits smoke-phase63-memory-pressure smoke-phase64-services smoke-phase65-update-rollback smoke-phase66-boot-health smoke-phase67-update-trust smoke-phase68-update-keys smoke-phase69-package-trust smoke-phase70-package-payloads smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
+.PHONY: run run-net run-usb run-usb-init run-smooth run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-phase31-accounts smoke-phase32-isolation smoke-phase33-process-control smoke-phase34-tty-jobs smoke-phase35-tty-input smoke-phase36-userspace-shell smoke-phase37-coreutils smoke-phase38-apps smoke-phase39-recovery smoke-phase40-shell-semantics smoke-phase41-fs-durability smoke-phase42-app-consistency smoke-phase43-observability smoke-phase44-devkit smoke-phase45-smoothness smoke-phase46-adaptive-refresh smoke-phase47-evented-userspace smoke-phase48-terminal-tui smoke-phase49-browser-engine smoke-phase50-css-layout smoke-phase51-browser-forms smoke-phase52-dom-events smoke-phase53-dom-forms smoke-phase54-browser-post smoke-phase55-browser-session smoke-phase56-css-box-model smoke-phase57-browser-layout smoke-phase58-browser-subresources smoke-phase59-browser-js smoke-phase60-browser-webapi smoke-phase61-browser-compat smoke-phase62-resource-limits smoke-phase63-memory-pressure smoke-phase64-services smoke-phase65-update-rollback smoke-phase66-boot-health smoke-phase67-update-trust smoke-phase68-update-keys smoke-phase69-package-trust smoke-phase70-package-payloads smoke-phase71-browser-engine-port smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -1046,12 +1046,14 @@ smoke-phase44-devkit: build
 		--usb \
 		--seconds 45 \
 		--retries $(SMOKE_RETRIES) \
-		--fw-cmd "devkit;;cat /SDK/README.TXT;;exec /bin/devkit" \
+		--fw-cmd "devkit;;cat /SDK/README.TXT;;cat /SDK/BROWSER_ENGINE_PORT.TXT;;exec /bin/devkit" \
 		--expect "coolOS devkit ABI=10" \
 		--expect "coolOS SDK" \
 		--expect "ABI version: 10" \
+		--expect "Target engine: WPE WebKit." \
 		--expect "foreground /bin/devkit" \
 		--expect "template: /SDK/APP_TEMPLATE.RS" \
+		--expect "browser engine: /SDK/BROWSER_ENGINE_PORT.TXT" \
 		--expect "[fg done] /bin/devkit" \
 		--expect "[boot] desktop ready"
 
@@ -1848,6 +1850,28 @@ smoke-phase70-package-payloads: build
 		--expect "pkg: package transaction rollback" \
 		--expect "transaction=rolled-back action=install id=app.phase25.guidemo" \
 		--expect "hash: file not found" \
+		--expect "[boot] desktop ready"
+
+smoke-phase71-browser-engine-port: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--fw-cmd "engine;;engine abi;;engine requirements;;browser browser://engine;;diagnostics;;recovery;;sysreport write;;cat /LOGS/SYSREPORT.TXT;;cat /SDK/BROWSER_ENGINE_PORT.TXT" \
+		--screendump "$(SMOKE_ARTIFACT_DIR)/phase71-browser-engine-port.ppm" \
+		--expect-framebuffer-window \
+		--expect "BROWSER ENGINE PORT" \
+		--expect "engine-port abi=1 target=wpe-webkit fallback=coolos-native active=coolos-native" \
+		--expect "surface=rgba-shmem" \
+		--expect "req.threads-futex=missing" \
+		--expect "backend_probe=/SYSTEM/BROWSER-ENGINE/WPE.READY" \
+		--expect "browser: opening browser://engine" \
+		--expect "== browser engine ==" \
+		--expect "browser_engine=port-prep target=wpe-webkit active=coolos-native abi=1" \
+		--expect "Target engine: WPE WebKit." \
 		--expect "[boot] desktop ready"
 
 smoke-coolfs-native: build

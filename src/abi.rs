@@ -24,6 +24,12 @@ pub fn lines() -> Vec<String> {
         String::from(
             "syscalls: chdir/getcwd/stat/rename/open_write/spawn_fds_args/sync/time/poll/tty_control",
         ),
+        format!(
+            "browser-engine-port abi={} target={} fallback={}",
+            crate::browser_engine::PORT_ABI_VERSION,
+            crate::browser_engine::TARGET_ENGINE,
+            crate::browser_engine::FALLBACK_ENGINE
+        ),
         String::from("stdio: mapped fd 0/1/2 override TTY for pipes and redirection"),
     ]
 }

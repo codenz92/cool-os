@@ -13,7 +13,7 @@ stdio, and IPC with pipes, shared memory, and per-task fd tables.
 
 ---
 
-# Current state — v7.34
+# Current state — v7.35
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -62,7 +62,7 @@ rename, writable file descriptors, fd-mapped child stdio, sync, and RTC time;
 `/bin/sh` now supports quoting, relative paths, redirection, and one-stage
 pipelines; `/bin` includes practical file/text/date/devkit tools; sysreport can
 write `/LOGS/SYSREPORT.TXT`; and the generated image ships `/SDK` docs and
-templates. Phases 45-70 add compositor smoothness, evented terminal work, and
+templates. Phases 45-71 add compositor smoothness, evented terminal work, and
 a richer native browser renderer:
 timer ticks now request
 paced frames instead of unconditional full redraws, mouse-only motion uses a
@@ -96,7 +96,8 @@ modern script-heavy pages, main-resource content-type routing so JavaScript and
 non-HTML resources show source diagnostics instead of being laid out as HTML,
 a Google/Search compatibility shell that keeps the search form usable on
 `https://www.google.com/`, and `browser://js`, `browser://storage`, and
-`browser://compat` diagnostics. Phase 62 shifts back to core OS hardening:
+`browser://compat` diagnostics; Phase 71 adds `browser://engine` for the WPE
+WebKit port ABI/readiness view. Phase 62 shifts back to core OS hardening:
 active user tasks are capped, user address spaces and individual `mmap` calls
 are bounded, fd allocation preflights before object allocation, shared-memory
 and socket quotas are enforced per task and globally, task exit/fault paths
@@ -142,7 +143,13 @@ those archives into real payload installers: manifests can declare
 `payload=<target>|<source>|<sha256>|<mode>` entries, installs copy payload files
 transactionally, `/LOGS/PACKAGE-TXN.TXT` records clean or rolled-back package
 transactions, owner records pin payload hashes, and verify/repair/remove cover
-the installed payloads as well as the launcher manifest.
+the installed payloads as well as the launcher manifest. Phase 71 starts the
+real modern-browser track: WPE WebKit is now the selected engine target,
+`src/browser_engine.rs` defines a versioned browser engine port ABI/readiness
+surface, `/CONFIG/BROWSER-ENGINE.CFG` records the desired engine/fallback path,
+`/SDK/BROWSER_ENGINE_PORT.TXT` documents the host contract and blockers, and
+Terminal, Browser, Recovery, Diagnostics, and Sysreport expose the engine-port
+state while the native browser remains the fallback/debug renderer.
 
 | Context | Mode | Description |
 | :------ | :--- | :---------- |
@@ -201,11 +208,12 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **FAT32 layer** | Optional legacy import mount at `/FAT`, formatted in a separate 8 MiB-offset disk region. BPB parsing, FAT chain walking, short-name and long-filename lookup, directory traversal, cluster→sector mapping, mutation helpers, free-space stats, and `fsck` remain available without being required for CoolFS boot. |
 | **VFS** | CoolFS-root path routing, `/FAT` legacy routing, CoolFS read/write/execute permission enforcement, task-local cwd resolution, and task-local fd tables (16 slots, with explicit 0/1/2 mappings for child stdio) backed by shared file/pipe/shmem objects. `vfs_open` reads whole files into heap buffers after access checks and drops them if pressure admission fails; `vfs_open_write` buffers writable file descriptors and commits through safe CoolFS writes on close/exit; `vfs_pipe` allocates a 512-byte kernel ring buffer only when the heap reserve allows it; `vfs_read_blocking` blocks tasks on empty pipes and wakes them on write/EOF; `ipc` and `spawn_fds_args` selectively inherit pipe/file fds into child processes; `vfs_shmem_create`/`vfs_shmem_map` manage a shared memory region pool indexed by ID. |
 | **Networking** | Legacy PCI virtio-net driver for QEMU user networking, polling RX/TX virtqueues, Ethernet framing, ARP cache, IPv4, ICMP echo, UDP DNS queries, minimal TCP client sockets, userspace socket syscalls, HTTP/1.1, and verified TLS 1.3 HTTPS for the native browser/terminal path. |
-| **Kernel services** | Persistent kernel log buffer flushed to `/LOGS/KERNEL.TXT`, crash-screen log tail, sysreport generation to `/LOGS/SYSREPORT.TXT`, central device registry for PCI/USB/system devices, signed installable package/app manifests with payload ownership and file associations, networking status, ACPI power-control status foundation, a credentialed durable service supervisor with dependency metadata, persisted `/CONFIG/SERVICES.CFG` desired state, `/LOGS/SERVICES.TXT` restart history, backoff, and recovery diagnostics under service uid/gid 200, plus boot-health state under `/BOOT` for last-known-good validation. |
+| **Kernel services** | Persistent kernel log buffer flushed to `/LOGS/KERNEL.TXT`, crash-screen log tail, sysreport generation to `/LOGS/SYSREPORT.TXT`, central device registry for PCI/USB/system devices, signed installable package/app manifests with payload ownership and file associations, networking status, ACPI power-control status foundation, a credentialed durable service supervisor with dependency metadata, persisted `/CONFIG/SERVICES.CFG` desired state, `/LOGS/SERVICES.TXT` restart history, backoff, recovery diagnostics under service uid/gid 200, browser engine port readiness under `/CONFIG/BROWSER-ENGINE.CFG`, and boot-health state under `/BOOT` for last-known-good validation. |
 | **Updates / rollback** | Ed25519-signed staged system update manifests under `/UPDATES/STAGED`, per-payload SHA-256 verification, public-key trust checks against `/CONFIG/UPDATE-KEYS.TXT`, multiple trusted/revoked/expired key states, anti-rollback version checks, payload snapshots under `/UPDATES/SNAPSHOTS/LAST`, update journals in `/LOGS/UPDATE.TXT`, service-aware apply/rollback operations, recovery rollback integration, and automatic rollback when a pending update fails boot validation. |
 | **Packages** | Ed25519-signed package archives under `/Packages` with detached `<package>.sig` files, public package trust keys under `/CONFIG/PACKAGE-KEYS.TXT`, version/dependency checks, payload tables with SHA-256 and mode metadata, per-install owner records under `/APPS/<command>/OWNER.TXT`, package history under `/LOGS/PACKAGES.TXT`, transaction state under `/LOGS/PACKAGE-TXN.TXT`, verified `pkg install\|run\|repair`, and recovery/sysreport package trust diagnostics. |
+| **Browser engine port** | Phase 71 selects WPE WebKit as the modern-browser target while keeping the native browser as fallback. `src/browser_engine.rs` defines port ABI v1, runtime requirement diagnostics, backend readiness probing through `/SYSTEM/BROWSER-ENGINE/WPE.READY`, Terminal `engine` commands, `browser://engine`, Recovery/Diagnostics/Sysreport lines, and SDK docs for the host contract. |
 | **Applications** | Terminal, System Monitor, Text Viewer, Color Picker, File Manager, Web Browser, ring-3 Notes, Text Editor, Trash Bin, Screenshot, Process Demo, and GUI Demo. Text-file opens route into `/bin/editor <path>` with kernel viewer fallback, while File Manager exposes explicit Open With Editor/Viewer actions. |
-| **Disk image** | `disk-image/src/fs_image.rs` builds `fs.img` as a 64 MiB raw OS disk: native CoolFS starts at LBA 0 with root-owned system paths, user-owned writable paths, executable `/bin` ELFs, `/RECOVERY` boot/repair docs, `/SDK` devkit docs/templates, `/Packages/guidemo.pkg`, `/Packages/guidemo.elf`, and `/Documents/package-demo.p25`; an optional FAT32 `/FAT` import region starts at 8 MiB. The Makefile attaches it to QEMU as the IDE slave. |
+| **Disk image** | `disk-image/src/fs_image.rs` builds `fs.img` as a 64 MiB raw OS disk: native CoolFS starts at LBA 0 with root-owned system paths, user-owned writable paths, executable `/bin` ELFs, `/RECOVERY` boot/repair docs, `/SDK` devkit docs/templates including `/SDK/BROWSER_ENGINE_PORT.TXT`, `/CONFIG/BROWSER-ENGINE.CFG`, `/SYSTEM/BROWSER-ENGINE`, `/Packages/guidemo.pkg`, `/Packages/guidemo.elf`, and `/Documents/package-demo.p25`; an optional FAT32 `/FAT` import region starts at 8 MiB. The Makefile attaches it to QEMU as the IDE slave. |
 
 ### Applications
 
@@ -216,7 +224,7 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **Text Viewer** | Right-click | Scrollable "About" doc; `j`/`k` to scroll. |
 | **Color Picker** | Right-click | Clickable 16-colour EGA palette grid. |
 | **File Manager** | Right-click / desktop icon | Browse and mutate the CoolFS root with breadcrumbs, recursive search, sorting, multi-select, clipboard copy/cut/paste, Trash-backed delete, properties, inline text editing, Open With Editor/Viewer, and ELF launch routing. |
-| **Web Browser** | Launcher / desktop icon | Native HTTP/HTTPS/local-file browser with address/search bar, redirects, decoded chunked responses, headings/lists/quotes/tables, CSS2-style cascade, box-model, positioning, float, z-index, table/list, parser-repair, external stylesheet/script loading, inline-image cache, subresource metadata hints, a bounded JavaScript/DOM runtime for text/class/value/checked mutations plus event handlers/timers, web-app APIs for storage, cookies, location/history, attributes/styles/classes, and same-origin fetch callbacks, robust raw script/style/head suppression, main-resource content-type routing, a Google/Search compatibility shell, styled text blocks, direct and HTML-sourced inline PNG previews, image metadata/placeholders for JPEG/GIF/WebP, clickable links/forms, session history, visible TLS trust-root status, persistent bookmarks, persistent cookies/storage, `browser://session`, `browser://cache`, `browser://js`, `browser://storage`, and `browser://compat`. |
+| **Web Browser** | Launcher / desktop icon | Native HTTP/HTTPS/local-file browser with address/search bar, redirects, decoded chunked responses, headings/lists/quotes/tables, CSS2-style cascade, box-model, positioning, float, z-index, table/list, parser-repair, external stylesheet/script loading, inline-image cache, subresource metadata hints, a bounded JavaScript/DOM runtime for text/class/value/checked mutations plus event handlers/timers, web-app APIs for storage, cookies, location/history, attributes/styles/classes, and same-origin fetch callbacks, robust raw script/style/head suppression, main-resource content-type routing, a Google/Search compatibility shell, styled text blocks, direct and HTML-sourced inline PNG previews, image metadata/placeholders for JPEG/GIF/WebP, clickable links/forms, session history, visible TLS trust-root status, persistent bookmarks, persistent cookies/storage, `browser://session`, `browser://cache`, `browser://js`, `browser://storage`, `browser://compat`, and `browser://engine`. |
 | **Accounts** | Launcher / Display Settings Users tab | Admin account management for first-run setup, account creation, role changes, enable/disable, password reset, and deletion. |
 | **Trash Bin** | Launcher / desktop icon / `exec /bin/trash` | Ring-3 GUI utility that lists deleted items staged in `/Trash` and can permanently empty them. |
 | **Screenshot** | Launcher / desktop icon / `exec /bin/screenshot` | Ring-3 GUI utility that queues a focused-window PPM capture to `/Pictures`. |
@@ -288,6 +296,7 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `http <host-or-url> [path]` | Fetch an HTTP response through the kernel network API |
 | `https <host-or-url> [path]` | Fetch an HTTPS response through the verified kernel TLS client |
 | `browser [url]` | Open the native Web Browser to a URL or `browser://home` |
+| `engine [status\|abi\|requirements\|config\|log\|recovery]` | Inspect the WPE WebKit browser-engine port ABI and readiness blockers |
 | `power [reboot\|shutdown\|sleep]` | Print or request power-control actions |
 | `log` | Flush and print the kernel log tail |
 | `logs` | Open the in-terminal log view |
@@ -296,7 +305,7 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `services [list\|status <name>\|history\|recovery\|run\|start <name>\|restart <name>\|stop <name>\|fail <name>]` | Inspect and control the durable service supervisor; mutating operations require an admin session |
 | `update [status\|verify\|keys\|history\|sign\|sign-as <key>\|stage <path> <text>\|stage-version <path> <version> <text>\|apply\|rollback]` | Stage or sign a trusted system file update, verify manifest/payload integrity and monotonic version, apply it with a pre-update snapshot, inspect the update journal, or roll back |
 | `memory` | Print heap pressure, reclaim counters, OOM state, and per-task memory estimates |
-| `diagnostics` | Print kernel, profiler, boot-health, service, update, compositor, heap, memory-pressure, resource-limit, filesystem, VFS, and crash diagnostics |
+| `diagnostics` | Print kernel, profiler, boot-health, service, update, browser-engine, compositor, heap, memory-pressure, resource-limit, filesystem, VFS, and crash diagnostics |
 | `sysreport [write]` | Print the generated system report or write it to `/LOGS/SYSREPORT.TXT` |
 | `devkit` | Print SDK paths, ABI version, and userspace template locations |
 | `compositor` | Print FPS, frame pacing, frame budget, damage, and cursor overlay telemetry |
@@ -363,7 +372,8 @@ disk-image/
   src/fs_image.rs  Host tool — builds fs.img (64 MiB raw OS disk) with native
                     CoolFS at LBA 0 plus an optional /FAT import region:
                     /bin, /CONFIG, /APPS, /Documents, /Packages, /Pictures,
-                    /Desktop, /Downloads, /Trash, /LOGS, /SDK, and process-control demos
+                    /Desktop, /Downloads, /Trash, /LOGS, /SDK, /SYSTEM,
+                    and process-control demos
 src/
   main.rs          Kernel entry point — framebuffer init, GDT, heap, scheduler,
                    input-first idle loop
@@ -401,6 +411,7 @@ src/
   sysreport.rs     System report generator for diagnostics and /LOGS/SYSREPORT.TXT
   boot_health.rs   Boot validation, last-known-good state, and auto rollback
   services.rs      Durable service supervisor with dependency/backoff policy and /CONFIG + /LOGS state
+  browser_engine.rs WPE WebKit port ABI/readiness model and diagnostics
   update_crypto.rs SHA-256 and Ed25519 helpers for update/package trust checks
   updates.rs       Signed staged system updates, snapshots, journals, and rollback
   packages.rs      Built-in package registry plus signed payload archive transactions
@@ -590,6 +601,9 @@ install copies those files into protected targets such as `/bin/pkgdemo`, owner
 records pin installed payload hashes, `pkg verify` detects payload tampering,
 `pkg repair` restores files from the trusted source archive, `pkg remove`
 deletes owned payloads, and rollback restores pre-transaction file state.
+Phase 71 adds the browser engine port surface for the WPE WebKit track:
+`engine` reports ABI/readiness, `browser://engine` exposes the GUI view, and
+Recovery/Sysreport include the same target/fallback state.
 
 **GUI login and lock screen (Phase 30).** The desktop now boots into a
 boot-splash-style compositor greeter instead of exposing the session
@@ -658,7 +672,8 @@ pipe or file descriptors. The toolset now includes `/bin/cp`, `/bin/mv`,
 `/bin/stat`, `/bin/sync`, and `/bin/devkit`. Terminal diagnostics gained
 `sysreport [write]` and `devkit`, `/LOGS/SYSREPORT.TXT` gives a persistent
 report bundle, and the generated image ships `/SDK/README.TXT`,
-`/SDK/APP_TEMPLATE.RS`, and `/SDK/PACKAGE_TEMPLATE.PKG`.
+`/SDK/APP_TEMPLATE.RS`, `/SDK/PACKAGE_TEMPLATE.PKG`, and the Phase 71
+`/SDK/BROWSER_ENGINE_PORT.TXT` WebKit port contract.
 
 **Compositor latency and smoothness (Phase 45).** The timer IRQ now requests a
 passive frame tick instead of forcing a full repaint every interrupt; normal
@@ -795,7 +810,11 @@ dependency refusal, repair, recovery, and sysreport coverage.
 Phase 70 adds `pkg transaction`, `pkg tamper-payload`, `pkg break-payload`, and
 `pkg install-fail`, plus `make smoke-phase70-package-payloads` for real payload
 install/run/remove, installed payload tamper repair, source payload hash refusal,
-and injected install rollback.
+and injected install rollback. Phase 71 adds `engine`, `engine abi`,
+`engine requirements`, `engine config`, `engine log`, `browser://engine`,
+browser-engine Recovery/Diagnostics/Sysreport lines, and
+`make smoke-phase71-browser-engine-port` to verify the WPE WebKit port ABI,
+SDK documentation, backend probe, and native fallback state.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
@@ -885,5 +904,6 @@ while kernel faults still panic.
 | 68 | Update key rotation and anti-rollback — Ed25519 public-key signatures, trusted/revoked/expired key states, and monotonic update versions | **Done** |
 | 69 | Package trust and repair — Ed25519-signed package archives, owner records, dependencies, and recovery/sysreport diagnostics | **Done** |
 | 70 | Package payloads and transactional installs — real file payload copying, owner hash verification, repair/remove payload handling, and rollback journal coverage | **Done** |
+| 71 | Browser engine port ABI — WPE WebKit target selection, host contract diagnostics, SDK docs, and native fallback readiness | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

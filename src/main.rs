@@ -16,6 +16,7 @@ mod boot_health;
 mod boot_splash;
 mod boot_watchdog;
 mod branding;
+mod browser_engine;
 mod browser_session;
 mod browser_storage;
 mod clipboard;
@@ -186,6 +187,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     }
     app_lifecycle::init();
     packages::init();
+    browser_engine::init();
     accessibility::load_from_disk();
     device_registry::refresh_pci();
     drivers::init();

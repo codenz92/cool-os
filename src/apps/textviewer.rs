@@ -25,7 +25,7 @@ const SUBTLE: u32 = 0x00_66_AA_DD;
 const MUTED: u32 = 0x00_55_7A_92;
 
 const ABOUT: &[&str] = &[
-    " coolOS v7.34",
+    " coolOS v7.35",
     " Bare-metal OS in Rust",
     "",
     " == Current Platform ==",
@@ -43,6 +43,7 @@ const ABOUT: &[&str] = &[
     " Ed25519 signed updates with rollback snapshots",
     " Update key rotation, revocation, and anti-rollback",
     " Signed package payloads with transaction rollback and repair",
+    " Browser engine port ABI targeting WPE WebKit",
     " Boot health with last-known-good auto rollback",
     "",
     " == Commands ==",
@@ -54,6 +55,7 @@ const ABOUT: &[&str] = &[
     " browser://js shows Browser script runtime state",
     " browser://storage shows Browser localStorage keys",
     " browser://compat shows Browser compatibility state",
+    " browser://engine shows real-engine port readiness",
     " diagnostics  - health and resource-limit report",
     " memory       - heap pressure and per-task memory",
     " sysreport    - write /LOGS/SYSREPORT.TXT",
@@ -192,6 +194,11 @@ impl TextViewerApp {
             crate::services::recovery_lines(),
         );
         push_section(&mut lines, "updates", crate::updates::status_lines());
+        push_section(
+            &mut lines,
+            "browser engine",
+            crate::browser_engine::status_lines(),
+        );
         push_section(
             &mut lines,
             "compositor",

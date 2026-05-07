@@ -92,6 +92,7 @@ fn main() {
         "FONTS",
         "RECOVERY",
         "SDK",
+        "SYSTEM",
     ] {
         root.create_dir(dir)
             .unwrap_or_else(|e| panic!("failed to create /{}: {}", dir, e));
@@ -99,6 +100,11 @@ fn main() {
     }
     coolfs.create_dir("/Users/root");
     coolfs.create_dir("/Users/guest");
+    root.open_dir("SYSTEM")
+        .expect("failed to open /SYSTEM")
+        .create_dir("BROWSER-ENGINE")
+        .expect("failed to create /SYSTEM/BROWSER-ENGINE");
+    coolfs.create_dir("/SYSTEM/BROWSER-ENGINE");
 
     // /bin/
     root.create_dir("bin").expect("failed to create /bin");
@@ -128,6 +134,8 @@ fn main() {
 
     let users_db = default_users_db();
     coolfs.create_file("/CONFIG/USERS.DB", users_db.as_bytes());
+    coolfs.create_file("/CONFIG/BROWSER-ENGINE.CFG", BROWSER_ENGINE_CONFIG);
+    coolfs.create_file("/LOGS/BROWSER-ENGINE.TXT", BROWSER_ENGINE_LOG);
     let recovery_readme = b"coolOS recovery\n\nBoot target: BIOS VBE framebuffer, IDE disk index 1, CoolFS root at /.\nRun `recovery` for status and `recovery repair` to recreate standard system directories and write /RECOVERY/LAST-REPAIR.TXT.\n";
     coolfs.create_file("/RECOVERY/README.TXT", recovery_readme);
     let recovery_boot_cfg = b"boot=normal\nroot=/\nrootfs=coolfs\nvideo=bios-vbe\nstorage=ide1\n";
@@ -151,6 +159,11 @@ fn main() {
             "PACKAGE_TEMPLATE.PKG",
             "/SDK/PACKAGE_TEMPLATE.PKG",
             SDK_PACKAGE_TEMPLATE,
+        );
+        write_sdk_file(
+            "BROWSER_ENGINE_PORT.TXT",
+            "/SDK/BROWSER_ENGINE_PORT.TXT",
+            SDK_BROWSER_ENGINE_PORT,
         );
     }
 
@@ -604,11 +617,17 @@ fn phase70_guidemo_package(payload: &[u8]) -> String {
     )
 }
 
-const SDK_README: &[u8] = b"coolOS SDK\n\nABI version: 10\nUserspace apps are no_std Rust ELF64 binaries linked with userspace/libcool.\nUseful APIs: process::spawn_args, process::spawn_fds_args, evented::poll, tty::{size,set_mode,enter_raw_mode}, fs::{stat,rename,chdir,getcwd,sync}, io::{open,create,pipe}, gui::Window.\nPackage manifests live under /Packages, must be signed with pkg sign or pkg sign-as, and install transactionally into /APPS/<command>/APP.CFG with an OWNER.TXT trust record.\nUse payload=<target>|<source>|<sha256>|<mode> to copy real files, such as an ELF from /Packages into /bin, with installed payload hashes verified by pkg verify and restored by pkg repair.\n";
+const BROWSER_ENGINE_CONFIG: &[u8] = b"preferred=wpe-webkit\nfallback=coolos-native\nmode=port-prep\nengine_abi=1\nsurface=rgba-shmem\ninput=gui-events\nnetwork=kernel-http-tls\n";
+
+const BROWSER_ENGINE_LOG: &[u8] = b"coolOS browser engine port log\nphase=71\npreferred=wpe-webkit\nactive=coolos-native\nstatus=port-prep\n";
+
+const SDK_README: &[u8] = b"coolOS SDK\n\nABI version: 10\nUserspace apps are no_std Rust ELF64 binaries linked with userspace/libcool.\nUseful APIs: process::spawn_args, process::spawn_fds_args, evented::poll, tty::{size,set_mode,enter_raw_mode}, fs::{stat,rename,chdir,getcwd,sync}, io::{open,create,pipe}, gui::Window.\nPackage manifests live under /Packages, must be signed with pkg sign or pkg sign-as, and install transactionally into /APPS/<command>/APP.CFG with an OWNER.TXT trust record.\nUse payload=<target>|<source>|<sha256>|<mode> to copy real files, such as an ELF from /Packages into /bin, with installed payload hashes verified by pkg verify and restored by pkg repair.\nBrowser engine porting starts at /SDK/BROWSER_ENGINE_PORT.TXT and targets WPE WebKit with the native browser kept as fallback.\n";
 
 const SDK_APP_TEMPLATE: &[u8] = b"#![no_std]\n#![no_main]\n\nuse libcool::{io, prelude::*};\n\nlibcool::entry!(main);\n\nfn main(args: Args) -> ! {\n    io::write_stdout(b\"hello from a coolOS app\\n\");\n    if let Some(name) = args.get(1) {\n        io::write_stdout(b\"arg: \");\n        io::write_stdout(name);\n        io::write_stdout(b\"\\n\");\n    }\n    exit(0);\n}\n";
 
 const SDK_PACKAGE_TEMPLATE: &[u8] = b"id=app.example\nname=Example App\ncommand=example\nversion=1.0\nicon=EX\ncategory=Development\npermission=filesystem\nexec=/bin/example\naliases=example,demo\nassociations=TXT\ndepends=\nmin_os_version=1\npayload=/bin/example|/Packages/example.elf|<sha256>|755\n";
+
+const SDK_BROWSER_ENGINE_PORT: &[u8] = b"coolOS Browser Engine Port ABI v1\n\nTarget engine: WPE WebKit.\nFallback engine: coolos-native.\n\nGoal\nRun a mature WebKit-class engine for modern sites while keeping the existing native browser as a small fallback/debug surface.\n\nHost contract\n- Surface output: RGBA shared-memory buffers presented through the GUI window API.\n- Input: keyboard, pointer, focus, and resize events translated from coolOS GUI events.\n- Network: DNS/TCP/TLS and HTTP paths through the kernel networking stack until a fuller POSIX socket layer exists.\n- Storage: /CONFIG/BROWSER.*, /Downloads, /TMP, and package-owned engine files.\n- Fonts: /FONTS with scalable font lookup planned.\n- Process model: browser shell plus isolated web process planned.\n\nKnown blockers before real WPE boots\n- Userspace threads, futex wait/wake, TLS segments, and a pthread-compatible ABI.\n- Shared-library loader, relocations, and C/C++ runtime support.\n- Larger mmap/file-backed mapping support and higher address-space budgets.\n- JavaScriptCore JIT policy or interpreter-only engine configuration.\n- Software rendering backend first; EGL/OpenGL/WebGL can come later.\n\nDiagnostics\n- Terminal: engine, engine abi, engine requirements, engine config, engine log, engine recovery.\n- Browser: browser://engine.\n- Sysreport/recovery include browser engine readiness.\n";
 
 fn sha256_hex(data: &[u8]) -> String {
     let digest = sha256(data);

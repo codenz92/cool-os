@@ -707,6 +707,8 @@ impl TerminalApp {
                 self.cmd_lines("DIAGNOSTICS", diagnostics_lines())
             }
 
+            Some("engine") | Some("browser-engine") => self.cmd_engine(words.next()),
+
             Some("sysreport") => self.cmd_sysreport(words.next()),
 
             Some("devkit") => self.cmd_devkit(),
@@ -1210,6 +1212,7 @@ impl TerminalApp {
                 "diagnostics",
                 "combined logs/profiler/update/fs/memory status",
             ),
+            ("engine [op]", "browser engine port ABI and WPE readiness"),
             ("sysreport [write]", "combined diagnostics report"),
             ("devkit", "SDK docs and app templates"),
             ("profiler", "boot/service/task timing"),
@@ -1759,6 +1762,7 @@ impl TerminalApp {
                 String::from("docs=/SDK/README.TXT"),
                 String::from("app_template=/SDK/APP_TEMPLATE.RS"),
                 String::from("package_template=/SDK/PACKAGE_TEMPLATE.PKG"),
+                String::from("browser_engine_port=/SDK/BROWSER_ENGINE_PORT.TXT"),
                 String::from("example: exec /bin/devkit"),
             ],
         );
@@ -2561,6 +2565,37 @@ impl TerminalApp {
                 self.set_fg(FG_ERROR);
                 self.print_str("usage: pkg [list|keys|history|transaction|info <id|path>|verify <id|path>|install <id|path>|remove <id>|repair <id>|run <id> [args...]]\n");
                 self.print_str("       pkg [sign <path>|sign-as <path> <key>|unsign <path>|tamper <path>|tamper-payload <path>|deps <path> [ids...]|break <id>|break-payload <id>|install-fail <path>]\n");
+            }
+        }
+    }
+
+    fn cmd_engine(&mut self, op: Option<&str>) {
+        match op {
+            None | Some("status") => {
+                self.cmd_lines("BROWSER ENGINE PORT", crate::browser_engine::status_lines())
+            }
+            Some("abi") | Some("manifest") => self.cmd_lines(
+                "BROWSER ENGINE ABI",
+                crate::browser_engine::manifest_lines(),
+            ),
+            Some("requirements") | Some("reqs") => self.cmd_lines(
+                "BROWSER ENGINE REQUIREMENTS",
+                crate::browser_engine::requirement_lines(),
+            ),
+            Some("config") => self.cmd_lines(
+                "BROWSER ENGINE CONFIG",
+                crate::browser_engine::config_lines(),
+            ),
+            Some("log") | Some("history") => {
+                self.cmd_lines("BROWSER ENGINE LOG", crate::browser_engine::log_lines())
+            }
+            Some("recovery") | Some("health") => self.cmd_lines(
+                "BROWSER ENGINE RECOVERY",
+                crate::browser_engine::recovery_lines(),
+            ),
+            _ => {
+                self.set_fg(FG_ERROR);
+                self.print_str("usage: engine [status|abi|requirements|config|log|recovery]\n");
             }
         }
     }
@@ -3780,6 +3815,11 @@ fn diagnostics_lines() -> Vec<String> {
     push_terminal_section(&mut lines, "services", crate::services::lines());
     push_terminal_section(&mut lines, "updates", crate::updates::status_lines());
     push_terminal_section(&mut lines, "packages", crate::packages::status_lines());
+    push_terminal_section(
+        &mut lines,
+        "browser engine",
+        crate::browser_engine::status_lines(),
+    );
     push_terminal_section(
         &mut lines,
         "compositor",

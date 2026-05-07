@@ -24,6 +24,7 @@ const CACHE_INTERNAL_URL: &str = "browser://cache";
 const JS_INTERNAL_URL: &str = "browser://js";
 const STORAGE_INTERNAL_URL: &str = "browser://storage";
 const COMPAT_INTERNAL_URL: &str = "browser://compat";
+const ENGINE_INTERNAL_URL: &str = "browser://engine";
 const MAX_BOOKMARKS: usize = 32;
 const MAX_INLINE_PNG_PIXELS: usize = 1_048_576;
 const MAX_HTML_INLINE_IMAGES: usize = 4;
@@ -1276,6 +1277,15 @@ impl BrowserApp {
                 self.status = format!("mode={}", self.compat_state.mode);
                 self.lines = self.browser_compat_lines();
             }
+            ENGINE_INTERNAL_URL => {
+                self.title = String::from("Engine Port");
+                self.status = format!(
+                    "target={} active={}",
+                    crate::browser_engine::TARGET_ENGINE,
+                    crate::browser_engine::active_engine_name()
+                );
+                self.lines = browser_engine_lines();
+            }
             JS_INTERNAL_URL => {
                 self.title = String::from("Scripts");
                 self.status = script_stats_debug_line(self.script_stats);
@@ -1628,6 +1638,7 @@ impl BrowserApp {
         out.push(link_line("Home", "browser://home"));
         out.push(link_line("Script diagnostics", JS_INTERNAL_URL));
         out.push(link_line("Cache state", CACHE_INTERNAL_URL));
+        out.push(link_line("Engine port", ENGINE_INTERNAL_URL));
         out
     }
 
@@ -3259,7 +3270,32 @@ fn welcome_lines() -> Vec<BrowserLine> {
         link_line("Script diagnostics", JS_INTERNAL_URL),
         link_line("Web storage", STORAGE_INTERNAL_URL),
         link_line("Compatibility", COMPAT_INTERNAL_URL),
+        link_line("Engine port", ENGINE_INTERNAL_URL),
     ]
+}
+
+fn browser_engine_lines() -> Vec<BrowserLine> {
+    crate::browser_engine::browser_page_lines()
+        .into_iter()
+        .enumerate()
+        .map(|(idx, text)| {
+            if idx == 0 {
+                kind_line(&text, BrowserLineKind::Heading)
+            } else if text.is_empty() {
+                BrowserLine::new(String::new(), None, BrowserLineKind::Text)
+            } else if idx < 5
+                || text.starts_with("engine-port")
+                || text.starts_with("goal=")
+                || text.starts_with("requirements")
+                || text.starts_with("readiness=")
+                || text.starts_with("coolOS browser engine port manifest")
+            {
+                kind_line(&text, BrowserLineKind::Muted)
+            } else {
+                line(&text)
+            }
+        })
+        .collect()
 }
 
 fn browser_session_lines() -> Vec<BrowserLine> {
