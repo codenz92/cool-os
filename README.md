@@ -13,7 +13,7 @@ stdio, and IPC with pipes, shared memory, and per-task fd tables.
 
 ---
 
-# Current state — v7.8
+# Current state — v7.9
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -59,7 +59,11 @@ rename, writable file descriptors, fd-mapped child stdio, sync, and RTC time;
 `/bin/sh` now supports quoting, relative paths, redirection, and one-stage
 pipelines; `/bin` includes practical file/text/date/devkit tools; sysreport can
 write `/LOGS/SYSREPORT.TXT`; and the generated image ships `/SDK` docs and
-templates.
+templates. Phase 45 adds compositor smoothness work: timer ticks now request
+passive frames instead of unconditional full redraws, mouse-only motion uses a
+hardware cursor overlay fast path, the main loop polls input before background
+maintenance, and `compositor`/`smoothness` telemetry exposes frame source,
+damage, and cursor overlay counters.
 
 | Context | Mode | Description |
 | :------ | :--- | :---------- |
@@ -93,10 +97,10 @@ built-in trust roots, and SAN-first hostname validation coverage.
 
 | Subsystem | Details |
 | :-------- | :------ |
-| **Framebuffer** | `bootloader 0.11` linear framebuffer at ≥1280×720. 3bpp and 4bpp both handled. Shadow-buffer compositor — full frame rendered in a heap `Vec<u32>`, blitted per-row with correct bpp conversion. No tearing. |
+| **Framebuffer** | `bootloader 0.11` linear framebuffer at ≥1280×720. 3bpp and 4bpp both handled. Shadow-buffer compositor with dirty row-span blits, passive frame pacing, and a hardware cursor overlay fast path that restores/draws only cursor rectangles for mouse-only motion. No tearing. |
 | **PS/2 mouse** | Full hardware init (CCB, 0xF6/0xF4), 9-bit signed X/Y deltas, IRQ12 packet collection via atomics. |
 | **Window manager** | Z-ordered windows, focus-on-click, title-bar drag, edge snapping, keyboard snapping, task switcher overlay, minimise/maximise/restore, resize grip, close button, taskbar previews/right-click actions, per-window pixel back-buffer. |
-| **Desktop shell** | Wallpaper, desktop icons, right-click context menu, start menu, taskbar window buttons, configurable shortcuts, launcher/search palette, login/lock greeter, Accounts settings, notification center, File Manager drag/drop/open-with routing, shared clipboard plumbing, userspace app lifecycle tracking with System Monitor controls, persistent settings, session restore, and clock. |
+| **Desktop shell** | Wallpaper, desktop icons, right-click context menu, start menu, taskbar window buttons, configurable shortcuts, launcher/search palette, login/lock greeter, Accounts settings, notification center, File Manager drag/drop/open-with routing, shared clipboard plumbing, userspace app lifecycle tracking with System Monitor controls, persistent settings, session restore, clock, and compositor smoothness telemetry. |
 | **Heap** | `LockedHeap` allocator — `String`, `Vec`, `Box` all work. 32 MiB heap to accommodate large shadow and window buffers. |
 | **Paging / VMM** | 4-level `OffsetPageTable` + global `BootInfoFrameAllocator`. Per-process PML4 cloned from kernel upper half; private user-space mappings in lower half. `vmm::` module exposes `new_process_pml4`, `map_page_in`, `map_region`, `switch_to`. |
 | **IDT** | Breakpoint, Double Fault, Page Fault with user-task termination/crashdump handling for invalid ring-3 accesses, General Protection Fault, Invalid Opcode, Timer (IRQ0), Keyboard (IRQ1), Mouse (IRQ12). |
@@ -204,6 +208,8 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `diagnostics` | Print kernel, profiler, service, compositor, heap, filesystem, VFS, and crash diagnostics |
 | `sysreport [write]` | Print the generated system report or write it to `/LOGS/SYSREPORT.TXT` |
 | `devkit` | Print SDK paths, ABI version, and userspace template locations |
+| `compositor` | Print FPS, frame, damage, and cursor overlay telemetry |
+| `smoothness` | Alias for compositor latency telemetry |
 | `fsck` | Print CoolFS-root consistency plus optional legacy FAT32 import summary |
 | `recovery [repair\|fsck-on-boot on\|fsck-on-boot off]` | Show recovery status, write a repair report, or toggle boot fsck |
 | `coolfs` | Print CoolFS root mount and inode/block usage |
@@ -235,6 +241,12 @@ brew install qemu
 make run
 ```
 
+For the smoothest QEMU pointer path, use the phase 45 tablet-input profile:
+
+```bash
+make run-smooth
+```
+
 For virtio networking in QEMU:
 
 ```bash
@@ -260,9 +272,11 @@ disk-image/
                     /bin, /CONFIG, /APPS, /Documents, /Packages, /Pictures,
                     /Desktop, /Downloads, /Trash, /LOGS, /SDK, and process-control demos
 src/
-  main.rs          Kernel entry point — framebuffer init, GDT, heap, scheduler, main loop
+  main.rs          Kernel entry point — framebuffer init, GDT, heap, scheduler,
+                   input-first idle loop
   gdt.rs           GDT (ring-0/ring-3 segments) + TSS (RSP0 for ring-3 IRQ entry)
-  interrupts.rs    IDT, PIC, PIT (288 Hz), IRQ masking, keyboard/timer(naked)/mouse/fault handlers
+  interrupts.rs    IDT, PIC, PIT (288 Hz passive frame ticks), IRQ masking,
+                   keyboard/timer(naked)/mouse/fault handlers
   syscall.rs       SYSCALL/SYSRET — naked entry, dispatcher, lock-free output buffer,
                    jump_to_userspace (iretq trampoline); syscalls including
                    open/read/write/close/exec/pipe/signal/process groups,
@@ -314,7 +328,8 @@ src/
   wm/
     mod.rs         Public WM API — request_repaint, compose_if_needed, userspace GUI bridge
     compositor.rs  WindowManager — shadow buffer, z-order, drag, taskbar,
-                   context menu, syscall output drain, AppWindow enum dispatch, blit
+                   context menu, syscall output drain, AppWindow enum dispatch,
+                   dirty-span blit, hardware cursor overlay, frame-source telemetry
     window.rs      Window struct — back-buffer, hit tests
   apps/
     terminal.rs    TerminalApp — keyboard input, shell commands, text render
@@ -520,6 +535,17 @@ pipe or file descriptors. The toolset now includes `/bin/cp`, `/bin/mv`,
 report bundle, and the generated image ships `/SDK/README.TXT`,
 `/SDK/APP_TEMPLATE.RS`, and `/SDK/PACKAGE_TEMPLATE.PKG`.
 
+**Compositor latency and smoothness (Phase 45).** The timer IRQ now requests a
+passive frame tick instead of forcing a full repaint every interrupt; normal
+events still request explicit full repaint. Mouse packets distinguish plain
+motion from button/scroll/drag work, so simple cursor movement can restore the
+old cursor rectangle from the clean shadow scene and draw the new cursor
+directly to the hardware framebuffer without recomposing windows. The idle loop
+polls USB input before service/deferred/network maintenance and limits deferred
+work to a smaller budget so input-to-pixel latency wins. `compositor` and
+`smoothness` show full-frame count, cursor-fast count, passive frame cadence,
+damage rows/pixels, and cursor overlay pixel counts.
+
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
 empty). `vmm::new_process_pml4` handles the clone; `vmm::map_page_in` / `vmm::map_region`
@@ -582,5 +608,6 @@ while kernel faults still panic.
 | 42 | App consistency — diagnostics/help surfaces expose the current runtime and devkit paths | **Done** |
 | 43 | Observability — generated sysreports written under `/LOGS` | **Done** |
 | 44 | Developer platform — `/SDK` docs/templates plus `/bin/devkit` | **Done** |
+| 45 | Compositor latency and smoothness — passive frame ticks, cursor overlay fast path, input-first loop, telemetry | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

@@ -6,17 +6,30 @@ extern crate alloc;
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 
 static REPAINT: AtomicBool = AtomicBool::new(false);
+static CURSOR_REPAINT: AtomicBool = AtomicBool::new(false);
+static FRAME_TICK: AtomicBool = AtomicBool::new(false);
+static LAST_PASSIVE_FRAME_TICK: AtomicU64 = AtomicU64::new(0);
 static SESSION_LOCK_REQUEST: AtomicBool = AtomicBool::new(false);
 static SCREENSHOT_REQUEST: Mutex<Option<String>> = Mutex::new(None);
 static PENDING_USER_GUI_OWNER_CLEANUP: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 static PENDING_STARTUP_COMMANDS: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new());
 
+const PASSIVE_FRAME_HZ: u64 = 36;
+
 pub fn request_repaint() {
     REPAINT.store(true, Ordering::Relaxed);
+}
+
+pub fn request_cursor_repaint() {
+    CURSOR_REPAINT.store(true, Ordering::Relaxed);
+}
+
+pub fn request_frame_tick() {
+    FRAME_TICK.store(true, Ordering::Relaxed);
 }
 
 pub fn request_session_lock() {
@@ -29,9 +42,36 @@ pub(crate) fn take_session_lock_request() -> bool {
 }
 
 pub fn compose_if_needed() {
-    if REPAINT.swap(false, Ordering::Relaxed) {
+    let full = REPAINT.swap(false, Ordering::Relaxed);
+    let cursor = CURSOR_REPAINT.swap(false, Ordering::Relaxed);
+    let tick = FRAME_TICK.swap(false, Ordering::Relaxed);
+    let now = crate::interrupts::ticks();
+    let passive_due = tick && passive_frame_due(now);
+    let startup_pending = !PENDING_STARTUP_COMMANDS.lock().is_empty();
+
+    if full || startup_pending || passive_due {
         compositor::WM.lock().compose();
+    } else if cursor {
+        let mut wm = compositor::WM.lock();
+        if !wm.compose_cursor_only() {
+            wm.compose();
+        }
     }
+}
+
+fn passive_frame_due(now: u64) -> bool {
+    let divisor = (crate::interrupts::TIMER_HZ as u64 / PASSIVE_FRAME_HZ).max(1);
+    let last = LAST_PASSIVE_FRAME_TICK.load(Ordering::Relaxed);
+    if now.wrapping_sub(last) >= divisor {
+        LAST_PASSIVE_FRAME_TICK.store(now, Ordering::Relaxed);
+        true
+    } else {
+        false
+    }
+}
+
+pub fn passive_frame_hz() -> u64 {
+    PASSIVE_FRAME_HZ
 }
 
 pub fn prepare() {
@@ -82,12 +122,12 @@ pub(crate) fn take_startup_command() -> Option<String> {
     if ready {
         let command = pending.remove(0).0;
         if !pending.is_empty() {
-            request_repaint();
+            request_frame_tick();
         }
         Some(command)
     } else {
         if !pending.is_empty() {
-            request_repaint();
+            request_frame_tick();
         }
         None
     }

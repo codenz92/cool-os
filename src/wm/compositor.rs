@@ -58,6 +58,9 @@ static COMPOSITOR_FRAME_TICKS_PEAK: AtomicU64 = AtomicU64::new(0);
 static COMPOSITOR_DAMAGE_ROWS: AtomicU64 = AtomicU64::new(0);
 static COMPOSITOR_DAMAGE_PIXELS: AtomicU64 = AtomicU64::new(0);
 static COMPOSITOR_FRAMES: AtomicU64 = AtomicU64::new(0);
+static COMPOSITOR_CURSOR_FAST_FRAMES: AtomicU64 = AtomicU64::new(0);
+static COMPOSITOR_CURSOR_PIXELS_LAST: AtomicU64 = AtomicU64::new(0);
+static COMPOSITOR_FULL_FRAMES: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy)]
 pub struct CompositorStats {
@@ -67,6 +70,9 @@ pub struct CompositorStats {
     pub damage_rows: u64,
     pub damage_pixels: u64,
     pub frames: u64,
+    pub full_frames: u64,
+    pub cursor_fast_frames: u64,
+    pub cursor_pixels_last: u64,
 }
 
 pub fn compositor_stats() -> CompositorStats {
@@ -77,6 +83,9 @@ pub fn compositor_stats() -> CompositorStats {
         damage_rows: COMPOSITOR_DAMAGE_ROWS.load(Ordering::Relaxed),
         damage_pixels: COMPOSITOR_DAMAGE_PIXELS.load(Ordering::Relaxed),
         frames: COMPOSITOR_FRAMES.load(Ordering::Relaxed),
+        full_frames: COMPOSITOR_FULL_FRAMES.load(Ordering::Relaxed),
+        cursor_fast_frames: COMPOSITOR_CURSOR_FAST_FRAMES.load(Ordering::Relaxed),
+        cursor_pixels_last: COMPOSITOR_CURSOR_PIXELS_LAST.load(Ordering::Relaxed),
     }
 }
 
@@ -91,6 +100,16 @@ pub fn compositor_lines() -> Vec<String> {
         format!(
             "damage rows={} pixels={}",
             stats.damage_rows, stats.damage_pixels
+        ),
+        format!(
+            "frame_source full={} cursor_fast={} passive_frame_hz={}",
+            stats.full_frames,
+            stats.cursor_fast_frames,
+            crate::wm::passive_frame_hz()
+        ),
+        format!(
+            "cursor_mode=overlay cursor_pixels_last={}",
+            stats.cursor_pixels_last
         ),
     ]
 }
@@ -149,6 +168,7 @@ const ICON_COL_ACC: u32 = 0x00_AA_44_FF; // #AA44FF  violet phosphor
 // ── Cursor ────────────────────────────────────────────────────────────────────
 
 const CURSOR_H: usize = 12;
+const CURSOR_W: usize = 16;
 // Standard Windows arrow cursor (taller, more precise)
 const CURSOR_SHAPE: [u16; CURSOR_H] = [
     0b1000000000000000,
@@ -1006,6 +1026,9 @@ pub struct WindowManager {
     damage_pixels_last: usize,
     damage_frames: u64,
     full_damage_next: bool,
+    cursor_drawn: bool,
+    cursor_hw_x: i32,
+    cursor_hw_y: i32,
     shadow_width: usize,
     shadow_height: usize,
     blit_scratch: Vec<u8>,
@@ -1094,6 +1117,9 @@ impl WindowManager {
             damage_pixels_last: 0,
             damage_frames: 0,
             full_damage_next: true,
+            cursor_drawn: false,
+            cursor_hw_x: 0,
+            cursor_hw_y: 0,
             shadow_width: w,
             shadow_height: h,
             blit_scratch: alloc::vec![0u8; w * 3],
@@ -3177,6 +3203,88 @@ impl WindowManager {
         }
     }
 
+    /// Repaint only the hardware cursor overlay when the base scene is unchanged.
+    pub fn compose_cursor_only(&mut self) -> bool {
+        let frame_start_tick = crate::interrupts::ticks();
+        let (mx, my) = crate::mouse::pos();
+        let (left, right) = crate::mouse::buttons();
+        let mx_i = mx as i32;
+        let my_i = my as i32;
+        if !self.cursor_fast_path_allowed(mx_i, my_i, left, right) {
+            return false;
+        }
+
+        let resize = self.cursor_resize_hover_at(mx_i, my_i);
+        let pixels = self.restore_cursor_backing() + self.draw_cursor_overlay(mx_i, my_i, resize);
+        COMPOSITOR_CURSOR_FAST_FRAMES.fetch_add(1, Ordering::Relaxed);
+        COMPOSITOR_CURSOR_PIXELS_LAST.store(pixels as u64, Ordering::Relaxed);
+        COMPOSITOR_FRAME_TICKS_LAST.store(
+            crate::interrupts::ticks().wrapping_sub(frame_start_tick),
+            Ordering::Relaxed,
+        );
+        true
+    }
+
+    fn cursor_fast_path_allowed(&self, mx_i: i32, my_i: i32, left: bool, right: bool) -> bool {
+        if !self.cursor_drawn
+            || self.full_damage_next
+            || left
+            || right
+            || self.session_locked
+            || self.start_menu_open
+            || self.start_power_menu_open
+            || self.context_menu.is_some()
+            || self.taskbar_menu.is_some()
+            || self.notification_center_open
+            || self.launcher.is_some()
+            || self.dialog.is_some()
+            || self.drag.is_some()
+            || self.resize.is_some()
+            || self.scroll_drag.is_some()
+            || self.file_drag.is_some()
+            || self.desktop_select_drag.is_some()
+            || self.desktop_icon_drag.is_some()
+            || self.task_switcher_until_tick > crate::interrupts::ticks()
+        {
+            return false;
+        }
+
+        let taskbar_y = self.shadow_height as i32 - TASKBAR_H;
+        if my_i >= taskbar_y {
+            return false;
+        }
+
+        if let Some(z_pos) = self.front_to_back_hit(mx_i, my_i) {
+            let wi = self.z_order[z_pos];
+            if wi >= self.windows.len() {
+                return false;
+            }
+            let w = self.windows[wi].window();
+            if w.hit_title(mx_i, my_i)
+                || w.hit_close(mx_i, my_i)
+                || w.hit_minimize(mx_i, my_i)
+                || w.hit_maximize(mx_i, my_i)
+                || w.hit_scrollbar(mx_i, my_i)
+            {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn cursor_resize_hover_at(&self, mx_i: i32, my_i: i32) -> bool {
+        !self.session_locked
+            && (self.resize.is_some()
+                || self
+                    .front_to_back_hit(mx_i, my_i)
+                    .map(|z_pos| {
+                        let wi = self.z_order[z_pos];
+                        wi < self.windows.len() && self.windows[wi].window().hit_resize(mx_i, my_i)
+                    })
+                    .unwrap_or(false))
+    }
+
     /// Full composite frame into shadow, then blit to hardware framebuffer.
     pub fn compose(&mut self) {
         let frame_start_tick = crate::interrupts::ticks();
@@ -5033,118 +5141,205 @@ impl WindowManager {
                     uptime_ticks,
                 );
             }
-
-            // ── Cursor — switches to resize cursor over resize handles ────────────
-            let (cursor_outline, cursor_shape) = if resize_hover {
-                (&CURSOR_RESIZE_OUTLINE, &CURSOR_RESIZE_SHAPE)
-            } else {
-                (&CURSOR_OUTLINE, &CURSOR_SHAPE)
-            };
-
-            // Draw outline first (black), then fill (white)
-            for (row, &mask) in cursor_outline.iter().enumerate() {
-                for bit in 0..16usize {
-                    if mask & (0x8000u16 >> bit) != 0 {
-                        s_put(
-                            s,
-                            sw,
-                            sh,
-                            mx as i32 + bit as i32,
-                            my as i32 + row as i32,
-                            BLACK,
-                        );
-                    }
-                }
-            }
-            for (row, &mask) in cursor_shape.iter().enumerate() {
-                for bit in 0..16usize {
-                    if mask & (0x8000u16 >> bit) != 0 {
-                        s_put(
-                            s,
-                            sw,
-                            sh,
-                            mx as i32 + bit as i32,
-                            my as i32 + row as i32,
-                            WHITE,
-                        );
-                    }
-                }
-            }
         } // end shadow borrow — rendering done
 
         self.compute_damage_spans(sw, sh);
 
-        // ── Blit damaged shadow spans → hardware framebuffer ─────────────────
+        self.blit_damage_spans_to_hw(sh);
+        let cursor_pixels =
+            self.restore_cursor_backing() + self.draw_cursor_overlay(mx_i, my_i, resize_hover);
+        COMPOSITOR_CURSOR_PIXELS_LAST.store(cursor_pixels as u64, Ordering::Relaxed);
+        self.update_compositor_telemetry(frame_start_tick);
+    }
+
+    fn blit_damage_spans_to_hw(&mut self, sh: usize) -> usize {
+        let mut pixels = 0usize;
+        for row in 0..sh {
+            let (x0, x1) = self.damage_spans[row];
+            if x0 >= x1 {
+                continue;
+            }
+            pixels += self.blit_shadow_span_to_hw(row, x0, x1);
+        }
+        pixels
+    }
+
+    fn restore_cursor_backing(&mut self) -> usize {
+        if !self.cursor_drawn {
+            return 0;
+        }
+        self.blit_shadow_rect_to_hw(
+            self.cursor_hw_x,
+            self.cursor_hw_y,
+            CURSOR_W as i32,
+            CURSOR_H as i32,
+        )
+    }
+
+    fn blit_shadow_rect_to_hw(&mut self, x: i32, y: i32, w: i32, h: i32) -> usize {
+        let sw = self.shadow_width;
+        let sh = self.shadow_height;
+        let x0 = x.clamp(0, sw as i32) as usize;
+        let y0 = y.clamp(0, sh as i32) as usize;
+        let x1 = (x + w).clamp(0, sw as i32) as usize;
+        let y1 = (y + h).clamp(0, sh as i32) as usize;
+        if x0 >= x1 || y0 >= y1 {
+            return 0;
+        }
+        let mut pixels = 0usize;
+        for row in y0..y1 {
+            pixels += self.blit_shadow_span_to_hw(row, x0, x1);
+        }
+        pixels
+    }
+
+    fn blit_shadow_span_to_hw(&mut self, row: usize, x0: usize, x1: usize) -> usize {
+        let sw = self.shadow_width;
+        let sh = self.shadow_height;
+        if row >= sh || x0 >= x1 || x1 > sw {
+            return 0;
+        }
         let hw_base = crate::framebuffer::base();
+        if hw_base == 0 {
+            return 0;
+        }
         let hw_stride = crate::framebuffer::stride();
         let hw_bpp = crate::framebuffer::bpp();
         let hw_fmt = crate::framebuffer::fmt();
         let is_rgb = hw_fmt == crate::framebuffer::PixFmt::Rgb;
-        if hw_base != 0 {
-            match hw_bpp {
-                4 => {
-                    for row in 0..sh {
-                        let (x0, x1) = self.damage_spans[row];
-                        if x0 >= x1 {
-                            continue;
-                        }
-                        let src = &self.shadow[row * sw + x0..row * sw + x1];
-                        let row_base = hw_base + (row * hw_stride * 4) as u64;
-                        let dst = row_base as *mut u32;
-                        if !is_rgb {
-                            unsafe {
-                                core::ptr::copy_nonoverlapping(src.as_ptr(), dst.add(x0), x1 - x0);
-                            }
-                        } else {
-                            for col in x0..x1 {
-                                let c = self.shadow[row * sw + col];
-                                let hw = ((c & 0xFF) << 16) | (c & 0x00FF00) | (c >> 16 & 0xFF);
-                                unsafe {
-                                    dst.add(col).write_volatile(hw);
-                                }
-                            }
-                        }
+        match hw_bpp {
+            4 => {
+                let src = &self.shadow[row * sw + x0..row * sw + x1];
+                let row_base = hw_base + (row * hw_stride * 4) as u64;
+                let dst = row_base as *mut u32;
+                if !is_rgb {
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(src.as_ptr(), dst.add(x0), x1 - x0);
                     }
-                }
-                3 => {
-                    let row_bytes = sw * 3;
-                    if self.blit_scratch.len() < row_bytes {
-                        self.blit_scratch.resize(row_bytes, 0);
-                    }
-                    let scratch = &mut self.blit_scratch[..row_bytes];
-                    for row in 0..sh {
-                        let (x0, x1) = self.damage_spans[row];
-                        if x0 >= x1 {
-                            continue;
-                        }
-                        let src = &self.shadow[row * sw + x0..row * sw + x1];
-                        let row_base = hw_base + (row * hw_stride * 3 + x0 * 3) as u64;
-                        if !is_rgb {
-                            for (col, c) in src.iter().copied().enumerate() {
-                                scratch[col * 3] = c as u8;
-                                scratch[col * 3 + 1] = (c >> 8) as u8;
-                                scratch[col * 3 + 2] = (c >> 16) as u8;
-                            }
-                        } else {
-                            for (col, c) in src.iter().copied().enumerate() {
-                                scratch[col * 3] = (c >> 16) as u8;
-                                scratch[col * 3 + 1] = (c >> 8) as u8;
-                                scratch[col * 3 + 2] = c as u8;
-                            }
-                        }
+                } else {
+                    for col in x0..x1 {
+                        let c = self.shadow[row * sw + col];
+                        let hw = ((c & 0xFF) << 16) | (c & 0x00FF00) | (c >> 16 & 0xFF);
                         unsafe {
-                            core::ptr::copy_nonoverlapping(
-                                scratch.as_ptr(),
-                                row_base as *mut u8,
-                                (x1 - x0) * 3,
-                            );
+                            dst.add(col).write_volatile(hw);
                         }
                     }
                 }
-                _ => {}
+            }
+            3 => {
+                let src = &self.shadow[row * sw + x0..row * sw + x1];
+                let row_bytes = (x1 - x0) * 3;
+                if self.blit_scratch.len() < row_bytes {
+                    self.blit_scratch.resize(row_bytes, 0);
+                }
+                let scratch = &mut self.blit_scratch[..row_bytes];
+                if !is_rgb {
+                    for (col, c) in src.iter().copied().enumerate() {
+                        scratch[col * 3] = c as u8;
+                        scratch[col * 3 + 1] = (c >> 8) as u8;
+                        scratch[col * 3 + 2] = (c >> 16) as u8;
+                    }
+                } else {
+                    for (col, c) in src.iter().copied().enumerate() {
+                        scratch[col * 3] = (c >> 16) as u8;
+                        scratch[col * 3 + 1] = (c >> 8) as u8;
+                        scratch[col * 3 + 2] = c as u8;
+                    }
+                }
+                let row_base = hw_base + (row * hw_stride * 3 + x0 * 3) as u64;
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        scratch.as_ptr(),
+                        row_base as *mut u8,
+                        row_bytes,
+                    );
+                }
+            }
+            _ => return 0,
+        }
+        x1 - x0
+    }
+
+    fn draw_cursor_overlay(&mut self, x: i32, y: i32, resize: bool) -> usize {
+        if crate::framebuffer::base() == 0 {
+            self.cursor_drawn = false;
+            return 0;
+        }
+        let (outline, shape) = if resize {
+            (&CURSOR_RESIZE_OUTLINE, &CURSOR_RESIZE_SHAPE)
+        } else {
+            (&CURSOR_OUTLINE, &CURSOR_SHAPE)
+        };
+        let mut pixels = 0usize;
+        for row in 0..CURSOR_H {
+            for bit in 0..CURSOR_W {
+                let mask = 0x8000u16 >> bit;
+                let color = if shape[row] & mask != 0 {
+                    Some(WHITE)
+                } else if outline[row] & mask != 0 {
+                    Some(BLACK)
+                } else {
+                    None
+                };
+                if let Some(color) = color {
+                    if self.write_hw_pixel(x + bit as i32, y + row as i32, color) {
+                        pixels += 1;
+                    }
+                }
             }
         }
-        self.update_compositor_telemetry(frame_start_tick);
+        self.cursor_drawn = true;
+        self.cursor_hw_x = x;
+        self.cursor_hw_y = y;
+        pixels
+    }
+
+    fn write_hw_pixel(&self, x: i32, y: i32, color: u32) -> bool {
+        if x < 0 || y < 0 {
+            return false;
+        }
+        let x = x as usize;
+        let y = y as usize;
+        if x >= self.shadow_width || y >= self.shadow_height {
+            return false;
+        }
+        let hw_base = crate::framebuffer::base();
+        if hw_base == 0 {
+            return false;
+        }
+        let hw_stride = crate::framebuffer::stride();
+        let is_rgb = crate::framebuffer::fmt() == crate::framebuffer::PixFmt::Rgb;
+        match crate::framebuffer::bpp() {
+            4 => {
+                let hw = if is_rgb {
+                    ((color & 0xFF) << 16) | (color & 0x00FF00) | (color >> 16 & 0xFF)
+                } else {
+                    color
+                };
+                let ptr = (hw_base + (y * hw_stride * 4 + x * 4) as u64) as *mut u32;
+                unsafe {
+                    ptr.write_volatile(hw);
+                }
+                true
+            }
+            3 => {
+                let ptr = (hw_base + (y * hw_stride * 3 + x * 3) as u64) as *mut u8;
+                let (r, g, b) = ((color >> 16) as u8, (color >> 8) as u8, color as u8);
+                unsafe {
+                    if is_rgb {
+                        ptr.add(0).write_volatile(r);
+                        ptr.add(1).write_volatile(g);
+                        ptr.add(2).write_volatile(b);
+                    } else {
+                        ptr.add(0).write_volatile(b);
+                        ptr.add(1).write_volatile(g);
+                        ptr.add(2).write_volatile(r);
+                    }
+                }
+                true
+            }
+            _ => false,
+        }
     }
 
     fn update_compositor_telemetry(&mut self, frame_start_tick: u64) {
@@ -5152,6 +5347,7 @@ impl WindowManager {
         let frame_ticks = now.wrapping_sub(frame_start_tick);
         self.frame_ticks_peak = self.frame_ticks_peak.max(frame_ticks);
         self.fps_window_frames = self.fps_window_frames.saturating_add(1);
+        COMPOSITOR_FULL_FRAMES.fetch_add(1, Ordering::Relaxed);
         if self.fps_window_start_tick == 0 {
             self.fps_window_start_tick = now;
         }

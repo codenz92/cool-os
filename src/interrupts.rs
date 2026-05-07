@@ -275,7 +275,7 @@ extern "C" fn timer_inner(current_rsp: usize) -> usize {
     let tick = TICKS.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
     crate::boot_watchdog::tick_from_irq(tick);
     crate::scheduler::BACKGROUND_COUNTER.fetch_add(1, Ordering::Relaxed);
-    crate::wm::request_repaint();
+    crate::wm::request_frame_tick();
     unsafe {
         PICS.lock()
             .notify_end_of_interrupt(InterruptIndex::Timer.as_u8());

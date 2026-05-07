@@ -108,12 +108,15 @@ pub fn handle_packet(b0: u8, b1: u8, b2: u8, b3: u8) {
 
     let left = b0 & 0x01 != 0;
     let right = b0 & 0x02 != 0;
+    let old_left = MOUSE_LEFT.load(Ordering::Relaxed);
+    let old_right = MOUSE_RIGHT.load(Ordering::Relaxed);
 
     apply_motion(dx, -dy, left, right);
 
     // Accumulate scroll-wheel delta from byte 3 in IntelliMouse mode.
     // PS/2 Z-axis is 4-bit two's complement: positive = scroll up, negative = scroll down.
     // Negate so SCROLL_ACCUM is positive-down (matches screen offset direction).
+    let mut scrolled = false;
     if INTELLIMOUSE.load(Ordering::Relaxed) {
         let z_raw = b3 & 0x0F;
         let z: i8 = if z_raw & 0x08 != 0 {
@@ -123,11 +126,18 @@ pub fn handle_packet(b0: u8, b1: u8, b2: u8, b3: u8) {
         };
         if z != 0 {
             SCROLL_ACCUM.fetch_sub(z as i32, Ordering::Relaxed);
+            scrolled = true;
         }
     }
 
-    // Tell the compositor a frame is needed.
-    crate::wm::request_repaint();
+    request_mouse_frame(
+        dx != 0 || dy != 0,
+        old_left,
+        old_right,
+        left,
+        right,
+        scrolled,
+    );
 }
 
 /// Process a USB HID boot-protocol mouse report (3 or 4 bytes).
@@ -141,6 +151,8 @@ pub fn handle_usb_boot_report(report: &[u8]) {
     let dy = report[2] as i8 as i32;
     let left = buttons & 0x01 != 0;
     let right = buttons & 0x02 != 0;
+    let old_left = MOUSE_LEFT.load(Ordering::Relaxed);
+    let old_right = MOUSE_RIGHT.load(Ordering::Relaxed);
 
     if USB_DEBUG_LOGS
         && (dx != 0 || dy != 0 || buttons != 0 || report.get(3).copied().unwrap_or(0) != 0)
@@ -158,14 +170,23 @@ pub fn handle_usb_boot_report(report: &[u8]) {
     // HID boot mouse reports use signed relative deltas; positive Y moves down.
     apply_motion(dx, dy, left, right);
 
+    let mut scrolled = false;
     if report.len() >= 4 {
         let wheel = report[3] as i8 as i32;
         if wheel != 0 {
             SCROLL_ACCUM.fetch_sub(wheel, Ordering::Relaxed);
+            scrolled = true;
         }
     }
 
-    crate::wm::request_repaint();
+    request_mouse_frame(
+        dx != 0 || dy != 0,
+        old_left,
+        old_right,
+        left,
+        right,
+        scrolled,
+    );
 }
 
 /// Process QEMU's USB tablet report:
@@ -184,17 +205,32 @@ pub fn handle_usb_tablet_report(report: &[u8]) {
     let x = ((raw_x.min(max) * w + (max / 2)) / max) as usize;
     let y = ((raw_y.min(max) * h + (max / 2)) / max) as usize;
 
+    let old_x = MOUSE_X.load(Ordering::Relaxed);
+    let old_y = MOUSE_Y.load(Ordering::Relaxed);
+    let old_left = MOUSE_LEFT.load(Ordering::Relaxed);
+    let old_right = MOUSE_RIGHT.load(Ordering::Relaxed);
+    let left = buttons & 0x01 != 0;
+    let right = buttons & 0x02 != 0;
     MOUSE_X.store(x, Ordering::Relaxed);
     MOUSE_Y.store(y, Ordering::Relaxed);
-    MOUSE_LEFT.store(buttons & 0x01 != 0, Ordering::Relaxed);
-    MOUSE_RIGHT.store(buttons & 0x02 != 0, Ordering::Relaxed);
+    MOUSE_LEFT.store(left, Ordering::Relaxed);
+    MOUSE_RIGHT.store(right, Ordering::Relaxed);
 
+    let mut scrolled = false;
     let wheel = report[5] as i8 as i32;
     if wheel != 0 {
         SCROLL_ACCUM.fetch_sub(wheel, Ordering::Relaxed);
+        scrolled = true;
     }
 
-    crate::wm::request_repaint();
+    request_mouse_frame(
+        x != old_x || y != old_y,
+        old_left,
+        old_right,
+        left,
+        right,
+        scrolled,
+    );
 }
 
 fn apply_motion(dx: i32, dy: i32, left: bool, right: bool) {
@@ -206,6 +242,21 @@ fn apply_motion(dx: i32, dy: i32, left: bool, right: bool) {
     MOUSE_Y.store(y, Ordering::Relaxed);
     MOUSE_LEFT.store(left, Ordering::Relaxed);
     MOUSE_RIGHT.store(right, Ordering::Relaxed);
+}
+
+fn request_mouse_frame(
+    moved: bool,
+    old_left: bool,
+    old_right: bool,
+    left: bool,
+    right: bool,
+    scrolled: bool,
+) {
+    if scrolled || old_left != left || old_right != right || left || right {
+        crate::wm::request_repaint();
+    } else if moved {
+        crate::wm::request_cursor_repaint();
+    }
 }
 
 // ── Hardware init ─────────────────────────────────────────────────────────────

@@ -619,7 +619,7 @@ impl TerminalApp {
                 self.cmd_lines("BOOT/SESSION PROFILER", lines);
             }
 
-            Some("compositor") => {
+            Some("compositor") | Some("smoothness") => {
                 self.cmd_lines("COMPOSITOR", crate::wm::compositor::compositor_lines())
             }
 
@@ -1085,7 +1085,8 @@ impl TerminalApp {
             ("sysreport [write]", "combined diagnostics report"),
             ("devkit", "SDK docs and app templates"),
             ("profiler", "boot/service/task timing"),
-            ("compositor", "FPS, frame, and damage telemetry"),
+            ("compositor", "FPS, frame, damage, and cursor telemetry"),
+            ("smoothness", "compositor latency telemetry"),
             ("heap", "heap diagnostics"),
             ("slab", "slab allocator diagnostics"),
             ("waitq", "kernel wait queue diagnostics"),

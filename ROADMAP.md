@@ -4,11 +4,13 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–44 are complete. The current milestone gives coolOS a much more
+Phases 1–45 are complete. The current milestone gives coolOS a much more
 normal command-line and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, and an
-in-image `/SDK` with devkit templates.
+in-image `/SDK` with devkit templates. Phase 45 focuses on smoothness: passive
+frame pacing, cursor-only framebuffer updates, input-first idle-loop ordering,
+and compositor telemetry for damage and cursor overlay work.
 
 ---
 
@@ -1303,6 +1305,37 @@ them.
 
 ---
 
+## ✅ Phase 45 — Compositor Latency and Smoothness
+
+**Goal:** Make mouse movement and normal desktop frames feel less like a toy by
+separating cursor latency from full-scene composition and by keeping background
+work behind the input/render path.
+
+- [x] Split repaint requests into explicit full repaint, cursor-only repaint,
+      and passive timer frame tick paths.
+- [x] Move the timer IRQ from unconditional full repaint requests to passive
+      frame ticks paced at 36 Hz for clocks/animations/idle visual updates.
+- [x] Keep mouse-only movement out of the full compositor path when no button,
+      scroll, drag, modal, menu, or taskbar hover work needs to change the base
+      scene.
+- [x] Draw the cursor as a hardware overlay after the clean shadow scene is
+      blitted, and restore/draw only old/new cursor rectangles on fast-path
+      mouse motion.
+- [x] Reorder the idle loop to poll USB input and render before service,
+      deferred, and network maintenance; reduce the deferred-work budget per
+      loop to bound latency spikes.
+- [x] Add `compositor`/`smoothness` telemetry for full frames, cursor-fast
+      frames, passive frame cadence, damage rows/pixels, and cursor overlay
+      pixels.
+- [x] Add `make run-smooth` for QEMU tablet input and
+      `make smoke-phase45-smoothness`.
+
+**Current status:** complete. Plain pointer movement can now update through a
+cursor overlay path instead of forcing a full window recomposition, while normal
+events still request full frames when the base scene changes.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -1363,4 +1396,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.5 | Phase 41 complete: filesystem durability and metadata |
 | v7.6 | Phase 42 complete: app consistency and in-OS help |
 | v7.7 | Phase 43 complete: observability and sysreport |
-| v7.8 | Current — Phase 44 complete: developer platform and SDK devkit |
+| v7.8 | Phase 44 complete: developer platform and SDK devkit |
+| v7.9 | Current — Phase 45 complete: compositor latency and smoothness |
