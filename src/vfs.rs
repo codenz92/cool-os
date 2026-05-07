@@ -735,6 +735,11 @@ pub fn vfs_kernel_read_file(path: &str) -> Option<Vec<u8>> {
     read_file_unchecked(&path)
 }
 
+pub fn vfs_kernel_metadata(path: &str) -> Option<FileMetadata> {
+    let path = normalize_path(path);
+    metadata_unchecked(&path)
+}
+
 pub fn vfs_kernel_create_file(path: &str) -> Result<(), crate::fat32::FsError> {
     let path = normalize_path(path);
     let (uid, gid) = default_owner_for_path(&path);
@@ -763,6 +768,31 @@ pub fn vfs_kernel_safe_write_file(path: &str, data: &[u8]) -> Result<(), crate::
         default_mode_for_path(&path, false),
     ));
     safe_write_file_for(&path, data, uid, gid, mode)
+}
+
+pub fn vfs_kernel_safe_write_file_with_mode(
+    path: &str,
+    data: &[u8],
+    mode: u16,
+) -> Result<(), crate::fat32::FsError> {
+    let path = normalize_path(path);
+    let meta = metadata_unchecked(&path);
+    let (default_uid, default_gid) = default_owner_for_path(&path);
+    let (uid, gid) = meta
+        .map(|meta| (meta.uid, meta.gid))
+        .unwrap_or((default_uid, default_gid));
+    safe_write_file_for(&path, data, uid, gid, mode & 0o777)
+}
+
+pub fn vfs_kernel_safe_write_file_with_metadata(
+    path: &str,
+    data: &[u8],
+    uid: u32,
+    gid: u32,
+    mode: u16,
+) -> Result<(), crate::fat32::FsError> {
+    let path = normalize_path(path);
+    safe_write_file_for(&path, data, uid, gid, mode & 0o777)
 }
 
 pub fn vfs_kernel_delete(path: &str) -> Result<(), crate::fat32::FsError> {

@@ -1,4 +1,4 @@
-.PHONY: run run-net run-usb run-usb-init run-smooth run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-phase31-accounts smoke-phase32-isolation smoke-phase33-process-control smoke-phase34-tty-jobs smoke-phase35-tty-input smoke-phase36-userspace-shell smoke-phase37-coreutils smoke-phase38-apps smoke-phase39-recovery smoke-phase40-shell-semantics smoke-phase41-fs-durability smoke-phase42-app-consistency smoke-phase43-observability smoke-phase44-devkit smoke-phase45-smoothness smoke-phase46-adaptive-refresh smoke-phase47-evented-userspace smoke-phase48-terminal-tui smoke-phase49-browser-engine smoke-phase50-css-layout smoke-phase51-browser-forms smoke-phase52-dom-events smoke-phase53-dom-forms smoke-phase54-browser-post smoke-phase55-browser-session smoke-phase56-css-box-model smoke-phase57-browser-layout smoke-phase58-browser-subresources smoke-phase59-browser-js smoke-phase60-browser-webapi smoke-phase61-browser-compat smoke-phase62-resource-limits smoke-phase63-memory-pressure smoke-phase64-services smoke-phase65-update-rollback smoke-phase66-boot-health smoke-phase67-update-trust smoke-phase68-update-keys smoke-phase69-package-trust smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
+.PHONY: run run-net run-usb run-usb-init run-smooth run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-phase31-accounts smoke-phase32-isolation smoke-phase33-process-control smoke-phase34-tty-jobs smoke-phase35-tty-input smoke-phase36-userspace-shell smoke-phase37-coreutils smoke-phase38-apps smoke-phase39-recovery smoke-phase40-shell-semantics smoke-phase41-fs-durability smoke-phase42-app-consistency smoke-phase43-observability smoke-phase44-devkit smoke-phase45-smoothness smoke-phase46-adaptive-refresh smoke-phase47-evented-userspace smoke-phase48-terminal-tui smoke-phase49-browser-engine smoke-phase50-css-layout smoke-phase51-browser-forms smoke-phase52-dom-events smoke-phase53-dom-forms smoke-phase54-browser-post smoke-phase55-browser-session smoke-phase56-css-box-model smoke-phase57-browser-layout smoke-phase58-browser-subresources smoke-phase59-browser-js smoke-phase60-browser-webapi smoke-phase61-browser-compat smoke-phase62-resource-limits smoke-phase63-memory-pressure smoke-phase64-services smoke-phase65-update-rollback smoke-phase66-boot-health smoke-phase67-update-trust smoke-phase68-update-keys smoke-phase69-package-trust smoke-phase70-package-payloads smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -571,12 +571,12 @@ smoke-package-app: build
 		--seconds 45 \
 		--retries $(SMOKE_RETRIES) \
 		--fw-cmd "pkg install /Packages/guidemo.pkg;;pkg run pkgdemo;;pkg remove pkgdemo" \
-		--expect "[pkg] installed app.phase25.guidemo name=Packaged GUI Demo exec=/bin/guidemo" \
-		--expect "[pkg] launched app.phase25.guidemo exec=/bin/guidemo pid=" \
+		--expect "[pkg] installed app.phase25.guidemo name=Packaged GUI Demo exec=/bin/pkgdemo payloads=1" \
+		--expect "[pkg] launched app.phase25.guidemo exec=/bin/pkgdemo pid=" \
 		--expect "guidemo: window opened" \
 		--expect "guidemo: presented frame" \
-	--expect "[pkg] removed app.phase25.guidemo" \
-	--expect "[boot] desktop ready"
+		--expect "[pkg] removed app.phase25.guidemo" \
+		--expect "[boot] desktop ready"
 
 smoke-coolfs-root: build
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
@@ -1696,8 +1696,10 @@ smoke-phase69-package-trust: build
 		--expect "key=phase69-pkg-revoked algorithm=ed25519 status=revoked scope=packages" \
 		--expect "key=phase69-pkg-expired algorithm=ed25519 status=trusted scope=packages" \
 		--expect "package_trust=ok key=phase69-pkg-a algorithm=ed25519 id=app.phase25.guidemo version=1.0 command=pkgdemo" \
-		--expect "[pkg] installed app.phase25.guidemo name=Packaged GUI Demo exec=/bin/guidemo" \
+		--expect "[pkg] installed app.phase25.guidemo name=Packaged GUI Demo exec=/bin/pkgdemo payloads=1" \
 		--expect "installed_trust=ok id=app.phase25.guidemo command=pkgdemo version=1.0 key=phase69-pkg-a algorithm=ed25519" \
+		--expect "payloads=ok count=1" \
+		--expect "payload=/bin/pkgdemo|source=/Packages/guidemo.elf" \
 		--expect "verified_by=phase69-pkg-a" \
 		--expect "flush: ok" \
 		--expect "[boot] desktop ready"
@@ -1711,7 +1713,8 @@ smoke-phase69-package-trust: build
 		--fw-cmd "pkg sign-as /Packages/guidemo.pkg phase69-pkg-b;;pkg verify /Packages/guidemo.pkg;;pkg install /Packages/guidemo.pkg;;cat /APPS/pkgdemo/OWNER.TXT;;flush" \
 		--expect "pkg: ok" \
 		--expect "package_trust=ok key=phase69-pkg-b algorithm=ed25519 id=app.phase25.guidemo version=1.0 command=pkgdemo" \
-		--expect "[pkg] installed app.phase25.guidemo name=Packaged GUI Demo exec=/bin/guidemo" \
+		--expect "[pkg] installed app.phase25.guidemo name=Packaged GUI Demo exec=/bin/pkgdemo payloads=1" \
+		--expect "payload=/bin/pkgdemo|/Packages/guidemo.elf" \
 		--expect "verified_by=phase69-pkg-b" \
 		--expect "flush: ok" \
 		--expect "[boot] desktop ready"
@@ -1777,7 +1780,7 @@ smoke-phase69-package-trust: build
 		--usb \
 		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
 		--fw-cmd "pkg install /Packages/guidemo.pkg;;pkg break pkgdemo;;pkg verify pkgdemo;;pkg repair pkgdemo;;pkg verify pkgdemo;;pkg remove pkgdemo;;pkg verify pkgdemo;;pkg history;;recovery;;sysreport" \
-		--expect "[pkg] installed app.phase25.guidemo name=Packaged GUI Demo exec=/bin/guidemo" \
+		--expect "[pkg] installed app.phase25.guidemo name=Packaged GUI Demo exec=/bin/pkgdemo payloads=1" \
 		--expect "installed_trust=failed error=installed manifest invalid" \
 		--expect "installed_trust=ok id=app.phase25.guidemo command=pkgdemo version=1.0 key=phase69-pkg-a algorithm=ed25519" \
 		--expect "[pkg] removed app.phase25.guidemo" \
@@ -1786,6 +1789,65 @@ smoke-phase69-package-trust: build
 		--expect "package_trust=ok signed=0" \
 		--expect "== packages ==" \
 		--expect "[selftest] kernel unit checks ok=27 fail=0" \
+		--expect "[boot] desktop ready"
+
+smoke-phase70-package-payloads: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-valid-remove" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--fw-cmd "pkg info /Packages/guidemo.pkg;;pkg verify /Packages/guidemo.pkg;;pkg install /Packages/guidemo.pkg;;pkg verify pkgdemo;;perm /bin/pkgdemo;;pkg run pkgdemo;;pkg remove pkgdemo;;hash /bin/pkgdemo" \
+		--expect "payloads=1" \
+		--expect "payloads=ok count=1" \
+		--expect "payload=/bin/pkgdemo|source=/Packages/guidemo.elf" \
+		--expect "[pkg] installed app.phase25.guidemo name=Packaged GUI Demo exec=/bin/pkgdemo payloads=1" \
+		--expect "installed_trust=ok id=app.phase25.guidemo command=pkgdemo version=1.0 key=phase69-pkg-a algorithm=ed25519" \
+		--expect "/bin/pkgdemo file uid=0 gid=0 mode=755" \
+		--expect "[pkg] launched app.phase25.guidemo exec=/bin/pkgdemo pid=" \
+		--expect "guidemo: window opened" \
+		--expect "[pkg] removed app.phase25.guidemo" \
+		--expect "hash: file not found" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-repair-transaction" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--fw-cmd "pkg install /Packages/guidemo.pkg;;pkg break-payload pkgdemo;;pkg verify pkgdemo;;pkg repair pkgdemo;;pkg verify pkgdemo;;pkg transaction;;recovery;;sysreport" \
+		--expect "installed_trust=failed error=installed payload hash mismatch" \
+		--expect "installed_trust=ok id=app.phase25.guidemo command=pkgdemo version=1.0 key=phase69-pkg-a algorithm=ed25519" \
+		--expect "payloads=ok count=1" \
+		--expect "transaction=clean action=repair id=app.phase25.guidemo" \
+		--expect "package_trust=ok signed=1" \
+		--expect "== packages ==" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-source-tamper" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--fw-cmd "pkg tamper-payload /Packages/guidemo.pkg;;pkg verify /Packages/guidemo.pkg;;pkg install /Packages/guidemo.pkg" \
+		--expect "package_trust=failed error=package payload hash mismatch" \
+		--expect "pkg: package payload hash mismatch" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-rollback" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--fw-cmd "pkg install-fail /Packages/guidemo.pkg;;pkg transaction;;hash /bin/pkgdemo" \
+		--expect "pkg: package transaction rollback" \
+		--expect "transaction=rolled-back action=install id=app.phase25.guidemo" \
+		--expect "hash: file not found" \
 		--expect "[boot] desktop ready"
 
 smoke-coolfs-native: build

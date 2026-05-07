@@ -1265,7 +1265,7 @@ impl TerminalApp {
             ("account <op>", "admin user management"),
             ("umask [mode]", "view/set file creation mask"),
             ("users", "user/security status"),
-            ("pkg <op>", "package trust/install/repair/run"),
+            ("pkg <op>", "package payload trust/install/repair/run"),
             ("proc", "process groups and signals"),
             ("zombies", "zombie cleanup policy"),
             ("signal <pid|-pgid> <sig>", "deliver signal to task/group"),
@@ -2437,6 +2437,9 @@ impl TerminalApp {
             (Some("history"), _) => {
                 self.cmd_lines("PACKAGE HISTORY", crate::packages::history_lines())
             }
+            (Some("transaction"), _) | (Some("txn"), _) => {
+                self.cmd_lines("PACKAGE TRANSACTION", crate::packages::transaction_lines())
+            }
             (Some("info"), Some(value)) => {
                 let value = resolve_path_if_archive(&self.cwd, value);
                 self.cmd_lines("PACKAGE INFO", crate::packages::info_lines(&value));
@@ -2451,6 +2454,13 @@ impl TerminalApp {
                 }
                 let id = resolve_path_if_archive(&self.cwd, id);
                 self.print_result("pkg", crate::packages::install(&id));
+            }
+            (Some("install-fail"), Some(id)) => {
+                if !self.require_admin("pkg") {
+                    return;
+                }
+                let id = resolve_path_if_archive(&self.cwd, id);
+                self.print_result("pkg", crate::packages::install_archive_with_fault(&id));
             }
             (Some("remove"), Some(id)) | (Some("uninstall"), Some(id)) => {
                 if !self.require_admin("pkg") {
@@ -2497,6 +2507,13 @@ impl TerminalApp {
                 let path = resolve_path(&self.cwd, path);
                 self.print_result("pkg", crate::packages::tamper_archive_name(&path));
             }
+            (Some("tamper-payload"), Some(path)) => {
+                if !self.require_admin("pkg") {
+                    return;
+                }
+                let path = resolve_path(&self.cwd, path);
+                self.print_result("pkg", crate::packages::tamper_archive_payload(&path));
+            }
             (Some("deps"), Some(path)) => {
                 if !self.require_admin("pkg") {
                     return;
@@ -2513,6 +2530,12 @@ impl TerminalApp {
                     return;
                 }
                 self.print_result("pkg", crate::packages::break_installed(id));
+            }
+            (Some("break-payload"), Some(id)) | (Some("payload-break"), Some(id)) => {
+                if !self.require_admin("pkg") {
+                    return;
+                }
+                self.print_result("pkg", crate::packages::break_installed_payload(id));
             }
             (Some("run"), Some(id)) | (Some("launch"), Some(id)) => {
                 match crate::packages::launch(id, &args) {
@@ -2536,8 +2559,8 @@ impl TerminalApp {
             }
             _ => {
                 self.set_fg(FG_ERROR);
-                self.print_str("usage: pkg [list|keys|history|info <id|path>|verify <id|path>|install <id|path>|remove <id>|repair <id>|run <id> [args...]]\n");
-                self.print_str("       pkg [sign <path>|sign-as <path> <key>|unsign <path>|tamper <path>|deps <path> [ids...]|break <id>]\n");
+                self.print_str("usage: pkg [list|keys|history|transaction|info <id|path>|verify <id|path>|install <id|path>|remove <id>|repair <id>|run <id> [args...]]\n");
+                self.print_str("       pkg [sign <path>|sign-as <path> <key>|unsign <path>|tamper <path>|tamper-payload <path>|deps <path> [ids...]|break <id>|break-payload <id>|install-fail <path>]\n");
             }
         }
     }

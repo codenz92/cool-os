@@ -25,7 +25,7 @@ const SUBTLE: u32 = 0x00_66_AA_DD;
 const MUTED: u32 = 0x00_55_7A_92;
 
 const ABOUT: &[&str] = &[
-    " coolOS v7.33",
+    " coolOS v7.34",
     " Bare-metal OS in Rust",
     "",
     " == Current Platform ==",
@@ -42,7 +42,7 @@ const ABOUT: &[&str] = &[
     " Durable service supervision with dependency recovery",
     " Ed25519 signed updates with rollback snapshots",
     " Update key rotation, revocation, and anti-rollback",
-    " Signed package archives with owner records and repair",
+    " Signed package payloads with transaction rollback and repair",
     " Boot health with last-known-good auto rollback",
     "",
     " == Commands ==",

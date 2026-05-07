@@ -5,10 +5,11 @@ use spin::Mutex;
 
 const TRUST_KEYS_PATH: &str = "/CONFIG/PACKAGE-KEYS.TXT";
 const PACKAGE_LOG_PATH: &str = "/LOGS/PACKAGES.TXT";
+const PACKAGE_TXN_PATH: &str = "/LOGS/PACKAGE-TXN.TXT";
 const TRUST_ALGORITHM: &str = "ed25519";
 const TRUST_KEY_ID: &str = "phase69-pkg-a";
-const CURRENT_OS_VERSION: u64 = 69;
-const CURRENT_EPOCH: u64 = 69;
+const CURRENT_OS_VERSION: u64 = 70;
+const CURRENT_EPOCH: u64 = 70;
 const MAX_EPOCH: u64 = 9999;
 
 const PKG_A_SEED: [u8; 32] = [
@@ -74,6 +75,7 @@ struct ArchiveManifest {
     aliases: String,
     associations: String,
     dependencies: Vec<String>,
+    payloads: Vec<PackagePayload>,
     min_os_version: u64,
     trust_manifest: String,
     installed_manifest: String,
@@ -108,6 +110,7 @@ struct PackageVerification {
     manifest_sha256: String,
     signature_path: String,
     dependencies: Vec<String>,
+    payloads: Vec<PackagePayload>,
 }
 
 struct OwnerRecord {
@@ -122,6 +125,21 @@ struct OwnerRecord {
     verified_by: String,
     algorithm: String,
     dependencies: Vec<String>,
+    payloads: Vec<PackagePayload>,
+}
+
+#[derive(Clone)]
+struct PackagePayload {
+    target: String,
+    source: String,
+    sha256: String,
+    mode: u16,
+}
+
+struct RollbackFile {
+    path: String,
+    before: Option<Vec<u8>>,
+    metadata: Option<crate::vfs::FileMetadata>,
 }
 
 static INSTALLED: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -231,18 +249,60 @@ pub fn install(id_or_command: &str) -> Result<(), &'static str> {
 }
 
 pub fn install_archive(path: &str) -> Result<(), &'static str> {
+    install_archive_inner(path, false)
+}
+
+pub fn install_archive_with_fault(path: &str) -> Result<(), &'static str> {
+    install_archive_inner(path, true)
+}
+
+fn install_archive_inner(path: &str, inject_failure: bool) -> Result<(), &'static str> {
     ensure_layout();
     let (archive, verification) = verify_archive(path)?;
     check_archive_collision(&archive)?;
     check_dependencies(&archive)?;
     check_package_downgrade(&archive)?;
+    check_payload_targets(&archive)?;
 
     let dir = app_dir(&archive.command);
-    let _ = crate::vfs::vfs_kernel_create_dir(&dir);
     let manifest_path = app_manifest_path(&archive.command);
-    safe_write(&manifest_path, archive.installed_manifest.as_bytes())
-        .map_err(|_| "install write failed")?;
-    write_owner_record(path, &archive, &verification)?;
+    let owner_path = owner_path(&archive.command);
+    let app_dir_existed = crate::vfs::vfs_kernel_list_dir(&dir).is_some();
+    let rollback = capture_rollback(&transaction_paths(
+        &archive.payloads,
+        &manifest_path,
+        &owner_path,
+    ));
+    write_transaction(
+        "running",
+        "install",
+        &archive.id,
+        &[
+            format!("command={}", archive.command),
+            format!("payloads={}", archive.payloads.len()),
+        ],
+    );
+    let result = write_installed_files(path, &archive, &verification, inject_failure);
+    if result.is_err() {
+        restore_rollback(&rollback);
+        if !app_dir_existed {
+            let _ = delete_app_dir(&archive.command);
+        }
+        write_transaction(
+            "rolled-back",
+            "install",
+            &archive.id,
+            &[format!(
+                "error={}",
+                result.err().unwrap_or("install failed")
+            )],
+        );
+        append_log(
+            "install-rollback",
+            &[format!("id={} command={}", archive.id, archive.command)],
+        );
+        return Err("package transaction rollback");
+    }
     let mut installed = INSTALLED.lock();
     if !installed
         .iter()
@@ -253,16 +313,28 @@ pub fn install_archive(path: &str) -> Result<(), &'static str> {
     append_log(
         "install",
         &[format!(
-            "id={} command={} version={} key={} source={}",
-            archive.id, archive.command, archive.version, verification.key, path
+            "id={} command={} version={} key={} source={} payloads={}",
+            archive.id,
+            archive.command,
+            archive.version,
+            verification.key,
+            path,
+            archive.payloads.len()
         )],
+    );
+    write_transaction(
+        "clean",
+        "install",
+        &archive.id,
+        &[format!("payloads={}", archive.payloads.len())],
     );
     crate::event_bus::emit("packages", "install-pkg", &archive.id);
     crate::println!(
-        "[pkg] installed {} name={} exec={}",
+        "[pkg] installed {} name={} exec={} payloads={}",
         archive.id,
         archive.name,
-        archive.exec_path
+        archive.exec_path,
+        archive.payloads.len()
     );
     Ok(())
 }
@@ -276,18 +348,75 @@ pub fn uninstall(id_or_command: &str) -> Result<(), &'static str> {
         crate::println!("[pkg] removed {}", app.id);
         return Ok(());
     }
+    let Some(owner) = owner_record_by_id_or_command(id_or_command) else {
+        let manifest = crate::app_metadata::installed_manifest_by_id_or_command(id_or_command)
+            .ok_or("unknown package")?;
+        INSTALLED
+            .lock()
+            .retain(|id| !id.eq_ignore_ascii_case(&manifest.id));
+        delete_app_dir(&manifest.command).map_err(|_| "remove failed")?;
+        append_log(
+            "remove",
+            &[format!(
+                "id={} command={} legacy=true",
+                manifest.id, manifest.command
+            )],
+        );
+        crate::event_bus::emit("packages", "remove", &manifest.id);
+        crate::println!("[pkg] removed {}", manifest.id);
+        return Ok(());
+    };
     let manifest = crate::app_metadata::installed_manifest_by_id_or_command(id_or_command)
-        .or_else(|| {
-            owner_record_by_id_or_command(id_or_command).map(|owner| owner_to_manifest(&owner))
-        })
-        .ok_or("unknown package")?;
+        .unwrap_or_else(|| owner_to_manifest(&owner));
+    let manifest_path = app_manifest_path(&manifest.command);
+    let owner_path = owner_path(&manifest.command);
+    let app_dir_existed = crate::vfs::vfs_kernel_list_dir(&app_dir(&manifest.command)).is_some();
+    let rollback = capture_rollback(&transaction_paths(
+        &owner.payloads,
+        &manifest_path,
+        &owner_path,
+    ));
+    write_transaction(
+        "running",
+        "remove",
+        &manifest.id,
+        &[format!("payloads={}", owner.payloads.len())],
+    );
+    let result = remove_owned_files(&manifest.command, &owner);
+    if result.is_err() {
+        restore_rollback(&rollback);
+        if !app_dir_existed {
+            let _ = delete_app_dir(&manifest.command);
+        }
+        write_transaction(
+            "rolled-back",
+            "remove",
+            &manifest.id,
+            &[format!("error={}", result.err().unwrap_or("remove failed"))],
+        );
+        append_log(
+            "remove-rollback",
+            &[format!("id={} command={}", manifest.id, manifest.command)],
+        );
+        return Err("package transaction rollback");
+    }
     INSTALLED
         .lock()
         .retain(|id| !id.eq_ignore_ascii_case(&manifest.id));
-    delete_app_dir(&manifest.command).map_err(|_| "remove failed")?;
     append_log(
         "remove",
-        &[format!("id={} command={}", manifest.id, manifest.command)],
+        &[format!(
+            "id={} command={} payloads={}",
+            manifest.id,
+            manifest.command,
+            owner.payloads.len()
+        )],
+    );
+    write_transaction(
+        "clean",
+        "remove",
+        &manifest.id,
+        &[format!("payloads={}", owner.payloads.len())],
     );
     crate::event_bus::emit("packages", "remove", &manifest.id);
     crate::println!("[pkg] removed {}", manifest.id);
@@ -388,6 +517,7 @@ pub fn verify_lines(value: &str) -> Vec<String> {
             ),
             format!("manifest_sha256={}", owner.installed_sha256),
             format!("source={}", owner.source),
+            format!("payloads=ok count={}", owner.payloads.len()),
         ],
         Err(err) => alloc::vec![format!("installed_trust=failed error={}", err)],
     }
@@ -429,9 +559,30 @@ pub fn info_lines(value: &str) -> Vec<String> {
                 owner.manifest_path, owner.installed_sha256
             ),
             format!("depends={}", join_csv(&owner.dependencies)),
+            format!("payloads={}", owner.payloads.len()),
+            payload_summary_lines(&owner.payloads),
         ],
         None => alloc::vec![String::from("package=unknown")],
     }
+}
+
+pub fn transaction_lines() -> Vec<String> {
+    let Some(bytes) = crate::vfs::vfs_kernel_read_file(PACKAGE_TXN_PATH) else {
+        return alloc::vec![String::from("transaction=clean")];
+    };
+    let Ok(text) = core::str::from_utf8(&bytes) else {
+        return alloc::vec![String::from("transaction=unreadable")];
+    };
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        if !line.trim().is_empty() {
+            lines.push(String::from(line));
+        }
+    }
+    if lines.is_empty() {
+        lines.push(String::from("transaction=clean"));
+    }
+    lines
 }
 
 pub fn sign_archive(path: &str) -> Result<(), &'static str> {
@@ -533,6 +684,30 @@ pub fn break_installed(id_or_command: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
+pub fn break_installed_payload(id_or_command: &str) -> Result<(), &'static str> {
+    let owner = owner_record_by_id_or_command(id_or_command).ok_or("package owner missing")?;
+    let payload = owner.payloads.first().ok_or("package has no payloads")?;
+    safe_write(&payload.target, b"broken package payload\n")?;
+    append_log(
+        "break-payload",
+        &[format!("id={} target={}", owner.id, payload.target)],
+    );
+    Ok(())
+}
+
+pub fn tamper_archive_payload(path: &str) -> Result<(), &'static str> {
+    let bytes = crate::vfs::vfs_kernel_read_file(path).ok_or("package file not found")?;
+    let text = core::str::from_utf8(&bytes).map_err(|_| "package is not UTF-8 manifest")?;
+    let archive = parse_archive_manifest(text)?;
+    let payload = archive.payloads.first().ok_or("package has no payloads")?;
+    safe_write(&payload.source, b"tampered package source payload\n")?;
+    append_log(
+        "tamper-payload",
+        &[format!("path={} source={}", path, payload.source)],
+    );
+    Ok(())
+}
+
 pub fn repair(id_or_command: &str) -> Result<(), &'static str> {
     let owner = owner_record_by_id_or_command(id_or_command).ok_or("package owner missing")?;
     let (archive, verification) = verify_archive(&owner.source)?;
@@ -542,8 +717,34 @@ pub fn repair(id_or_command: &str) -> Result<(), &'static str> {
         return Err("package source mismatch");
     }
     check_dependencies(&archive)?;
-    safe_write(&owner.manifest_path, archive.installed_manifest.as_bytes())?;
-    write_owner_record(&owner.source, &archive, &verification)?;
+    check_payload_targets(&archive)?;
+    let owner_path = owner_path(&archive.command);
+    let rollback = capture_rollback(&transaction_paths(
+        &archive.payloads,
+        &owner.manifest_path,
+        &owner_path,
+    ));
+    write_transaction(
+        "running",
+        "repair",
+        &archive.id,
+        &[format!("payloads={}", archive.payloads.len())],
+    );
+    let result = write_installed_files(&owner.source, &archive, &verification, false);
+    if result.is_err() {
+        restore_rollback(&rollback);
+        write_transaction(
+            "rolled-back",
+            "repair",
+            &archive.id,
+            &[format!("error={}", result.err().unwrap_or("repair failed"))],
+        );
+        append_log(
+            "repair-rollback",
+            &[format!("id={} command={}", archive.id, archive.command)],
+        );
+        return Err("package transaction rollback");
+    }
     let mut installed = INSTALLED.lock();
     if !installed
         .iter()
@@ -554,9 +755,19 @@ pub fn repair(id_or_command: &str) -> Result<(), &'static str> {
     append_log(
         "repair",
         &[format!(
-            "id={} command={} key={} source={}",
-            archive.id, archive.command, verification.key, owner.source
+            "id={} command={} key={} source={} payloads={}",
+            archive.id,
+            archive.command,
+            verification.key,
+            owner.source,
+            archive.payloads.len()
         )],
+    );
+    write_transaction(
+        "clean",
+        "repair",
+        &archive.id,
+        &[format!("payloads={}", archive.payloads.len())],
     );
     crate::event_bus::emit("packages", "repair", &archive.id);
     Ok(())
@@ -594,17 +805,26 @@ pub fn recovery_lines() -> Vec<String> {
 pub fn status_lines() -> Vec<String> {
     let mut lines = alloc::vec![
         format!("keys={} log={}", TRUST_KEYS_PATH, PACKAGE_LOG_PATH),
-        String::from("archives=/Packages signature_sidecar=<package>.sig"),
+        format!(
+            "archives=/Packages signature_sidecar=<package>.sig transaction={}",
+            PACKAGE_TXN_PATH
+        ),
     ];
     lines.extend(recovery_lines());
+    lines.extend(transaction_lines());
     for package in list()
         .into_iter()
         .filter(|pkg| !pkg.builtin && pkg.installed)
     {
         match verify_installed_package(&package.id) {
             Ok((manifest, owner)) => lines.push(format!(
-                "package={} command={} version={} trust=ok key={} source={}",
-                manifest.id, manifest.command, manifest.version, owner.verified_by, owner.source
+                "package={} command={} version={} trust=ok key={} source={} payloads={}",
+                manifest.id,
+                manifest.command,
+                manifest.version,
+                owner.verified_by,
+                owner.source,
+                owner.payloads.len()
             )),
             Err(err) => lines.push(format!("package={} trust=failed error={}", package.id, err)),
         }
@@ -650,6 +870,8 @@ fn archive_verify_lines(path: &str) -> Vec<String> {
                 format!("manifest_sha256={}", verification.manifest_sha256),
                 format!("signature={}", verification.signature_path),
                 dependency_line,
+                format!("payloads=ok count={}", verification.payloads.len()),
+                payload_summary_lines(&verification.payloads),
             ]
         }
         Err(err) => alloc::vec![format!("package_trust=failed error={}", err)],
@@ -683,6 +905,8 @@ fn archive_info_lines(path: &str) -> Vec<String> {
                 join_csv(&archive.dependencies),
                 archive.min_os_version
             ),
+            format!("payloads={}", archive.payloads.len()),
+            payload_summary_lines(&archive.payloads),
         ],
         Err(err) => alloc::vec![format!("path={} invalid={}", path, err)],
     }
@@ -744,6 +968,7 @@ fn verify_archive(path: &str) -> Result<(ArchiveManifest, PackageVerification), 
         manifest_sha256: crate::update_crypto::hex(&digest),
         signature_path: sig_path,
         dependencies: archive.dependencies.clone(),
+        payloads: archive.payloads.clone(),
     };
     Ok((archive, verification))
 }
@@ -779,6 +1004,7 @@ fn verify_installed_package(
     {
         return Err("package source mismatch");
     }
+    verify_installed_payloads(&owner, &archive)?;
     Ok((manifest, owner))
 }
 
@@ -796,6 +1022,7 @@ fn parse_archive_manifest(text: &str) -> Result<ArchiveManifest, &'static str> {
     let dependencies = manifest_value(text, "depends")
         .map(split_csv)
         .unwrap_or_default();
+    let payloads = parse_payload_lines(text)?;
     let min_os_version = manifest_value(text, "min_os_version")
         .and_then(parse_u64)
         .unwrap_or(1);
@@ -806,7 +1033,12 @@ fn parse_archive_manifest(text: &str) -> Result<ArchiveManifest, &'static str> {
     {
         return Err("invalid package manifest");
     }
-    if !exec_path.starts_with('/') || crate::vfs::vfs_kernel_read_file(exec_path).is_none() {
+    if !exec_path.starts_with('/')
+        || (crate::vfs::vfs_kernel_read_file(exec_path).is_none()
+            && !payloads
+                .iter()
+                .any(|payload| payload.target.eq_ignore_ascii_case(exec_path)))
+    {
         return Err("package exec not found");
     }
     for dep in &dependencies {
@@ -834,6 +1066,17 @@ fn parse_archive_manifest(text: &str) -> Result<ArchiveManifest, &'static str> {
     trust_manifest.push_str("\nmin_os_version=");
     trust_manifest.push_str(&format!("{}", min_os_version));
     trust_manifest.push('\n');
+    for payload in &payloads {
+        trust_manifest.push_str("payload=");
+        trust_manifest.push_str(&payload.target);
+        trust_manifest.push('|');
+        trust_manifest.push_str(&payload.source);
+        trust_manifest.push('|');
+        trust_manifest.push_str(&payload.sha256);
+        trust_manifest.push('|');
+        trust_manifest.push_str(&crate::security::format_mode(payload.mode));
+        trust_manifest.push('\n');
+    }
     Ok(ArchiveManifest {
         id: String::from(id),
         name: String::from(name),
@@ -846,6 +1089,7 @@ fn parse_archive_manifest(text: &str) -> Result<ArchiveManifest, &'static str> {
         aliases: String::from(aliases),
         associations: String::from(associations),
         dependencies,
+        payloads,
         min_os_version,
         trust_manifest,
         installed_manifest,
@@ -889,6 +1133,61 @@ fn installed_manifest_text(
     manifest
 }
 
+fn parse_payload_lines(text: &str) -> Result<Vec<PackagePayload>, &'static str> {
+    let mut payloads = Vec::new();
+    for raw in manifest_values(text, "payload") {
+        let parts: Vec<&str> = raw.split('|').map(str::trim).collect();
+        if parts.len() < 2 || parts.len() > 4 {
+            return Err("invalid package payload");
+        }
+        let target = parts[0];
+        let source = parts[1];
+        if !valid_payload_target(target) || !source.starts_with('/') {
+            return Err("invalid package payload");
+        }
+        if payloads
+            .iter()
+            .any(|payload: &PackagePayload| payload.target.eq_ignore_ascii_case(target))
+        {
+            return Err("duplicate package payload");
+        }
+        let mut expected_sha = "";
+        let mut mode_text = "644";
+        match parts.len() {
+            2 => {}
+            3 => {
+                if is_sha256_hex(parts[2]) {
+                    expected_sha = parts[2];
+                } else {
+                    mode_text = parts[2];
+                }
+            }
+            4 => {
+                if !is_sha256_hex(parts[2]) {
+                    return Err("invalid package payload");
+                }
+                expected_sha = parts[2];
+                mode_text = parts[3];
+            }
+            _ => return Err("invalid package payload"),
+        }
+        let mode = crate::security::parse_mode(mode_text).ok_or("invalid package payload mode")?;
+        let source_data =
+            crate::vfs::vfs_kernel_read_file(source).ok_or("package payload missing")?;
+        let actual_sha = crate::update_crypto::digest_hex(&source_data);
+        if !expected_sha.is_empty() && !expected_sha.eq_ignore_ascii_case(&actual_sha) {
+            return Err("package payload hash mismatch");
+        }
+        payloads.push(PackagePayload {
+            target: String::from(target),
+            source: String::from(source),
+            sha256: actual_sha,
+            mode,
+        });
+    }
+    Ok(payloads)
+}
+
 fn check_archive_collision(archive: &ArchiveManifest) -> Result<(), &'static str> {
     if crate::app_metadata::is_builtin_id(&archive.id)
         || crate::app_metadata::app_by_id_or_command(&archive.command).is_some()
@@ -928,6 +1227,19 @@ fn check_package_downgrade(archive: &ArchiveManifest) -> Result<(), &'static str
     Ok(())
 }
 
+fn check_payload_targets(archive: &ArchiveManifest) -> Result<(), &'static str> {
+    for payload in &archive.payloads {
+        if let Some(owner) = payload_owner_by_target(&payload.target) {
+            if !owner.id.eq_ignore_ascii_case(&archive.id) {
+                return Err("package payload target owned");
+            }
+        } else if crate::vfs::vfs_kernel_read_file(&payload.target).is_some() {
+            return Err("package payload target exists");
+        }
+    }
+    Ok(())
+}
+
 fn write_owner_record(
     source: &str,
     archive: &ArchiveManifest,
@@ -960,7 +1272,141 @@ fn write_owner_record(
     out.push_str("\ndepends=");
     out.push_str(&join_csv_field(&verification.dependencies));
     out.push('\n');
+    for payload in &verification.payloads {
+        out.push_str("payload=");
+        out.push_str(&payload.target);
+        out.push('|');
+        out.push_str(&payload.source);
+        out.push('|');
+        out.push_str(&payload.sha256);
+        out.push('|');
+        out.push_str(&crate::security::format_mode(payload.mode));
+        out.push('\n');
+    }
     safe_write(&owner_path, out.as_bytes())
+}
+
+fn write_installed_files(
+    source: &str,
+    archive: &ArchiveManifest,
+    verification: &PackageVerification,
+    inject_failure: bool,
+) -> Result<(), &'static str> {
+    let dir = app_dir(&archive.command);
+    let _ = crate::vfs::vfs_kernel_create_dir(&dir);
+    for (idx, payload) in archive.payloads.iter().enumerate() {
+        let data =
+            crate::vfs::vfs_kernel_read_file(&payload.source).ok_or("package payload missing")?;
+        let actual_sha = crate::update_crypto::digest_hex(&data);
+        if actual_sha != payload.sha256 {
+            return Err("package payload hash mismatch");
+        }
+        safe_write_mode(&payload.target, &data, payload.mode)?;
+        if inject_failure && idx == 0 {
+            return Err("injected install failure");
+        }
+    }
+    let manifest_path = app_manifest_path(&archive.command);
+    safe_write(&manifest_path, archive.installed_manifest.as_bytes())
+        .map_err(|_| "install write failed")?;
+    write_owner_record(source, archive, verification)?;
+    Ok(())
+}
+
+fn remove_owned_files(command: &str, owner: &OwnerRecord) -> Result<(), &'static str> {
+    for payload in &owner.payloads {
+        match crate::vfs::vfs_kernel_delete(&payload.target) {
+            Ok(()) | Err(crate::fat32::FsError::NotFound) => {}
+            Err(_) => return Err("remove payload failed"),
+        }
+    }
+    delete_app_dir(command).map_err(|_| "remove failed")
+}
+
+fn verify_installed_payloads(
+    owner: &OwnerRecord,
+    archive: &ArchiveManifest,
+) -> Result<(), &'static str> {
+    if owner.payloads.len() != archive.payloads.len() {
+        return Err("installed payload table mismatch");
+    }
+    for payload in &archive.payloads {
+        let Some(owner_payload) = owner
+            .payloads
+            .iter()
+            .find(|owned| owned.target.eq_ignore_ascii_case(&payload.target))
+        else {
+            return Err("installed payload table mismatch");
+        };
+        if owner_payload.source != payload.source
+            || owner_payload.sha256 != payload.sha256
+            || owner_payload.mode != payload.mode
+        {
+            return Err("installed payload table mismatch");
+        }
+        let data =
+            crate::vfs::vfs_kernel_read_file(&payload.target).ok_or("installed payload missing")?;
+        let actual_sha = crate::update_crypto::digest_hex(&data);
+        if actual_sha != payload.sha256 {
+            return Err("installed payload hash mismatch");
+        }
+    }
+    Ok(())
+}
+
+fn transaction_paths(
+    payloads: &[PackagePayload],
+    manifest_path: &str,
+    owner_path: &str,
+) -> Vec<String> {
+    let mut paths: Vec<String> = payloads
+        .iter()
+        .map(|payload| payload.target.clone())
+        .collect();
+    paths.push(String::from(manifest_path));
+    paths.push(String::from(owner_path));
+    paths
+}
+
+fn capture_rollback(paths: &[String]) -> Vec<RollbackFile> {
+    let mut rollback = Vec::new();
+    for path in paths {
+        if rollback
+            .iter()
+            .any(|entry: &RollbackFile| entry.path.eq_ignore_ascii_case(path))
+        {
+            continue;
+        }
+        rollback.push(RollbackFile {
+            path: path.clone(),
+            before: crate::vfs::vfs_kernel_read_file(path),
+            metadata: crate::vfs::vfs_kernel_metadata(path),
+        });
+    }
+    rollback
+}
+
+fn restore_rollback(rollback: &[RollbackFile]) {
+    for file in rollback {
+        match &file.before {
+            Some(data) => {
+                if let Some(metadata) = file.metadata {
+                    let _ = safe_write_metadata(
+                        &file.path,
+                        data,
+                        metadata.uid,
+                        metadata.gid,
+                        metadata.mode,
+                    );
+                } else {
+                    let _ = safe_write(&file.path, data);
+                }
+            }
+            None => {
+                let _ = crate::vfs::vfs_kernel_delete(&file.path);
+            }
+        }
+    }
 }
 
 fn owner_record_by_id_or_command(value: &str) -> Option<OwnerRecord> {
@@ -986,7 +1432,48 @@ fn owner_record_by_id_or_command(value: &str) -> Option<OwnerRecord> {
     None
 }
 
+fn payload_owner_by_target(target: &str) -> Option<OwnerRecord> {
+    let dirs = crate::vfs::vfs_kernel_list_dir("/APPS")?;
+    for dir in dirs.iter().filter(|entry| entry.is_dir).take(64) {
+        let path = owner_path(&dir.name);
+        let Some(bytes) = crate::vfs::vfs_kernel_read_file(&path) else {
+            continue;
+        };
+        let Ok(text) = core::str::from_utf8(&bytes) else {
+            continue;
+        };
+        let Some(owner) = parse_owner_record(text) else {
+            continue;
+        };
+        if owner
+            .payloads
+            .iter()
+            .any(|payload| payload.target.eq_ignore_ascii_case(target))
+        {
+            return Some(owner);
+        }
+    }
+    None
+}
+
 fn parse_owner_record(text: &str) -> Option<OwnerRecord> {
+    let mut payloads = Vec::new();
+    for raw in manifest_values(text, "payload") {
+        let parts: Vec<&str> = raw.split('|').map(str::trim).collect();
+        if parts.len() < 3 {
+            continue;
+        }
+        let mode = parts
+            .get(3)
+            .and_then(|mode| crate::security::parse_mode(mode))
+            .unwrap_or(0o644);
+        payloads.push(PackagePayload {
+            target: String::from(parts[0]),
+            source: String::from(parts[1]),
+            sha256: String::from(parts[2]),
+            mode,
+        });
+    }
     Some(OwnerRecord {
         id: String::from(manifest_value(text, "id")?),
         name: String::from(manifest_value(text, "name").unwrap_or("Package")),
@@ -1001,6 +1488,7 @@ fn parse_owner_record(text: &str) -> Option<OwnerRecord> {
         dependencies: manifest_value(text, "depends")
             .map(split_csv)
             .unwrap_or_default(),
+        payloads,
     })
 }
 
@@ -1275,12 +1763,45 @@ fn append_log(action: &str, details: &[String]) {
     let _ = safe_write(PACKAGE_LOG_PATH, log.as_bytes());
 }
 
+fn write_transaction(status: &str, action: &str, id: &str, details: &[String]) {
+    let mut out = String::new();
+    out.push_str("transaction=");
+    out.push_str(status);
+    out.push_str(" action=");
+    out.push_str(action);
+    out.push_str(" id=");
+    out.push_str(id);
+    out.push_str(" tick=");
+    out.push_str(&format!("{}", crate::interrupts::ticks()));
+    out.push('\n');
+    for detail in details {
+        out.push_str(detail);
+        out.push('\n');
+    }
+    let _ = safe_write(PACKAGE_TXN_PATH, out.as_bytes());
+}
+
 fn safe_write(path: &str, data: &[u8]) -> Result<(), &'static str> {
     match crate::vfs::vfs_kernel_create_file(path) {
         Ok(()) | Err(crate::fat32::FsError::AlreadyExists) => {}
         Err(_) => return Err("create failed"),
     }
     crate::vfs::vfs_kernel_safe_write_file(path, data).map_err(|_| "write failed")
+}
+
+fn safe_write_mode(path: &str, data: &[u8], mode: u16) -> Result<(), &'static str> {
+    crate::vfs::vfs_kernel_safe_write_file_with_mode(path, data, mode).map_err(|_| "write failed")
+}
+
+fn safe_write_metadata(
+    path: &str,
+    data: &[u8],
+    uid: u32,
+    gid: u32,
+    mode: u16,
+) -> Result<(), &'static str> {
+    crate::vfs::vfs_kernel_safe_write_file_with_metadata(path, data, uid, gid, mode)
+        .map_err(|_| "write failed")
 }
 
 fn find_app(id_or_command: &str) -> Option<&'static crate::app_metadata::AppMetadata> {
@@ -1424,6 +1945,22 @@ fn manifest_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
     None
 }
 
+fn manifest_values<'a>(text: &'a str, key: &str) -> Vec<&'a str> {
+    let mut values = Vec::new();
+    for line in text.lines() {
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        if k.trim().eq_ignore_ascii_case(key) {
+            let value = v.trim();
+            if !value.is_empty() {
+                values.push(value);
+            }
+        }
+    }
+    values
+}
+
 fn token_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
     for token in text.split_whitespace() {
         if let Some(value) = token.strip_prefix(key) {
@@ -1442,6 +1979,47 @@ fn split_csv(value: &str) -> Vec<String> {
         }
     }
     out
+}
+
+fn payload_summary_lines(payloads: &[PackagePayload]) -> String {
+    if payloads.is_empty() {
+        return String::from("payload=none");
+    }
+    let mut out = String::new();
+    for (idx, payload) in payloads.iter().enumerate() {
+        if idx > 0 {
+            out.push_str(";");
+        }
+        out.push_str("payload=");
+        out.push_str(&payload.target);
+        out.push_str("|source=");
+        out.push_str(&payload.source);
+        out.push_str("|sha256=");
+        out.push_str(&payload.sha256);
+        out.push_str("|mode=");
+        out.push_str(&crate::security::format_mode(payload.mode));
+    }
+    out
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64
+        && value.bytes().all(|byte| {
+            byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte) || (b'A'..=b'F').contains(&byte)
+        })
+}
+
+fn valid_payload_target(path: &str) -> bool {
+    if !path.starts_with('/') || path.contains("..") {
+        return false;
+    }
+    path.starts_with("/bin/")
+        || path.starts_with("/Documents/")
+        || path.starts_with("/Pictures/")
+        || path.starts_with("/Desktop/")
+        || path.starts_with("/Downloads/")
+        || path.starts_with("/FONTS/")
+        || path.starts_with("/SDK/")
 }
 
 fn join_csv(values: &[String]) -> String {

@@ -4,7 +4,7 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–69 are complete. The current milestone gives coolOS a much more
+Phases 1–70 are complete. The current milestone gives coolOS a much more
 normal command-line and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
@@ -52,8 +52,13 @@ older signed updates. Phase 69 extends public-key trust to installable packages:
 package archives now have detached Ed25519 sidecar signatures, package trust
 metadata under `/CONFIG/PACKAGE-KEYS.TXT`, source/owner records under `/APPS`,
 dependency and downgrade checks, package repair, and package trust diagnostics
-in Terminal, Recovery, Diagnostics, and Sysreport.
-Phases 45-69 focus on responsiveness, interactive terminal behavior, and
+in Terminal, Recovery, Diagnostics, and Sysreport. Phase 70 makes package
+installs copy real payload files transactionally: manifests can declare
+payload target/source/hash/mode entries, installs verify and write those
+payloads, owner records pin the installed payload table, repair restores payload
+files, remove deletes owned payloads, and `/LOGS/PACKAGE-TXN.TXT` records clean
+or rolled-back install/repair/remove state.
+Phases 45-70 focus on responsiveness, interactive terminal behavior, and
 desktop-browser compatibility:
 cursor-only framebuffer updates,
 input-first idle-loop ordering, adaptive 36/144 Hz frame pacing, compositor
@@ -66,8 +71,8 @@ subresource cache, script runtime, web-app API layer, main-response
 content-type routing, compatibility diagnostics, resource accounting for the
 scheduler, VMM, VFS, shared memory, and sockets, low-memory recovery, durable
 service recovery, update rollback, boot-health rollback, signed update
-verification, update key rotation, downgrade refusal, and signed package
-install/repair trust.
+verification, update key rotation, downgrade refusal, signed package
+install/repair trust, and package payload transactions.
 
 ---
 
@@ -2084,6 +2089,45 @@ trusted source archive.
 
 ---
 
+## ✅ Phase 70 — Package Payloads and Transactional Installs
+
+**Goal:** Move package installation from signed launcher metadata to signed,
+hash-verified file payloads with rollback, ownership, and repair semantics close
+enough to serve as the foundation for a real desktop package manager.
+
+- [x] Extend `.pkg` manifests with `payload=<target>|<source>|<sha256>|<mode>`
+      entries and include normalized payload records in the signed package trust
+      manifest.
+- [x] Verify package payload source files and SHA-256 hashes before signature
+      acceptance, install, or repair.
+- [x] Copy payload files into protected targets such as `/bin/pkgdemo` with the
+      declared executable mode, while refusing collisions with unowned files or
+      payloads owned by another package.
+- [x] Extend `/APPS/<command>/OWNER.TXT` with the installed payload table so
+      owner records pin source, target, digest, and mode metadata.
+- [x] Add `/LOGS/PACKAGE-TXN.TXT` package transaction state for clean, running,
+      and rolled-back install/repair/remove operations.
+- [x] Roll back partially written payloads, APP.CFG, and OWNER.TXT on injected or
+      real install/repair/remove failures.
+- [x] Make `pkg verify` check installed payload existence and hashes, make
+      `pkg repair` restore tampered payloads from the trusted source archive, and
+      make `pkg remove` delete owned payload targets.
+- [x] Extend Terminal `pkg` with `transaction`, `install-fail`,
+      `tamper-payload`, and `break-payload` diagnostics for payload and rollback
+      coverage.
+- [x] Update `/SDK/PACKAGE_TEMPLATE.PKG` and `/SDK/README.TXT` for payload
+      manifests.
+- [x] Add `make smoke-phase70-package-payloads` covering real payload
+      install/run/remove, payload tamper repair, source-payload hash refusal,
+      transaction rollback, recovery/sysreport diagnostics, and document v7.34.
+
+**Current status:** complete. coolOS packages now install real signed payload
+files, verify those files after install, repair them from their trusted source,
+remove owned payloads cleanly, and leave an inspectable transaction journal when
+an install is rolled back.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -2169,4 +2213,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.30 | Phase 66 complete: Boot health and last-known-good rollback |
 | v7.31 | Phase 67 complete: Signed updates and integrity verification |
 | v7.32 | Phase 68 complete: Update key rotation and anti-rollback |
-| v7.33 | Current — Phase 69 complete: Package trust and repair |
+| v7.33 | Phase 69 complete: Package trust and repair |
+| v7.34 | Current — Phase 70 complete: Package payloads and transactional installs |
