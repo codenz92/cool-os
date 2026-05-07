@@ -19,6 +19,7 @@ const ADDRESS_X: i32 = 162;
 const SEARCH_BUTTON_W: i32 = 72;
 const BOOKMARKS_PATH: &str = "/CONFIG/BROWSER.CFG";
 const DOWNLOADS_DIR: &str = "/Downloads";
+const SESSION_INTERNAL_URL: &str = "browser://session";
 const MAX_BOOKMARKS: usize = 32;
 const MAX_INLINE_PNG_PIXELS: usize = 1_048_576;
 const MAX_HTML_INLINE_IMAGES: usize = 4;
@@ -522,7 +523,7 @@ impl BrowserApp {
         self.render();
 
         match parse_web_url(&url) {
-            Ok((_scheme, host, path)) => match crate::net::web_get_response(&url) {
+            Ok((_scheme, host, path)) => match crate::net::browser_get_response(&url) {
                 Ok(response) => {
                     self.apply_web_response(response, add_history, "Loaded");
                 }
@@ -614,6 +615,10 @@ impl BrowserApp {
                 BrowserLineKind::Muted,
             ));
         }
+        if response.session_cookies_stored > 0 {
+            self.status
+                .push_str(&format!("  cookies={}", response.session_cookies_stored));
+        }
         if add_history {
             self.push_history(response.final_url);
         }
@@ -653,6 +658,11 @@ impl BrowserApp {
                 self.title = String::from("Downloads");
                 self.status = String::from(DOWNLOADS_DIR);
                 self.lines = downloads_lines();
+            }
+            SESSION_INTERNAL_URL => {
+                self.title = String::from("Session");
+                self.status = crate::browser_session::summary_line();
+                self.lines = browser_session_lines();
             }
             _ if url.starts_with("browser://search?q=") => {
                 let query = decode_query(&url["browser://search?q=".len()..]);
@@ -1031,8 +1041,11 @@ impl BrowserApp {
 
         match parse_web_url(url) {
             Ok((_scheme, host, path)) => {
-                match crate::net::web_post_response(url, body, "application/x-www-form-urlencoded")
-                {
+                match crate::net::browser_post_response(
+                    url,
+                    body,
+                    "application/x-www-form-urlencoded",
+                ) {
                     Ok(response) => {
                         self.apply_web_response(response, true, "Submitted POST");
                     }
@@ -2037,7 +2050,29 @@ fn welcome_lines() -> Vec<BrowserLine> {
         link_line("History", "browser://history"),
         link_line("Bookmarks", "browser://bookmarks"),
         link_line("Downloads", "browser://downloads"),
+        link_line("Session state", SESSION_INTERNAL_URL),
     ]
+}
+
+fn browser_session_lines() -> Vec<BrowserLine> {
+    crate::browser_session::lines()
+        .into_iter()
+        .enumerate()
+        .map(|(idx, text)| {
+            if idx == 0 {
+                kind_line(&text, BrowserLineKind::Heading)
+            } else if text.is_empty() {
+                BrowserLine::new(String::new(), None, BrowserLineKind::Text)
+            } else if text.starts_with("Cookie jar:")
+                || text.starts_with("Storage:")
+                || text == "No cookies stored."
+            {
+                kind_line(&text, BrowserLineKind::Muted)
+            } else {
+                line(&text)
+            }
+        })
+        .collect()
 }
 
 fn load_bookmarks() -> Vec<String> {
@@ -2523,7 +2558,7 @@ fn fetch_png_for_browser(url: &str) -> Result<(crate::png::PngImage, String, usi
     if matches!(extension_from_path(url), "jpg" | "gif" | "webp") {
         return Err("preview skipped: not PNG");
     }
-    let response = crate::net::web_get_response(url)?;
+    let response = crate::net::browser_get_response(url)?;
     if !is_png_content(response.content_type.as_deref(), &response.final_url) {
         return Err("preview skipped: not PNG");
     }

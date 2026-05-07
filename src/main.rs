@@ -15,6 +15,7 @@ mod ata;
 mod boot_splash;
 mod boot_watchdog;
 mod branding;
+mod browser_session;
 mod clipboard;
 mod config_store;
 mod coolfs;

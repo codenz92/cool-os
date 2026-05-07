@@ -4,7 +4,7 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–54 are complete. The current milestone gives coolOS a much more
+Phases 1–55 are complete. The current milestone gives coolOS a much more
 normal command-line and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
@@ -13,15 +13,16 @@ v10 TTY control for raw terminal-mode programs. The native browser now has a
 bounded HTML/CSS rendering foundation with CSS selector/cascade support,
 CSS-styled line boxes, better image metadata/sizing, form submit URL handling,
 DOM-event hit-box fixture coverage, and DOM-backed form controls with live
-editing, reset handling, and real URL-encoded POST request bodies.
-Phases 45-54 focus on responsiveness, interactive terminal behavior, and
+editing, reset handling, real URL-encoded POST request bodies, and persistent
+cookie/session state.
+Phases 45-55 focus on responsiveness, interactive terminal behavior, and
 desktop-browser compatibility:
 cursor-only framebuffer updates,
 input-first idle-loop ordering, adaptive 36/144 Hz frame pacing, compositor
 telemetry, and `poll`-driven userspace waits for pipes, TTY stdin, sockets,
 GUI events, and child exits, plus raw TTY input, ANSI-rendered TUI output,
 keyboard-editable Browser controls, and a richer native Browser rendering
-surface with GET and POST form submission.
+surface with GET/POST form submission and a persistent cookie jar.
 
 ---
 
@@ -570,13 +571,14 @@ HTTPS rather than a fake port-443 passthrough.
 
 - `src/net.rs` owns HTTP redirect following and chunked transfer decoding so Terminal,
   browser, and syscall callers share one HTTP implementation.
-- `src/apps/browser.rs` remains a native no_std GUI app. Phases 49-54 give it a
+- `src/apps/browser.rs` remains a native no_std GUI app. Phases 49-55 give it a
   bounded browser-engine layer for HTML/CSS line boxes, images, forms, and
-  DOM-backed document controls while keeping JavaScript execution as future work.
+  DOM-backed document controls plus persistent cookie/session state while
+  keeping JavaScript execution as future work.
 - `/bin/wget` now sends an HTTP/1.1 request with a coolOS user agent, keeping it as a
   raw userspace socket demo.
-- The next browser phase after 54 is script/runtime work: incremental reflow
-  hooks, a DOM event loop, cookie/session state, and eventually JavaScript.
+- The next browser phase after 55 is script/runtime work: incremental reflow
+  hooks, a DOM event loop, CSS2 box-model depth, and eventually JavaScript.
 
 ---
 
@@ -1557,8 +1559,39 @@ network submissions through the shared Browser loader.
       smoke-phase54-browser-post` with a keyboard-submitted HTTPS POST.
 
 **Current status:** complete. Browser forms can now send live DOM values as real
-URL-encoded POST request bodies; JavaScript, cookies, and richer session/cache
-state remain future browser-engine work.
+URL-encoded POST request bodies; JavaScript and richer cache state remain
+future browser-engine work.
+
+---
+
+## ✅ Phase 55 — Browser Session State
+
+**Goal:** Give the native Browser a persistent session foundation so page loads,
+redirects, images, and form submissions can share cookie state like a desktop
+browser.
+
+- [x] Add a bounded persistent cookie jar at `/CONFIG/BROWSER.COOKIES` with
+      safe serialization, corruption recovery through the config store, and
+      redacted display output.
+- [x] Parse `Set-Cookie` headers for name/value, Domain, Path, Secure, and
+      Max-Age deletion while rejecting oversized, malformed, cross-domain, and
+      insecure Secure-cookie inputs.
+- [x] Split Browser network entry points from the Terminal/web API path so
+      Browser GET and POST requests recompute matching cookies per request and
+      redirect, while terminal/network diagnostics remain stateless.
+- [x] Route HTML-sourced inline PNG fetches through the Browser session path so
+      authenticated image loads can share cookie state with their page.
+- [x] Add `browser://session` plus a home-page link so users can inspect
+      cookie counts, storage location, scope, path, and Secure flags without
+      exposing cookie values.
+- [x] Extend kernel selftests with deterministic cookie matching/deletion and
+      Cookie-header request construction checks, add `/TMP/PHASE55.SESSION.HTML`,
+      and add `make smoke-phase55-browser-session`.
+
+**Current status:** complete. The Browser now persists cookies across page
+loads, applies scope/path/secure matching when building requests, and exposes a
+redacted session-state page. JavaScript execution, HTTP cache behavior, and a
+full CSS2 box model remain future browser-engine work.
 
 ---
 
@@ -1632,4 +1665,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.15 | Phase 51 complete: browser forms |
 | v7.16 | Phase 52 complete: DOM/event foundation |
 | v7.17 | Phase 53 complete: DOM-backed browser forms |
-| v7.18 | Current — Phase 54 complete: Browser POST submission |
+| v7.18 | Phase 54 complete: Browser POST submission |
+| v7.19 | Current — Phase 55 complete: Browser session state |

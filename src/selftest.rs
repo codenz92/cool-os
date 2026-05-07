@@ -498,6 +498,10 @@ fn png_decode_roundtrip() -> bool {
         "/TMP/PHASE54.POST.HTML",
         b"<!doctype html><html><head><title>Phase 54 POST</title><style>form{margin-left:12px}.net{color:#063970;background:#eef7ff}</style></head><body><h1>Phase 54 POST submission</h1><p class=\"net\">POST forms now build real request bodies through the Browser network path.</p><form action=\"https://example.com/post\" method=\"post\"><input type=\"hidden\" name=\"phase\" value=\"54\"><input type=\"text\" name=\"msg\" value=\"draft\"><textarea name=\"notes\" rows=\"3\">network body</textarea><input type=\"submit\" name=\"send\" value=\"Send\"></form></body></html>",
     );
+    let _ = crate::vfs::vfs_safe_write_file(
+        "/TMP/PHASE55.SESSION.HTML",
+        b"<!doctype html><html><head><title>Phase 55 Session</title><style>.session{color:#16435c;background:#edf8ff}</style></head><body><h1>Phase 55 browser session</h1><p class=\"session\">Browser GET and POST requests now use persistent cookie state.</p><a href=\"browser://session\">Open session state</a></body></html>",
+    );
     image.width == 2
         && image.height == 2
         && image.pixels.as_slice() == [0x00ff0000, 0x0000ff00, 0x000000ff, 0x00ffffff]
@@ -568,6 +572,38 @@ fn browser_html_render_roundtrip() -> bool {
         && post_request
             .iter()
             .any(|line| line == "msg=draft&post=Post");
+    let cookie_debug = crate::browser_session::cookie_debug_for_test();
+    let has_cookie_session = cookie_debug.iter().any(|line| line == "stored_sid=true")
+        && cookie_debug.iter().any(|line| line == "stored_theme=true")
+        && cookie_debug
+            .iter()
+            .any(|line| line == "rejected_domain=true")
+        && cookie_debug
+            .iter()
+            .any(|line| line == "secure_header=sid=abc; theme=dark")
+        && cookie_debug
+            .iter()
+            .any(|line| line == "plain_header=theme=dark")
+        && cookie_debug
+            .iter()
+            .any(|line| line == "subdomain_header=theme=dark")
+        && cookie_debug.iter().any(|line| line == "deleted_sid=true")
+        && cookie_debug
+            .iter()
+            .any(|line| line == "after_delete=theme=dark");
+    let cookie_request = crate::net::http_cookie_request_debug_for_test(
+        "https://example.com/account",
+        "sid=abc; theme=dark",
+    );
+    let has_cookie_request = cookie_request
+        .iter()
+        .any(|line| line == "GET /account HTTP/1.1")
+        && cookie_request
+            .iter()
+            .any(|line| line == "Host: example.com")
+        && cookie_request
+            .iter()
+            .any(|line| line == "Cookie: sid=abc; theme=dark");
     has_heading
         && has_css
         && has_quote
@@ -576,4 +612,6 @@ fn browser_html_render_roundtrip() -> bool {
         && has_form
         && has_interaction
         && has_post_request
+        && has_cookie_session
+        && has_cookie_request
 }

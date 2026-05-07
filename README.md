@@ -13,7 +13,7 @@ stdio, and IPC with pipes, shared memory, and per-task fd tables.
 
 ---
 
-# Current state — v7.18
+# Current state — v7.19
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -59,7 +59,7 @@ rename, writable file descriptors, fd-mapped child stdio, sync, and RTC time;
 `/bin/sh` now supports quoting, relative paths, redirection, and one-stage
 pipelines; `/bin` includes practical file/text/date/devkit tools; sysreport can
 write `/LOGS/SYSREPORT.TXT`; and the generated image ships `/SDK` docs and
-templates. Phases 45-54 add compositor smoothness, evented terminal work, and
+templates. Phases 45-55 add compositor smoothness, evented terminal work, and
 a richer native browser renderer:
 timer ticks now request
 paced frames instead of unconditional full redraws, mouse-only motion uses a
@@ -76,8 +76,10 @@ CSS-derived alignment, colors, backgrounds, indentation, hidden content, image
 sizing hints, PNG/JPEG/GIF/WebP metadata handling, GET-form query construction,
 DOM-backed form controls with live value state, keyboard focus/editing, reset
 handling, real URL-encoded POST request bodies over the shared HTTP/TLS stack,
-and smoke fixtures for the browser engine, CSS layout, forms, DOM events,
-DOM-backed form interaction, and POST form pages.
+persistent Browser cookie/session state under `/CONFIG/BROWSER.COOKIES`, a
+redacted `browser://session` inspection page, and smoke fixtures for the browser
+engine, CSS layout, forms, DOM events, DOM-backed form interaction, POST form
+pages, and session state.
 
 | Context | Mode | Description |
 | :------ | :--- | :---------- |
@@ -103,8 +105,9 @@ response, and streams it to the terminal. The native Web Browser app can open
 HTTP, HTTPS, and local HTML pages, follow redirects, decode chunked responses,
 render headings, lists, block quotes, simple tables, CSS-styled text blocks,
 bounded inline PNG images, image dimensions/placeholders for common image
-formats, and HTML forms that submit GET query URLs, and keep session history
-plus persistent local bookmarks. HTTPS uses a
+formats, and HTML forms that submit GET query URLs or POST bodies, and keep
+session history, persistent local bookmarks, and persistent browser cookies.
+HTTPS uses a
 no_std TLS 1.3 client over the kernel TCP stack with hardware RNG entropy,
 RTC-backed certificate validity checks, X.509 chain validation against the
 built-in trust roots, and SAN-first hostname validation coverage.
@@ -146,7 +149,7 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **Text Viewer** | Right-click | Scrollable "About" doc; `j`/`k` to scroll. |
 | **Color Picker** | Right-click | Clickable 16-colour EGA palette grid. |
 | **File Manager** | Right-click / desktop icon | Browse and mutate the CoolFS root with breadcrumbs, recursive search, sorting, multi-select, clipboard copy/cut/paste, Trash-backed delete, properties, inline text editing, Open With Editor/Viewer, and ELF launch routing. |
-| **Web Browser** | Launcher / desktop icon | Native HTTP/HTTPS/local-file browser with address/search bar, redirects, decoded chunked responses, headings/lists/quotes/tables, CSS2-style cascade hints for tag/class/id/inline selectors, styled text blocks, direct and HTML-sourced inline PNG previews, image metadata/placeholders for JPEG/GIF/WebP, clickable links/forms, session history, visible TLS trust-root status, and persistent bookmarks. |
+| **Web Browser** | Launcher / desktop icon | Native HTTP/HTTPS/local-file browser with address/search bar, redirects, decoded chunked responses, headings/lists/quotes/tables, CSS2-style cascade hints for tag/class/id/inline selectors, styled text blocks, direct and HTML-sourced inline PNG previews, image metadata/placeholders for JPEG/GIF/WebP, clickable links/forms, session history, visible TLS trust-root status, persistent bookmarks, persistent cookies, and `browser://session`. |
 | **Accounts** | Launcher / Display Settings Users tab | Admin account management for first-run setup, account creation, role changes, enable/disable, password reset, and deletion. |
 | **Trash Bin** | Launcher / desktop icon / `exec /bin/trash` | Ring-3 GUI utility that lists deleted items staged in `/Trash` and can permanently empty them. |
 | **Screenshot** | Launcher / desktop icon / `exec /bin/screenshot` | Ring-3 GUI utility that queues a focused-window PPM capture to `/Pictures`. |
@@ -593,7 +596,7 @@ movement, and screen/line clearing. `libcool::tty` exposes mode/size helpers,
 and `/bin/tuidemo` smokes raw single-key input without Enter plus ANSI-rendered
 status text.
 
-**Browser rendering phases (49-54).** The native Browser now has a more explicit
+**Browser rendering phases (49-55).** The native Browser now has a more explicit
 HTML/CSS rendering path: style blocks and inline styles are parsed into bounded
 rules for tag, class, id, and simple compound selectors; computed style drives
 hidden content, alignment, indentation, text color, backgrounds, preformatted
@@ -605,11 +608,14 @@ bounded DOM/form-state model. Clicks and keyboard focus edit live control values
 checkbox/radio/select/reset controls update state across reflow, GET forms
 submit encoded live values, and POST forms now send
 `application/x-www-form-urlencoded` request bodies through the same HTTP/TLS
-response path used by normal page loads. The Browser can also be launched from
-Terminal with `browser [url]`. The fixture targets from `make
-smoke-phase49-browser-engine` through `make smoke-phase54-browser-post` boot
-pages under `/TMP`; the Phase 54 target submits the fixture form over HTTPS and
-expects the POST/TLS trace.
+response path used by normal page loads. Browser GET/POST page loads now share
+a persistent cookie jar in `/CONFIG/BROWSER.COOKIES`; `Set-Cookie` handling
+covers Domain, Path, Secure, and Max-Age deletion, and `browser://session`
+shows redacted session state. The Browser can also be launched from Terminal
+with `browser [url]`. The fixture targets from `make
+smoke-phase49-browser-engine` through `make smoke-phase55-browser-session` boot
+pages or internal Browser diagnostics; the Phase 54 target submits the fixture
+form over HTTPS, and Phase 55 opens the session-state surface.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
@@ -683,5 +689,6 @@ while kernel faults still panic.
 | 52 | DOM/event foundation — clickable link/form/button hit boxes plus browser event fixtures | **Done** |
 | 53 | DOM-backed browser forms — live control state, keyboard editing, resets, and staged POST bodies | **Done** |
 | 54 | Browser POST submission — URL-encoded request bodies through the shared HTTP/TLS loader | **Done** |
+| 55 | Browser session state — persistent cookie jar, session-aware GET/POST, and `browser://session` | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

@@ -50,6 +50,7 @@ pub struct HttpResponse {
     pub request: String,
     pub status_line: String,
     pub content_type: Option<String>,
+    pub session_cookies_stored: usize,
     pub body: String,
     pub body_bytes: Vec<u8>,
 }
@@ -70,6 +71,27 @@ impl HttpRequestMethod {
         match self {
             Self::Get => "GET",
             Self::Post => "POST",
+        }
+    }
+}
+
+struct HttpRequestSession {
+    enabled: bool,
+    stored_cookies: usize,
+}
+
+impl HttpRequestSession {
+    fn disabled() -> Self {
+        Self {
+            enabled: false,
+            stored_cookies: 0,
+        }
+    }
+
+    fn enabled() -> Self {
+        Self {
+            enabled: true,
+            stored_cookies: 0,
         }
     }
 }
@@ -524,10 +546,35 @@ pub fn http_get(host: &str, path: &str) -> Result<String, &'static str> {
 
 pub fn web_get_response(url: &str) -> Result<HttpResponse, &'static str> {
     let (scheme, host, path) = parse_web_url(url)?;
-    http_request_response_follow(&scheme, &host, &path, HttpRequestMethod::Get, &[], None, 0)
+    let mut session = HttpRequestSession::disabled();
+    http_request_response_follow(
+        &scheme,
+        &host,
+        &path,
+        HttpRequestMethod::Get,
+        &[],
+        None,
+        0,
+        &mut session,
+    )
 }
 
-pub fn web_post_response(
+pub fn browser_get_response(url: &str) -> Result<HttpResponse, &'static str> {
+    let (scheme, host, path) = parse_web_url(url)?;
+    let mut session = HttpRequestSession::enabled();
+    http_request_response_follow(
+        &scheme,
+        &host,
+        &path,
+        HttpRequestMethod::Get,
+        &[],
+        None,
+        0,
+        &mut session,
+    )
+}
+
+pub fn browser_post_response(
     url: &str,
     body: &str,
     content_type: &str,
@@ -539,6 +586,7 @@ pub fn web_post_response(
         content_type
     );
     let (scheme, host, path) = parse_web_url(url)?;
+    let mut session = HttpRequestSession::enabled();
     http_request_response_follow(
         &scheme,
         &host,
@@ -547,11 +595,22 @@ pub fn web_post_response(
         body.as_bytes(),
         Some(content_type),
         0,
+        &mut session,
     )
 }
 
 pub fn http_get_response(host: &str, path: &str) -> Result<HttpResponse, &'static str> {
-    http_request_response_follow("http", host, path, HttpRequestMethod::Get, &[], None, 0)
+    let mut session = HttpRequestSession::disabled();
+    http_request_response_follow(
+        "http",
+        host,
+        path,
+        HttpRequestMethod::Get,
+        &[],
+        None,
+        0,
+        &mut session,
+    )
 }
 
 pub fn http_request_debug_for_test(
@@ -568,8 +627,14 @@ pub fn http_request_debug_for_test(
     let Ok((_scheme, host, path)) = parse_web_url(url) else {
         return vec![String::from("parse failed")];
     };
-    let Ok(request) = build_http_request(method, &host, &path, body.as_bytes(), Some(content_type))
-    else {
+    let Ok(request) = build_http_request(
+        method,
+        &host,
+        &path,
+        body.as_bytes(),
+        Some(content_type),
+        None,
+    ) else {
         return vec![String::from("request failed")];
     };
     request
@@ -578,9 +643,33 @@ pub fn http_request_debug_for_test(
             line.starts_with("GET ")
                 || line.starts_with("POST ")
                 || line.starts_with("Host:")
+                || line.starts_with("Cookie:")
                 || line.starts_with("Content-Type:")
                 || line.starts_with("Content-Length:")
                 || *line == body
+        })
+        .map(String::from)
+        .collect()
+}
+
+pub fn http_cookie_request_debug_for_test(url: &str, cookie: &str) -> Vec<String> {
+    let Ok((_scheme, host, path)) = parse_web_url(url) else {
+        return vec![String::from("parse failed")];
+    };
+    let Ok(request) = build_http_request(
+        HttpRequestMethod::Get,
+        &host,
+        &path,
+        &[],
+        None,
+        Some(cookie),
+    ) else {
+        return vec![String::from("request failed")];
+    };
+    request
+        .lines()
+        .filter(|line| {
+            line.starts_with("GET ") || line.starts_with("Host:") || line.starts_with("Cookie:")
         })
         .map(String::from)
         .collect()
@@ -592,12 +681,18 @@ fn build_http_request(
     path: &str,
     body: &[u8],
     content_type: Option<&str>,
+    cookie_header: Option<&str>,
 ) -> Result<String, &'static str> {
     if method == HttpRequestMethod::Get && !body.is_empty() {
         return Err("GET request body unsupported");
     }
     if body.len() > HTTP_MAX_REQUEST_BODY {
         return Err("HTTP request body too large");
+    }
+    if let Some(cookie) = cookie_header {
+        if cookie.len() > 4096 || cookie.bytes().any(|b| matches!(b, b'\r' | b'\n')) {
+            return Err("invalid Cookie header");
+        }
     }
     let mut request = String::from(method.as_str());
     request.push(' ');
@@ -610,6 +705,12 @@ fn build_http_request(
         request.push_str(content_type.unwrap_or("application/x-www-form-urlencoded"));
         request.push_str("\r\nContent-Length: ");
         push_decimal(&mut request, body.len() as u64);
+    }
+    if let Some(cookie) = cookie_header {
+        if !cookie.trim().is_empty() {
+            request.push_str("\r\nCookie: ");
+            request.push_str(cookie.trim());
+        }
     }
     request.push_str("\r\n\r\n");
     if !body.is_empty() {
@@ -626,6 +727,7 @@ fn http_request_response_follow(
     request_body: &[u8],
     content_type: Option<&str>,
     redirect_count: usize,
+    session: &mut HttpRequestSession,
 ) -> Result<HttpResponse, &'static str> {
     let settings = crate::settings_state::snapshot();
     if !settings.network_http_enabled {
@@ -637,7 +739,19 @@ fn http_request_response_follow(
     }
     let path = if path.is_empty() { "/" } else { path };
 
-    let request = build_http_request(method, host, path, request_body, content_type)?;
+    let cookie_header = if session.enabled {
+        crate::browser_session::cookie_header_for_request(scheme, host, path)
+    } else {
+        None
+    };
+    let request = build_http_request(
+        method,
+        host,
+        path,
+        request_body,
+        content_type,
+        cookie_header.as_deref(),
+    )?;
 
     if scheme == "https" {
         if !has_link() {
@@ -664,6 +778,7 @@ fn http_request_response_follow(
             method,
             request_body,
             content_type,
+            session,
         );
     }
 
@@ -692,6 +807,7 @@ fn http_request_response_follow(
                 request,
                 status_line: String::from("HTTP/1.1 200 OK (offline)"),
                 content_type: Some(String::from("text/plain")),
+                session_cookies_stored: session.stored_cookies,
                 body,
                 body_bytes,
             });
@@ -750,6 +866,7 @@ fn http_request_response_follow(
         method,
         request_body,
         content_type,
+        session,
     )
 }
 
@@ -765,6 +882,7 @@ fn finish_web_response(
     method: HttpRequestMethod,
     request_body: &[u8],
     content_type: Option<&str>,
+    session: &mut HttpRequestSession,
 ) -> Result<HttpResponse, &'static str> {
     let status_line = String::from(
         body.text
@@ -774,6 +892,15 @@ fn finish_web_response(
             .unwrap_or("HTTP response"),
     );
     let response_content_type = http_header_value(&body.text, "content-type");
+    let set_cookie_headers = http_header_values(&body.text, "set-cookie");
+    if session.enabled && !set_cookie_headers.is_empty() {
+        session.stored_cookies += crate::browser_session::store_set_cookie_headers(
+            scheme,
+            host,
+            path,
+            &set_cookie_headers,
+        );
+    }
     let status = http_status_code(&status_line).unwrap_or(0);
     if is_redirect_status(status) {
         if redirect_count >= HTTP_MAX_REDIRECTS {
@@ -794,6 +921,7 @@ fn finish_web_response(
             next_body,
             next_content_type,
             redirect_count + 1,
+            session,
         );
     }
 
@@ -807,6 +935,7 @@ fn finish_web_response(
         request,
         status_line,
         content_type: response_content_type,
+        session_cookies_stored: session.stored_cookies,
         body: body.text,
         body_bytes: body.body_bytes,
     })
@@ -851,6 +980,24 @@ fn http_header_value(response: &str, name: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn http_header_values(response: &str, name: &str) -> Vec<String> {
+    let header_block = response
+        .split_once("\r\n\r\n")
+        .map(|(headers, _)| headers)
+        .or_else(|| response.split_once("\n\n").map(|(headers, _)| headers))
+        .unwrap_or(response);
+    let mut out = Vec::new();
+    for line in header_block.lines().skip(1) {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        if key.trim().eq_ignore_ascii_case(name) {
+            out.push(String::from(value.trim()));
+        }
+    }
+    out
 }
 
 fn normalize_http_response_bytes(response: &[u8]) -> Result<NormalizedHttpResponse, &'static str> {
