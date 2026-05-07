@@ -4,15 +4,17 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–47 are complete. The current milestone gives coolOS a much more
+Phases 1–48 are complete. The current milestone gives coolOS a much more
 normal command-line and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
-in-image `/SDK` with devkit templates, and ABI v9 evented readiness waits.
-Phases 45-47 focus on responsiveness: cursor-only framebuffer updates,
+in-image `/SDK` with devkit templates, ABI v9 evented readiness waits, and ABI
+v10 TTY control for raw terminal-mode programs.
+Phases 45-48 focus on responsiveness and interactive terminal behavior:
+cursor-only framebuffer updates,
 input-first idle-loop ordering, adaptive 36/144 Hz frame pacing, compositor
 telemetry, and `poll`-driven userspace waits for pipes, TTY stdin, sockets,
-GUI events, and child exits.
+GUI events, and child exits, plus raw TTY input and ANSI-rendered TUI output.
 
 ---
 
@@ -1392,6 +1394,35 @@ readiness, and child-exit readiness under QEMU.
 
 ---
 
+## ✅ Phase 48 — Terminal/TUI Platform
+
+**Goal:** Build on evented waits with a real terminal-mode userspace surface:
+foreground apps should be able to query terminal geometry, disable canonical
+line input, receive single-key raw input, and draw practical ANSI/VT output.
+
+- [x] Add ABI v10 `tty_control(op, arg1, arg2)` for foreground TTY mode and
+      size queries.
+- [x] Track per-TTY canonical/raw mode, echo, signal delivery, and cell
+      geometry in the kernel TTY registry.
+- [x] Make TerminalApp update TTY geometry when resized and reset foreground
+      jobs back to canonical mode when they stop or exit.
+- [x] Forward raw control bytes plus cursor/home/end/page escape sequences to
+      foreground apps when canonical mode is disabled.
+- [x] Add a practical ANSI/VT renderer subset for SGR colors, cursor
+      positioning/movement, screen clearing, line clearing, and cursor
+      save/restore.
+- [x] Add `libcool::tty::{mode,set_mode,enter_raw_mode,restore_mode,size}`.
+- [x] Add `/bin/tuidemo` plus `make smoke-phase48-terminal-tui` to verify raw
+      single-key input without Enter and ANSI-rendered status output.
+- [x] Update `/SDK/README.TXT`, in-OS devkit/about text, README, and roadmap
+      docs for ABI v10.
+
+**Current status:** complete. `/bin/tuidemo` enters raw no-echo/no-signal mode,
+uses `poll` on stdin, exits on a single `q`, restores the previous TTY mode, and
+prints ANSI-colored/status output through TerminalApp's VT parser.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -1406,8 +1437,8 @@ Userspace binaries are written in `#![no_std]` Rust and link against
 `userspace/libcool`. The SDK owns `_start`, panic aborts, initial argv parsing,
 raw syscall assembly, and convenience APIs such as `println!`, `File::open`,
 `File::create`, `pipe`, `mmap`, `shmem_create`, `spawn_args`,
-`spawn_fds_args`, `evented::poll`, `read_event`, `dns_resolve`, TCP sockets, time, and
-filesystem utility calls plus GUI windows through `libcool::fs` and
+`spawn_fds_args`, `evented::poll`, `tty::enter_raw_mode`, `read_event`,
+`dns_resolve`, TCP sockets, time, and filesystem utility calls plus GUI windows through `libcool::fs` and
 `libcool::gui`.
 
 ### Real hardware vs QEMU
@@ -1455,4 +1486,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.8 | Phase 44 complete: developer platform and SDK devkit |
 | v7.9 | Phase 45 complete: compositor latency and smoothness |
 | v7.10 | Phase 46 complete: adaptive high refresh |
-| v7.11 | Current — Phase 47 complete: evented userspace runtime |
+| v7.11 | Phase 47 complete: evented userspace runtime |
+| v7.12 | Current — Phase 48 complete: terminal/TUI platform |

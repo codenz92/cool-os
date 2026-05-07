@@ -3,7 +3,7 @@
 use core::arch::asm;
 
 pub const SDK_VERSION: u64 = 1;
-pub const ABI_VERSION: u64 = 9;
+pub const ABI_VERSION: u64 = 10;
 pub const U64_MAX: u64 = u64::MAX;
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -74,6 +74,7 @@ pub mod sys {
     pub const SYNC: u64 = 43;
     pub const TIME: u64 = 44;
     pub const POLL: u64 = 45;
+    pub const TTY_CONTROL: u64 = 46;
 
     #[inline]
     pub unsafe fn syscall0(nr: u64) -> u64 {
@@ -965,6 +966,55 @@ pub mod evented {
     }
 }
 
+pub mod tty {
+    use super::{sys, Error, Result};
+
+    pub const MODE_CANONICAL: u64 = 1 << 0;
+    pub const MODE_ECHO: u64 = 1 << 1;
+    pub const MODE_SIGNALS: u64 = 1 << 2;
+    pub const MODE_DEFAULT: u64 = MODE_CANONICAL | MODE_ECHO | MODE_SIGNALS;
+    pub const MODE_RAW: u64 = 0;
+
+    pub const CTL_GET_MODE: u64 = 0;
+    pub const CTL_SET_MODE: u64 = 1;
+    pub const CTL_GET_SIZE: u64 = 2;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Size {
+        pub cols: u16,
+        pub rows: u16,
+    }
+
+    pub fn control(op: u64, arg1: u64, arg2: u64) -> Result<u64> {
+        let ret = unsafe { sys::syscall3(sys::TTY_CONTROL, op, arg1, arg2) };
+        Error::from_ret(ret)
+    }
+
+    pub fn mode() -> Result<u64> {
+        control(CTL_GET_MODE, 0, 0)
+    }
+
+    pub fn set_mode(mode: u64) -> Result<u64> {
+        control(CTL_SET_MODE, mode, 0)
+    }
+
+    pub fn enter_raw_mode() -> Result<u64> {
+        set_mode(MODE_RAW)
+    }
+
+    pub fn restore_mode(mode: u64) -> Result<()> {
+        set_mode(mode).map(|_| ())
+    }
+
+    pub fn size() -> Result<Size> {
+        let packed = control(CTL_GET_SIZE, 0, 0)?;
+        Ok(Size {
+            cols: (packed & 0xffff) as u16,
+            rows: ((packed >> 16) & 0xffff) as u16,
+        })
+    }
+}
+
 pub mod gui {
     use font8x8::UnicodeFonts;
 
@@ -1220,14 +1270,17 @@ pub mod gui {
 
 pub mod prelude {
     pub use crate::args::Args;
-    pub use crate::evented::{poll, wait_child, wait_fd_read, wait_gui_event, wait_socket_read, PollDesc};
     pub use crate::event::{read_event, Event, INPUT_FD};
+    pub use crate::evented::{
+        poll, wait_child, wait_fd_read, wait_gui_event, wait_socket_read, PollDesc,
+    };
     pub use crate::io::{close, create, open, pipe, read, write, write_all, write_stdout, File};
     pub use crate::memory::mmap;
     pub use crate::process::{
         abi_version, exit, get_process_group, getpid, set_process_group, signal, signal_group,
         sleep_ms, spawn, spawn_args, spawn_fds_args, waitpid, yield_now, Signal,
     };
+    pub use crate::tty;
     pub use crate::{entry, print, println, Error, Result, ABI_VERSION, SDK_VERSION};
 }
 

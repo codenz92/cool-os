@@ -45,6 +45,13 @@ struct ForegroundJob {
     title: String,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AnsiState {
+    Ground,
+    Escape,
+    Csi,
+}
+
 pub struct TerminalApp {
     pub window: Window,
     tty_id: u64,
@@ -63,6 +70,14 @@ pub struct TerminalApp {
     input_start_col: usize,
     last_width: i32,
     last_height: i32,
+    ansi_state: AnsiState,
+    ansi_params: [u16; 4],
+    ansi_param_count: usize,
+    ansi_param_value: u16,
+    ansi_param_active: bool,
+    ansi_private: bool,
+    saved_col: usize,
+    saved_row: usize,
 }
 
 impl TerminalApp {
@@ -71,6 +86,7 @@ impl TerminalApp {
         let cols = text_cols(TERM_W as usize);
         let rows = text_rows((TERM_H - TITLE_H) as usize);
         let tty_id = crate::tty::create();
+        let _ = crate::tty::set_size(tty_id, cols as u16, rows as u16);
 
         let mut t = TerminalApp {
             window,
@@ -90,8 +106,17 @@ impl TerminalApp {
             input_start_col: 0,
             last_width: TERM_W,
             last_height: TERM_H,
+            ansi_state: AnsiState::Ground,
+            ansi_params: [0; 4],
+            ansi_param_count: 0,
+            ansi_param_value: 0,
+            ansi_param_active: false,
+            ansi_private: false,
+            saved_col: 0,
+            saved_row: 0,
         };
         t.fill_background();
+        t.refresh_layout();
         t.set_fg(FG_ACCENT);
         t.print_str("coolOS phosphor shell\n");
         t.set_fg(FG_DIM);
@@ -155,7 +180,9 @@ impl TerminalApp {
     }
 
     pub fn handle_key_input(&mut self, input: KeyInput) {
-        if input.has_ctrl() && !input.has_alt() {
+        let foreground_signals =
+            self.foreground_job.is_some() && crate::tty::signals_enabled(self.tty_id);
+        if foreground_signals && input.has_ctrl() && !input.has_alt() {
             match input.key {
                 Key::Character('c') | Key::Character('C') => {
                     if self.signal_foreground(crate::process_model::Signal::Int, "^C\n") {
@@ -182,7 +209,10 @@ impl TerminalApp {
     }
 
     fn forward_foreground_input(&mut self, input: KeyInput) {
-        if input.has_ctrl() && !input.has_alt() {
+        let mode = crate::tty::input_mode(self.tty_id).unwrap_or(crate::tty::TTY_MODE_DEFAULT);
+        let raw = mode & crate::tty::TTY_MODE_CANONICAL == 0;
+        let signals = mode & crate::tty::TTY_MODE_SIGNALS != 0;
+        if signals && input.has_ctrl() && !input.has_alt() {
             match input.key {
                 Key::Character('d') | Key::Character('D') => {
                     let _ = crate::tty::submit_eof(self.tty_id);
@@ -192,6 +222,10 @@ impl TerminalApp {
             return;
         }
         if input.has_alt() {
+            return;
+        }
+        if raw {
+            self.forward_raw_input(input);
             return;
         }
         match input.key {
@@ -222,6 +256,63 @@ impl TerminalApp {
             | Key::F2
             | Key::F4
             | Key::F5 => {}
+        }
+    }
+
+    fn forward_raw_input(&mut self, input: KeyInput) {
+        if input.has_ctrl() && !input.has_alt() {
+            if let Some(byte) = ctrl_byte(input.key) {
+                let _ = crate::tty::submit_bytes(self.tty_id, &[byte]);
+            }
+            return;
+        }
+        match input.key {
+            Key::Character(c) => {
+                let _ = crate::tty::submit_char(self.tty_id, c);
+            }
+            Key::Space => {
+                let _ = crate::tty::submit_char(self.tty_id, ' ');
+            }
+            Key::Tab => {
+                let _ = crate::tty::submit_bytes(self.tty_id, b"\t");
+            }
+            Key::Enter => {
+                let _ = crate::tty::submit_bytes(self.tty_id, b"\n");
+            }
+            Key::Backspace => {
+                let _ = crate::tty::submit_bytes(self.tty_id, b"\x08");
+            }
+            Key::Delete => {
+                let _ = crate::tty::submit_bytes(self.tty_id, b"\x7f");
+            }
+            Key::Escape => {
+                let _ = crate::tty::submit_bytes(self.tty_id, b"\x1b");
+            }
+            Key::ArrowUp => {
+                let _ = crate::tty::submit_bytes(self.tty_id, b"\x1b[A");
+            }
+            Key::ArrowDown => {
+                let _ = crate::tty::submit_bytes(self.tty_id, b"\x1b[B");
+            }
+            Key::ArrowRight => {
+                let _ = crate::tty::submit_bytes(self.tty_id, b"\x1b[C");
+            }
+            Key::ArrowLeft => {
+                let _ = crate::tty::submit_bytes(self.tty_id, b"\x1b[D");
+            }
+            Key::Home => {
+                let _ = crate::tty::submit_bytes(self.tty_id, b"\x1b[H");
+            }
+            Key::End => {
+                let _ = crate::tty::submit_bytes(self.tty_id, b"\x1b[F");
+            }
+            Key::PageUp => {
+                let _ = crate::tty::submit_bytes(self.tty_id, b"\x1b[5~");
+            }
+            Key::PageDown => {
+                let _ = crate::tty::submit_bytes(self.tty_id, b"\x1b[6~");
+            }
+            Key::F2 | Key::F4 | Key::F5 => {}
         }
     }
 
@@ -265,6 +356,7 @@ impl TerminalApp {
             crate::scheduler::ProcessGroupStatus::Stopped => {
                 let job = self.foreground_job.take().unwrap();
                 crate::tty::set_foreground_group(self.tty_id, None);
+                crate::tty::reset_input_mode(self.tty_id);
                 self.set_fg(FG_WARN);
                 self.print_str("\n[fg stopped] ");
                 self.set_fg(FG_OUTPUT);
@@ -282,6 +374,7 @@ impl TerminalApp {
             | crate::scheduler::ProcessGroupStatus::Empty => {
                 let job = self.foreground_job.take().unwrap();
                 crate::tty::set_foreground_group(self.tty_id, None);
+                crate::tty::reset_input_mode(self.tty_id);
                 self.set_fg(FG_ACCENT);
                 self.print_str("\n[fg done] ");
                 self.set_fg(FG_OUTPUT);
@@ -1582,7 +1675,7 @@ impl TerminalApp {
         self.cmd_lines(
             "DEVKIT",
             alloc::vec![
-                String::from("coolOS devkit ABI=9"),
+                alloc::format!("coolOS devkit ABI={}", crate::abi::version()),
                 String::from("docs=/SDK/README.TXT"),
                 String::from("app_template=/SDK/APP_TEMPLATE.RS"),
                 String::from("package_template=/SDK/PACKAGE_TEMPLATE.PKG"),
@@ -2334,6 +2427,7 @@ impl TerminalApp {
     }
 
     fn begin_foreground(&mut self, pid: usize, group: usize, job_id: Option<u64>, title: &str) {
+        crate::tty::reset_input_mode(self.tty_id);
         crate::tty::set_foreground_group(self.tty_id, Some(group));
         self.foreground_job = Some(ForegroundJob {
             group,
@@ -2697,13 +2791,21 @@ impl TerminalApp {
     // ── Rendering helpers ─────────────────────────────────────────────────────
 
     pub fn print_char(&mut self, c: char) {
-        mirror_debug_char(c);
         self.refresh_layout();
+        if self.ansi_state != AnsiState::Ground {
+            self.feed_ansi(c);
+            return;
+        }
+        if c == '\u{001B}' {
+            self.ansi_state = AnsiState::Escape;
+            return;
+        }
         if c == '\r' {
             self.col = 0;
             return;
         }
         if c == '\n' {
+            mirror_debug_char(c);
             self.col = 0;
             self.advance_row();
             return;
@@ -2729,6 +2831,7 @@ impl TerminalApp {
             self.col = 0;
             self.advance_row();
         }
+        mirror_debug_char(c);
         self.draw_char_at(self.col, self.row, c);
         self.col += 1;
     }
@@ -2807,6 +2910,229 @@ impl TerminalApp {
             .mark_dirty(text_x as i32, text_y as i32, text_w as i32, text_h as i32);
     }
 
+    fn feed_ansi(&mut self, c: char) {
+        match self.ansi_state {
+            AnsiState::Ground => {}
+            AnsiState::Escape => match c {
+                '[' => {
+                    self.reset_csi();
+                    self.ansi_state = AnsiState::Csi;
+                }
+                'c' => {
+                    self.reset_terminal();
+                    self.ansi_state = AnsiState::Ground;
+                }
+                '7' => {
+                    self.save_cursor();
+                    self.ansi_state = AnsiState::Ground;
+                }
+                '8' => {
+                    self.restore_cursor();
+                    self.ansi_state = AnsiState::Ground;
+                }
+                '\u{001B}' => {
+                    self.ansi_state = AnsiState::Escape;
+                }
+                _ => {
+                    self.ansi_state = AnsiState::Ground;
+                }
+            },
+            AnsiState::Csi => {
+                if c == '?' && self.ansi_param_count == 0 && !self.ansi_param_active {
+                    self.ansi_private = true;
+                    return;
+                }
+                if c.is_ascii_digit() {
+                    self.ansi_param_active = true;
+                    self.ansi_param_value = self
+                        .ansi_param_value
+                        .saturating_mul(10)
+                        .saturating_add(c as u16 - '0' as u16);
+                    return;
+                }
+                if c == ';' {
+                    self.push_csi_param();
+                    return;
+                }
+                self.push_csi_param_if_active();
+                self.execute_csi(c);
+                self.ansi_state = AnsiState::Ground;
+            }
+        }
+    }
+
+    fn reset_csi(&mut self) {
+        self.ansi_params = [0; 4];
+        self.ansi_param_count = 0;
+        self.ansi_param_value = 0;
+        self.ansi_param_active = false;
+        self.ansi_private = false;
+    }
+
+    fn push_csi_param(&mut self) {
+        if self.ansi_param_count < self.ansi_params.len() {
+            self.ansi_params[self.ansi_param_count] = if self.ansi_param_active {
+                self.ansi_param_value
+            } else {
+                0
+            };
+            self.ansi_param_count += 1;
+        }
+        self.ansi_param_value = 0;
+        self.ansi_param_active = false;
+    }
+
+    fn push_csi_param_if_active(&mut self) {
+        if self.ansi_param_active {
+            self.push_csi_param();
+        }
+    }
+
+    fn csi_param(&self, index: usize, default: u16) -> u16 {
+        if index < self.ansi_param_count {
+            let value = self.ansi_params[index];
+            if value == 0 {
+                default
+            } else {
+                value
+            }
+        } else {
+            default
+        }
+    }
+
+    fn execute_csi(&mut self, command: char) {
+        if self.ansi_private {
+            return;
+        }
+        match command {
+            'm' => self.apply_sgr(),
+            'H' | 'f' => {
+                let row = self.csi_param(0, 1) as usize;
+                let col = self.csi_param(1, 1) as usize;
+                self.set_cursor(row.saturating_sub(1), col.saturating_sub(1));
+            }
+            'A' => self.move_cursor_rows(-(self.csi_param(0, 1) as isize)),
+            'B' => self.move_cursor_rows(self.csi_param(0, 1) as isize),
+            'C' => self.move_cursor_cols(self.csi_param(0, 1) as isize),
+            'D' => self.move_cursor_cols(-(self.csi_param(0, 1) as isize)),
+            'G' => {
+                let col = self.csi_param(0, 1) as usize;
+                self.set_cursor(self.row, col.saturating_sub(1));
+            }
+            'J' => match self.csi_param(0, 0) {
+                0 => self.clear_to_end_of_screen(),
+                1 => self.clear_to_start_of_screen(),
+                2 | 3 => self.reset_terminal(),
+                _ => {}
+            },
+            'K' => match self.csi_param(0, 0) {
+                0 => self.clear_line_range(self.row, self.col, self.cols),
+                1 => self.clear_line_range(self.row, 0, self.col.saturating_add(1)),
+                2 => self.clear_line_range(self.row, 0, self.cols),
+                _ => {}
+            },
+            's' => self.save_cursor(),
+            'u' => self.restore_cursor(),
+            _ => {}
+        }
+    }
+
+    fn apply_sgr(&mut self) {
+        if self.ansi_param_count == 0 {
+            self.set_fg(FG_OUTPUT);
+            return;
+        }
+        for idx in 0..self.ansi_param_count {
+            let code = self.ansi_params[idx];
+            match code {
+                0 => self.set_fg(FG_OUTPUT),
+                1 => {}
+                30 => self.set_fg(0x00_20_28_24),
+                31 => self.set_fg(FG_ERROR),
+                32 => self.set_fg(FG_PROMPT),
+                33 => self.set_fg(FG_WARN),
+                34 => self.set_fg(FG_DIR),
+                35 => self.set_fg(0x00_DD_88_FF),
+                36 => self.set_fg(FG_ACCENT),
+                37 => self.set_fg(FG_INPUT),
+                39 => self.set_fg(FG_OUTPUT),
+                90 => self.set_fg(FG_DIM),
+                91 => self.set_fg(0x00_FF_A0_A0),
+                92 => self.set_fg(0x00_88_FF_BB),
+                93 => self.set_fg(0x00_FF_E8_88),
+                94 => self.set_fg(0x00_88_DD_FF),
+                95 => self.set_fg(0x00_F0_A8_FF),
+                96 => self.set_fg(0x00_A0_FF_FF),
+                97 => self.set_fg(0x00_FF_FF_FF),
+                _ => {}
+            }
+        }
+    }
+
+    fn set_cursor(&mut self, row: usize, col: usize) {
+        self.row = row.min(self.rows.saturating_sub(1));
+        self.col = col.min(self.cols.saturating_sub(1));
+    }
+
+    fn move_cursor_rows(&mut self, delta: isize) {
+        let next = if delta.is_negative() {
+            self.row.saturating_sub(delta.unsigned_abs())
+        } else {
+            self.row.saturating_add(delta as usize)
+        };
+        self.set_cursor(next, self.col);
+    }
+
+    fn move_cursor_cols(&mut self, delta: isize) {
+        let next = if delta.is_negative() {
+            self.col.saturating_sub(delta.unsigned_abs())
+        } else {
+            self.col.saturating_add(delta as usize)
+        };
+        self.set_cursor(self.row, next);
+    }
+
+    fn save_cursor(&mut self) {
+        self.saved_col = self.col;
+        self.saved_row = self.row;
+    }
+
+    fn restore_cursor(&mut self) {
+        self.set_cursor(self.saved_row, self.saved_col);
+    }
+
+    fn reset_terminal(&mut self) {
+        self.fill_background();
+        self.col = 0;
+        self.row = 0;
+        self.set_fg(FG_OUTPUT);
+    }
+
+    fn clear_to_end_of_screen(&mut self) {
+        self.clear_line_range(self.row, self.col, self.cols);
+        for row in self.row.saturating_add(1)..self.rows {
+            self.clear_line_range(row, 0, self.cols);
+        }
+    }
+
+    fn clear_to_start_of_screen(&mut self) {
+        for row in 0..self.row {
+            self.clear_line_range(row, 0, self.cols);
+        }
+        self.clear_line_range(self.row, 0, self.col.saturating_add(1));
+    }
+
+    fn clear_line_range(&mut self, row: usize, start_col: usize, end_col: usize) {
+        if row >= self.rows || start_col >= end_col {
+            return;
+        }
+        let end_col = end_col.min(self.cols);
+        for col in start_col.min(self.cols)..end_col {
+            self.draw_char_at(col, row, ' ');
+        }
+    }
+
     fn draw_char_at(&mut self, col: usize, row: usize, c: char) {
         let glyph = font8x8::BASIC_FONTS
             .get(c)
@@ -2883,8 +3209,13 @@ impl TerminalApp {
     }
 
     fn refresh_layout(&mut self) {
-        self.cols = text_cols(self.window.width as usize);
-        self.rows = text_rows((self.window.height - TITLE_H).max(0) as usize);
+        let cols = text_cols(self.window.width as usize);
+        let rows = text_rows((self.window.height - TITLE_H).max(0) as usize);
+        if cols != self.cols || rows != self.rows {
+            let _ = crate::tty::set_size(self.tty_id, cols as u16, rows as u16);
+        }
+        self.cols = cols;
+        self.rows = rows;
         self.col = self.col.min(self.cols.saturating_sub(1));
         self.row = self.row.min(self.rows.saturating_sub(1));
         self.input_start_col = self.input_start_col.min(self.cols.saturating_sub(1));
@@ -2915,6 +3246,21 @@ fn mirror_debug_char(c: char) {
 fn debug_byte(byte: u8) {
     unsafe {
         x86_64::instructions::port::Port::<u8>::new(0xE9).write(byte);
+    }
+}
+
+fn ctrl_byte(key: Key) -> Option<u8> {
+    match key {
+        Key::Character(c) if c.is_ascii_alphabetic() => Some((c.to_ascii_uppercase() as u8) - b'@'),
+        Key::Character('[') | Key::Escape => Some(0x1b),
+        Key::Character('\\') => Some(0x1c),
+        Key::Character(']') => Some(0x1d),
+        Key::Character('^') => Some(0x1e),
+        Key::Character('_') => Some(0x1f),
+        Key::Space => Some(0x00),
+        Key::Backspace => Some(0x08),
+        Key::Delete => Some(0x7f),
+        _ => None,
     }
 }
 

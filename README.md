@@ -13,7 +13,7 @@ stdio, and IPC with pipes, shared memory, and per-task fd tables.
 
 ---
 
-# Current state — v7.11
+# Current state — v7.12
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -59,7 +59,7 @@ rename, writable file descriptors, fd-mapped child stdio, sync, and RTC time;
 `/bin/sh` now supports quoting, relative paths, redirection, and one-stage
 pipelines; `/bin` includes practical file/text/date/devkit tools; sysreport can
 write `/LOGS/SYSREPORT.TXT`; and the generated image ships `/SDK` docs and
-templates. Phases 45-47 add compositor smoothness and evented userspace work:
+templates. Phases 45-48 add compositor smoothness and evented terminal work:
 timer ticks now request
 paced frames instead of unconditional full redraws, mouse-only motion uses a
 hardware cursor overlay fast path, active input temporarily boosts full-frame
@@ -67,7 +67,9 @@ pacing to 144 Hz while idle work stays at 36 Hz, the main loop polls input
 before background maintenance, and `compositor`/`smoothness` telemetry exposes
 frame source, adaptive pacing, budget, damage, and cursor overlay counters. ABI
 v9 adds `poll(desc, count, timeout_ms)` so ring-3 programs can block on pipes,
-TTY stdin, TCP sockets, GUI events, and child exit without spin/yield loops.
+TTY stdin, TCP sockets, GUI events, and child exit without spin/yield loops; ABI
+v10 adds `tty_control(op, arg1, arg2)` so foreground ring-3 programs can query
+terminal geometry and switch between canonical and raw TTY input.
 
 | Context | Mode | Description |
 | :------ | :--- | :---------- |
@@ -109,12 +111,12 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **Paging / VMM** | 4-level `OffsetPageTable` + global `BootInfoFrameAllocator`. Per-process PML4 cloned from kernel upper half; private user-space mappings in lower half. `vmm::` module exposes `new_process_pml4`, `map_page_in`, `map_region`, `switch_to`. |
 | **IDT** | Breakpoint, Double Fault, Page Fault with user-task termination/crashdump handling for invalid ring-3 accesses, General Protection Fault, Invalid Opcode, Timer (IRQ0), Keyboard (IRQ1), Mouse (IRQ12). |
 | **Scheduler** | Preemptive round-robin at 288 Hz. Each task carries `pml4: Option<PhysFrame>` plus `uid`, `gid`, capability credentials, current working directory, process group, controlling TTY, pending signal state, and a private 64 KiB kernel stack. The scheduler switches CR3 when needed and updates TSS RSP0 to the selected task's stack so ring-3 IRQ frames never share one global stack. Task lifecycle now distinguishes ready/running/blocked/stopped/exited/reaped states, records parents and exit codes, supports blocking `waitpid`/reaping, supports kernel-side task termination, and backs blocking pipe/TTY reads with `block_current` / `unblock(id)`. |
-| **TTY sessions** | Each Terminal owns a kernel TTY with canonical stdin, a dedicated output queue, and a foreground process group. Userspace `read(0)` plus stdout/stderr route through the task's controlling TTY by default, fd mappings can override 0/1/2 for pipes and redirection, `exec` blocks the prompt as a foreground job, background jobs keep their terminal output route, and Ctrl+C/Ctrl+Z signal the foreground group. |
+| **TTY sessions** | Each Terminal owns a kernel TTY with canonical/raw input modes, echo and signal flags, cell geometry, a dedicated output queue, and a foreground process group. Userspace `read(0)` plus stdout/stderr route through the task's controlling TTY by default, fd mappings can override 0/1/2 for pipes and redirection, `exec` blocks the prompt as a foreground job, background jobs keep their terminal output route, and Ctrl+C/Ctrl+Z signal the foreground group when signal mode is enabled. |
 | **Process isolation** | Two user processes share the same user-stack virtual address (`0x7FFF_0010_0000`) but map it to different physical frames. Guard pages (kernel-only) sit below each stack. |
 | **GDT + TSS** | Four segments (kernel code/data ring 0, user code/data ring 3) + TSS. RSP0 starts on a fallback ISR stack and is updated on every context switch to the selected task's private kernel stack for ring-3 IRQ entry. |
 | **SYSCALL/SYSRET** | EFER.SCE enabled. STAR/LSTAR/SFMASK MSRs configured. Naked `syscall_entry` saves context, switches to the currently scheduled task's private kernel stack top, dispatches on rax, restores context, and executes `sysretq`. |
-| **Syscall table** | `0 exit`, `1 write`, `2 yield`, `3 getpid`, `4 mmap(addr, len, flags)`, `5 open(path, len)`, `6 read(fd, buf, len)`, `7 close(fd)`, `8 exec(path, len)`, `9 pipe(fds_ptr)`, `10 dup(fd)`, `11 shmem_create(len)`, `12 shmem_map(id)`, `13 waitpid(pid, status_ptr)`, `14 spawn(path, len)`, `15 sleep_ms(ms)`, `16 abi_version()`, `17 dns_resolve(host, len)`, `18 http_get(host, len)`, `19 socket(domain, type, proto)`, `20 connect(socket, ipv4, port)`, `21 send(socket, buf, len)`, `22 recv(socket, buf, len)`, `23 gui_open(title, len, dims)`, `24 gui_present(handle, pixels, len)`, `25 gui_poll_event(handle, packet, len)`, `26 gui_close(handle)`, `27 fs_write_file(desc)`, `28 fs_create_dir(path, len)`, `29 fs_delete_tree(path, len)`, `30 fs_list_dir(desc)`, `31 screenshot(path, len, flags)`, `32 signal(pid, signal)`, `33 setpgid(pid, pgid)`, `34 getpgid(pid)`, `35 signal_group(pgid, signal)`, `36 spawn_args(desc)`, `37 chdir(path, len)`, `38 getcwd(buf, len)`, `39 stat(desc)`, `40 rename(desc)`, `41 open_write(path, len)`, `42 spawn_fds_args(desc)`, `43 sync()`, `44 time()`, and `45 poll(desc, count, timeout_ms)`. `sys_read(0)` reads from the current task's controlling TTY when assigned unless fd 0 is mapped; `sys_write` writes stdout/stderr to that TTY, falls back to the compositor ring for orphaned output, or writes pipe/file descriptors through the VFS fd table. |
-| **Userspace** | Ring-3 code can run either as the original isolation stubs or as real ELF64 binaries loaded from `/bin`. The `libcool` SDK crate now provides no_std entry/argv setup plus process, signal/process-group, file, pipe, evented poll, mmap, shared-memory, event, DNS/HTTP, TCP socket, filesystem utility, screenshot, time, and userspace GUI wrappers. `/bin/sh` reads stdin from the TTY, tracks the kernel cwd, parses quoting and escapes, runs builtins, resolves bare commands under `/bin`, supports `<`/`>` redirection and one-stage `|` pipelines, and can launch argv/fd-capable children with `spawn_args` or `spawn_fds_args`. `/bin/ls`, `/bin/cat`, `/bin/echo`, `/bin/pwd`, `/bin/mkdir`, `/bin/touch`, `/bin/rm`, `/bin/writefile`, `/bin/cp`, `/bin/mv`, `/bin/grep`, `/bin/head`, `/bin/tail`, `/bin/date`, `/bin/uname`, `/bin/clear`, `/bin/stat`, `/bin/sync`, `/bin/devkit`, and `/bin/polldemo` cover practical command-line and ABI workflows. `sys_exec` replaces the current userspace image in-place by swapping CR3 and rewriting the saved syscall return frame. Shared memory (`sys_shmem_create`/`sys_shmem_map`) maps a region of physical frames into the caller's address space at a fixed VA. |
+| **Syscall table** | `0 exit`, `1 write`, `2 yield`, `3 getpid`, `4 mmap(addr, len, flags)`, `5 open(path, len)`, `6 read(fd, buf, len)`, `7 close(fd)`, `8 exec(path, len)`, `9 pipe(fds_ptr)`, `10 dup(fd)`, `11 shmem_create(len)`, `12 shmem_map(id)`, `13 waitpid(pid, status_ptr)`, `14 spawn(path, len)`, `15 sleep_ms(ms)`, `16 abi_version()`, `17 dns_resolve(host, len)`, `18 http_get(host, len)`, `19 socket(domain, type, proto)`, `20 connect(socket, ipv4, port)`, `21 send(socket, buf, len)`, `22 recv(socket, buf, len)`, `23 gui_open(title, len, dims)`, `24 gui_present(handle, pixels, len)`, `25 gui_poll_event(handle, packet, len)`, `26 gui_close(handle)`, `27 fs_write_file(desc)`, `28 fs_create_dir(path, len)`, `29 fs_delete_tree(path, len)`, `30 fs_list_dir(desc)`, `31 screenshot(path, len, flags)`, `32 signal(pid, signal)`, `33 setpgid(pid, pgid)`, `34 getpgid(pid)`, `35 signal_group(pgid, signal)`, `36 spawn_args(desc)`, `37 chdir(path, len)`, `38 getcwd(buf, len)`, `39 stat(desc)`, `40 rename(desc)`, `41 open_write(path, len)`, `42 spawn_fds_args(desc)`, `43 sync()`, `44 time()`, `45 poll(desc, count, timeout_ms)`, and `46 tty_control(op, arg1, arg2)`. `sys_read(0)` reads from the current task's controlling TTY when assigned unless fd 0 is mapped; `sys_write` writes stdout/stderr to that TTY, falls back to the compositor ring for orphaned output, or writes pipe/file descriptors through the VFS fd table. |
+| **Userspace** | Ring-3 code can run either as the original isolation stubs or as real ELF64 binaries loaded from `/bin`. The `libcool` SDK crate now provides no_std entry/argv setup plus process, signal/process-group, file, pipe, evented poll, TTY mode/size, mmap, shared-memory, event, DNS/HTTP, TCP socket, filesystem utility, screenshot, time, and userspace GUI wrappers. `/bin/sh` reads stdin from the TTY, tracks the kernel cwd, parses quoting and escapes, runs builtins, resolves bare commands under `/bin`, supports `<`/`>` redirection and one-stage `|` pipelines, and can launch argv/fd-capable children with `spawn_args` or `spawn_fds_args`. `/bin/ls`, `/bin/cat`, `/bin/echo`, `/bin/pwd`, `/bin/mkdir`, `/bin/touch`, `/bin/rm`, `/bin/writefile`, `/bin/cp`, `/bin/mv`, `/bin/grep`, `/bin/head`, `/bin/tail`, `/bin/date`, `/bin/uname`, `/bin/clear`, `/bin/stat`, `/bin/sync`, `/bin/devkit`, `/bin/polldemo`, and `/bin/tuidemo` cover practical command-line, evented, and terminal-mode workflows. `sys_exec` replaces the current userspace image in-place by swapping CR3 and rewriting the saved syscall return frame. Shared memory (`sys_shmem_create`/`sys_shmem_map`) maps a region of physical frames into the caller's address space at a fixed VA. |
 | **ELF loader** | Validates ELF64 headers, maps `PT_LOAD` segments into a fresh address space, allocates a private user stack, builds an initial `argc/argv/envp` stack frame, and can either spawn a new task or prepare an image for `sys_exec`. |
 | **ATA PIO driver** | Primary-bus slave device (QEMU `if=ide,index=1`). LBA28 PIO reads/writes, BSY/DRQ polling with bounded retries and software reset recovery, nIEN=1 (device interrupts disabled). Wrapped in `without_interrupts` to prevent preemption mid-transfer. |
 | **CoolFS layer** | Native coolOS root filesystem mounted at `/`, stored directly at LBA 0 of the attached OS disk. It has a CoolFS superblock, fixed inode table with durable `uid`/`gid`/mode metadata, block bitmap, 4 KiB blocks, direct plus indirect data blocks, directory records, a 64-slot block cache with dirty 4 KiB writeback, VFS read/write/create/rename/delete/copy routing, stats, and boot self-tests. |
@@ -349,7 +351,7 @@ src/
     utilities.rs   UtilityApp — Trash Bin, Screenshot, Notes, and Text Editor
 userspace/
   libcool/         no_std userspace SDK — entry, argv, syscalls, files, pipes,
-                   signals, process groups, evented poll, mmap, shmem, events, networking,
+                   signals, process groups, evented poll, TTY control, mmap, shmem, events, networking,
                    filesystem utilities, time, GUI, print!/println!
   hello/
     src/main.rs    `/bin/hello` — minimal userspace ELF that writes and exits
@@ -369,7 +371,8 @@ userspace/
     src/bin/screenshot.rs `/bin/screenshot` — ring-3 screenshot utility
     src/bin/procdemo.rs `/bin/procdemo` — process group and signal-control demo
     src/bin/procsleep.rs `/bin/procsleep` — long-running helper used by jobs/tests
-    src/bin/polldemo.rs `/bin/polldemo` — ABI v9 poll readiness demo
+    src/bin/polldemo.rs `/bin/polldemo` — poll readiness demo
+    src/bin/tuidemo.rs `/bin/tuidemo` — raw TTY and ANSI terminal demo
     src/bin/sh.rs `/bin/sh` — userspace shell with cwd, redirection, and one-stage pipes
     src/bin/cp.rs `/bin/cp` — streaming userspace file copy
     src/bin/mv.rs `/bin/mv` — userspace rename wrapper
@@ -570,6 +573,15 @@ blocked tasks when readiness changes. `libcool::evented` exposes `PollDesc`,
 `poll`, and focused wait helpers, and `/bin/polldemo` smokes timeout, pipe, and
 child-exit readiness.
 
+**Terminal/TUI platform (Phase 48).** ABI v10 adds `tty_control` for foreground
+TTY mode and size queries. Kernel TTYs now track canonical/raw mode, echo,
+signal delivery, and terminal cell geometry; TerminalApp forwards raw control
+bytes and cursor-key escape sequences when a foreground app disables canonical
+mode. Terminal output handles a practical VT subset for SGR colors, cursor
+movement, and screen/line clearing. `libcool::tty` exposes mode/size helpers,
+and `/bin/tuidemo` smokes raw single-key input without Enter plus ANSI-rendered
+status text.
+
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
 empty). `vmm::new_process_pml4` handles the clone; `vmm::map_page_in` / `vmm::map_region`
@@ -635,5 +647,6 @@ while kernel faults still panic.
 | 45 | Compositor latency and smoothness — passive frame ticks, cursor overlay fast path, input-first loop, telemetry | **Done** |
 | 46 | Adaptive high refresh — 144 Hz active pacing, 36 Hz idle pacing, frame-budget telemetry | **Done** |
 | 47 | Evented userspace runtime — ABI v9 poll for fd/socket/GUI/child/TTY readiness | **Done** |
+| 48 | Terminal/TUI platform — ABI v10 TTY control, raw mode, ANSI rendering, `/bin/tuidemo` | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

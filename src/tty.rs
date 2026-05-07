@@ -16,6 +16,17 @@ const TTY_INPUT_SIZE: usize = 4096;
 const TTY_LINE_LIMIT: usize = 1024;
 const TTY_READ_QUEUE: &str = "tty-read";
 
+pub const TTY_MODE_CANONICAL: u64 = 1 << 0;
+pub const TTY_MODE_ECHO: u64 = 1 << 1;
+pub const TTY_MODE_SIGNALS: u64 = 1 << 2;
+pub const TTY_MODE_DEFAULT: u64 = TTY_MODE_CANONICAL | TTY_MODE_ECHO | TTY_MODE_SIGNALS;
+pub const TTY_MODE_MASK: u64 = TTY_MODE_DEFAULT;
+
+pub const TTY_CTL_GET_MODE: u64 = 0;
+pub const TTY_CTL_SET_MODE: u64 = 1;
+pub const TTY_CTL_GET_SIZE: u64 = 2;
+pub const TTY_CTL_SET_SIZE: u64 = 3;
+
 struct Tty {
     id: u64,
     foreground_group: Option<usize>,
@@ -30,6 +41,9 @@ struct Tty {
     line: Vec<u8>,
     waiting_readers: Vec<usize>,
     eof_pending: bool,
+    mode: u64,
+    cols: u16,
+    rows: u16,
 }
 
 impl Tty {
@@ -52,6 +66,9 @@ impl Tty {
             line: Vec::new(),
             waiting_readers: Vec::new(),
             eof_pending: false,
+            mode: TTY_MODE_DEFAULT,
+            cols: 80,
+            rows: 25,
         }
     }
 
@@ -90,6 +107,16 @@ impl Tty {
         }
         self.input[self.input_head] = byte;
         self.input_head = next;
+    }
+
+    fn push_raw_input(&mut self, bytes: &[u8]) -> Vec<usize> {
+        for &byte in bytes {
+            self.push_input_byte(byte);
+            if self.mode & TTY_MODE_ECHO != 0 {
+                self.push_byte(byte);
+            }
+        }
+        self.take_readers()
     }
 
     fn pop_input_byte(&mut self) -> Option<u8> {
@@ -180,7 +207,9 @@ pub fn submit_char(id: u64, c: char) -> bool {
         let Some(tty) = ttys.iter_mut().find(|tty| tty.id == id) else {
             return false;
         };
-        if c == '\n' || c == '\r' {
+        if tty.mode & TTY_MODE_CANONICAL == 0 {
+            tty.push_raw_input(bytes)
+        } else if c == '\n' || c == '\r' {
             tty.push_byte(b'\n');
             tty.flush_line(true)
         } else if c == '\u{0008}' || c == '\u{007F}' {
@@ -200,6 +229,45 @@ pub fn submit_char(id: u64, c: char) -> bool {
             Vec::new()
         } else {
             Vec::new()
+        }
+    };
+    wake_readers(wake_tasks);
+    crate::wm::request_repaint();
+    true
+}
+
+pub fn submit_bytes(id: u64, bytes: &[u8]) -> bool {
+    if bytes.is_empty() {
+        return true;
+    }
+    let wake_tasks = {
+        let mut ttys = TTYS.lock();
+        let Some(tty) = ttys.iter_mut().find(|tty| tty.id == id) else {
+            return false;
+        };
+        if tty.mode & TTY_MODE_CANONICAL == 0 {
+            tty.push_raw_input(bytes)
+        } else {
+            let mut wake_tasks = Vec::new();
+            for &byte in bytes {
+                let c = byte as char;
+                if c == '\n' || c == '\r' {
+                    tty.push_byte(b'\n');
+                    wake_tasks = tty.flush_line(true);
+                } else if byte == b'\x08' || byte == b'\x7f' {
+                    if tty.remove_last_line_char() {
+                        tty.push_byte(8);
+                        tty.push_byte(b' ');
+                        tty.push_byte(8);
+                    }
+                } else if c == '\t' || !c.is_control() {
+                    if tty.line.len().saturating_add(1) <= TTY_LINE_LIMIT {
+                        tty.line.push(byte);
+                        tty.push_byte(byte);
+                    }
+                }
+            }
+            wake_tasks
         }
     };
     wake_readers(wake_tasks);
@@ -247,13 +315,14 @@ pub fn read_input_blocking(id: u64, buf: &mut [u8], len: usize) -> usize {
                 return usize::MAX;
             };
             let mut n = 0usize;
+            let canonical = tty.mode & TTY_MODE_CANONICAL != 0;
             while n < max {
                 let Some(byte) = tty.pop_input_byte() else {
                     break;
                 };
                 buf[n] = byte;
                 n += 1;
-                if byte == b'\n' {
+                if canonical && byte == b'\n' {
                     break;
                 }
             }
@@ -311,6 +380,69 @@ pub fn unregister_input_waiter(id: u64, task_id: usize) {
     }
 }
 
+pub fn input_mode(id: u64) -> Option<u64> {
+    TTYS.lock()
+        .iter()
+        .find(|tty| tty.id == id)
+        .map(|tty| tty.mode)
+}
+
+pub fn signals_enabled(id: u64) -> bool {
+    input_mode(id)
+        .map(|mode| mode & TTY_MODE_SIGNALS != 0)
+        .unwrap_or(true)
+}
+
+pub fn set_input_mode(id: u64, mode: u64) -> Option<u64> {
+    let mut ttys = TTYS.lock();
+    let tty = ttys.iter_mut().find(|tty| tty.id == id)?;
+    let previous = tty.mode;
+    tty.mode = mode & TTY_MODE_MASK;
+    Some(previous)
+}
+
+pub fn reset_input_mode(id: u64) -> bool {
+    set_input_mode(id, TTY_MODE_DEFAULT).is_some()
+}
+
+pub fn size(id: u64) -> Option<(u16, u16)> {
+    TTYS.lock()
+        .iter()
+        .find(|tty| tty.id == id)
+        .map(|tty| (tty.cols, tty.rows))
+}
+
+pub fn set_size(id: u64, cols: u16, rows: u16) -> bool {
+    if cols == 0 || rows == 0 {
+        return false;
+    }
+    let mut ttys = TTYS.lock();
+    let Some(tty) = ttys.iter_mut().find(|tty| tty.id == id) else {
+        return false;
+    };
+    tty.cols = cols;
+    tty.rows = rows;
+    true
+}
+
+pub fn control(id: u64, op: u64, arg1: u64, arg2: u64) -> Option<u64> {
+    match op {
+        TTY_CTL_GET_MODE => input_mode(id),
+        TTY_CTL_SET_MODE => set_input_mode(id, arg1),
+        TTY_CTL_GET_SIZE => size(id).map(|(cols, rows)| cols as u64 | ((rows as u64) << 16)),
+        TTY_CTL_SET_SIZE => {
+            let cols = u16::try_from(arg1).ok()?;
+            let rows = u16::try_from(arg2).ok()?;
+            if set_size(id, cols, rows) {
+                Some(cols as u64 | ((rows as u64) << 16))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 pub fn pop_output_byte(id: u64) -> Option<u8> {
     TTYS.lock()
         .iter_mut()
@@ -343,11 +475,14 @@ pub fn lines() -> Vec<String> {
     ttys.iter()
         .map(|tty| {
             format!(
-                "tty #{} foreground={} output={} input={} dropped={}/{}",
+                "tty #{} foreground={} mode={} size={}x{} output={} input={} dropped={}/{}",
                 tty.id,
                 tty.foreground_group
                     .map(|group| group.to_string())
                     .unwrap_or_else(|| String::from("-")),
+                mode_name(tty.mode),
+                tty.cols,
+                tty.rows,
                 tty.pending_bytes(),
                 tty.pending_input_bytes(),
                 tty.dropped,
@@ -372,11 +507,30 @@ pub fn selftest_passes() -> bool {
         && submit_char(id, 'k')
         && submit_enter(id)
         && read_input_blocking(id, &mut input, 8) == 3
-        && &input[..3] == b"ok\n";
+        && &input[..3] == b"ok\n"
+        && set_input_mode(id, 0) == Some(TTY_MODE_DEFAULT)
+        && submit_char(id, 'q')
+        && read_input_blocking(id, &mut input, 8) == 1
+        && input[0] == b'q'
+        && reset_input_mode(id);
     destroy(id);
     passed
 }
 
 fn wake_readers(task_ids: Vec<usize>) {
     crate::evented::wake_tasks(TTY_READ_QUEUE, task_ids);
+}
+
+fn mode_name(mode: u64) -> &'static str {
+    match mode & TTY_MODE_MASK {
+        TTY_MODE_DEFAULT => "canon+echo+sig",
+        0 => "raw",
+        TTY_MODE_CANONICAL => "canon",
+        TTY_MODE_ECHO => "echo",
+        TTY_MODE_SIGNALS => "sig",
+        value if value == (TTY_MODE_CANONICAL | TTY_MODE_ECHO) => "canon+echo",
+        value if value == (TTY_MODE_CANONICAL | TTY_MODE_SIGNALS) => "canon+sig",
+        value if value == (TTY_MODE_ECHO | TTY_MODE_SIGNALS) => "echo+sig",
+        _ => "custom",
+    }
 }

@@ -54,6 +54,7 @@
 ///   43 sync() → 0 on success
 ///   44 time() → packed UTC-ish RTC timestamp
 ///   45 poll(desc_ptr, count, timeout_ms) → ready descriptor count
+///   46 tty_control(op, arg1, arg2) → mode/size/control result
 ///
 /// Output path: sys_write routes bytes to the current task's controlling TTY
 /// when one is assigned unless fd 1/2 is explicitly mapped in the task fd
@@ -282,6 +283,7 @@ extern "C" fn syscall_dispatch(
         43 => sys_sync(),
         44 => sys_time(),
         45 => sys_poll(a1 as *mut u8, a2, a3),
+        46 => sys_tty_control(a1, a2, a3),
         _ => u64::MAX,
     }
 }
@@ -431,6 +433,13 @@ fn sys_close(fd: u64) {
     if !crate::net::socket_close(owner, fd) {
         crate::vfs::vfs_close(fd as usize);
     }
+}
+
+fn sys_tty_control(op: u64, arg1: u64, arg2: u64) -> u64 {
+    let Some(tty) = crate::scheduler::current_tty() else {
+        return u64::MAX;
+    };
+    crate::tty::control(tty, op, arg1, arg2).unwrap_or(u64::MAX)
 }
 
 fn sys_socket(domain: u64, socket_type: u64, protocol: u64) -> u64 {

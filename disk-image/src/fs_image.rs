@@ -581,7 +581,7 @@ impl Seek for RegionFile {
 
 const PHASE25_GUIDEMO_PACKAGE: &[u8] = b"id=app.phase25.guidemo\nname=Packaged GUI Demo\ncommand=pkgdemo\nversion=1.0\nicon=P5\ncategory=Development\npermission=desktop\nexec=/bin/guidemo\naliases=package,demo,phase25\nassociations=P25\n";
 
-const SDK_README: &[u8] = b"coolOS SDK\n\nABI version: 9\nUserspace apps are no_std Rust ELF64 binaries linked with userspace/libcool.\nUseful APIs: process::spawn_args, process::spawn_fds_args, evented::poll, fs::{stat,rename,chdir,getcwd,sync}, io::{open,create,pipe}, gui::Window.\nPackage manifests live under /Packages and install into /APPS/<command>/APP.CFG.\n";
+const SDK_README: &[u8] = b"coolOS SDK\n\nABI version: 10\nUserspace apps are no_std Rust ELF64 binaries linked with userspace/libcool.\nUseful APIs: process::spawn_args, process::spawn_fds_args, evented::poll, tty::{size,set_mode,enter_raw_mode}, fs::{stat,rename,chdir,getcwd,sync}, io::{open,create,pipe}, gui::Window.\nPackage manifests live under /Packages and install into /APPS/<command>/APP.CFG.\n";
 
 const SDK_APP_TEMPLATE: &[u8] = b"#![no_std]\n#![no_main]\n\nuse libcool::{io, prelude::*};\n\nlibcool::entry!(main);\n\nfn main(args: Args) -> ! {\n    io::write_stdout(b\"hello from a coolOS app\\n\");\n    if let Some(name) = args.get(1) {\n        io::write_stdout(b\"arg: \");\n        io::write_stdout(name);\n        io::write_stdout(b\"\\n\");\n    }\n    exit(0);\n}\n";
 
