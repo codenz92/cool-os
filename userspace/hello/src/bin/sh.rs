@@ -4,19 +4,80 @@
 use libcool::{fs, io, prelude::*};
 
 const MAX_LINE: usize = 256;
-const MAX_WORDS: usize = 8;
+const MAX_TOKENS: usize = 18;
+const MAX_TOKEN: usize = 96;
+const MAX_ARGS: usize = 7;
 const MAX_PATH: usize = 160;
+const LIST_BYTES: usize = 4096;
+
+#[derive(Clone, Copy)]
+struct Token {
+    bytes: [u8; MAX_TOKEN],
+    len: usize,
+}
+
+impl Token {
+    const fn empty() -> Self {
+        Self {
+            bytes: [0; MAX_TOKEN],
+            len: 0,
+        }
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+
+    fn push(&mut self, byte: u8) -> bool {
+        if self.len >= self.bytes.len() {
+            return false;
+        }
+        self.bytes[self.len] = byte;
+        self.len += 1;
+        true
+    }
+}
+
+struct Tokens {
+    items: [Token; MAX_TOKENS],
+    len: usize,
+}
+
+impl Tokens {
+    const fn new() -> Self {
+        Self {
+            items: [Token::empty(); MAX_TOKENS],
+            len: 0,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.len = 0;
+        for item in self.items.iter_mut() {
+            item.len = 0;
+        }
+    }
+
+    fn get(&self, index: usize) -> &[u8] {
+        self.items[index].as_bytes()
+    }
+}
+
+struct CommandSpec {
+    command: usize,
+    args: [usize; MAX_ARGS],
+    argc: usize,
+    input: Option<usize>,
+    output: Option<usize>,
+}
 
 libcool::entry!(main);
 
 fn main(_args: Args) -> ! {
     println!("sh: ready abi={}", abi_version());
 
-    let mut cwd = [0u8; MAX_PATH];
-    cwd[0] = b'/';
-    let mut cwd_len = 1usize;
     let mut line = [0u8; MAX_LINE];
-    let mut words = [(0usize, 0usize); MAX_WORDS];
+    let mut tokens = Tokens::new();
 
     loop {
         io::write_stdout(b"$ ");
@@ -31,29 +92,42 @@ fn main(_args: Args) -> ! {
                 exit(1);
             }
         };
+
         let input = trim_line(&line[..n]);
-        let argc = split_words(input, &mut words);
-        if argc == 0 {
+        tokens.clear();
+        match parse_tokens(input, &mut tokens) {
+            Ok(()) => {}
+            Err(msg) => {
+                println!("{}", msg);
+                continue;
+            }
+        }
+        if tokens.len == 0 {
             continue;
         }
-        if run_builtin(input, argc, &words, &mut cwd, &mut cwd_len) {
-            continue;
-        }
-        run_external(input, argc, &words, &cwd[..cwd_len], false);
+        execute_tokens(&tokens);
     }
 }
 
-fn run_builtin(
-    line: &[u8],
-    argc: usize,
-    words: &[(usize, usize); MAX_WORDS],
-    cwd: &mut [u8; MAX_PATH],
-    cwd_len: &mut usize,
-) -> bool {
-    let cmd = word(line, words, 0);
+fn execute_tokens(tokens: &Tokens) {
+    if let Some(pipe_idx) = find_token(tokens, b"|", 0, tokens.len) {
+        run_pipeline(tokens, pipe_idx);
+        return;
+    }
+
+    let has_redirection =
+        find_token(tokens, b">", 0, tokens.len).is_some() || find_token(tokens, b"<", 0, tokens.len).is_some();
+    if !has_redirection && run_builtin(tokens) {
+        return;
+    }
+    run_external_range(tokens, 0, tokens.len, &[]);
+}
+
+fn run_builtin(tokens: &Tokens) -> bool {
+    let cmd = tokens.get(0);
     if cmd == b"help" {
-        println!("builtins: help exit clear pwd cd ls cat echo write mkdir touch rm run abi pid");
-        println!("external commands: type a name for /bin/name, or run <path> [args...]");
+        println!("builtins: help exit clear pwd cd env echo write mkdir touch rm ls cat run abi pid sync");
+        println!("syntax: command args, command > file, command < file, left | right");
         return true;
     }
     if cmd == b"exit" {
@@ -66,108 +140,75 @@ fn run_builtin(
         return true;
     }
     if cmd == b"pwd" {
-        io::write_stdout(&cwd[..*cwd_len]);
-        println!();
+        print_cwd();
         return true;
     }
     if cmd == b"cd" {
-        let target = if argc > 1 { word(line, words, 1) } else { b"/" };
-        let mut path = [0u8; MAX_PATH];
-        if let Some(path_len) = resolve_path(&cwd[..*cwd_len], target, &mut path) {
-            let mut listing = [0u8; 1];
-            if fs::list_dir(&path[..path_len], &mut listing).is_ok() {
-                cwd[..path_len].copy_from_slice(&path[..path_len]);
-                *cwd_len = path_len;
-            } else {
-                print_err_path(b"cd", &path[..path_len]);
-            }
-        } else {
-            println!("cd: path too long");
+        let target = if tokens.len > 1 { tokens.get(1) } else { b"/" };
+        match fs::chdir(target) {
+            Ok(()) => {}
+            Err(_) => print_err_path(b"cd", target),
         }
         return true;
     }
-    if cmd == b"ls" {
-        let target = if argc > 1 {
-            word(line, words, 1)
-        } else {
-            &cwd[..*cwd_len]
-        };
-        let mut path = [0u8; MAX_PATH];
-        if let Some(path_len) = resolve_path(&cwd[..*cwd_len], target, &mut path) {
-            list_dir(&path[..path_len]);
-        } else {
-            println!("ls: path too long");
-        }
-        return true;
-    }
-    if cmd == b"cat" {
-        if argc < 2 {
-            println!("usage: cat <path>");
-        } else {
-            let mut path = [0u8; MAX_PATH];
-            if let Some(path_len) = resolve_path(&cwd[..*cwd_len], word(line, words, 1), &mut path)
-            {
-                cat_file(&path[..path_len]);
-            } else {
-                println!("cat: path too long");
-            }
-        }
+    if cmd == b"env" {
+        io::write_stdout(b"PATH=/bin\nPWD=");
+        print_cwd();
         return true;
     }
     if cmd == b"echo" {
-        for idx in 1..argc {
+        for idx in 1..tokens.len {
             if idx > 1 {
                 io::write_stdout(b" ");
             }
-            io::write_stdout(word(line, words, idx));
+            io::write_stdout(tokens.get(idx));
         }
         println!();
         return true;
     }
     if cmd == b"write" {
-        if argc < 3 {
+        if tokens.len < 3 {
             println!("usage: write <path> <text>");
         } else {
-            let mut path = [0u8; MAX_PATH];
-            if let Some(path_len) = resolve_path(&cwd[..*cwd_len], word(line, words, 1), &mut path)
-            {
-                let text_start = words[2].0;
-                match fs::write_file(&path[..path_len], &line[text_start..]) {
-                    Ok(()) => println!("write: ok"),
-                    Err(_) => print_err_path(b"write", &path[..path_len]),
-                }
-            } else {
-                println!("write: path too long");
+            let mut data = [0u8; 512];
+            let len = join_tokens(tokens, 2, &mut data);
+            match fs::write_file(tokens.get(1), &data[..len]) {
+                Ok(()) => println!("write: ok"),
+                Err(_) => print_err_path(b"write", tokens.get(1)),
             }
         }
         return true;
     }
     if cmd == b"mkdir" {
-        one_path_op(
-            b"mkdir",
-            argc,
-            line,
-            words,
-            &cwd[..*cwd_len],
-            fs::create_dir,
-        );
+        one_path_op(b"mkdir", tokens, fs::create_dir);
         return true;
     }
     if cmd == b"touch" {
-        one_path_op(b"touch", argc, line, words, &cwd[..*cwd_len], |path| {
-            fs::write_file(path, b"")
-        });
+        one_path_op(b"touch", tokens, |path| fs::write_file(path, b""));
         return true;
     }
     if cmd == b"rm" {
-        one_path_op(b"rm", argc, line, words, &cwd[..*cwd_len], fs::delete_tree);
+        one_path_op(b"rm", tokens, fs::delete_tree);
+        return true;
+    }
+    if cmd == b"ls" {
+        let path = if tokens.len > 1 { tokens.get(1) } else { b"." };
+        list_dir(path);
+        return true;
+    }
+    if cmd == b"cat" {
+        if tokens.len < 2 {
+            println!("usage: cat <path>");
+        } else {
+            cat_file(tokens.get(1));
+        }
         return true;
     }
     if cmd == b"run" {
-        if argc < 2 {
+        if tokens.len < 2 {
             println!("usage: run <path> [args...]");
         } else {
-            run_external_from(line, argc, words, &cwd[..*cwd_len], 1, true);
+            run_external_range(tokens, 1, tokens.len, &[]);
         }
         return true;
     }
@@ -179,66 +220,210 @@ fn run_builtin(
         println!("pid={}", getpid());
         return true;
     }
+    if cmd == b"sync" {
+        match fs::sync() {
+            Ok(()) => println!("sync: ok"),
+            Err(_) => println!("sync: failed"),
+        }
+        return true;
+    }
     false
 }
 
-fn run_external(
-    line: &[u8],
-    argc: usize,
-    words: &[(usize, usize); MAX_WORDS],
-    cwd: &[u8],
-    first_word_is_path: bool,
-) {
-    run_external_from(line, argc, words, cwd, 0, first_word_is_path);
-}
-
-fn run_external_from(
-    line: &[u8],
-    argc: usize,
-    words: &[(usize, usize); MAX_WORDS],
-    cwd: &[u8],
-    start_word: usize,
-    first_word_is_path: bool,
-) {
-    let command = word(line, words, start_word);
-    let mut path = [0u8; MAX_PATH];
-    let path_len = if first_word_is_path || contains_byte(command, b'/') {
-        resolve_path(cwd, command, &mut path)
-    } else {
-        resolve_bin(command, &mut path)
-    };
-    let Some(path_len) = path_len else {
-        println!("sh: path too long");
+fn run_pipeline(tokens: &Tokens, pipe_idx: usize) {
+    if pipe_idx == 0 || pipe_idx + 1 >= tokens.len {
+        println!("sh: invalid pipeline");
+        return;
+    }
+    let Ok((read_fd, write_fd)) = io::pipe() else {
+        println!("pipe: failed");
         return;
     };
 
-    let empty: &[u8] = b"";
-    let mut argv = [empty; MAX_WORDS - 1];
-    let arg_count = argc.saturating_sub(start_word + 1);
-    for idx in 0..arg_count {
-        argv[idx] = word(line, words, start_word + 1 + idx);
-    }
-    match spawn_args(&path[..path_len], &argv[..arg_count]) {
-        Ok(pid) => match wait_for_exit(pid) {
-            Ok(status) => {
-                if status != 0 {
-                    io::write_stdout(b"exit ");
-                    libcool::io::write_u64(status);
-                    println!();
-                }
+    let left_maps = [(write_fd, io::STDOUT)];
+    let left = spawn_external_range(tokens, 0, pipe_idx, &left_maps);
+    io::close(write_fd);
+
+    let right_maps = [(read_fd, io::STDIN)];
+    let right = spawn_external_range(tokens, pipe_idx + 1, tokens.len, &right_maps);
+    io::close(read_fd);
+
+    match (left, right) {
+        (Ok(left_pid), Ok(right_pid)) => {
+            let _ = wait_for_exit(left_pid);
+            match wait_for_exit(right_pid) {
+                Ok(status) => print_status_if_failed(status),
+                Err(_) => println!("wait: failed"),
             }
-            Err(_) => println!("wait: failed"),
-        },
-        Err(_) => {
-            io::write_stdout(b"not found: ");
-            io::write_stdout(&path[..path_len]);
-            println!();
         }
+        _ => println!("pipeline: spawn failed"),
     }
 }
 
-fn wait_for_exit(pid: u64) -> Result<u64> {
-    waitpid(pid)
+fn run_external_range(tokens: &Tokens, start: usize, end: usize, extra_maps: &[(u64, u64)]) {
+    match spawn_external_range(tokens, start, end, extra_maps) {
+        Ok(pid) => match wait_for_exit(pid) {
+            Ok(status) => print_status_if_failed(status),
+            Err(_) => println!("wait: failed"),
+        },
+        Err(_) => println!("sh: spawn failed"),
+    }
+}
+
+fn spawn_external_range(
+    tokens: &Tokens,
+    start: usize,
+    end: usize,
+    extra_maps: &[(u64, u64)],
+) -> Result<u64> {
+    let spec = parse_command_spec(tokens, start, end)?;
+    let mut path = [0u8; MAX_PATH];
+    let path_len = resolve_command(tokens.get(spec.command), &mut path).ok_or(Error::Invalid)?;
+
+    let empty: &[u8] = b"";
+    let mut argv = [empty; MAX_ARGS];
+    for idx in 0..spec.argc {
+        argv[idx] = tokens.get(spec.args[idx]);
+    }
+
+    let mut fd_maps = [(0u64, 0u64); 4];
+    let mut fd_count = 0usize;
+    for &(parent_fd, child_fd) in extra_maps {
+        if fd_count >= fd_maps.len() {
+            return Err(Error::Invalid);
+        }
+        fd_maps[fd_count] = (parent_fd, child_fd);
+        fd_count += 1;
+    }
+
+    let mut close_after = [0u64; 2];
+    let mut close_count = 0usize;
+    if let Some(input_idx) = spec.input {
+        let fd = io::open(tokens.get(input_idx))?;
+        if fd_count >= fd_maps.len() || close_count >= close_after.len() {
+            io::close(fd);
+            return Err(Error::Invalid);
+        }
+        fd_maps[fd_count] = (fd, io::STDIN);
+        fd_count += 1;
+        close_after[close_count] = fd;
+        close_count += 1;
+    }
+    if let Some(output_idx) = spec.output {
+        let fd = io::create(tokens.get(output_idx))?;
+        if fd_count >= fd_maps.len() || close_count >= close_after.len() {
+            io::close(fd);
+            return Err(Error::Invalid);
+        }
+        fd_maps[fd_count] = (fd, io::STDOUT);
+        fd_count += 1;
+        close_after[close_count] = fd;
+        close_count += 1;
+    }
+
+    let result = spawn_fds_args(&path[..path_len], &argv[..spec.argc], &fd_maps[..fd_count]);
+    for &fd in &close_after[..close_count] {
+        io::close(fd);
+    }
+    result
+}
+
+fn parse_command_spec(tokens: &Tokens, start: usize, end: usize) -> Result<CommandSpec> {
+    let mut spec = CommandSpec {
+        command: start,
+        args: [0; MAX_ARGS],
+        argc: 0,
+        input: None,
+        output: None,
+    };
+    let mut saw_command = false;
+    let mut idx = start;
+    while idx < end {
+        let token = tokens.get(idx);
+        if token == b"<" || token == b">" {
+            if idx + 1 >= end {
+                return Err(Error::Invalid);
+            }
+            if token == b"<" {
+                spec.input = Some(idx + 1);
+            } else {
+                spec.output = Some(idx + 1);
+            }
+            idx += 2;
+            continue;
+        }
+        if !saw_command {
+            spec.command = idx;
+            saw_command = true;
+        } else {
+            if spec.argc >= spec.args.len() {
+                return Err(Error::Invalid);
+            }
+            spec.args[spec.argc] = idx;
+            spec.argc += 1;
+        }
+        idx += 1;
+    }
+    if saw_command {
+        Ok(spec)
+    } else {
+        Err(Error::Invalid)
+    }
+}
+
+fn parse_tokens(line: &[u8], tokens: &mut Tokens) -> core::result::Result<(), &'static str> {
+    let mut pos = 0usize;
+    while pos < line.len() {
+        while pos < line.len() && is_space(line[pos]) {
+            pos += 1;
+        }
+        if pos >= line.len() {
+            break;
+        }
+        if tokens.len >= tokens.items.len() {
+            return Err("sh: too many words");
+        }
+        let mut token = Token::empty();
+        let mut quote = 0u8;
+        loop {
+            if pos >= line.len() {
+                break;
+            }
+            let mut byte = line[pos];
+            if quote == 0 && is_space(byte) {
+                break;
+            }
+            if quote == 0 && (byte == b'|' || byte == b'<' || byte == b'>') {
+                if token.len == 0 {
+                    token.push(byte);
+                    pos += 1;
+                }
+                break;
+            }
+            if byte == b'\\' && pos + 1 < line.len() {
+                pos += 1;
+                byte = line[pos];
+            } else if quote == 0 && (byte == b'\'' || byte == b'"') {
+                quote = byte;
+                pos += 1;
+                continue;
+            } else if quote != 0 && byte == quote {
+                quote = 0;
+                pos += 1;
+                continue;
+            }
+            if !token.push(byte) {
+                return Err("sh: word too long");
+            }
+            pos += 1;
+        }
+        if quote != 0 {
+            return Err("sh: unterminated quote");
+        }
+        tokens.items[tokens.len] = token;
+        tokens.len += 1;
+    }
+    Ok(())
 }
 
 fn trim_line(mut line: &[u8]) -> &[u8] {
@@ -252,32 +437,14 @@ fn trim_line(mut line: &[u8]) -> &[u8] {
     line
 }
 
-fn split_words(line: &[u8], out: &mut [(usize, usize); MAX_WORDS]) -> usize {
-    let mut count = 0usize;
-    let mut pos = 0usize;
-    while pos < line.len() && count < out.len() {
-        while pos < line.len() && line[pos] == b' ' {
-            pos += 1;
+fn resolve_command(cmd: &[u8], out: &mut [u8; MAX_PATH]) -> Option<usize> {
+    if contains_byte(cmd, b'/') {
+        if cmd.len() > out.len() {
+            return None;
         }
-        if pos >= line.len() {
-            break;
-        }
-        let start = pos;
-        while pos < line.len() && line[pos] != b' ' {
-            pos += 1;
-        }
-        out[count] = (start, pos);
-        count += 1;
+        out[..cmd.len()].copy_from_slice(cmd);
+        return Some(cmd.len());
     }
-    count
-}
-
-fn word<'a>(line: &'a [u8], words: &[(usize, usize); MAX_WORDS], idx: usize) -> &'a [u8] {
-    let (start, end) = words[idx];
-    &line[start..end]
-}
-
-fn resolve_bin(cmd: &[u8], out: &mut [u8; MAX_PATH]) -> Option<usize> {
     let prefix = b"/bin/";
     if prefix.len() + cmd.len() > out.len() {
         return None;
@@ -287,33 +454,40 @@ fn resolve_bin(cmd: &[u8], out: &mut [u8; MAX_PATH]) -> Option<usize> {
     Some(prefix.len() + cmd.len())
 }
 
-fn resolve_path(cwd: &[u8], arg: &[u8], out: &mut [u8; MAX_PATH]) -> Option<usize> {
-    if arg.starts_with(b"/") {
-        if arg.len() > out.len() {
-            return None;
+fn join_tokens(tokens: &Tokens, start: usize, out: &mut [u8]) -> usize {
+    let mut len = 0usize;
+    for idx in start..tokens.len {
+        if idx > start {
+            if len >= out.len() {
+                break;
+            }
+            out[len] = b' ';
+            len += 1;
         }
-        out[..arg.len()].copy_from_slice(arg);
-        return Some(arg.len());
-    }
-    if cwd == b"/" {
-        if arg.len() + 1 > out.len() {
-            return None;
+        for &byte in tokens.get(idx) {
+            if len >= out.len() {
+                break;
+            }
+            out[len] = byte;
+            len += 1;
         }
-        out[0] = b'/';
-        out[1..1 + arg.len()].copy_from_slice(arg);
-        return Some(1 + arg.len());
     }
-    if cwd.len() + 1 + arg.len() > out.len() {
-        return None;
+    len
+}
+
+fn find_token(tokens: &Tokens, needle: &[u8], start: usize, end: usize) -> Option<usize> {
+    let mut idx = start;
+    while idx < end {
+        if tokens.get(idx) == needle {
+            return Some(idx);
+        }
+        idx += 1;
     }
-    out[..cwd.len()].copy_from_slice(cwd);
-    out[cwd.len()] = b'/';
-    out[cwd.len() + 1..cwd.len() + 1 + arg.len()].copy_from_slice(arg);
-    Some(cwd.len() + 1 + arg.len())
+    None
 }
 
 fn list_dir(path: &[u8]) {
-    let mut out = [0u8; 2048];
+    let mut out = [0u8; LIST_BYTES];
     match fs::list_dir(path, &mut out) {
         Ok(n) => {
             if n == 0 {
@@ -348,30 +522,40 @@ fn cat_file(path: &[u8]) {
     }
 }
 
-fn one_path_op(
-    name: &[u8],
-    argc: usize,
-    line: &[u8],
-    words: &[(usize, usize); MAX_WORDS],
-    cwd: &[u8],
-    op: fn(&[u8]) -> Result<()>,
-) {
-    if argc < 2 {
+fn one_path_op(name: &[u8], tokens: &Tokens, op: fn(&[u8]) -> Result<()>) {
+    if tokens.len < 2 {
         io::write_stdout(b"usage: ");
         io::write_stdout(name);
         println!(" <path>");
         return;
     }
-    let mut path = [0u8; MAX_PATH];
-    if let Some(path_len) = resolve_path(cwd, word(line, words, 1), &mut path) {
-        match op(&path[..path_len]) {
-            Ok(()) => println!("ok"),
-            Err(_) => print_err_path(name, &path[..path_len]),
-        }
-    } else {
-        io::write_stdout(name);
-        println!(": path too long");
+    match op(tokens.get(1)) {
+        Ok(()) => println!("ok"),
+        Err(_) => print_err_path(name, tokens.get(1)),
     }
+}
+
+fn print_cwd() {
+    let mut cwd = [0u8; MAX_PATH];
+    match fs::getcwd(&mut cwd) {
+        Ok(n) => {
+            io::write_stdout(&cwd[..n]);
+            println!();
+        }
+        Err(_) => println!("/"),
+    }
+}
+
+fn print_status_if_failed(status: u64) {
+    if status != 0 {
+        io::write_stdout(b"exit ");
+        libcool::io::write_u64(status);
+        println!();
+    }
+}
+
+fn wait_for_exit(pid: u64) -> Result<u64> {
+    waitpid(pid)
 }
 
 fn print_err_path(prefix: &[u8], path: &[u8]) {
@@ -388,4 +572,8 @@ fn contains_byte(bytes: &[u8], needle: u8) -> bool {
         }
     }
     false
+}
+
+fn is_space(byte: u8) -> bool {
+    byte == b' ' || byte == b'\t'
 }

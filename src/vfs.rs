@@ -73,8 +73,11 @@ const MOUNTS: [MountInfo; 5] = [
 ];
 
 struct OpenFile {
+    path: Option<String>,
     data: Vec<u8>,
     offset: usize,
+    writable: bool,
+    dirty: bool,
 }
 
 struct Pipe {
@@ -128,6 +131,20 @@ enum PipeReadResult {
     Data(usize),
     WouldBlock,
     Eof,
+}
+
+struct ReleaseEvent {
+    wake_task: Option<usize>,
+    commit: Option<(String, Vec<u8>)>,
+}
+
+impl ReleaseEvent {
+    const fn none() -> Self {
+        Self {
+            wake_task: None,
+            commit: None,
+        }
+    }
 }
 
 struct SharedMemRegion {
@@ -193,7 +210,7 @@ impl TaskFdTable {
     }
 
     fn install_fd(&mut self, fd: usize, entry: LocalFd) -> bool {
-        if fd < 3 || fd >= MAX_FDS || self.entries[fd].is_some() {
+        if fd >= MAX_FDS || self.entries[fd].is_some() {
             return false;
         }
         self.entries[fd] = Some(entry);
@@ -262,11 +279,11 @@ impl VfsState {
         true
     }
 
-    fn release_fd(&mut self, entry: LocalFd) -> Option<usize> {
+    fn release_fd(&mut self, entry: LocalFd) -> ReleaseEvent {
         let mut wake_task = None;
 
         let Some(object) = self.objects.get_mut(entry.object).and_then(Option::as_mut) else {
-            return None;
+            return ReleaseEvent::none();
         };
 
         object.refs = object.refs.saturating_sub(1);
@@ -292,11 +309,28 @@ impl VfsState {
             .as_ref()
             .map(|object| object.refs == 0)
             .unwrap_or(false);
+        let commit = if should_drop {
+            self.objects[entry.object].as_ref().and_then(|object| {
+                if let SharedKind::File(file) = &object.kind {
+                    if file.writable && file.dirty {
+                        file.path
+                            .as_ref()
+                            .map(|path| (path.clone(), file.data.clone()))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        };
         if should_drop {
             self.objects[entry.object] = None;
         }
 
-        wake_task
+        ReleaseEvent { wake_task, commit }
     }
 }
 
@@ -532,6 +566,27 @@ pub fn vfs_rename(path: &str, new_name: &str) -> Result<(), crate::fat32::FsErro
     let path = normalize_path(path);
     check_delete_access(&path)?;
     rename_unchecked(&path, new_name)
+}
+
+pub fn vfs_rename_path(src: &str, dst: &str) -> Result<(), crate::fat32::FsError> {
+    let src = normalize_path(src);
+    let dst = normalize_path(dst);
+    if src == "/" || dst == "/" || src == dst {
+        return Err(crate::fat32::FsError::InvalidPath);
+    }
+    let src_parent = parent_path(&src)?;
+    let dst_parent = parent_path(&dst)?;
+    let dst_name = file_name(&dst)?;
+    if src_parent == dst_parent {
+        return vfs_rename(&src, &dst_name);
+    }
+
+    let meta = vfs_metadata(&src).ok_or(crate::fat32::FsError::NotFound)?;
+    if !meta.is_file {
+        return Err(crate::fat32::FsError::InvalidPath);
+    }
+    vfs_copy_file(&src, &dst)?;
+    vfs_delete(&src)
 }
 
 pub fn vfs_copy_file(src: &str, dst: &str) -> Result<(), crate::fat32::FsError> {
@@ -882,6 +937,22 @@ fn parent_path(path: &str) -> Result<String, crate::fat32::FsError> {
     }
 }
 
+fn file_name(path: &str) -> Result<String, crate::fat32::FsError> {
+    let path = normalize_path(path);
+    if path == "/" {
+        return Err(crate::fat32::FsError::InvalidPath);
+    }
+    let Some(slash) = path.rfind('/') else {
+        return Err(crate::fat32::FsError::InvalidPath);
+    };
+    let name = &path[slash + 1..];
+    if name.is_empty() {
+        Err(crate::fat32::FsError::InvalidPath)
+    } else {
+        Ok(String::from(name))
+    }
+}
+
 fn default_mode_for_path(path: &str, is_dir: bool) -> u16 {
     if is_dir && path.eq_ignore_ascii_case("/TMP") {
         return crate::security::SHARED_TMP_MODE;
@@ -950,17 +1021,22 @@ pub fn init_task(task_id: usize) {
 }
 
 pub fn drop_task(task_id: usize) {
-    let (wake_tasks, shmem_refs) = {
+    let (wake_tasks, commits, shmem_refs) = {
         let mut vfs = VFS.lock();
         if task_id >= vfs.task_fds.len() {
-            (Vec::new(), Vec::new())
+            (Vec::new(), Vec::new(), Vec::new())
         } else {
             let mut wake_tasks = Vec::new();
-            for fd in 3..MAX_FDS {
+            let mut commits = Vec::new();
+            for fd in 0..MAX_FDS {
                 let entry = vfs.task_fds[task_id].entries[fd].take();
                 if let Some(entry) = entry {
-                    if let Some(task) = vfs.release_fd(entry) {
+                    let event = vfs.release_fd(entry);
+                    if let Some(task) = event.wake_task {
                         wake_tasks.push(task);
+                    }
+                    if let Some(commit) = event.commit {
+                        commits.push(commit);
                     }
                 }
             }
@@ -969,10 +1045,11 @@ pub fn drop_task(task_id: usize) {
             } else {
                 Vec::new()
             };
-            (wake_tasks, shmem_refs)
+            (wake_tasks, commits, shmem_refs)
         }
     };
 
+    commit_files(commits);
     release_shmem_refs(shmem_refs);
 
     for task_id in wake_tasks {
@@ -993,6 +1070,12 @@ pub fn drop_task_shmem_refs(task_id: usize) {
     release_shmem_refs(refs);
 }
 
+fn commit_files(commits: Vec<(String, Vec<u8>)>) {
+    for (path, data) in commits {
+        let _ = vfs_safe_write_file(&path, &data);
+    }
+}
+
 pub fn inherit_fds(parent_task: usize, child_task: usize, mappings: &[(usize, usize)]) -> bool {
     let mut vfs = VFS.lock();
     vfs.ensure_task(parent_task);
@@ -1003,7 +1086,7 @@ pub fn inherit_fds(parent_task: usize, child_task: usize, mappings: &[(usize, us
         let Some(entry) = vfs.current_entry(parent_task, parent_fd) else {
             for fd in installed {
                 if let Some(rollback) = vfs.task_fds[child_task].entries[fd].take() {
-                    vfs.release_fd(rollback);
+                    let _ = vfs.release_fd(rollback);
                 }
             }
             return false;
@@ -1011,11 +1094,11 @@ pub fn inherit_fds(parent_task: usize, child_task: usize, mappings: &[(usize, us
 
         if !vfs.retain_fd(entry) || !vfs.task_fds[child_task].install_fd(child_fd, entry) {
             if vfs.current_entry(child_task, child_fd).is_none() {
-                vfs.release_fd(entry);
+                let _ = vfs.release_fd(entry);
             }
             for fd in installed {
                 if let Some(rollback) = vfs.task_fds[child_task].entries[fd].take() {
-                    vfs.release_fd(rollback);
+                    let _ = vfs.release_fd(rollback);
                 }
             }
             return false;
@@ -1038,7 +1121,13 @@ pub fn vfs_open(path: &str) -> usize {
     let mut vfs = VFS.lock();
     vfs.ensure_task(task_id);
 
-    let object = vfs.alloc_object(SharedKind::File(OpenFile { data, offset: 0 }));
+    let object = vfs.alloc_object(SharedKind::File(OpenFile {
+        path: None,
+        data,
+        offset: 0,
+        writable: false,
+        dirty: false,
+    }));
     let entry = LocalFd {
         object,
         access: FdAccess::File,
@@ -1050,10 +1139,49 @@ pub fn vfs_open(path: &str) -> usize {
     match vfs.task_fds[task_id].alloc_fd(entry) {
         Some(fd) => fd,
         None => {
-            vfs.release_fd(entry);
+            let _ = vfs.release_fd(entry);
             usize::MAX
         }
     }
+}
+
+pub fn vfs_open_write(path: &str) -> usize {
+    let path = normalize_path(path);
+    if check_safe_write_access(&path).is_err() {
+        return usize::MAX;
+    }
+
+    let task_id = crate::scheduler::current_task_id();
+    let mut vfs = VFS.lock();
+    vfs.ensure_task(task_id);
+
+    let object = vfs.alloc_object(SharedKind::File(OpenFile {
+        path: Some(path),
+        data: Vec::new(),
+        offset: 0,
+        writable: true,
+        dirty: false,
+    }));
+    let entry = LocalFd {
+        object,
+        access: FdAccess::File,
+    };
+    if !vfs.retain_fd(entry) {
+        return usize::MAX;
+    }
+
+    match vfs.task_fds[task_id].alloc_fd(entry) {
+        Some(fd) => fd,
+        None => {
+            let _ = vfs.release_fd(entry);
+            usize::MAX
+        }
+    }
+}
+
+pub fn vfs_has_fd(fd: usize) -> bool {
+    let task_id = crate::scheduler::current_task_id();
+    VFS.lock().current_entry(task_id, fd).is_some()
 }
 
 pub fn vfs_pipe() -> Option<(usize, usize)> {
@@ -1077,22 +1205,22 @@ pub fn vfs_pipe() -> Option<(usize, usize)> {
     let read_fd = match vfs.task_fds[task_id].alloc_fd(read_entry) {
         Some(fd) => fd,
         None => {
-            vfs.release_fd(read_entry);
+            let _ = vfs.release_fd(read_entry);
             return None;
         }
     };
 
     if !vfs.retain_fd(write_entry) {
         vfs.task_fds[task_id].entries[read_fd] = None;
-        vfs.release_fd(read_entry);
+        let _ = vfs.release_fd(read_entry);
         return None;
     }
     let write_fd = match vfs.task_fds[task_id].alloc_fd(write_entry) {
         Some(fd) => fd,
         None => {
             vfs.task_fds[task_id].entries[read_fd] = None;
-            vfs.release_fd(read_entry);
-            vfs.release_fd(write_entry);
+            let _ = vfs.release_fd(read_entry);
+            let _ = vfs.release_fd(write_entry);
             return None;
         }
     };
@@ -1141,6 +1269,21 @@ pub fn vfs_write(fd: usize, buf: &[u8]) -> usize {
         };
 
         match (&mut object.kind, entry.access) {
+            (SharedKind::File(file), FdAccess::File) if file.writable => {
+                let Some(end) = file.offset.checked_add(buf.len()) else {
+                    return usize::MAX;
+                };
+                if end > file.data.len() {
+                    if file.data.try_reserve_exact(end - file.data.len()).is_err() {
+                        return usize::MAX;
+                    }
+                    file.data.resize(end, 0);
+                }
+                file.data[file.offset..end].copy_from_slice(buf);
+                file.offset = end;
+                file.dirty = true;
+                (buf.len(), None)
+            }
             (SharedKind::Pipe(pipe), FdAccess::PipeWrite) => {
                 if pipe.readers == 0 {
                     return usize::MAX;
@@ -1216,7 +1359,7 @@ pub fn vfs_read_blocking(fd: usize, buf: &mut [u8], len: usize) -> usize {
 
 pub fn vfs_close(fd: usize) {
     let task_id = crate::scheduler::current_task_id();
-    let wake_task = {
+    let event = {
         let mut vfs = VFS.lock();
         let Some(table) = vfs.task_fds.get_mut(task_id) else {
             return;
@@ -1227,7 +1370,10 @@ pub fn vfs_close(fd: usize) {
         vfs.release_fd(entry)
     };
 
-    if let Some(task_id) = wake_task {
+    if let Some((path, data)) = event.commit {
+        let _ = vfs_safe_write_file(&path, &data);
+    }
+    if let Some(task_id) = event.wake_task {
         crate::wait_queue::wake("pipe-read", task_id);
         crate::scheduler::unblock(task_id);
     }
@@ -1248,7 +1394,7 @@ pub fn vfs_dup(fd: usize) -> usize {
     match vfs.task_fds[task_id].alloc_fd(entry) {
         Some(new_fd) => new_fd,
         None => {
-            vfs.release_fd(entry);
+            let _ = vfs.release_fd(entry);
             usize::MAX
         }
     }

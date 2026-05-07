@@ -91,6 +91,7 @@ fn main() {
         "Packages",
         "FONTS",
         "RECOVERY",
+        "SDK",
     ] {
         root.create_dir(dir)
             .unwrap_or_else(|e| panic!("failed to create /{}: {}", dir, e));
@@ -131,6 +132,27 @@ fn main() {
     coolfs.create_file("/RECOVERY/README.TXT", recovery_readme);
     let recovery_boot_cfg = b"boot=normal\nroot=/\nrootfs=coolfs\nvideo=bios-vbe\nstorage=ide1\n";
     coolfs.create_file("/RECOVERY/BOOT.CFG", recovery_boot_cfg);
+
+    let sdk = root.open_dir("SDK").expect("failed to open /SDK");
+    {
+        let mut write_sdk_file = |name: &str, coolfs_path: &str, bytes: &[u8]| {
+            let mut sdk_file = sdk
+                .create_file(name)
+                .unwrap_or_else(|e| panic!("failed to create {}: {}", coolfs_path, e));
+            sdk_file.truncate().unwrap();
+            sdk_file
+                .write_all(bytes)
+                .unwrap_or_else(|e| panic!("failed to write {}: {}", coolfs_path, e));
+            coolfs.create_file(coolfs_path, bytes);
+        };
+        write_sdk_file("README.TXT", "/SDK/README.TXT", SDK_README);
+        write_sdk_file("APP_TEMPLATE.RS", "/SDK/APP_TEMPLATE.RS", SDK_APP_TEMPLATE);
+        write_sdk_file(
+            "PACKAGE_TEMPLATE.PKG",
+            "/SDK/PACKAGE_TEMPLATE.PKG",
+            SDK_PACKAGE_TEMPLATE,
+        );
+    }
 
     if let Some(hello_path) = hello_elf {
         let hello_bytes = std::fs::read(&hello_path)
@@ -558,6 +580,12 @@ impl Seek for RegionFile {
 }
 
 const PHASE25_GUIDEMO_PACKAGE: &[u8] = b"id=app.phase25.guidemo\nname=Packaged GUI Demo\ncommand=pkgdemo\nversion=1.0\nicon=P5\ncategory=Development\npermission=desktop\nexec=/bin/guidemo\naliases=package,demo,phase25\nassociations=P25\n";
+
+const SDK_README: &[u8] = b"coolOS SDK\n\nABI version: 8\nUserspace apps are no_std Rust ELF64 binaries linked with userspace/libcool.\nUseful APIs: process::spawn_args, process::spawn_fds_args, fs::{stat,rename,chdir,getcwd,sync}, io::{open,create,pipe}, gui::Window.\nPackage manifests live under /Packages and install into /APPS/<command>/APP.CFG.\n";
+
+const SDK_APP_TEMPLATE: &[u8] = b"#![no_std]\n#![no_main]\n\nuse libcool::{io, prelude::*};\n\nlibcool::entry!(main);\n\nfn main(args: Args) -> ! {\n    io::write_stdout(b\"hello from a coolOS app\\n\");\n    if let Some(name) = args.get(1) {\n        io::write_stdout(b\"arg: \");\n        io::write_stdout(name);\n        io::write_stdout(b\"\\n\");\n    }\n    exit(0);\n}\n";
+
+const SDK_PACKAGE_TEMPLATE: &[u8] = b"id=app.example\nname=Example App\ncommand=example\nversion=1.0\nicon=EX\ncategory=Development\npermission=filesystem\nexec=/bin/example\naliases=example,demo\nassociations=TXT\n";
 
 struct BuiltinAppManifest {
     id: &'static str,

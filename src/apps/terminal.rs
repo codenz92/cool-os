@@ -608,6 +608,10 @@ impl TerminalApp {
                 self.cmd_lines("DIAGNOSTICS", diagnostics_lines())
             }
 
+            Some("sysreport") => self.cmd_sysreport(words.next()),
+
+            Some("devkit") => self.cmd_devkit(),
+
             Some("profiler") => {
                 let mut lines = crate::profiler::lines();
                 lines.extend(crate::boot_watchdog::lines());
@@ -1078,6 +1082,8 @@ impl TerminalApp {
             ("log", "kernel log tail"),
             ("logs", "open combined log summary"),
             ("diagnostics", "combined logs/profiler/fs/memory status"),
+            ("sysreport [write]", "combined diagnostics report"),
+            ("devkit", "SDK docs and app templates"),
             ("profiler", "boot/service/task timing"),
             ("compositor", "FPS, frame, and damage telemetry"),
             ("heap", "heap diagnostics"),
@@ -1544,6 +1550,41 @@ impl TerminalApp {
     fn cmd_devices(&mut self) {
         crate::device_registry::refresh_pci();
         self.cmd_lines("DEVICES", crate::device_registry::lines());
+    }
+
+    fn cmd_sysreport(&mut self, op: Option<&str>) {
+        match op {
+            Some("write") => match crate::sysreport::write_report() {
+                Ok(()) => {
+                    self.set_fg(FG_ACCENT);
+                    self.print_str("wrote ");
+                    self.set_fg(FG_OUTPUT);
+                    self.print_str(crate::sysreport::report_path());
+                    self.print_char('\n');
+                }
+                Err(err) => {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("sysreport: ");
+                    self.set_fg(FG_OUTPUT);
+                    self.print_str(err);
+                    self.print_char('\n');
+                }
+            },
+            _ => self.cmd_lines("SYSREPORT", crate::sysreport::lines()),
+        }
+    }
+
+    fn cmd_devkit(&mut self) {
+        self.cmd_lines(
+            "DEVKIT",
+            alloc::vec![
+                String::from("coolOS devkit ABI=8"),
+                String::from("docs=/SDK/README.TXT"),
+                String::from("app_template=/SDK/APP_TEMPLATE.RS"),
+                String::from("package_template=/SDK/PACKAGE_TEMPLATE.PKG"),
+                String::from("example: exec /bin/devkit"),
+            ],
+        );
     }
 
     fn cmd_lines(&mut self, title: &str, lines: Vec<String>) {

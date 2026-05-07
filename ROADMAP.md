@@ -4,10 +4,11 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–39 are complete. The current milestone gives coolOS real terminal
-stdin, a foreground userspace shell, argv-capable userspace child spawning,
-external coreutils-style `/bin` commands, verified utility app persistence, and
-an in-OS recovery command that writes repair reports under `/RECOVERY`.
+Phases 1–44 are complete. The current milestone gives coolOS a much more
+normal command-line and platform layer: cwd-aware userspace syscalls, shell
+quoting/redirection/pipelines, writable file descriptors with durable close
+commit, metadata and rename APIs, persistent sysreports under `/LOGS`, and an
+in-image `/SDK` with devkit templates.
 
 ---
 
@@ -1205,6 +1206,103 @@ running desktop and can persist an fsck-on-boot setting for the next boot.
 
 ---
 
+## ✅ Phase 40 — Shell, Terminal, and Filesystem Semantics
+
+**Goal:** Make the userspace shell behave less like a demo REPL and more like a
+small Unix-style command interpreter.
+
+- [x] Add ABI v8 `chdir(path)`, `getcwd(buf)`, and task-local cwd inheritance.
+- [x] Resolve relative filesystem, screenshot, exec, spawn, and directory-list
+      syscall paths against the current task's cwd.
+- [x] Replace `/bin/sh` parsing with tokenization for quotes, backslash escapes,
+      `<`, `>`, and `|`.
+- [x] Add shell cwd builtins, `/bin/<command>` lookup for bare command names,
+      output/input redirection, and one-stage pipelines.
+- [x] Add fd-mapped child launch through `spawn_fds_args(desc)` so shell pipes
+      and redirection use kernel file descriptors instead of kernel-side tricks.
+- [x] Add `make smoke-phase40-shell-semantics`.
+
+**Current status:** complete. `/bin/sh` now supports cwd-aware file workflows,
+quoted arguments, redirected files, and simple command pipelines running as
+normal ring-3 child processes.
+
+---
+
+## ✅ Phase 41 — Filesystem Durability and Metadata
+
+**Goal:** Give userspace practical file mutation primitives and prove their
+results survive a remount.
+
+- [x] Add ABI v8 `stat(desc)`, `rename(desc)`, `open_write(path)`, `sync()`, and
+      RTC `time()`.
+- [x] Commit writable file descriptors through CoolFS safe-write on close and
+      when a task exits with dirty open files.
+- [x] Add `libcool` wrappers for metadata, rename, cwd, sync, time, and file
+      creation.
+- [x] Add `/bin/cp`, `/bin/mv`, `/bin/stat`, `/bin/sync`, `/bin/date`,
+      `/bin/uname`, and `/bin/clear`.
+- [x] Add a writable-image smoke that creates a redirected file, syncs it,
+      reboots from the same copied disk image, and verifies file contents plus
+      metadata.
+
+**Current status:** complete. Shell-created files and renamed/copied files now
+flow through real userspace fds and survive across a second QEMU boot.
+
+---
+
+## ✅ Phase 42 — App Consistency and In-OS Help
+
+**Goal:** Keep built-in app text, terminal diagnostics, and shell-facing helper
+surfaces aligned with the current runtime instead of stale milestone labels.
+
+- [x] Update Text Viewer welcome/about content to describe the current ring-3,
+      shell, recovery, sysreport, and devkit capabilities.
+- [x] Add Terminal `devkit` output that reports the active ABI and SDK paths.
+- [x] Keep Terminal help/diagnostics surfaces aware of the new sysreport/devkit
+      commands.
+- [x] Add `make smoke-phase42-app-consistency`.
+
+**Current status:** complete. In-OS help and diagnostics now describe the same
+ABI, shell, and devkit surfaces that the boot image actually exposes.
+
+---
+
+## ✅ Phase 43 — Observability and Sysreport
+
+**Goal:** Provide one command that gathers useful system state into a persistent
+report file for debugging and support.
+
+- [x] Add `src/sysreport.rs` to gather kernel log, profiler, services, process
+      table, wait queues, VFS, writeback, and crash-report sections.
+- [x] Add Terminal `sysreport` to print the generated report and
+      `sysreport write` to persist `/LOGS/SYSREPORT.TXT`.
+- [x] Flush the report through the writeback barrier so it is durable after the
+      command returns.
+- [x] Add `make smoke-phase43-observability`.
+
+**Current status:** complete. `sysreport write` creates a readable
+`/LOGS/SYSREPORT.TXT` that can be inspected immediately from the running OS.
+
+---
+
+## ✅ Phase 44 — Developer Platform and SDK Devkit
+
+**Goal:** Make the generated OS image self-describing enough for future
+userspace app development.
+
+- [x] Generate `/SDK/README.TXT`, `/SDK/APP_TEMPLATE.RS`, and
+      `/SDK/PACKAGE_TEMPLATE.PKG` in the CoolFS image.
+- [x] Add `/bin/devkit` as a userspace ABI/devkit path helper.
+- [x] Add Terminal `devkit` as the kernel-side companion view.
+- [x] Wire the new devkit binary into the Makefile and disk-image builder.
+- [x] Add `make smoke-phase44-devkit`.
+
+**Current status:** complete. The boot image now carries ABI v8 SDK notes,
+starter app/package templates, and both kernel and userspace commands to find
+them.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -1218,9 +1316,10 @@ yielding — preemption is what makes the OS real.
 Userspace binaries are written in `#![no_std]` Rust and link against
 `userspace/libcool`. The SDK owns `_start`, panic aborts, initial argv parsing,
 raw syscall assembly, and convenience APIs such as `println!`, `File::open`,
-`pipe`, `mmap`, `shmem_create`, `spawn_args`, `read_event`, `dns_resolve`, TCP
-sockets, and filesystem utility calls plus GUI windows through `libcool::fs`
-and `libcool::gui`.
+`File::create`, `pipe`, `mmap`, `shmem_create`, `spawn_args`,
+`spawn_fds_args`, `read_event`, `dns_resolve`, TCP sockets, time, and
+filesystem utility calls plus GUI windows through `libcool::fs` and
+`libcool::gui`.
 
 ### Real hardware vs QEMU
 
@@ -1259,4 +1358,9 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.0 | Phase 36 complete: userspace shell foundation |
 | v7.1 | Phase 37 complete: coreutils command set |
 | v7.2 | Phase 38 complete: utility app dependability |
-| v7.3 | Current — Phase 39 complete: recovery and repair path |
+| v7.3 | Phase 39 complete: recovery and repair path |
+| v7.4 | Phase 40 complete: shell semantics, cwd, redirection, and pipelines |
+| v7.5 | Phase 41 complete: filesystem durability and metadata |
+| v7.6 | Phase 42 complete: app consistency and in-OS help |
+| v7.7 | Phase 43 complete: observability and sysreport |
+| v7.8 | Current — Phase 44 complete: developer platform and SDK devkit |

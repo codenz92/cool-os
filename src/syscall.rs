@@ -45,10 +45,18 @@
 ///   34 getpgid(pid) → pgid on success
 ///   35 signal_group(pgid, signal) → delivered count on success
 ///   36 spawn_args(desc_ptr) → pid on success, u64::MAX on failure
+///   37 chdir(path_ptr, path_len) → 0 on success
+///   38 getcwd(buf_ptr, len) → bytes written
+///   39 stat(desc_ptr) → metadata record written to output buffer
+///   40 rename(desc_ptr) → 0 on success
+///   41 open_write(path_ptr, path_len) → fd on success
+///   42 spawn_fds_args(desc_ptr) → pid on success, u64::MAX on failure
+///   43 sync() → 0 on success
+///   44 time() → packed UTC-ish RTC timestamp
 ///
 /// Output path: sys_write routes bytes to the current task's controlling TTY
-/// when one is assigned, then falls back to SYSCALL_OUTPUT for early boot and
-/// orphaned tasks. compositor::compose() drains those buffers into terminals.
+/// when one is assigned unless fd 1/2 is explicitly mapped in the task fd
+/// table for shell redirection or pipes.
 extern crate alloc;
 
 use alloc::{string::String, vec::Vec};
@@ -61,6 +69,7 @@ const MAX_USER_STRING: u64 = 4096;
 const MAX_USER_BUFFER: u64 = 1024 * 1024;
 const MAX_GUI_SURFACE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_USER_DIR_LISTING: u64 = 16 * 1024;
+const STAT_RECORD_BYTES: u64 = 40;
 const ZERO8: AtomicU8 = AtomicU8::new(0);
 static OUTPUT_BUF: [AtomicU8; OUTPUT_SIZE] = [ZERO8; OUTPUT_SIZE];
 static OUTPUT_HEAD: AtomicUsize = AtomicUsize::new(0);
@@ -261,6 +270,14 @@ extern "C" fn syscall_dispatch(
         34 => sys_getpgid(a1),
         35 => sys_signal_group(a1, a2),
         36 => sys_spawn_args(a1 as *const u8),
+        37 => sys_chdir(a1 as *const u8, a2),
+        38 => sys_getcwd(a1 as *mut u8, a2),
+        39 => sys_stat(a1 as *const u8),
+        40 => sys_rename(a1 as *const u8),
+        41 => sys_open_write(a1 as *const u8, a2),
+        42 => sys_spawn_fds_args(a1 as *const u8),
+        43 => sys_sync(),
+        44 => sys_time(),
         _ => u64::MAX,
     }
 }
@@ -273,7 +290,7 @@ fn sys_write(fd: u64, buf: *const u8, len: u64) -> u64 {
         return u64::MAX;
     };
 
-    if fd == 1 || fd == 2 {
+    if (fd == 1 || fd == 2) && !crate::vfs::vfs_has_fd(fd as usize) {
         write_output_bytes(bytes);
         return len;
     }
@@ -357,7 +374,8 @@ fn sys_open(path_ptr: *const u8, path_len: u64) -> u64 {
     };
     match core::str::from_utf8(bytes) {
         Ok(path) => {
-            let fd = crate::vfs::vfs_open(path);
+            let path = resolve_task_path(path);
+            let fd = crate::vfs::vfs_open(&path);
             if fd == usize::MAX {
                 u64::MAX
             } else {
@@ -384,7 +402,9 @@ fn sys_read(fd: u64, buf_ptr: *mut u8, len: u64) -> u64 {
     kernel_buf.resize(len as usize, 0);
 
     let n = if fd == 0 {
-        if let Some(tty) = crate::scheduler::current_tty() {
+        if crate::vfs::vfs_has_fd(0) {
+            crate::vfs::vfs_read_blocking(fd as usize, &mut kernel_buf, len as usize)
+        } else if let Some(tty) = crate::scheduler::current_tty() {
             crate::tty::read_input_blocking(tty, &mut kernel_buf, len as usize)
         } else {
             crate::vfs::vfs_read_blocking(fd as usize, &mut kernel_buf, len as usize)
@@ -556,12 +576,13 @@ fn sys_fs_write_file(desc_ptr: *const u8) -> u64 {
         data
     };
 
-    match crate::vfs::vfs_create_file(path) {
+    let path = resolve_task_path(path);
+    match crate::vfs::vfs_create_file(&path) {
         Ok(()) | Err(crate::fat32::FsError::AlreadyExists) => {}
         Err(_) => return u64::MAX,
     }
 
-    match crate::vfs::vfs_write_file(path, data) {
+    match crate::vfs::vfs_write_file(&path, data) {
         Ok(()) => 0,
         Err(_) => u64::MAX,
     }
@@ -571,7 +592,8 @@ fn sys_fs_create_dir(path_ptr: *const u8, path_len: u64) -> u64 {
     let Some(path) = user_path(path_ptr, path_len) else {
         return u64::MAX;
     };
-    match crate::vfs::vfs_create_dir(path) {
+    let path = resolve_task_path(path);
+    match crate::vfs::vfs_create_dir(&path) {
         Ok(()) | Err(crate::fat32::FsError::AlreadyExists) => 0,
         Err(_) => u64::MAX,
     }
@@ -581,7 +603,8 @@ fn sys_fs_delete_tree(path_ptr: *const u8, path_len: u64) -> u64 {
     let Some(path) = user_path(path_ptr, path_len) else {
         return u64::MAX;
     };
-    match crate::vfs::vfs_delete_recursive(path) {
+    let path = resolve_task_path(path);
+    match crate::vfs::vfs_delete_recursive(&path) {
         Ok(()) => 0,
         Err(_) => u64::MAX,
     }
@@ -597,7 +620,8 @@ fn sys_fs_list_dir(desc_ptr: *const u8) -> u64 {
     let Some(out) = user_slice_mut(desc[2] as *mut u8, desc[3], MAX_USER_DIR_LISTING) else {
         return u64::MAX;
     };
-    let Some(entries) = crate::vfs::vfs_list_dir(path) else {
+    let path = resolve_task_path(path);
+    let Some(entries) = crate::vfs::vfs_list_dir(&path) else {
         return u64::MAX;
     };
 
@@ -632,7 +656,8 @@ fn sys_screenshot(path_ptr: *const u8, path_len: u64, _flags: u64) -> u64 {
     let Some(path) = user_path(path_ptr, path_len) else {
         return u64::MAX;
     };
-    crate::wm::request_focused_screenshot(path);
+    let path = resolve_task_path(path);
+    crate::wm::request_focused_screenshot(&path);
     0
 }
 
@@ -679,7 +704,7 @@ fn sys_spawn(path_ptr: *const u8, path_len: u64) -> u64 {
         Ok(path) => path,
         Err(_) => return u64::MAX,
     };
-    let path = String::from(path);
+    let path = resolve_task_path(path);
     match crate::elf::spawn_elf_process_with_args(&path, &[]) {
         Ok(pid) => pid as u64,
         Err(_) => u64::MAX,
@@ -732,7 +757,7 @@ fn sys_spawn_args(desc_ptr: *const u8) -> u64 {
         arg_strings.push(String::from(arg));
     }
 
-    let path = String::from(path);
+    let path = resolve_task_path(path);
     let mut arg_refs = Vec::new();
     if arg_refs.try_reserve_exact(arg_strings.len()).is_err() {
         return u64::MAX;
@@ -745,6 +770,151 @@ fn sys_spawn_args(desc_ptr: *const u8) -> u64 {
         Ok(pid) => pid as u64,
         Err(_) => u64::MAX,
     }
+}
+
+fn sys_chdir(path_ptr: *const u8, path_len: u64) -> u64 {
+    let Some(path) = user_path(path_ptr, path_len) else {
+        return u64::MAX;
+    };
+    let path = resolve_task_path(path);
+    if crate::vfs::vfs_list_dir(&path).is_none() {
+        return u64::MAX;
+    }
+    crate::scheduler::set_current_cwd(path);
+    0
+}
+
+fn sys_getcwd(buf_ptr: *mut u8, len: u64) -> u64 {
+    if len == 0 || !validate_user_range(buf_ptr as u64, len, MAX_USER_STRING, true) {
+        return u64::MAX;
+    }
+    let cwd = crate::scheduler::current_cwd();
+    let bytes = cwd.as_bytes();
+    if bytes.len() > len as usize {
+        return u64::MAX;
+    }
+    unsafe {
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), buf_ptr, bytes.len());
+    }
+    bytes.len() as u64
+}
+
+fn sys_stat(desc_ptr: *const u8) -> u64 {
+    let Some(desc) = user_descriptor4(desc_ptr) else {
+        return u64::MAX;
+    };
+    let Some(path) = user_path(desc[0] as *const u8, desc[1]) else {
+        return u64::MAX;
+    };
+    if desc[3] < STAT_RECORD_BYTES {
+        return u64::MAX;
+    }
+    let Some(out) = user_slice_mut(desc[2] as *mut u8, STAT_RECORD_BYTES, STAT_RECORD_BYTES) else {
+        return u64::MAX;
+    };
+    let path = resolve_task_path(path);
+    let Some(meta) = crate::vfs::vfs_metadata(&path) else {
+        return u64::MAX;
+    };
+    let kind = if meta.is_dir {
+        2u64
+    } else if meta.is_file {
+        1u64
+    } else {
+        0u64
+    };
+    write_record_u64(out, 0, kind);
+    write_record_u64(out, 8, meta.size);
+    write_record_u64(out, 16, meta.uid as u64);
+    write_record_u64(out, 24, meta.gid as u64);
+    write_record_u64(out, 32, meta.mode as u64);
+    STAT_RECORD_BYTES
+}
+
+fn sys_rename(desc_ptr: *const u8) -> u64 {
+    let Some(desc) = user_descriptor4(desc_ptr) else {
+        return u64::MAX;
+    };
+    let Some(src) = user_path(desc[0] as *const u8, desc[1]) else {
+        return u64::MAX;
+    };
+    let Some(dst) = user_path(desc[2] as *const u8, desc[3]) else {
+        return u64::MAX;
+    };
+    let src = resolve_task_path(src);
+    let dst = resolve_task_path(dst);
+    match crate::vfs::vfs_rename_path(&src, &dst) {
+        Ok(()) => 0,
+        Err(_) => u64::MAX,
+    }
+}
+
+fn sys_open_write(path_ptr: *const u8, path_len: u64) -> u64 {
+    let Some(path) = user_path(path_ptr, path_len) else {
+        return u64::MAX;
+    };
+    let path = resolve_task_path(path);
+    let fd = crate::vfs::vfs_open_write(&path);
+    if fd == usize::MAX {
+        u64::MAX
+    } else {
+        fd as u64
+    }
+}
+
+fn sys_spawn_fds_args(desc_ptr: *const u8) -> u64 {
+    const MAX_ARGC: u64 = 7;
+    const MAX_FD_MAPS: u64 = 4;
+    let Some(desc) = user_descriptor6(desc_ptr) else {
+        return u64::MAX;
+    };
+    let Some(path) = user_path(desc[0] as *const u8, desc[1]) else {
+        return u64::MAX;
+    };
+    let argc = desc[3];
+    let fd_count = desc[5];
+    if argc > MAX_ARGC || fd_count > MAX_FD_MAPS {
+        return u64::MAX;
+    }
+
+    let Some(arg_strings) = parse_user_arg_strings(desc[2], argc, MAX_ARGC) else {
+        return u64::MAX;
+    };
+    let Some(fd_mappings) = parse_user_fd_mappings(desc[4], fd_count, MAX_FD_MAPS) else {
+        return u64::MAX;
+    };
+
+    let mut arg_refs = Vec::new();
+    if arg_refs.try_reserve_exact(arg_strings.len()).is_err() {
+        return u64::MAX;
+    }
+    for arg in &arg_strings {
+        arg_refs.push(arg.as_str());
+    }
+
+    let path = resolve_task_path(path);
+    match crate::elf::spawn_elf_process_with_fds(&path, &arg_refs, &fd_mappings) {
+        Ok(pid) => pid as u64,
+        Err(_) => u64::MAX,
+    }
+}
+
+fn sys_sync() -> u64 {
+    match crate::writeback::barrier() {
+        Ok(()) => 0,
+        Err(_) => u64::MAX,
+    }
+}
+
+fn sys_time() -> u64 {
+    let Some(dt) = crate::rtc::read_datetime() else {
+        return 0;
+    };
+    ((dt.year as u64) << 32)
+        | ((dt.month as u64) << 24)
+        | ((dt.day as u64) << 16)
+        | ((dt.hour as u64) << 8)
+        | (dt.minute as u64)
 }
 
 fn sys_signal(pid: u64, signal_code: u64) -> u64 {
@@ -888,8 +1058,9 @@ fn sys_exec(frame: &mut SyscallFrame, path_ptr: *const u8, path_len: u64) -> u64
         Ok(path) => path,
         Err(_) => return u64::MAX,
     };
+    let path = resolve_task_path(path);
 
-    let image = match crate::elf::load_elf_image(path) {
+    let image = match crate::elf::load_elf_image(&path) {
         Ok(image) => image,
         Err(_) => return u64::MAX,
     };
@@ -900,7 +1071,7 @@ fn sys_exec(frame: &mut SyscallFrame, path_ptr: *const u8, path_len: u64) -> u64
         let old = sched.tasks[cur].pml4.replace(image.pml4);
         (cur, old)
     };
-    crate::app_lifecycle::record_process_start(cur, path, path);
+    crate::app_lifecycle::record_process_start(cur, &path, &path);
 
     unsafe { crate::vmm::switch_to(image.pml4) };
     crate::vfs::drop_task_shmem_refs(cur);
@@ -962,6 +1133,90 @@ fn user_descriptor4(desc_ptr: *const u8) -> Option<[u64; 4]> {
         u64::from_le_bytes(bytes[16..24].try_into().ok()?),
         u64::from_le_bytes(bytes[24..32].try_into().ok()?),
     ])
+}
+
+fn user_descriptor6(desc_ptr: *const u8) -> Option<[u64; 6]> {
+    let bytes = user_slice(desc_ptr, 48, 48)?;
+    Some([
+        u64::from_le_bytes(bytes[0..8].try_into().ok()?),
+        u64::from_le_bytes(bytes[8..16].try_into().ok()?),
+        u64::from_le_bytes(bytes[16..24].try_into().ok()?),
+        u64::from_le_bytes(bytes[24..32].try_into().ok()?),
+        u64::from_le_bytes(bytes[32..40].try_into().ok()?),
+        u64::from_le_bytes(bytes[40..48].try_into().ok()?),
+    ])
+}
+
+fn resolve_task_path(path: &str) -> String {
+    if path.starts_with('/') {
+        return crate::vfs::normalize_path(path);
+    }
+    let cwd = crate::scheduler::current_cwd();
+    if cwd == "/" {
+        crate::vfs::normalize_path(&alloc::format!("/{}", path))
+    } else {
+        crate::vfs::normalize_path(&alloc::format!("{}/{}", cwd, path))
+    }
+}
+
+fn parse_user_arg_strings(arg_pairs_ptr: u64, argc: u64, max_argc: u64) -> Option<Vec<String>> {
+    if argc > max_argc {
+        return None;
+    }
+    let arg_pairs = if argc == 0 {
+        &[][..]
+    } else {
+        let pair_bytes = argc.saturating_mul(16);
+        user_slice(arg_pairs_ptr as *const u8, pair_bytes, max_argc * 16)?
+    };
+
+    let mut arg_strings = Vec::new();
+    if arg_strings.try_reserve_exact(argc as usize).is_err() {
+        return None;
+    }
+    for idx in 0..argc as usize {
+        let base = idx * 16;
+        let ptr = u64::from_le_bytes(arg_pairs[base..base + 8].try_into().ok()?);
+        let len = u64::from_le_bytes(arg_pairs[base + 8..base + 16].try_into().ok()?);
+        let bytes = user_slice(ptr as *const u8, len, MAX_USER_STRING)?;
+        let arg = core::str::from_utf8(bytes).ok()?;
+        arg_strings.push(String::from(arg));
+    }
+    Some(arg_strings)
+}
+
+fn parse_user_fd_mappings(
+    fd_pairs_ptr: u64,
+    fd_count: u64,
+    max_fd_count: u64,
+) -> Option<Vec<(usize, usize)>> {
+    if fd_count > max_fd_count {
+        return None;
+    }
+    let pairs = if fd_count == 0 {
+        &[][..]
+    } else {
+        let pair_bytes = fd_count.saturating_mul(16);
+        user_slice(fd_pairs_ptr as *const u8, pair_bytes, max_fd_count * 16)?
+    };
+    let mut out = Vec::new();
+    if out.try_reserve_exact(fd_count as usize).is_err() {
+        return None;
+    }
+    for idx in 0..fd_count as usize {
+        let base = idx * 16;
+        let parent_fd = u64::from_le_bytes(pairs[base..base + 8].try_into().ok()?);
+        let child_fd = u64::from_le_bytes(pairs[base + 8..base + 16].try_into().ok()?);
+        if parent_fd > usize::MAX as u64 || child_fd > usize::MAX as u64 {
+            return None;
+        }
+        out.push((parent_fd as usize, child_fd as usize));
+    }
+    Some(out)
+}
+
+fn write_record_u64(out: &mut [u8], offset: usize, value: u64) {
+    out[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
 }
 
 fn append_dir_listing_byte(out: &mut [u8], written: &mut usize, byte: u8) -> bool {

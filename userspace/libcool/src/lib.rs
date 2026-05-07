@@ -3,7 +3,7 @@
 use core::arch::asm;
 
 pub const SDK_VERSION: u64 = 1;
-pub const ABI_VERSION: u64 = 7;
+pub const ABI_VERSION: u64 = 8;
 pub const U64_MAX: u64 = u64::MAX;
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -65,6 +65,14 @@ pub mod sys {
     pub const GETPGID: u64 = 34;
     pub const SIGNAL_GROUP: u64 = 35;
     pub const SPAWN_ARGS: u64 = 36;
+    pub const CHDIR: u64 = 37;
+    pub const GETCWD: u64 = 38;
+    pub const STAT: u64 = 39;
+    pub const RENAME: u64 = 40;
+    pub const OPEN_WRITE: u64 = 41;
+    pub const SPAWN_FDS_ARGS: u64 = 42;
+    pub const SYNC: u64 = 43;
+    pub const TIME: u64 = 44;
 
     #[inline]
     pub unsafe fn syscall0(nr: u64) -> u64 {
@@ -290,6 +298,34 @@ pub mod process {
         Error::from_ret(ret)
     }
 
+    pub fn spawn_fds_args(path: &[u8], args: &[&[u8]], fds: &[(u64, u64)]) -> Result<u64> {
+        const MAX_ARGS: usize = 7;
+        const MAX_FDS: usize = 4;
+        if args.len() > MAX_ARGS || fds.len() > MAX_FDS {
+            return Err(Error::Invalid);
+        }
+        let mut arg_pairs = [0u64; MAX_ARGS * 2];
+        for (idx, arg) in args.iter().enumerate() {
+            arg_pairs[idx * 2] = arg.as_ptr() as u64;
+            arg_pairs[idx * 2 + 1] = arg.len() as u64;
+        }
+        let mut fd_pairs = [0u64; MAX_FDS * 2];
+        for (idx, &(parent_fd, child_fd)) in fds.iter().enumerate() {
+            fd_pairs[idx * 2] = parent_fd;
+            fd_pairs[idx * 2 + 1] = child_fd;
+        }
+        let desc = [
+            path.as_ptr() as u64,
+            path.len() as u64,
+            arg_pairs.as_ptr() as u64,
+            args.len() as u64,
+            fd_pairs.as_ptr() as u64,
+            fds.len() as u64,
+        ];
+        let ret = unsafe { sys::syscall1(sys::SPAWN_FDS_ARGS, desc.as_ptr() as u64) };
+        Error::from_ret(ret)
+    }
+
     pub fn waitpid(pid: u64) -> Result<u64> {
         let mut status = 0u64;
         let ret = unsafe { sys::syscall2(sys::WAITPID, pid, &mut status as *mut u64 as u64) };
@@ -387,6 +423,12 @@ pub mod io {
         Error::from_ret(ret)
     }
 
+    pub fn create(path: &[u8]) -> Result<u64> {
+        let ret =
+            unsafe { sys::syscall2(sys::OPEN_WRITE, path.as_ptr() as u64, path.len() as u64) };
+        Error::from_ret(ret)
+    }
+
     pub fn close(fd: u64) {
         unsafe {
             sys::syscall1(sys::CLOSE, fd);
@@ -411,6 +453,10 @@ pub mod io {
     impl File {
         pub fn open(path: &[u8]) -> Result<Self> {
             open(path).map(|fd| File { fd })
+        }
+
+        pub fn create(path: &[u8]) -> Result<Self> {
+            create(path).map(|fd| File { fd })
         }
 
         #[inline]
@@ -501,6 +547,23 @@ pub mod ipc {
 pub mod fs {
     use super::{io, sys, Error, Result};
 
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum FileKind {
+        Missing,
+        File,
+        Directory,
+        Other,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Metadata {
+        pub kind: FileKind,
+        pub size: u64,
+        pub uid: u64,
+        pub gid: u64,
+        pub mode: u64,
+    }
+
     pub fn read_file(path: &[u8], out: &mut [u8]) -> Result<usize> {
         let file = io::File::open(path)?;
         let n = file.read(out)?;
@@ -545,10 +608,104 @@ pub mod fs {
         Error::from_ret(ret).map(|n| n as usize)
     }
 
+    pub fn stat(path: &[u8]) -> Result<Metadata> {
+        let mut out = [0u8; 40];
+        let desc = [
+            path.as_ptr() as u64,
+            path.len() as u64,
+            out.as_mut_ptr() as u64,
+            out.len() as u64,
+        ];
+        let ret = unsafe { sys::syscall1(sys::STAT, desc.as_ptr() as u64) };
+        Error::from_ret(ret)?;
+        let kind = match read_u64(&out, 0) {
+            1 => FileKind::File,
+            2 => FileKind::Directory,
+            0 => FileKind::Missing,
+            _ => FileKind::Other,
+        };
+        Ok(Metadata {
+            kind,
+            size: read_u64(&out, 8),
+            uid: read_u64(&out, 16),
+            gid: read_u64(&out, 24),
+            mode: read_u64(&out, 32),
+        })
+    }
+
+    pub fn rename(src: &[u8], dst: &[u8]) -> Result<()> {
+        let desc = [
+            src.as_ptr() as u64,
+            src.len() as u64,
+            dst.as_ptr() as u64,
+            dst.len() as u64,
+        ];
+        let ret = unsafe { sys::syscall1(sys::RENAME, desc.as_ptr() as u64) };
+        Error::from_ret(ret).map(|_| ())
+    }
+
+    pub fn chdir(path: &[u8]) -> Result<()> {
+        let ret = unsafe { sys::syscall2(sys::CHDIR, path.as_ptr() as u64, path.len() as u64) };
+        Error::from_ret(ret).map(|_| ())
+    }
+
+    pub fn getcwd(out: &mut [u8]) -> Result<usize> {
+        if out.is_empty() {
+            return Err(Error::Invalid);
+        }
+        let ret = unsafe { sys::syscall2(sys::GETCWD, out.as_mut_ptr() as u64, out.len() as u64) };
+        Error::from_ret(ret).map(|n| n as usize)
+    }
+
+    pub fn sync() -> Result<()> {
+        let ret = unsafe { sys::syscall0(sys::SYNC) };
+        Error::from_ret(ret).map(|_| ())
+    }
+
     pub fn screenshot(path: &[u8]) -> Result<()> {
         let ret =
             unsafe { sys::syscall3(sys::SCREENSHOT, path.as_ptr() as u64, path.len() as u64, 0) };
         Error::from_ret(ret).map(|_| ())
+    }
+
+    fn read_u64(bytes: &[u8; 40], offset: usize) -> u64 {
+        u64::from_le_bytes([
+            bytes[offset],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
+            bytes[offset + 4],
+            bytes[offset + 5],
+            bytes[offset + 6],
+            bytes[offset + 7],
+        ])
+    }
+}
+
+pub mod time {
+    use super::sys;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct DateTime {
+        pub year: u16,
+        pub month: u8,
+        pub day: u8,
+        pub hour: u8,
+        pub minute: u8,
+    }
+
+    pub fn now() -> Option<DateTime> {
+        let packed = unsafe { sys::syscall0(sys::TIME) };
+        if packed == 0 {
+            return None;
+        }
+        Some(DateTime {
+            year: (packed >> 32) as u16,
+            month: (packed >> 24) as u8,
+            day: (packed >> 16) as u8,
+            hour: (packed >> 8) as u8,
+            minute: packed as u8,
+        })
     }
 }
 
@@ -941,11 +1098,11 @@ pub mod gui {
 pub mod prelude {
     pub use crate::args::Args;
     pub use crate::event::{read_event, Event, INPUT_FD};
-    pub use crate::io::{close, open, pipe, read, write, write_all, write_stdout, File};
+    pub use crate::io::{close, create, open, pipe, read, write, write_all, write_stdout, File};
     pub use crate::memory::mmap;
     pub use crate::process::{
         abi_version, exit, get_process_group, getpid, set_process_group, signal, signal_group,
-        sleep_ms, spawn, spawn_args, waitpid, yield_now, Signal,
+        sleep_ms, spawn, spawn_args, spawn_fds_args, waitpid, yield_now, Signal,
     };
     pub use crate::{entry, print, println, Error, Result, ABI_VERSION, SDK_VERSION};
 }

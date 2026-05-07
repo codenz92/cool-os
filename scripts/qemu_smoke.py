@@ -242,6 +242,16 @@ def hmp_key_for_char(ch: str) -> str | None:
         return "shift-semicolon"
     if ch == ">":
         return "shift-dot"
+    if ch == "<":
+        return "shift-comma"
+    if ch == "|":
+        return "shift-backslash"
+    if ch == "=":
+        return "equal"
+    if ch == "'":
+        return "apostrophe"
+    if ch == '"':
+        return "shift-apostrophe"
     if ch.isascii() and ch.isalpha():
         return ch.lower()
     if ch.isascii() and ch.isdigit():

@@ -6,7 +6,7 @@ use libcool::{fs, io, prelude::*};
 libcool::entry!(main);
 
 fn main(args: Args) -> ! {
-    let path = args.get(1).unwrap_or(b"/");
+    let path = args.get(1).unwrap_or(b".");
     let mut out = [0u8; 4096];
     match fs::list_dir(path, &mut out) {
         Ok(n) => {

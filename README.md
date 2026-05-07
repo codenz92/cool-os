@@ -8,12 +8,12 @@ graphical desktop with draggable and resizable windows, a taskbar, a start
 menu, hardware input, kernel and userspace GUI applications, a preemptive
 scheduler, ring-3 userspace, per-process virtual memory, process isolation, a
 CoolFS root filesystem with VFS/syscalls and uid/gid/mode enforcement, a FAT32
-legacy import mount, an ELF loader with `exec`, and IPC with pipes, shared
-memory, and per-task fd tables.
+legacy import mount, an ELF loader with `exec`, task-local cwd and fd-mapped
+stdio, and IPC with pipes, shared memory, and per-task fd tables.
 
 ---
 
-# Current state — v7.3
+# Current state — v7.8
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -53,7 +53,13 @@ terminal, and gives the shell foreground process groups with Ctrl+C/Ctrl+Z,
 `fg`, `bg`, and prompt blocking until foreground work stops or exits. Phases
 35-39 add canonical TTY stdin for `read(0)`, a real `/bin/sh` userspace shell,
 ABI v7 `spawn_args`, coreutils-style `/bin` tools, verified utility-app save
-paths, and a `/RECOVERY` repair/report surface.
+paths, and a `/RECOVERY` repair/report surface. Phases 40-44 move the shell
+and platform closer to a normal desktop OS: ABI v8 adds task cwd, metadata,
+rename, writable file descriptors, fd-mapped child stdio, sync, and RTC time;
+`/bin/sh` now supports quoting, relative paths, redirection, and one-stage
+pipelines; `/bin` includes practical file/text/date/devkit tools; sysreport can
+write `/LOGS/SYSREPORT.TXT`; and the generated image ships `/SDK` docs and
+templates.
 
 | Context | Mode | Description |
 | :------ | :--- | :---------- |
@@ -94,22 +100,22 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **Heap** | `LockedHeap` allocator — `String`, `Vec`, `Box` all work. 32 MiB heap to accommodate large shadow and window buffers. |
 | **Paging / VMM** | 4-level `OffsetPageTable` + global `BootInfoFrameAllocator`. Per-process PML4 cloned from kernel upper half; private user-space mappings in lower half. `vmm::` module exposes `new_process_pml4`, `map_page_in`, `map_region`, `switch_to`. |
 | **IDT** | Breakpoint, Double Fault, Page Fault with user-task termination/crashdump handling for invalid ring-3 accesses, General Protection Fault, Invalid Opcode, Timer (IRQ0), Keyboard (IRQ1), Mouse (IRQ12). |
-| **Scheduler** | Preemptive round-robin at 288 Hz. Each task carries `pml4: Option<PhysFrame>` plus `uid`, `gid`, capability credentials, process group, controlling TTY, pending signal state, and a private 64 KiB kernel stack. The scheduler switches CR3 when needed and updates TSS RSP0 to the selected task's stack so ring-3 IRQ frames never share one global stack. Task lifecycle now distinguishes ready/running/blocked/stopped/exited/reaped states, records parents and exit codes, supports blocking `waitpid`/reaping, supports kernel-side task termination, and backs blocking pipe/TTY reads with `block_current` / `unblock(id)`. |
-| **TTY sessions** | Each Terminal owns a kernel TTY with canonical stdin, a dedicated output queue, and a foreground process group. Userspace `read(0)` plus stdout/stderr route through the task's controlling TTY, `exec` blocks the prompt as a foreground job, background jobs keep their terminal output route, and Ctrl+C/Ctrl+Z signal the foreground group. |
+| **Scheduler** | Preemptive round-robin at 288 Hz. Each task carries `pml4: Option<PhysFrame>` plus `uid`, `gid`, capability credentials, current working directory, process group, controlling TTY, pending signal state, and a private 64 KiB kernel stack. The scheduler switches CR3 when needed and updates TSS RSP0 to the selected task's stack so ring-3 IRQ frames never share one global stack. Task lifecycle now distinguishes ready/running/blocked/stopped/exited/reaped states, records parents and exit codes, supports blocking `waitpid`/reaping, supports kernel-side task termination, and backs blocking pipe/TTY reads with `block_current` / `unblock(id)`. |
+| **TTY sessions** | Each Terminal owns a kernel TTY with canonical stdin, a dedicated output queue, and a foreground process group. Userspace `read(0)` plus stdout/stderr route through the task's controlling TTY by default, fd mappings can override 0/1/2 for pipes and redirection, `exec` blocks the prompt as a foreground job, background jobs keep their terminal output route, and Ctrl+C/Ctrl+Z signal the foreground group. |
 | **Process isolation** | Two user processes share the same user-stack virtual address (`0x7FFF_0010_0000`) but map it to different physical frames. Guard pages (kernel-only) sit below each stack. |
 | **GDT + TSS** | Four segments (kernel code/data ring 0, user code/data ring 3) + TSS. RSP0 starts on a fallback ISR stack and is updated on every context switch to the selected task's private kernel stack for ring-3 IRQ entry. |
 | **SYSCALL/SYSRET** | EFER.SCE enabled. STAR/LSTAR/SFMASK MSRs configured. Naked `syscall_entry` saves context, switches to the currently scheduled task's private kernel stack top, dispatches on rax, restores context, and executes `sysretq`. |
-| **Syscall table** | `0 exit`, `1 write`, `2 yield`, `3 getpid`, `4 mmap(addr, len, flags)`, `5 open(path, len)`, `6 read(fd, buf, len)`, `7 close(fd)`, `8 exec(path, len)`, `9 pipe(fds_ptr)`, `10 dup(fd)`, `11 shmem_create(len)`, `12 shmem_map(id)`, `13 waitpid(pid, status_ptr)`, `14 spawn(path, len)`, `15 sleep_ms(ms)`, `16 abi_version()`, `17 dns_resolve(host, len)`, `18 http_get(host, len)`, `19 socket(domain, type, proto)`, `20 connect(socket, ipv4, port)`, `21 send(socket, buf, len)`, `22 recv(socket, buf, len)`, `23 gui_open(title, len, dims)`, `24 gui_present(handle, pixels, len)`, `25 gui_poll_event(handle, packet, len)`, `26 gui_close(handle)`, `27 fs_write_file(desc)`, `28 fs_create_dir(path, len)`, `29 fs_delete_tree(path, len)`, `30 fs_list_dir(desc)`, `31 screenshot(path, len, flags)`, `32 signal(pid, signal)`, `33 setpgid(pid, pgid)`, `34 getpgid(pid)`, `35 signal_group(pgid, signal)`, `36 spawn_args(desc)`. `sys_read(0)` reads from the current task's controlling TTY when assigned; `sys_write` writes stdout/stderr to that TTY, falls back to the compositor ring for orphaned output, or writes pipe/file descriptors through the VFS fd table. |
-| **Userspace** | Ring-3 code can run either as the original isolation stubs or as real ELF64 binaries loaded from `/bin`. The `libcool` SDK crate now provides no_std entry/argv setup plus process, signal/process-group, file, pipe, mmap, shared-memory, event, DNS/HTTP, TCP socket, filesystem utility, screenshot, and userspace GUI wrappers. `/bin/sh` reads stdin from the TTY and can launch argv-capable children with `spawn_args`; `/bin/ls`, `/bin/cat`, `/bin/echo`, `/bin/pwd`, `/bin/mkdir`, `/bin/touch`, `/bin/rm`, and `/bin/writefile` cover basic file and text workflows. `sys_exec` replaces the current userspace image in-place by swapping CR3 and rewriting the saved syscall return frame. Shared memory (`sys_shmem_create`/`sys_shmem_map`) maps a region of physical frames into the caller's address space at a fixed VA. |
+| **Syscall table** | `0 exit`, `1 write`, `2 yield`, `3 getpid`, `4 mmap(addr, len, flags)`, `5 open(path, len)`, `6 read(fd, buf, len)`, `7 close(fd)`, `8 exec(path, len)`, `9 pipe(fds_ptr)`, `10 dup(fd)`, `11 shmem_create(len)`, `12 shmem_map(id)`, `13 waitpid(pid, status_ptr)`, `14 spawn(path, len)`, `15 sleep_ms(ms)`, `16 abi_version()`, `17 dns_resolve(host, len)`, `18 http_get(host, len)`, `19 socket(domain, type, proto)`, `20 connect(socket, ipv4, port)`, `21 send(socket, buf, len)`, `22 recv(socket, buf, len)`, `23 gui_open(title, len, dims)`, `24 gui_present(handle, pixels, len)`, `25 gui_poll_event(handle, packet, len)`, `26 gui_close(handle)`, `27 fs_write_file(desc)`, `28 fs_create_dir(path, len)`, `29 fs_delete_tree(path, len)`, `30 fs_list_dir(desc)`, `31 screenshot(path, len, flags)`, `32 signal(pid, signal)`, `33 setpgid(pid, pgid)`, `34 getpgid(pid)`, `35 signal_group(pgid, signal)`, `36 spawn_args(desc)`, `37 chdir(path, len)`, `38 getcwd(buf, len)`, `39 stat(desc)`, `40 rename(desc)`, `41 open_write(path, len)`, `42 spawn_fds_args(desc)`, `43 sync()`, and `44 time()`. `sys_read(0)` reads from the current task's controlling TTY when assigned unless fd 0 is mapped; `sys_write` writes stdout/stderr to that TTY, falls back to the compositor ring for orphaned output, or writes pipe/file descriptors through the VFS fd table. |
+| **Userspace** | Ring-3 code can run either as the original isolation stubs or as real ELF64 binaries loaded from `/bin`. The `libcool` SDK crate now provides no_std entry/argv setup plus process, signal/process-group, file, pipe, mmap, shared-memory, event, DNS/HTTP, TCP socket, filesystem utility, screenshot, time, and userspace GUI wrappers. `/bin/sh` reads stdin from the TTY, tracks the kernel cwd, parses quoting and escapes, runs builtins, resolves bare commands under `/bin`, supports `<`/`>` redirection and one-stage `|` pipelines, and can launch argv/fd-capable children with `spawn_args` or `spawn_fds_args`. `/bin/ls`, `/bin/cat`, `/bin/echo`, `/bin/pwd`, `/bin/mkdir`, `/bin/touch`, `/bin/rm`, `/bin/writefile`, `/bin/cp`, `/bin/mv`, `/bin/grep`, `/bin/head`, `/bin/tail`, `/bin/date`, `/bin/uname`, `/bin/clear`, `/bin/stat`, `/bin/sync`, and `/bin/devkit` cover practical command-line workflows. `sys_exec` replaces the current userspace image in-place by swapping CR3 and rewriting the saved syscall return frame. Shared memory (`sys_shmem_create`/`sys_shmem_map`) maps a region of physical frames into the caller's address space at a fixed VA. |
 | **ELF loader** | Validates ELF64 headers, maps `PT_LOAD` segments into a fresh address space, allocates a private user stack, builds an initial `argc/argv/envp` stack frame, and can either spawn a new task or prepare an image for `sys_exec`. |
 | **ATA PIO driver** | Primary-bus slave device (QEMU `if=ide,index=1`). LBA28 PIO reads/writes, BSY/DRQ polling with bounded retries and software reset recovery, nIEN=1 (device interrupts disabled). Wrapped in `without_interrupts` to prevent preemption mid-transfer. |
 | **CoolFS layer** | Native coolOS root filesystem mounted at `/`, stored directly at LBA 0 of the attached OS disk. It has a CoolFS superblock, fixed inode table with durable `uid`/`gid`/mode metadata, block bitmap, 4 KiB blocks, direct plus indirect data blocks, directory records, a 64-slot block cache with dirty 4 KiB writeback, VFS read/write/create/rename/delete/copy routing, stats, and boot self-tests. |
 | **FAT32 layer** | Optional legacy import mount at `/FAT`, formatted in a separate 8 MiB-offset disk region. BPB parsing, FAT chain walking, short-name and long-filename lookup, directory traversal, cluster→sector mapping, mutation helpers, free-space stats, and `fsck` remain available without being required for CoolFS boot. |
-| **VFS** | CoolFS-root path routing, `/FAT` legacy routing, CoolFS read/write/execute permission enforcement, and task-local fd tables (16 slots, fds 0–2 reserved) backed by shared file/pipe/shmem objects. `vfs_open` reads whole files into heap buffers after access checks; `vfs_pipe` allocates a 512-byte kernel ring buffer and returns per-task read/write fds; `vfs_read_blocking` blocks tasks on empty pipes and wakes them on write/EOF; `ipc` selectively inherits pipe ends into child processes; `vfs_shmem_create`/`vfs_shmem_map` manage a shared memory region pool indexed by ID. |
+| **VFS** | CoolFS-root path routing, `/FAT` legacy routing, CoolFS read/write/execute permission enforcement, task-local cwd resolution, and task-local fd tables (16 slots, with explicit 0/1/2 mappings for child stdio) backed by shared file/pipe/shmem objects. `vfs_open` reads whole files into heap buffers after access checks; `vfs_open_write` buffers writable file descriptors and commits through safe CoolFS writes on close/exit; `vfs_pipe` allocates a 512-byte kernel ring buffer and returns per-task read/write fds; `vfs_read_blocking` blocks tasks on empty pipes and wakes them on write/EOF; `ipc` and `spawn_fds_args` selectively inherit pipe/file fds into child processes; `vfs_shmem_create`/`vfs_shmem_map` manage a shared memory region pool indexed by ID. |
 | **Networking** | Legacy PCI virtio-net driver for QEMU user networking, polling RX/TX virtqueues, Ethernet framing, ARP cache, IPv4, ICMP echo, UDP DNS queries, minimal TCP client sockets, userspace socket syscalls, HTTP/1.1, and verified TLS 1.3 HTTPS for the native browser/terminal path. |
-| **Kernel services** | Persistent kernel log buffer flushed to `/LOGS/KERNEL.TXT`, crash-screen log tail, central device registry for PCI/USB/system devices, installable package/app manifests with file associations, networking status, ACPI power-control status foundation, and a credentialed service supervisor that restarts failed services under service uid/gid 200. |
+| **Kernel services** | Persistent kernel log buffer flushed to `/LOGS/KERNEL.TXT`, crash-screen log tail, sysreport generation to `/LOGS/SYSREPORT.TXT`, central device registry for PCI/USB/system devices, installable package/app manifests with file associations, networking status, ACPI power-control status foundation, and a credentialed service supervisor that restarts failed services under service uid/gid 200. |
 | **Applications** | Terminal, System Monitor, Text Viewer, Color Picker, File Manager, Web Browser, ring-3 Notes, Text Editor, Trash Bin, Screenshot, Process Demo, and GUI Demo. Text-file opens route into `/bin/editor <path>` with kernel viewer fallback, while File Manager exposes explicit Open With Editor/Viewer actions. |
-| **Disk image** | `disk-image/src/fs_image.rs` builds `fs.img` as a 64 MiB raw OS disk: native CoolFS starts at LBA 0 with root-owned system paths, user-owned writable paths, executable `/bin` ELFs, `/RECOVERY` boot/repair docs, `/Packages/guidemo.pkg`, and `/Documents/package-demo.p25`; an optional FAT32 `/FAT` import region starts at 8 MiB. The Makefile attaches it to QEMU as the IDE slave. |
+| **Disk image** | `disk-image/src/fs_image.rs` builds `fs.img` as a 64 MiB raw OS disk: native CoolFS starts at LBA 0 with root-owned system paths, user-owned writable paths, executable `/bin` ELFs, `/RECOVERY` boot/repair docs, `/SDK` devkit docs/templates, `/Packages/guidemo.pkg`, and `/Documents/package-demo.p25`; an optional FAT32 `/FAT` import region starts at 8 MiB. The Makefile attaches it to QEMU as the IDE slave. |
 
 ### Applications
 
@@ -193,6 +199,11 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `https <host-or-url> [path]` | Fetch an HTTPS response through the verified kernel TLS client |
 | `power [reboot\|shutdown\|sleep]` | Print or request power-control actions |
 | `log` | Flush and print the kernel log tail |
+| `logs` | Open the in-terminal log view |
+| `profiler` | Print boot/session profiler events |
+| `diagnostics` | Print kernel, profiler, service, compositor, heap, filesystem, VFS, and crash diagnostics |
+| `sysreport [write]` | Print the generated system report or write it to `/LOGS/SYSREPORT.TXT` |
+| `devkit` | Print SDK paths, ABI version, and userspace template locations |
 | `fsck` | Print CoolFS-root consistency plus optional legacy FAT32 import summary |
 | `recovery [repair\|fsck-on-boot on\|fsck-on-boot off]` | Show recovery status, write a repair report, or toggle boot fsck |
 | `coolfs` | Print CoolFS root mount and inode/block usage |
@@ -247,14 +258,15 @@ disk-image/
   src/fs_image.rs  Host tool — builds fs.img (64 MiB raw OS disk) with native
                     CoolFS at LBA 0 plus an optional /FAT import region:
                     /bin, /CONFIG, /APPS, /Documents, /Packages, /Pictures,
-                    /Desktop, /Downloads, /Trash, /LOGS, and process-control demos
+                    /Desktop, /Downloads, /Trash, /LOGS, /SDK, and process-control demos
 src/
   main.rs          Kernel entry point — framebuffer init, GDT, heap, scheduler, main loop
   gdt.rs           GDT (ring-0/ring-3 segments) + TSS (RSP0 for ring-3 IRQ entry)
   interrupts.rs    IDT, PIC, PIT (288 Hz), IRQ masking, keyboard/timer(naked)/mouse/fault handlers
   syscall.rs       SYSCALL/SYSRET — naked entry, dispatcher, lock-free output buffer,
                    jump_to_userspace (iretq trampoline); syscalls including
-                   open/read/write/close/exec/pipe/signal/process groups
+                   open/read/write/close/exec/pipe/signal/process groups,
+                   cwd/stat/rename/open_write/spawn_fds_args/sync/time
   elf.rs           ELF64 loader — parse headers, map PT_LOAD segments, build user images
   userspace.rs     Two isolated ring-3 processes — spawn_user_process(pid), user_stub
   memory.rs        Page table init, BootInfoFrameAllocator (with next/init_from),
@@ -263,8 +275,9 @@ src/
                    map_page_in, map_region, switch_to, switch_to_boot, alloc_zeroed_frame
   allocator.rs     Heap allocator (linked_list_allocator, 32 MiB)
   scheduler.rs     Preemptive scheduler — Task (with pml4 field), Scheduler,
-                   SCHEDULER global, timer_schedule, spawn_with_pml4, waitpid/reap,
-                   STOP/CONT, process groups, controlling TTYs, and signal delivery
+                   SCHEDULER global, timer_schedule, spawn_with_pml4, cwd,
+                   waitpid/reap, STOP/CONT, process groups, controlling TTYs,
+                   and signal delivery
   tty.rs           Kernel TTY registry — per-terminal output buffers and foreground pgid
   jobs.rs          Background job registry, including process-bound jobs controlled by signals
   ata.rs           ATA PIO driver — LBA28 read/write sector, BSY/DRQ polling,
@@ -274,9 +287,11 @@ src/
   fat32.rs         FAT32 — optional legacy /FAT import mount at the 8 MiB region
   vfs.rs           VFS — CoolFS root routing, /FAT compatibility routing,
                     task-local fd tables over shared file/pipe/shmem objects,
-                    selective child-fd inheritance, vfs_open/vfs_pipe/vfs_read/vfs_write/vfs_close,
+                    task-local cwd resolution, fd-mapped child stdio,
+                    selective child-fd inheritance, vfs_open/vfs_open_write/vfs_pipe/vfs_read/vfs_write/vfs_close,
                     vfs_shmem_create/vfs_shmem_map
   klog.rs          Kernel log ring buffer + /LOGS/KERNEL.TXT flushing
+  sysreport.rs     System report generator for diagnostics and /LOGS/SYSREPORT.TXT
   notifications.rs Desktop notification queue used by USB/task/filesystem events
   app_lifecycle.rs Persistent app recents/settings plus runtime userspace app ownership
   clipboard.rs     Shared text/path clipboard service
@@ -313,7 +328,7 @@ src/
 userspace/
   libcool/         no_std userspace SDK — entry, argv, syscalls, files, pipes,
                    signals, process groups, mmap, shmem, events, networking,
-                   filesystem utilities, GUI, print!/println!
+                   filesystem utilities, time, GUI, print!/println!
   hello/
     src/main.rs    `/bin/hello` — minimal userspace ELF that writes and exits
     src/bin/exec.rs `/bin/exec` — userspace `sys_exec` demo that replaces itself with `/bin/hello`
@@ -332,6 +347,17 @@ userspace/
     src/bin/screenshot.rs `/bin/screenshot` — ring-3 screenshot utility
     src/bin/procdemo.rs `/bin/procdemo` — process group and signal-control demo
     src/bin/procsleep.rs `/bin/procsleep` — long-running helper used by jobs/tests
+    src/bin/sh.rs `/bin/sh` — userspace shell with cwd, redirection, and one-stage pipes
+    src/bin/cp.rs `/bin/cp` — streaming userspace file copy
+    src/bin/mv.rs `/bin/mv` — userspace rename wrapper
+    src/bin/grep.rs `/bin/grep` — line matcher for files or stdin
+    src/bin/head.rs `/bin/head` — first-lines reader for files or stdin
+    src/bin/tail.rs `/bin/tail` — last-lines reader for files
+    src/bin/date.rs `/bin/date` — RTC timestamp via ABI v8
+    src/bin/uname.rs `/bin/uname` — ABI/platform identity
+    src/bin/stat.rs `/bin/stat` — metadata inspection
+    src/bin/sync.rs `/bin/sync` — writeback barrier wrapper
+    src/bin/devkit.rs `/bin/devkit` — SDK path and template helper
     linker.ld      Fixed-address linker script for the userspace ELF binaries
 ```
 
@@ -480,6 +506,20 @@ back from CoolFS. The disk image also carries `/RECOVERY/README.TXT` and
 recreates standard directories, writes `/RECOVERY/LAST-REPAIR.TXT`, and toggles
 `storage.fsck_on_boot`.
 
+**Shell semantics, durability, observability, and SDK (Phases 40-44).** ABI v8
+adds task-local `chdir`/`getcwd`, `stat`, `rename`, writable file descriptors,
+fd-mapped `spawn_fds_args`, `sync`, and RTC `time`. Kernel syscalls now resolve
+relative paths against each task's cwd, and writable fd buffers commit through
+CoolFS safe writes when closed or when a task exits. `/bin/sh` has a real parser
+for quotes, escapes, redirection, and one-stage pipelines, resolves bare
+commands to `/bin/<name>`, and can wire child stdin/stdout through inherited
+pipe or file descriptors. The toolset now includes `/bin/cp`, `/bin/mv`,
+`/bin/grep`, `/bin/head`, `/bin/tail`, `/bin/date`, `/bin/uname`, `/bin/clear`,
+`/bin/stat`, `/bin/sync`, and `/bin/devkit`. Terminal diagnostics gained
+`sysreport [write]` and `devkit`, `/LOGS/SYSREPORT.TXT` gives a persistent
+report bundle, and the generated image ships `/SDK/README.TXT`,
+`/SDK/APP_TEMPLATE.RS`, and `/SDK/PACKAGE_TEMPLATE.PKG`.
+
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
 empty). `vmm::new_process_pml4` handles the clone; `vmm::map_page_in` / `vmm::map_region`
@@ -537,5 +577,10 @@ while kernel faults still panic.
 | 37 | Coreutils command set — external `/bin` file/text commands driven by `/bin/sh` | **Done** |
 | 38 | Utility reliability — editor, Trash, and Screenshot smokes verify persisted output | **Done** |
 | 39 | Recovery path — `/RECOVERY`, repair reports, and fsck-on-boot controls | **Done** |
+| 40 | Shell semantics — cwd-aware paths, quoting, redirection, and one-stage pipelines | **Done** |
+| 41 | Filesystem durability and metadata — writable fds, `stat`, `rename`, and `sync` | **Done** |
+| 42 | App consistency — diagnostics/help surfaces expose the current runtime and devkit paths | **Done** |
+| 43 | Observability — generated sysreports written under `/LOGS` | **Done** |
+| 44 | Developer platform — `/SDK` docs/templates plus `/bin/devkit` | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

@@ -56,6 +56,7 @@ mod settings_state;
 mod shortcuts;
 mod slab;
 mod syscall;
+mod sysreport;
 mod task_snapshot;
 mod tls;
 mod tls_roots;

@@ -27,7 +27,7 @@
 ///   [stack_ptr + 136]  RFLAGS
 ///   [stack_ptr + 144]  RSP   (task's stack pointer restored by iretq)
 ///   [stack_ptr + 152]  SS
-use alloc::{format, vec::Vec};
+use alloc::{format, string::String, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::structures::paging::PhysFrame;
 
@@ -78,6 +78,7 @@ pub struct Task {
     pub pending_signal: Option<crate::process_model::Signal>,
     pub wake_tick: Option<u64>,
     pub credentials: crate::security::Credentials,
+    pub cwd: String,
     /// Per-process PML4 frame.  None = kernel task, shares the boot PML4.
     pub pml4: Option<PhysFrame>,
 }
@@ -119,6 +120,7 @@ impl Scheduler {
             pending_signal: None,
             wake_tick: None,
             credentials: crate::security::interactive_credentials(),
+            cwd: String::from("/"),
             pml4: None,
         });
         crate::vfs::init_task(0);
@@ -178,6 +180,9 @@ impl Scheduler {
         let credentials = parent
             .and_then(|parent_id| self.tasks.get(parent_id).map(|task| task.credentials))
             .unwrap_or_else(crate::security::interactive_credentials);
+        let cwd = parent
+            .and_then(|parent_id| self.tasks.get(parent_id).map(|task| task.cwd.clone()))
+            .unwrap_or_else(|| String::from("/"));
         let process_group = parent
             .and_then(|parent_id| self.tasks.get(parent_id).map(|task| task.process_group))
             .unwrap_or_else(|| self.tasks.len());
@@ -199,6 +204,7 @@ impl Scheduler {
             pending_signal: None,
             wake_tick: None,
             credentials,
+            cwd,
             pml4,
         });
         let task_id = self.tasks.len() - 1;
@@ -464,6 +470,23 @@ pub fn current_task_id() -> usize {
 pub fn current_credentials() -> Option<crate::security::Credentials> {
     let sched = SCHEDULER.lock();
     sched.tasks.get(sched.current).map(|task| task.credentials)
+}
+
+pub fn current_cwd() -> String {
+    let sched = SCHEDULER.lock();
+    sched
+        .tasks
+        .get(sched.current)
+        .map(|task| task.cwd.clone())
+        .unwrap_or_else(|| String::from("/"))
+}
+
+pub fn set_current_cwd(path: String) {
+    let mut sched = SCHEDULER.lock();
+    let current = sched.current;
+    if let Some(task) = sched.tasks.get_mut(current) {
+        task.cwd = path;
+    }
 }
 
 pub fn set_current_credentials(credentials: crate::security::Credentials) {
