@@ -10,12 +10,12 @@ scheduler, ring-3 userspace, per-process virtual memory, process isolation, a
 CoolFS root filesystem with VFS/syscalls and uid/gid/mode enforcement, a FAT32
 legacy import mount, an ELF loader with `exec`, task-local cwd and fd-mapped
 stdio, userspace thread groups, futex wait/wake, per-thread TLS bases,
-pthread-style userspace synchronization, and IPC with pipes, shared memory, and
+POSIX pthread/libc userspace shims, and IPC with pipes, shared memory, and
 per-task fd tables.
 
 ---
 
-# Current state — v7.37
+# Current state — v7.38
 
 The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -64,7 +64,7 @@ rename, writable file descriptors, fd-mapped child stdio, sync, and RTC time;
 `/bin/sh` now supports quoting, relative paths, redirection, and one-stage
 pipelines; `/bin` includes practical file/text/date/devkit tools; sysreport can
 write `/LOGS/SYSREPORT.TXT`; and the generated image ships `/SDK` docs and
-templates. Phases 45-73 add compositor smoothness, evented terminal work, and
+templates. Phases 45-74 add compositor smoothness, evented terminal work, and
 a richer native browser renderer:
 timer ticks now request
 paced frames instead of unconditional full redraws, mouse-only motion uses a
@@ -164,7 +164,12 @@ FS-base on every context switch; `libcool::thread` adds `TlsBlock`, TLS keys,
 spawn-with-TLS, and pthread-style mutex/condvar/once helpers backed by futexes;
 `/bin/tlsdemo` verifies independent per-thread TLS plus condition-variable
 wakeups; and browser-engine readiness now marks `threads-futex` ready while
-calling out hosted libc/POSIX pthread wiring as the next layer.
+moving hosted libc/POSIX pthread wiring to the runtime layer. Phase 74 adds
+that first POSIX-shaped runtime layer inside `libcool::posix`/`libcool::libc`:
+`pthread_create`, `pthread_join`, `pthread_exit`, `pthread_self`, mutexes,
+condition variables, once, pthread keys, per-thread `errno`, `gettid`,
+`sched_yield`, and `nanosleep` now sit on top of ABI v12 TLS/futex/thread
+primitives, and `/bin/pthreaddemo` verifies the compatibility path.
 
 | Context | Mode | Description |
 | :------ | :--- | :---------- |
@@ -216,7 +221,7 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **GDT + TSS** | Four segments (kernel code/data ring 0, user code/data ring 3) + TSS. RSP0 starts on a fallback ISR stack and is updated on every context switch to the selected task's private kernel stack for ring-3 IRQ entry. |
 | **SYSCALL/SYSRET** | EFER.SCE enabled. STAR/LSTAR/SFMASK MSRs configured. Naked `syscall_entry` saves context, switches to the currently scheduled task's private kernel stack top, dispatches on rax, restores context, and executes `sysretq`. |
 | **Syscall table** | `0 exit`, `1 write`, `2 yield`, `3 getpid`, `4 mmap(addr, len, flags)`, `5 open(path, len)`, `6 read(fd, buf, len)`, `7 close(fd)`, `8 exec(path, len)`, `9 pipe(fds_ptr)`, `10 dup(fd)`, `11 shmem_create(len)`, `12 shmem_map(id)`, `13 waitpid(pid, status_ptr)`, `14 spawn(path, len)`, `15 sleep_ms(ms)`, `16 abi_version()`, `17 dns_resolve(host, len)`, `18 http_get(host, len)`, `19 socket(domain, type, proto)`, `20 connect(socket, ipv4, port)`, `21 send(socket, buf, len)`, `22 recv(socket, buf, len)`, `23 gui_open(title, len, dims)`, `24 gui_present(handle, pixels, len)`, `25 gui_poll_event(handle, packet, len)`, `26 gui_close(handle)`, `27 fs_write_file(desc)`, `28 fs_create_dir(path, len)`, `29 fs_delete_tree(path, len)`, `30 fs_list_dir(desc)`, `31 screenshot(path, len, flags)`, `32 signal(pid, signal)`, `33 setpgid(pid, pgid)`, `34 getpgid(pid)`, `35 signal_group(pgid, signal)`, `36 spawn_args(desc)`, `37 chdir(path, len)`, `38 getcwd(buf, len)`, `39 stat(desc)`, `40 rename(desc)`, `41 open_write(path, len)`, `42 spawn_fds_args(desc)`, `43 sync()`, `44 time()`, `45 poll(desc, count, timeout_ms)`, `46 tty_control(op, arg1, arg2)`, `47 thread_spawn(entry, arg, flags)`, `48 futex_wait(addr, expected, timeout_ms)`, `49 futex_wake(addr, count, flags)`, `50 thread_tls_set(base, flags)`, `51 thread_tls_get()`, and `52 thread_spawn_tls(desc_ptr)`. `sys_read(0)` reads from the current task's controlling TTY when assigned unless fd 0 is mapped; `sys_write` writes stdout/stderr to that TTY, falls back to the compositor ring for orphaned output, or writes pipe/file descriptors through the VFS fd table. |
-| **Userspace** | Ring-3 code can run either as the original isolation stubs or as real ELF64 binaries loaded from `/bin`. The `libcool` SDK crate now provides no_std entry/argv setup plus process, signal/process-group, file, pipe, thread/futex/TLS, pthread-style mutex/condvar/once/key helpers, evented poll, TTY mode/size, mmap, shared-memory, event, DNS/HTTP, TCP socket, filesystem utility, screenshot, time, and userspace GUI wrappers. `/bin/sh` reads stdin from the TTY, tracks the kernel cwd, parses quoting and escapes, runs builtins, resolves bare commands under `/bin`, supports `<`/`>` redirection and one-stage `|` pipelines, and can launch argv/fd-capable children with `spawn_args` or `spawn_fds_args`. `/bin/ls`, `/bin/cat`, `/bin/echo`, `/bin/pwd`, `/bin/mkdir`, `/bin/touch`, `/bin/rm`, `/bin/writefile`, `/bin/cp`, `/bin/mv`, `/bin/grep`, `/bin/head`, `/bin/tail`, `/bin/date`, `/bin/uname`, `/bin/clear`, `/bin/stat`, `/bin/sync`, `/bin/devkit`, `/bin/polldemo`, `/bin/tuidemo`, `/bin/threaddemo`, and `/bin/tlsdemo` cover practical command-line, evented, terminal-mode, thread/futex, and TLS/pthread workflows. `sys_exec` replaces the current userspace image in-place by swapping CR3 and rewriting the saved syscall return frame. Shared memory (`sys_shmem_create`/`sys_shmem_map`) maps a region of physical frames into the caller's address space at a fixed VA. |
+| **Userspace** | Ring-3 code can run either as the original isolation stubs or as real ELF64 binaries loaded from `/bin`. The `libcool` SDK crate now provides no_std entry/argv setup plus process, signal/process-group, file, pipe, thread/futex/TLS, pthread-style mutex/condvar/once/key helpers, POSIX-shaped `pthread_*`/`errno`/`nanosleep` wrappers, evented poll, TTY mode/size, mmap, shared-memory, event, DNS/HTTP, TCP socket, filesystem utility, screenshot, time, and userspace GUI wrappers. `/bin/sh` reads stdin from the TTY, tracks the kernel cwd, parses quoting and escapes, runs builtins, resolves bare commands under `/bin`, supports `<`/`>` redirection and one-stage `|` pipelines, and can launch argv/fd-capable children with `spawn_args` or `spawn_fds_args`. `/bin/ls`, `/bin/cat`, `/bin/echo`, `/bin/pwd`, `/bin/mkdir`, `/bin/touch`, `/bin/rm`, `/bin/writefile`, `/bin/cp`, `/bin/mv`, `/bin/grep`, `/bin/head`, `/bin/tail`, `/bin/date`, `/bin/uname`, `/bin/clear`, `/bin/stat`, `/bin/sync`, `/bin/devkit`, `/bin/polldemo`, `/bin/tuidemo`, `/bin/threaddemo`, `/bin/tlsdemo`, and `/bin/pthreaddemo` cover practical command-line, evented, terminal-mode, thread/futex, TLS, and POSIX pthread workflows. `sys_exec` replaces the current userspace image in-place by swapping CR3 and rewriting the saved syscall return frame. Shared memory (`sys_shmem_create`/`sys_shmem_map`) maps a region of physical frames into the caller's address space at a fixed VA. |
 | **ELF loader** | Validates ELF64 headers, maps `PT_LOAD` segments into a fresh address space, allocates a private user stack, builds an initial `argc/argv/envp` stack frame, and can either spawn a new task or prepare an image for `sys_exec`. |
 | **ATA PIO driver** | Primary-bus slave device (QEMU `if=ide,index=1`). LBA28 PIO reads/writes, BSY/DRQ polling with bounded retries and software reset recovery, nIEN=1 (device interrupts disabled). Wrapped in `without_interrupts` to prevent preemption mid-transfer. |
 | **CoolFS layer** | Native coolOS root filesystem mounted at `/`, stored directly at LBA 0 of the attached OS disk. It has a CoolFS superblock, fixed inode table with durable `uid`/`gid`/mode metadata, block bitmap, 4 KiB blocks, direct plus indirect data blocks, directory records, a 64-slot block cache with dirty 4 KiB writeback, pressure-triggered clean-cache trimming, VFS read/write/create/rename/delete/copy routing, stats, and boot self-tests. |
@@ -226,9 +231,9 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **Kernel services** | Persistent kernel log buffer flushed to `/LOGS/KERNEL.TXT`, crash-screen log tail, sysreport generation to `/LOGS/SYSREPORT.TXT`, central device registry for PCI/USB/system devices, signed installable package/app manifests with payload ownership and file associations, networking status, ACPI power-control status foundation, a credentialed durable service supervisor with dependency metadata, persisted `/CONFIG/SERVICES.CFG` desired state, `/LOGS/SERVICES.TXT` restart history, backoff, recovery diagnostics under service uid/gid 200, browser engine port readiness under `/CONFIG/BROWSER-ENGINE.CFG`, and boot-health state under `/BOOT` for last-known-good validation. |
 | **Updates / rollback** | Ed25519-signed staged system update manifests under `/UPDATES/STAGED`, per-payload SHA-256 verification, public-key trust checks against `/CONFIG/UPDATE-KEYS.TXT`, multiple trusted/revoked/expired key states, anti-rollback version checks, payload snapshots under `/UPDATES/SNAPSHOTS/LAST`, update journals in `/LOGS/UPDATE.TXT`, service-aware apply/rollback operations, recovery rollback integration, and automatic rollback when a pending update fails boot validation. |
 | **Packages** | Ed25519-signed package archives under `/Packages` with detached `<package>.sig` files, public package trust keys under `/CONFIG/PACKAGE-KEYS.TXT`, version/dependency checks, payload tables with SHA-256 and mode metadata, per-install owner records under `/APPS/<command>/OWNER.TXT`, package history under `/LOGS/PACKAGES.TXT`, transaction state under `/LOGS/PACKAGE-TXN.TXT`, verified `pkg install\|run\|repair`, and recovery/sysreport package trust diagnostics. |
-| **Browser engine port** | Phase 71 selects WPE WebKit as the modern-browser target while keeping the native browser as fallback. Phase 73 marks the threads/futex/TLS requirement ready with ABI v12 userspace threads, futex wait/wake, FS-base TLS, and pthread-style SDK primitives. `src/browser_engine.rs` defines port ABI v1, runtime requirement diagnostics, backend readiness probing through `/SYSTEM/BROWSER-ENGINE/WPE.READY`, Terminal `engine` commands, `browser://engine`, Recovery/Diagnostics/Sysreport lines, futex/TLS telemetry, and SDK docs for the host contract. |
+| **Browser engine port** | Phase 71 selects WPE WebKit as the modern-browser target while keeping the native browser as fallback. Phase 74 marks the threads/futex/TLS requirement ready with ABI v12 userspace threads, futex wait/wake, FS-base TLS, pthread-style SDK primitives, and POSIX-shaped pthread/libc shims for hosted runtime integration. `src/browser_engine.rs` defines port ABI v1, runtime requirement diagnostics, backend readiness probing through `/SYSTEM/BROWSER-ENGINE/WPE.READY`, Terminal `engine` commands, `browser://engine`, Recovery/Diagnostics/Sysreport lines, futex/TLS telemetry, and SDK docs for the host contract. |
 | **Applications** | Terminal, System Monitor, Text Viewer, Color Picker, File Manager, Web Browser, ring-3 Notes, Text Editor, Trash Bin, Screenshot, Process Demo, and GUI Demo. Text-file opens route into `/bin/editor <path>` with kernel viewer fallback, while File Manager exposes explicit Open With Editor/Viewer actions. |
-| **Disk image** | `disk-image/src/fs_image.rs` builds `fs.img` as a 64 MiB raw OS disk: native CoolFS starts at LBA 0 with root-owned system paths, user-owned writable paths, executable `/bin` ELFs including `/bin/threaddemo` and `/bin/tlsdemo`, `/RECOVERY` boot/repair docs, `/SDK` devkit docs/templates including `/SDK/BROWSER_ENGINE_PORT.TXT`, `/CONFIG/BROWSER-ENGINE.CFG`, `/SYSTEM/BROWSER-ENGINE`, `/Packages/guidemo.pkg`, `/Packages/guidemo.elf`, and `/Documents/package-demo.p25`; an optional FAT32 `/FAT` import region starts at 8 MiB. The Makefile attaches it to QEMU as the IDE slave. |
+| **Disk image** | `disk-image/src/fs_image.rs` builds `fs.img` as a 64 MiB raw OS disk: native CoolFS starts at LBA 0 with root-owned system paths, user-owned writable paths, executable `/bin` ELFs including `/bin/threaddemo`, `/bin/tlsdemo`, and `/bin/pthreaddemo`, `/RECOVERY` boot/repair docs, `/SDK` devkit docs/templates including `/SDK/BROWSER_ENGINE_PORT.TXT`, `/CONFIG/BROWSER-ENGINE.CFG`, `/SYSTEM/BROWSER-ENGINE`, `/Packages/guidemo.pkg`, `/Packages/guidemo.elf`, and `/Documents/package-demo.p25`; an optional FAT32 `/FAT` import region starts at 8 MiB. The Makefile attaches it to QEMU as the IDE slave. |
 
 ### Applications
 
@@ -469,7 +474,7 @@ src/
 userspace/
   libcool/         no_std userspace SDK — entry, argv, syscalls, files, pipes,
                    signals, process groups, threads/futexes/TLS, pthread-style primitives,
-                   evented poll, TTY control, mmap,
+                   POSIX pthread/libc shims, evented poll, TTY control, mmap,
                    shmem, events, networking, filesystem utilities, time, GUI, print!/println!
   hello/
     src/main.rs    `/bin/hello` — minimal userspace ELF that writes and exits
@@ -493,6 +498,7 @@ userspace/
     src/bin/tuidemo.rs `/bin/tuidemo` — raw TTY and ANSI terminal demo
     src/bin/threaddemo.rs `/bin/threaddemo` — userspace thread/futex demo
     src/bin/tlsdemo.rs `/bin/tlsdemo` — FS-base TLS + pthread-style sync demo
+    src/bin/pthreaddemo.rs `/bin/pthreaddemo` — POSIX pthread/libc shim demo
     src/bin/sh.rs `/bin/sh` — userspace shell with cwd, redirection, and one-stage pipes
     src/bin/cp.rs `/bin/cp` — streaming userspace file copy
     src/bin/mv.rs `/bin/mv` — userspace rename wrapper
@@ -631,7 +637,11 @@ workers plus futex wake/join, and diagnostics/sysreport include futex counters
 and thread-stack capacity. Phase 73 adds FS-base TLS as scheduler task state,
 ABI v12 `thread_tls_set`, `thread_tls_get`, and `thread_spawn_tls`, libcool
 TLS blocks/keys plus pthread-style mutex/condvar/once helpers, `/bin/tlsdemo`,
-and TLS thread counts in diagnostics/resource reporting.
+and TLS thread counts in diagnostics/resource reporting. Phase 74 adds
+`libcool::posix` and `libcool::libc` pthread/libc shims over that substrate,
+including `pthread_create`/join/exit/self, mutex/condvar/once/key APIs,
+per-thread `errno`, `gettid`, `sched_yield`, `nanosleep`, `/bin/pthreaddemo`,
+and `make smoke-phase74-pthread-libc`.
 
 **GUI login and lock screen (Phase 30).** The desktop now boots into a
 boot-splash-style compositor greeter instead of exposing the session
@@ -847,7 +857,10 @@ SDK documentation, backend probe, and native fallback state. Phase 72 adds
 futex diagnostics, and `make smoke-phase72-threads-futex`. Phase 73 adds
 `/bin/tlsdemo`, ABI v12 `thread_tls_set`/`thread_tls_get`/`thread_spawn_tls`,
 libcool TLS/pthread-style helpers, `req.threads-futex=ready`, and
-`make smoke-phase73-tls-pthread`.
+`make smoke-phase73-tls-pthread`. Phase 74 adds `/bin/pthreaddemo`,
+POSIX-shaped `pthread_*`, per-thread `errno`, `gettid`, `sched_yield`, and
+`nanosleep` wrappers in `libcool::posix`/`libcool::libc`, plus
+`make smoke-phase74-pthread-libc`.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
@@ -940,5 +953,6 @@ while kernel faults still panic.
 | 71 | Browser engine port ABI — WPE WebKit target selection, host contract diagnostics, SDK docs, and native fallback readiness | **Done** |
 | 72 | Userspace threads and futex ABI — same-address-space thread tasks, futex wait/wake, libcool wrappers, `/bin/threaddemo`, and diagnostics | **Done** |
 | 73 | Thread-local storage and pthread runtime groundwork — FS-base TLS, spawn-with-TLS, libcool pthread-style primitives, `/bin/tlsdemo`, and diagnostics | **Done** |
+| 74 | POSIX pthread/libc shim — `pthread_create`/join/exit/self, mutex/condvar/once/key wrappers, per-thread `errno`, timing helpers, `/bin/pthreaddemo`, and docs | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

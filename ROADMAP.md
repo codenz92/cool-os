@@ -4,7 +4,7 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–73 are complete. The current milestone gives coolOS a much more
+Phases 1–74 are complete. The current milestone gives coolOS a much more
 normal command-line and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
@@ -75,8 +75,13 @@ futex counters plus thread-stack capacity. Phase 73 adds per-thread FS-base TLS
 state, ABI v12 `thread_tls_set`, `thread_tls_get`, and `thread_spawn_tls`,
 libcool TLS blocks/keys plus pthread-style mutex/condvar/once helpers,
 `/bin/tlsdemo`, and browser-engine readiness that marks `threads-futex` ready
-while leaving hosted libc/POSIX pthread wiring for the next runtime layer.
-Phases 45-73 focus on responsiveness, interactive terminal behavior, and
+while identifying hosted libc/POSIX pthread wiring as the next runtime layer.
+Phase 74 adds the first POSIX-shaped pthread/libc shim layer in
+`libcool::posix` and `libcool::libc`: pthread create/join/exit/self,
+mutex/condvar/once/key APIs, per-thread `errno`, `gettid`, `sched_yield`,
+`nanosleep`, `/bin/pthreaddemo`, and smoke coverage over the ABI v12
+thread/TLS/futex substrate. Phases 45-74 focus on responsiveness,
+interactive terminal behavior, and
 desktop-browser compatibility:
 cursor-only framebuffer updates,
 input-first idle-loop ordering, adaptive 36/144 Hz frame pacing, compositor
@@ -91,8 +96,8 @@ scheduler, VMM, VFS, shared memory, and sockets, low-memory recovery, durable
 service recovery, update rollback, boot-health rollback, signed update
 verification, update key rotation, downgrade refusal, signed package
 install/repair trust, package payload transactions, and the first explicit
-WPE WebKit port ABI plus thread/futex/TLS runtime prerequisites for a future
-full browser engine.
+WPE WebKit port ABI plus thread/futex/TLS/POSIX pthread runtime prerequisites
+for a future full browser engine.
 
 ---
 
@@ -2181,9 +2186,9 @@ browser kept as a small fallback/debug renderer.
 **Current status:** complete. coolOS now has an explicit WPE WebKit port target
 and an inspectable browser engine host contract. A real WebKit backend is not
 booting yet; the readiness surface deliberately identifies the remaining OS
-work after Phase 73: hosted libc/POSIX pthread integration, dynamic linking/C
-runtime support, larger/file backed mappings, JavaScriptCore JIT/interpreter
-policy, richer POSIX socket/file semantics, scalable fonts/text shaping, and
+work after Phase 74: dynamic linking/C runtime support, larger/file-backed
+mappings, JavaScriptCore JIT/interpreter policy, richer POSIX socket/file
+semantics, scalable fonts/text shaping, remaining pthread edge cases, and
 eventually graphics acceleration.
 
 ---
@@ -2248,16 +2253,50 @@ synchronization helpers that can later back a libc/POSIX pthread ABI.
       TLS-key slots, condition-variable wakeups, once initialization, and
       join/reap results.
 - [x] Update the browser-engine requirement table so `threads-futex` is ready
-      and the next blocker is hosted libc/POSIX pthread wiring.
+      and hosted libc/POSIX pthread wiring is staged as the next runtime layer.
 - [x] Add `make smoke-phase73-tls-pthread` and update SDK/README/Roadmap docs
       for ABI v12.
 
 **Current status:** complete. coolOS now saves and restores a real user TLS
 base per scheduled task, can launch a userspace thread with its TLS base already
 installed before first instruction, and has SDK-level pthread-style blocking
-primitives on top of futexes. This is still not an upstream libc pthread ABI:
-dynamic linking, ELF TLS relocations, errno/`pthread_*` symbol compatibility,
-and process-wide multi-thread signal/exit policy remain separate phases.
+primitives on top of futexes. A fuller upstream libc pthread ABI still needs
+dynamic linking, ELF TLS relocations, symbol/export integration, destructors,
+and process-wide multi-thread signal/exit policy in later phases.
+
+---
+
+## ✅ Phase 74 — POSIX Pthread and Libc Shim
+
+**Goal:** Put a hosted-runtime shaped API on top of the Phase 73 thread/TLS/futex
+substrate so browser-engine ports and C runtime experiments can call familiar
+`pthread_*`, `errno`, and timing symbols before a full dynamic libc exists.
+
+- [x] Reserve TLS slot 0 for per-thread `errno` and keep application-created
+      TLS keys in the remaining slots.
+- [x] Add `libcool::posix` plus `libcool::libc` re-exports for
+      `pthread_create`, `pthread_join`, `pthread_exit`, `pthread_self`, and
+      `pthread_equal`.
+- [x] Back `pthread_create` with `thread_spawn_tls`, fixed runtime-owned TLS
+      blocks, and a trampoline that records POSIX return pointers as join
+      statuses.
+- [x] Add POSIX-shaped wrappers for pthread mutexes, condition variables,
+      `pthread_once`, pthread keys/specific values, and no-op attr/destroy
+      helpers.
+- [x] Add libc-adjacent helpers for `errno`, `__errno_location`,
+      `init_main_thread`, `gettid`, `sched_yield`, `nanosleep`, and `usleep`.
+- [x] Add `/bin/pthreaddemo` to verify pthread creation/join, condition wakeups,
+      once initialization, pthread-specific values, per-thread `errno`, yield,
+      and sleep behavior through the compatibility layer.
+- [x] Add `make smoke-phase74-pthread-libc` and update SDK, browser-engine,
+      README, Roadmap, and in-OS text/docs.
+
+**Current status:** complete. coolOS now has a bounded no-alloc POSIX pthread
+shim suitable for early hosted-engine integration work. It is not a complete
+libc or upstream pthread implementation yet: dynamic linking, ELF TLS
+relocations, pthread destructors, robust/recursive mutex variants, cancellation,
+signal semantics across multi-threaded process groups, and broader POSIX
+file/socket compatibility remain future runtime work.
 
 ---
 
@@ -2352,4 +2391,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.34 | Phase 70 complete: Package payloads and transactional installs |
 | v7.35 | Phase 71 complete: Browser engine port ABI |
 | v7.36 | Phase 72 complete: Userspace threads and futex ABI |
-| v7.37 | Current — Phase 73 complete: Thread-local storage and pthread runtime groundwork |
+| v7.37 | Phase 73 complete: Thread-local storage and pthread runtime groundwork |
+| v7.38 | Current — Phase 74 complete: POSIX pthread and libc shim |

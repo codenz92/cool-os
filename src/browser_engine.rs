@@ -13,7 +13,7 @@ const WPE_READY_PATH: &str = "/SYSTEM/BROWSER-ENGINE/WPE.READY";
 
 const DEFAULT_CONFIG: &[u8] = b"preferred=wpe-webkit\nfallback=coolos-native\nmode=port-prep\nengine_abi=1\nsurface=rgba-shmem\ninput=gui-events\nnetwork=kernel-http-tls\n";
 
-const INITIAL_LOG: &[u8] = b"coolOS browser engine port log\nphase=73\npreferred=wpe-webkit\nactive=coolos-native\nstatus=port-prep\nthreads_futex=ready\ntls_pthread=partial\n";
+const INITIAL_LOG: &[u8] = b"coolOS browser engine port log\nphase=74\npreferred=wpe-webkit\nactive=coolos-native\nstatus=port-prep\nthreads_futex=ready\ntls_pthread=ready\nposix_libc=partial\n";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RequirementStatus {
@@ -92,8 +92,8 @@ const REQUIREMENTS: &[Requirement] = &[
     Requirement {
         key: "threads-futex",
         status: RequirementStatus::Ready,
-        detail: "thread groups, futex wait/wake, FS-base TLS, and pthread-style libcool primitives exist",
-        next: "wire the hosted C/POSIX pthread ABI to the libc runtime",
+        detail: "thread groups, futex wait/wake, FS-base TLS, and POSIX pthread/libc shims exist",
+        next: "wire hosted engine builds onto the shim and fill remaining pthread edge cases",
     },
     Requirement {
         key: "dynamic-linker",
@@ -168,6 +168,7 @@ pub fn manifest_lines() -> Vec<String> {
         String::from("input=gui-events"),
         String::from("network=kernel-http-tls-and-sockets"),
         String::from("process=shell-plus-web-process-planned"),
+        String::from("posix=partial-libc-pthread-shim"),
         String::from("storage=/CONFIG/BROWSER.*, /Downloads, /TMP"),
         String::from("font_source=/FONTS"),
         String::from("backend_probe=/SYSTEM/BROWSER-ENGINE/WPE.READY"),
