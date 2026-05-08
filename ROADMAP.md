@@ -80,7 +80,10 @@ Phase 74 adds the first POSIX-shaped pthread/libc shim layer in
 `libcool::posix` and `libcool::libc`: pthread create/join/exit/self,
 mutex/condvar/once/key APIs, per-thread `errno`, `gettid`, `sched_yield`,
 `nanosleep`, `/bin/pthreaddemo`, and smoke coverage over the ABI v12
-thread/TLS/futex substrate. Phases 45-74 focus on responsiveness,
+thread/TLS/futex substrate. Phase 75 adds ABI v13 `mprotect`, `/lib`
+shared-object image placement, `libcool::dynlink`, `/bin/lddemo`, ET_DYN
+`PT_DYNAMIC` parsing, RELA relocations, dynsym export lookup, init-array
+execution, and W^X executable text transitions. Phases 45-75 focus on responsiveness,
 interactive terminal behavior, and
 desktop-browser compatibility:
 cursor-only framebuffer updates,
@@ -2186,10 +2189,10 @@ browser kept as a small fallback/debug renderer.
 **Current status:** complete. coolOS now has an explicit WPE WebKit port target
 and an inspectable browser engine host contract. A real WebKit backend is not
 booting yet; the readiness surface deliberately identifies the remaining OS
-work after Phase 74: dynamic linking/C runtime support, larger/file-backed
-mappings, JavaScriptCore JIT/interpreter policy, richer POSIX socket/file
-semantics, scalable fonts/text shaping, remaining pthread edge cases, and
-eventually graphics acceleration.
+work after Phase 75: full dynamic-link dependency/TLS/C runtime support,
+larger/file-backed mappings, JavaScriptCore JIT/interpreter policy, richer
+POSIX socket/file semantics, scalable fonts/text shaping, remaining pthread
+edge cases, and eventually graphics acceleration.
 
 ---
 
@@ -2300,6 +2303,48 @@ file/socket compatibility remain future runtime work.
 
 ---
 
+## ✅ Phase 75 — Dynamic Loader Foundation
+
+**Goal:** Stop blocking hosted-runtime work on static-only userspace images by
+adding the first real shared-object loader path: W^X executable mappings,
+ET_DYN dynamic metadata parsing, relocations, export lookup, init arrays, and a
+ring-3 proof that code loaded from `/lib` can be invoked safely.
+
+- [x] Add ABI v13 `mprotect(addr, len, flags)` for existing mmap-arena pages,
+      with bit 0 as writable, bit 1 as executable, and writable+executable
+      mappings rejected by both `mmap` and `mprotect`.
+- [x] Add VMM support for changing leaf PTE flags on already-mapped user pages
+      while keeping the operation constrained to existing user mappings.
+- [x] Extend `libcool::memory` with `mmap_flags` and `mprotect`.
+- [x] Add no-alloc `libcool::dynlink` support for ELF64 ET_DYN objects:
+      `PT_LOAD` mapping, `PT_DYNAMIC` parsing, SysV hash symbol counts,
+      dynsym/dynstr export lookup, RELA relocation handling for
+      `RELATIVE`, `64`, `GLOB_DAT`, and `JUMP_SLOT`, init-array execution,
+      and final W^X segment sealing.
+- [x] Generate a real test shared object at build time as `/lib/libphase75.so`,
+      containing executable x86_64 text, writable data, RELA slots, dynsym
+      exports, and an init-array function.
+- [x] Add `/bin/lddemo` to load `/lib/libphase75.so`, resolve
+      `phase75_add` and `phase75_increment`, call the loaded function, and
+      verify the init array updates the exported data before invocation.
+- [x] Add `/lib` to the generated FAT/CoolFS image and route `.so` build
+      artifacts there while keeping normal extra ELFs under `/bin`.
+- [x] Update browser-engine readiness so dynamic linking and executable memory
+      policy move from missing to partial, with the remaining `DT_NEEDED`, ELF
+      TLS, libc `ld.so`, C++ runtime, and JIT policy work called out.
+- [x] Add `make smoke-phase75-dynlink` and update README, Roadmap, SDK, in-OS
+      About text, and browser-engine docs/logs for v7.39.
+
+**Current status:** complete. coolOS can now load a bounded shared object from
+`/lib`, apply dynamic relocations, seal text pages executable/non-writable, run
+an init array, resolve exports, and call loaded code from ring 3. This is not a
+complete ELF dynamic linker yet: dependency graphs (`DT_NEEDED`), soname/cache
+resolution, ELF TLS records, PLT/lazy binding, symbol versioning, libc `ld.so`,
+C++ runtime constructors/destructors, file-backed mappings, and browser-engine
+JIT policy remain future work.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -2317,7 +2362,8 @@ raw syscall assembly, and convenience APIs such as `println!`, `File::open`,
 `spawn_fds_args`, `thread::spawn`, `thread::spawn_tls`,
 `thread::set_tls_base`, `thread::futex_wait`, `thread::PThreadMutex`,
 `thread::PThreadCondvar`, `thread::PThreadOnce`, `evented::poll`,
-`tty::enter_raw_mode`, `read_event`, `dns_resolve`, TCP sockets, time, and filesystem utility calls plus GUI windows through `libcool::fs` and
+`tty::enter_raw_mode`, `dynlink::load`, `memory::mprotect`, `read_event`,
+`dns_resolve`, TCP sockets, time, and filesystem utility calls plus GUI windows through `libcool::fs` and
 `libcool::gui`.
 
 ### Real hardware vs QEMU
@@ -2392,4 +2438,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.35 | Phase 71 complete: Browser engine port ABI |
 | v7.36 | Phase 72 complete: Userspace threads and futex ABI |
 | v7.37 | Phase 73 complete: Thread-local storage and pthread runtime groundwork |
-| v7.38 | Current — Phase 74 complete: POSIX pthread and libc shim |
+| v7.38 | Phase 74 complete: POSIX pthread and libc shim |
+| v7.39 | Current — Phase 75 complete: dynamic loader foundation |

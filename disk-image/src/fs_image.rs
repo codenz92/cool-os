@@ -2,7 +2,7 @@
 /// CoolFS starts at LBA 0 and is the root filesystem. A FAT32 compatibility
 /// region is still formatted at 8 MiB for the optional `/FAT` import mount.
 ///
-/// Usage: fs-image <output-path> [hello-elf] [exec-elf] [pipe-elf] [read-elf] [piperd-elf] [pipewr-elf] [keyecho-elf] [terminal-elf] [ttyread-elf] [netdemo-elf] [wget-elf] [sdkdemo-elf] [guidemo-elf] [notes-elf] [editor-elf] [trash-elf] [screenshot-elf] [procdemo-elf] [procsleep-elf] [sentinel-elf] [badptr-elf] [badwrite-elf] [badmmap-elf] [badexec-elf] [baduserread-elf] [extra-bin-elf...]
+/// Usage: fs-image <output-path> [hello-elf] [exec-elf] [pipe-elf] [read-elf] [piperd-elf] [pipewr-elf] [keyecho-elf] [terminal-elf] [ttyread-elf] [netdemo-elf] [wget-elf] [sdkdemo-elf] [guidemo-elf] [notes-elf] [editor-elf] [trash-elf] [screenshot-elf] [procdemo-elf] [procsleep-elf] [sentinel-elf] [badptr-elf] [badwrite-elf] [badmmap-elf] [badexec-elf] [baduserread-elf] [extra-bin-elf-or-so...]
 /// Output: a 64 MiB raw OS disk image ready to attach as a QEMU IDE drive.
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -89,6 +89,7 @@ fn main() {
         "Trash",
         "Downloads",
         "Packages",
+        "lib",
         "FONTS",
         "RECOVERY",
         "SDK",
@@ -110,6 +111,7 @@ fn main() {
     root.create_dir("bin").expect("failed to create /bin");
     coolfs.create_dir("/bin");
     let bin = root.open_dir("bin").expect("failed to open /bin");
+    let lib = root.open_dir("lib").expect("failed to open /lib");
     populate_builtin_app_manifests(&mut coolfs);
 
     // /bin/hello.txt
@@ -479,14 +481,19 @@ fn main() {
             .unwrap_or_else(|| panic!("invalid extra binary path {}", extra_path));
         let bytes = std::fs::read(&extra_path)
             .unwrap_or_else(|e| panic!("failed to read {}: {}", extra_path, e));
-        let mut fat_bin = bin
+        let (fat_dir, coolfs_path) = if name.ends_with(".so") {
+            (&lib, format!("/lib/{}", name))
+        } else {
+            (&bin, format!("/bin/{}", name))
+        };
+        let mut fat_file = fat_dir
             .create_file(name)
             .unwrap_or_else(|e| panic!("failed to create {}: {}", name, e));
-        fat_bin.truncate().unwrap();
-        fat_bin
+        fat_file.truncate().unwrap();
+        fat_file
             .write_all(&bytes)
             .unwrap_or_else(|e| panic!("failed to write {}: {}", name, e));
-        coolfs.create_file(&format!("/bin/{}", name), &bytes);
+        coolfs.create_file(&coolfs_path, &bytes);
     }
 
     let packages = root.open_dir("Packages").expect("failed to open /Packages");
@@ -619,15 +626,15 @@ fn phase70_guidemo_package(payload: &[u8]) -> String {
 
 const BROWSER_ENGINE_CONFIG: &[u8] = b"preferred=wpe-webkit\nfallback=coolos-native\nmode=port-prep\nengine_abi=1\nsurface=rgba-shmem\ninput=gui-events\nnetwork=kernel-http-tls\n";
 
-const BROWSER_ENGINE_LOG: &[u8] = b"coolOS browser engine port log\nphase=74\npreferred=wpe-webkit\nactive=coolos-native\nstatus=port-prep\nthreads_futex=ready\ntls_pthread=ready\nposix_libc=partial\n";
+const BROWSER_ENGINE_LOG: &[u8] = b"coolOS browser engine port log\nphase=75\npreferred=wpe-webkit\nactive=coolos-native\nstatus=port-prep\nthreads_futex=ready\ntls_pthread=ready\nposix_libc=partial\ndynamic_linker=partial\nwx_mprotect=ready\n";
 
-const SDK_README: &[u8] = b"coolOS SDK\n\nABI version: 12\nUserspace apps are no_std Rust ELF64 binaries linked with userspace/libcool.\nUseful APIs: process::spawn_args, process::spawn_fds_args, thread::{spawn,spawn_tls,join,set_tls_base,tls_key_create,futex_wait,futex_wake,PThreadMutex,PThreadCondvar,PThreadOnce}, posix::{init_main_thread,pthread_create,pthread_join,pthread_exit,pthread_self,pthread_mutex_lock,pthread_cond_wait,pthread_once,pthread_key_create,pthread_setspecific,errno,set_errno,gettid,sched_yield,nanosleep}, evented::poll, tty::{size,set_mode,enter_raw_mode}, fs::{stat,rename,chdir,getcwd,sync}, io::{open,create,pipe}, gui::Window.\nPackage manifests live under /Packages, must be signed with pkg sign or pkg sign-as, and install transactionally into /APPS/<command>/APP.CFG with an OWNER.TXT trust record.\nUse payload=<target>|<source>|<sha256>|<mode> to copy real files, such as an ELF from /Packages into /bin, with installed payload hashes verified by pkg verify and restored by pkg repair.\nBrowser engine porting starts at /SDK/BROWSER_ENGINE_PORT.TXT and targets WPE WebKit with the native browser kept as fallback.\n";
+const SDK_README: &[u8] = b"coolOS SDK\n\nABI version: 13\nUserspace apps are no_std Rust ELF64 binaries linked with userspace/libcool.\nUseful APIs: process::spawn_args, process::spawn_fds_args, thread::{spawn,spawn_tls,join,set_tls_base,tls_key_create,futex_wait,futex_wake,PThreadMutex,PThreadCondvar,PThreadOnce}, posix::{init_main_thread,pthread_create,pthread_join,pthread_exit,pthread_self,pthread_mutex_lock,pthread_cond_wait,pthread_once,pthread_key_create,pthread_setspecific,errno,set_errno,gettid,sched_yield,nanosleep}, dynlink::load for /lib ET_DYN objects, memory::{mmap,mprotect}, evented::poll, tty::{size,set_mode,enter_raw_mode}, fs::{stat,rename,chdir,getcwd,sync}, io::{open,create,pipe}, gui::Window.\nShared-object experiments live under /lib; Phase 75 loads /lib/libphase75.so with RELA relocations, symbol lookup, W^X mprotect, and init-array execution.\nPackage manifests live under /Packages, must be signed with pkg sign or pkg sign-as, and install transactionally into /APPS/<command>/APP.CFG with an OWNER.TXT trust record.\nUse payload=<target>|<source>|<sha256>|<mode> to copy real files, such as an ELF from /Packages into /bin, with installed payload hashes verified by pkg verify and restored by pkg repair.\nBrowser engine porting starts at /SDK/BROWSER_ENGINE_PORT.TXT and targets WPE WebKit with the native browser kept as fallback.\n";
 
 const SDK_APP_TEMPLATE: &[u8] = b"#![no_std]\n#![no_main]\n\nuse libcool::{io, prelude::*};\n\nlibcool::entry!(main);\n\nfn main(args: Args) -> ! {\n    io::write_stdout(b\"hello from a coolOS app\\n\");\n    if let Some(name) = args.get(1) {\n        io::write_stdout(b\"arg: \");\n        io::write_stdout(name);\n        io::write_stdout(b\"\\n\");\n    }\n    exit(0);\n}\n";
 
 const SDK_PACKAGE_TEMPLATE: &[u8] = b"id=app.example\nname=Example App\ncommand=example\nversion=1.0\nicon=EX\ncategory=Development\npermission=filesystem\nexec=/bin/example\naliases=example,demo\nassociations=TXT\ndepends=\nmin_os_version=1\npayload=/bin/example|/Packages/example.elf|<sha256>|755\n";
 
-const SDK_BROWSER_ENGINE_PORT: &[u8] = b"coolOS Browser Engine Port ABI v1\n\nTarget engine: WPE WebKit.\nFallback engine: coolos-native.\n\nGoal\nRun a mature WebKit-class engine for modern sites while keeping the existing native browser as a small fallback/debug surface.\n\nHost contract\n- Surface output: RGBA shared-memory buffers presented through the GUI window API.\n- Input: keyboard, pointer, focus, and resize events translated from coolOS GUI events.\n- Network: DNS/TCP/TLS and HTTP paths through the kernel networking stack until a fuller POSIX socket layer exists.\n- Storage: /CONFIG/BROWSER.*, /Downloads, /TMP, and package-owned engine files.\n- Fonts: /FONTS with scalable font lookup planned.\n- Process model: browser shell plus isolated web process planned.\n- Threading: ABI 12 exposes shared-address-space userspace threads, futex wait/wake, per-thread FS-base TLS, spawn-with-TLS, pthread_create/join/exit/self, pthread mutex/condvar/once/key APIs, and per-thread errno storage for hosted engine run loops.\n\nKnown blockers before real WPE boots\n- Shared-library loader, relocations, ELF TLS records, and broader C/C++ runtime support.\n- Larger mmap/file-backed mapping support and higher address-space budgets.\n- POSIX socket/open flag compatibility and nonblocking run-loop edge cases.\n- JavaScriptCore JIT policy or interpreter-only engine configuration.\n- Software rendering backend first; EGL/OpenGL/WebGL can come later.\n\nDiagnostics\n- Terminal: engine, engine abi, engine requirements, engine config, engine log, engine recovery.\n- Browser: browser://engine.\n- Sysreport/recovery include browser engine readiness, futex telemetry, TLS thread counts, and POSIX pthread shim status.\n";
+const SDK_BROWSER_ENGINE_PORT: &[u8] = b"coolOS Browser Engine Port ABI v1\n\nTarget engine: WPE WebKit.\nFallback engine: coolos-native.\n\nGoal\nRun a mature WebKit-class engine for modern sites while keeping the existing native browser as a small fallback/debug surface.\n\nHost contract\n- Surface output: RGBA shared-memory buffers presented through the GUI window API.\n- Input: keyboard, pointer, focus, and resize events translated from coolOS GUI events.\n- Network: DNS/TCP/TLS and HTTP paths through the kernel networking stack until a fuller POSIX socket layer exists.\n- Storage: /CONFIG/BROWSER.*, /Downloads, /TMP, /lib shared objects, and package-owned engine files.\n- Fonts: /FONTS with scalable font lookup planned.\n- Process model: browser shell plus isolated web process planned.\n- Threading: ABI 13 exposes shared-address-space userspace threads, futex wait/wake, per-thread FS-base TLS, spawn-with-TLS, pthread_create/join/exit/self, pthread mutex/condvar/once/key APIs, and per-thread errno storage for hosted engine run loops.\n- Dynamic loading: Phase 75 maps ET_DYN objects from /lib, applies RELA relocations, resolves dynsym exports, runs init arrays, and seals text with W^X mprotect before invocation.\n\nKnown blockers before real WPE boots\n- DT_NEEDED dependency graphs, ELF TLS records, libc ld.so integration, and broader C/C++ runtime support.\n- Larger mmap/file-backed mapping support and higher address-space budgets.\n- POSIX socket/open flag compatibility and nonblocking run-loop edge cases.\n- JavaScriptCore JIT policy or interpreter-only engine configuration.\n- Software rendering backend first; EGL/OpenGL/WebGL can come later.\n\nDiagnostics\n- Terminal: engine, engine abi, engine requirements, engine config, engine log, engine recovery.\n- Browser: browser://engine.\n- Sysreport/recovery include browser engine readiness, futex telemetry, TLS thread counts, POSIX pthread shim status, and dynamic-linker readiness.\n";
 
 fn sha256_hex(data: &[u8]) -> String {
     let digest = sha256(data);

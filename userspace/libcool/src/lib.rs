@@ -3,7 +3,7 @@
 use core::arch::asm;
 
 pub const SDK_VERSION: u64 = 1;
-pub const ABI_VERSION: u64 = 12;
+pub const ABI_VERSION: u64 = 13;
 pub const U64_MAX: u64 = u64::MAX;
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -81,6 +81,7 @@ pub mod sys {
     pub const THREAD_TLS_SET: u64 = 50;
     pub const THREAD_TLS_GET: u64 = 51;
     pub const THREAD_SPAWN_TLS: u64 = 52;
+    pub const MPROTECT: u64 = 53;
 
     #[inline]
     pub unsafe fn syscall0(nr: u64) -> u64 {
@@ -1268,11 +1269,21 @@ pub mod memory {
     use super::{sys, Error, Result};
 
     pub const PROT_WRITE: u64 = 1;
+    pub const PROT_EXEC: u64 = 2;
 
     pub fn mmap(addr: u64, len: usize, writable: bool) -> Result<u64> {
         let flags = if writable { PROT_WRITE } else { 0 };
+        mmap_flags(addr, len, flags)
+    }
+
+    pub fn mmap_flags(addr: u64, len: usize, flags: u64) -> Result<u64> {
         let ret = unsafe { sys::syscall3(sys::MMAP, addr, len as u64, flags) };
         Error::from_ret(ret)
+    }
+
+    pub fn mprotect(addr: u64, len: usize, flags: u64) -> Result<()> {
+        let ret = unsafe { sys::syscall3(sys::MPROTECT, addr, len as u64, flags) };
+        Error::from_ret(ret).map(|_| ())
     }
 }
 
@@ -1438,6 +1449,712 @@ pub mod io {
         write_u64(((addr >> 8) & 0xff) as u64);
         write_stdout(b".");
         write_u64((addr & 0xff) as u64);
+    }
+}
+
+pub mod dynlink {
+    use core::{mem, ptr};
+
+    use super::{io, memory, Error, Result};
+
+    pub const DEFAULT_LOAD_BASE: u64 = 0x0000_7fff_2000_0000;
+    pub const MAX_IMAGE_BYTES: usize = 16 * 1024;
+
+    const PAGE_SIZE: u64 = 4096;
+    const MAX_PHDRS: usize = 16;
+    const MAX_LOAD_SEGMENTS: usize = 8;
+    const MAX_SYMBOLS: usize = 128;
+    const MAX_RELOCATIONS: usize = 128;
+    const MAX_INIT_ARRAY: usize = 16;
+
+    const ET_DYN: u16 = 3;
+    const EM_X86_64: u16 = 62;
+    const PT_LOAD: u32 = 1;
+    const PT_DYNAMIC: u32 = 2;
+    const PF_X: u32 = 1;
+    const PF_W: u32 = 2;
+
+    const DT_NULL: i64 = 0;
+    const DT_HASH: i64 = 4;
+    const DT_STRTAB: i64 = 5;
+    const DT_SYMTAB: i64 = 6;
+    const DT_RELA: i64 = 7;
+    const DT_RELASZ: i64 = 8;
+    const DT_RELAENT: i64 = 9;
+    const DT_STRSZ: i64 = 10;
+    const DT_SYMENT: i64 = 11;
+    const DT_INIT_ARRAY: i64 = 25;
+    const DT_INIT_ARRAYSZ: i64 = 27;
+
+    const R_X86_64_NONE: u32 = 0;
+    const R_X86_64_64: u32 = 1;
+    const R_X86_64_GLOB_DAT: u32 = 6;
+    const R_X86_64_JUMP_SLOT: u32 = 7;
+    const R_X86_64_RELATIVE: u32 = 8;
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Elf64Header {
+        e_ident: [u8; 16],
+        e_type: u16,
+        e_machine: u16,
+        e_version: u32,
+        e_entry: u64,
+        e_phoff: u64,
+        e_shoff: u64,
+        e_flags: u32,
+        e_ehsize: u16,
+        e_phentsize: u16,
+        e_phnum: u16,
+        e_shentsize: u16,
+        e_shnum: u16,
+        e_shstrndx: u16,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Elf64ProgramHeader {
+        p_type: u32,
+        p_flags: u32,
+        p_offset: u64,
+        p_vaddr: u64,
+        p_paddr: u64,
+        p_filesz: u64,
+        p_memsz: u64,
+        p_align: u64,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Elf64Dyn {
+        d_tag: i64,
+        d_val: u64,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Elf64Rela {
+        r_offset: u64,
+        r_info: u64,
+        r_addend: i64,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Elf64Sym {
+        st_name: u32,
+        st_info: u8,
+        st_other: u8,
+        st_shndx: u16,
+        st_value: u64,
+        st_size: u64,
+    }
+
+    #[derive(Clone, Copy)]
+    struct LoadSegment {
+        vaddr_start: u64,
+        vaddr_end: u64,
+        map_start: u64,
+        map_len: u64,
+        flags: u32,
+    }
+
+    impl LoadSegment {
+        const fn empty() -> Self {
+            Self {
+                vaddr_start: 0,
+                vaddr_end: 0,
+                map_start: 0,
+                map_len: 0,
+                flags: 0,
+            }
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct DynamicInfo {
+        hash: u64,
+        strtab: u64,
+        strsz: usize,
+        symtab: u64,
+        syment: usize,
+        rela: u64,
+        relasz: usize,
+        relaent: usize,
+        init_array: u64,
+        init_arraysz: usize,
+    }
+
+    impl DynamicInfo {
+        const fn empty() -> Self {
+            Self {
+                hash: 0,
+                strtab: 0,
+                strsz: 0,
+                symtab: 0,
+                syment: mem::size_of::<Elf64Sym>(),
+                rela: 0,
+                relasz: 0,
+                relaent: mem::size_of::<Elf64Rela>(),
+                init_array: 0,
+                init_arraysz: 0,
+            }
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    pub struct LoadedObject {
+        base: u64,
+        bias: u64,
+        strtab: u64,
+        strsz: usize,
+        symtab: u64,
+        syment: usize,
+        symbol_count: usize,
+        load_count: usize,
+        relocation_count: usize,
+        init_array: u64,
+        init_count: usize,
+    }
+
+    impl LoadedObject {
+        pub const fn base(self) -> u64 {
+            self.base
+        }
+
+        pub const fn load_count(self) -> usize {
+            self.load_count
+        }
+
+        pub const fn relocation_count(self) -> usize {
+            self.relocation_count
+        }
+
+        pub const fn init_count(self) -> usize {
+            self.init_count
+        }
+
+        pub fn symbol(self, name: &[u8]) -> Result<u64> {
+            if name.is_empty() || self.symbol_count == 0 {
+                return Err(Error::Invalid);
+            }
+            let mut idx = 0usize;
+            while idx < self.symbol_count {
+                let sym = unsafe {
+                    read_runtime::<Elf64Sym>(self.symtab + idx as u64 * self.syment as u64)
+                };
+                if sym.st_name as usize >= self.strsz {
+                    idx += 1;
+                    continue;
+                }
+                let str_addr = self.strtab + sym.st_name as u64;
+                if cstr_eq(str_addr, self.strsz - sym.st_name as usize, name) {
+                    if sym.st_shndx == 0 || sym.st_value == 0 {
+                        return Err(Error::Invalid);
+                    }
+                    return runtime_addr(self.bias, sym.st_value);
+                }
+                idx += 1;
+            }
+            Err(Error::Invalid)
+        }
+
+        pub unsafe fn call_init_array(self) -> Result<()> {
+            let mut idx = 0usize;
+            while idx < self.init_count {
+                let slot = self.init_array + idx as u64 * 8;
+                let func_addr = read_runtime::<u64>(slot);
+                if func_addr != 0 {
+                    let init: extern "C" fn() = mem::transmute(func_addr as usize);
+                    init();
+                }
+                idx += 1;
+            }
+            Ok(())
+        }
+    }
+
+    pub fn load(path: &[u8], image: &mut [u8], load_base: u64) -> Result<LoadedObject> {
+        if image.len() > MAX_IMAGE_BYTES || load_base & (PAGE_SIZE - 1) != 0 {
+            return Err(Error::Invalid);
+        }
+        let len = read_whole_file(path, image)?;
+        load_image(&image[..len], load_base)
+    }
+
+    pub fn load_image(image: &[u8], load_base: u64) -> Result<LoadedObject> {
+        let header = parse_header(image)?;
+        let mut loads = [LoadSegment::empty(); MAX_LOAD_SEGMENTS];
+        let load_count = collect_load_segments(image, &header, load_base, &mut loads)?;
+        let bias = load_bias(load_base, &loads, load_count)?;
+        let mut adjust = 0usize;
+        while adjust < load_count {
+            loads[adjust].map_start = runtime_addr(bias, loads[adjust].vaddr_start)?;
+            adjust += 1;
+        }
+
+        let mut idx = 0usize;
+        while idx < load_count {
+            map_load_segment(image, &loads[idx], bias, &header)?;
+            idx += 1;
+        }
+
+        let dyninfo = parse_dynamic(image, &header)?;
+        let symbol_count = symbol_count(&dyninfo, bias, &loads, load_count)?;
+        let relocation_count = apply_relocations(&dyninfo, bias, symbol_count, &loads, load_count)?;
+        if dyninfo.init_arraysz != 0
+            && (dyninfo.init_array == 0
+                || !vaddr_range_loaded(
+                    &loads,
+                    load_count,
+                    dyninfo.init_array,
+                    dyninfo.init_arraysz as u64,
+                    false,
+                ))
+        {
+            return Err(Error::Invalid);
+        }
+        protect_load_segments(&loads, load_count)?;
+
+        let init_count = dyninfo.init_arraysz / 8;
+        if init_count > MAX_INIT_ARRAY {
+            return Err(Error::Invalid);
+        }
+        let object = LoadedObject {
+            base: load_base,
+            bias,
+            strtab: runtime_addr(bias, dyninfo.strtab)?,
+            strsz: dyninfo.strsz,
+            symtab: runtime_addr(bias, dyninfo.symtab)?,
+            syment: dyninfo.syment,
+            symbol_count,
+            load_count,
+            relocation_count,
+            init_array: if dyninfo.init_array == 0 {
+                0
+            } else {
+                runtime_addr(bias, dyninfo.init_array)?
+            },
+            init_count,
+        };
+        unsafe { object.call_init_array()? };
+        Ok(object)
+    }
+
+    fn read_whole_file(path: &[u8], image: &mut [u8]) -> Result<usize> {
+        let file = io::File::open(path)?;
+        let mut total = 0usize;
+        loop {
+            if total == image.len() {
+                file.close();
+                return Err(Error::Invalid);
+            }
+            let n = file.read(&mut image[total..])?;
+            if n == 0 {
+                file.close();
+                return Ok(total);
+            }
+            total = total.checked_add(n).ok_or(Error::Invalid)?;
+        }
+    }
+
+    fn parse_header(image: &[u8]) -> Result<Elf64Header> {
+        let header = read_struct::<Elf64Header>(image, 0).ok_or(Error::Invalid)?;
+        if &header.e_ident[0..4] != b"\x7fELF"
+            || header.e_ident[4] != 2
+            || header.e_ident[5] != 1
+            || header.e_ident[6] != 1
+        {
+            return Err(Error::Invalid);
+        }
+        if header.e_type != ET_DYN || header.e_machine != EM_X86_64 {
+            return Err(Error::Invalid);
+        }
+        if header.e_phentsize as usize != mem::size_of::<Elf64ProgramHeader>()
+            || header.e_phnum as usize > MAX_PHDRS
+        {
+            return Err(Error::Invalid);
+        }
+        let ph_bytes = (header.e_phnum as usize)
+            .checked_mul(header.e_phentsize as usize)
+            .ok_or(Error::Invalid)?;
+        let ph_end = (header.e_phoff as usize)
+            .checked_add(ph_bytes)
+            .ok_or(Error::Invalid)?;
+        if ph_end > image.len() {
+            return Err(Error::Invalid);
+        }
+        Ok(header)
+    }
+
+    fn collect_load_segments(
+        image: &[u8],
+        header: &Elf64Header,
+        _load_base: u64,
+        loads: &mut [LoadSegment; MAX_LOAD_SEGMENTS],
+    ) -> Result<usize> {
+        let mut count = 0usize;
+        let mut i = 0u16;
+        while i < header.e_phnum {
+            let ph = program_header(image, header, i)?;
+            if ph.p_type == PT_LOAD {
+                if count >= MAX_LOAD_SEGMENTS {
+                    return Err(Error::Invalid);
+                }
+                validate_load(image, &ph)?;
+                let start = align_down(ph.p_vaddr, PAGE_SIZE);
+                let end = align_up(
+                    ph.p_vaddr.checked_add(ph.p_memsz).ok_or(Error::Invalid)?,
+                    PAGE_SIZE,
+                )?;
+                let mut existing = 0usize;
+                while existing < count {
+                    if ranges_overlap(
+                        start,
+                        end,
+                        loads[existing].vaddr_start,
+                        loads[existing].vaddr_end,
+                    ) {
+                        return Err(Error::Invalid);
+                    }
+                    existing += 1;
+                }
+                loads[count] = LoadSegment {
+                    vaddr_start: start,
+                    vaddr_end: end,
+                    map_start: 0,
+                    map_len: end - start,
+                    flags: ph.p_flags,
+                };
+                count += 1;
+            }
+            i += 1;
+        }
+        if count == 0 {
+            return Err(Error::Invalid);
+        }
+        Ok(count)
+    }
+
+    fn load_bias(
+        load_base: u64,
+        loads: &[LoadSegment; MAX_LOAD_SEGMENTS],
+        count: usize,
+    ) -> Result<u64> {
+        let mut min = u64::MAX;
+        let mut idx = 0usize;
+        while idx < count {
+            if loads[idx].vaddr_start < min {
+                min = loads[idx].vaddr_start;
+            }
+            idx += 1;
+        }
+        load_base.checked_sub(min).ok_or(Error::Invalid)
+    }
+
+    fn validate_load(image: &[u8], ph: &Elf64ProgramHeader) -> Result<()> {
+        if ph.p_memsz == 0 || ph.p_filesz > ph.p_memsz {
+            return Err(Error::Invalid);
+        }
+        if ph.p_align > 1 && !ph.p_align.is_power_of_two() {
+            return Err(Error::Invalid);
+        }
+        if ph.p_align >= PAGE_SIZE
+            && (ph.p_offset & (PAGE_SIZE - 1)) != (ph.p_vaddr & (PAGE_SIZE - 1))
+        {
+            return Err(Error::Invalid);
+        }
+        let file_end = ph.p_offset.checked_add(ph.p_filesz).ok_or(Error::Invalid)?;
+        if file_end > image.len() as u64 {
+            return Err(Error::Invalid);
+        }
+        ph.p_vaddr.checked_add(ph.p_memsz).ok_or(Error::Invalid)?;
+        Ok(())
+    }
+
+    fn map_load_segment(
+        image: &[u8],
+        load: &LoadSegment,
+        bias: u64,
+        header: &Elf64Header,
+    ) -> Result<()> {
+        memory::mmap(load.map_start, load.map_len as usize, true)?;
+
+        let mut i = 0u16;
+        while i < header.e_phnum {
+            let ph = program_header(image, header, i)?;
+            let start = align_down(ph.p_vaddr, PAGE_SIZE);
+            if ph.p_type == PT_LOAD && start == load.vaddr_start {
+                if ph.p_filesz != 0 {
+                    let dst = runtime_addr(bias, ph.p_vaddr)? as *mut u8;
+                    let src = image.as_ptr().wrapping_add(ph.p_offset as usize);
+                    unsafe {
+                        ptr::copy_nonoverlapping(src, dst, ph.p_filesz as usize);
+                    }
+                }
+                return Ok(());
+            }
+            i += 1;
+        }
+        Err(Error::Invalid)
+    }
+
+    fn parse_dynamic(image: &[u8], header: &Elf64Header) -> Result<DynamicInfo> {
+        let mut info = DynamicInfo::empty();
+        let mut found = false;
+        let mut i = 0u16;
+        while i < header.e_phnum {
+            let ph = program_header(image, header, i)?;
+            if ph.p_type == PT_DYNAMIC {
+                found = true;
+                let count = (ph.p_filesz as usize) / mem::size_of::<Elf64Dyn>();
+                let mut idx = 0usize;
+                while idx < count {
+                    let dynent = read_struct::<Elf64Dyn>(
+                        image,
+                        ph.p_offset as usize + idx * mem::size_of::<Elf64Dyn>(),
+                    )
+                    .ok_or(Error::Invalid)?;
+                    match dynent.d_tag {
+                        DT_NULL => break,
+                        DT_HASH => info.hash = dynent.d_val,
+                        DT_STRTAB => info.strtab = dynent.d_val,
+                        DT_SYMTAB => info.symtab = dynent.d_val,
+                        DT_STRSZ => info.strsz = dynent.d_val as usize,
+                        DT_SYMENT => info.syment = dynent.d_val as usize,
+                        DT_RELA => info.rela = dynent.d_val,
+                        DT_RELASZ => info.relasz = dynent.d_val as usize,
+                        DT_RELAENT => info.relaent = dynent.d_val as usize,
+                        DT_INIT_ARRAY => info.init_array = dynent.d_val,
+                        DT_INIT_ARRAYSZ => info.init_arraysz = dynent.d_val as usize,
+                        _ => {}
+                    }
+                    idx += 1;
+                }
+            }
+            i += 1;
+        }
+        if !found
+            || info.hash == 0
+            || info.strtab == 0
+            || info.symtab == 0
+            || info.strsz == 0
+            || info.syment != mem::size_of::<Elf64Sym>()
+            || info.relaent != mem::size_of::<Elf64Rela>()
+            || info.init_arraysz % 8 != 0
+        {
+            return Err(Error::Invalid);
+        }
+        Ok(info)
+    }
+
+    fn symbol_count(
+        info: &DynamicInfo,
+        bias: u64,
+        loads: &[LoadSegment; MAX_LOAD_SEGMENTS],
+        load_count: usize,
+    ) -> Result<usize> {
+        if !vaddr_range_loaded(loads, load_count, info.hash, 8, false)
+            || !vaddr_range_loaded(loads, load_count, info.strtab, info.strsz as u64, false)
+            || !vaddr_range_loaded(loads, load_count, info.symtab, info.syment as u64, false)
+        {
+            return Err(Error::Invalid);
+        }
+        let hash_addr = runtime_addr(bias, info.hash)?;
+        let nchain = unsafe { read_runtime::<u32>(hash_addr + 4) as usize };
+        if nchain == 0 || nchain > MAX_SYMBOLS {
+            return Err(Error::Invalid);
+        }
+        let sym_bytes = nchain.checked_mul(info.syment).ok_or(Error::Invalid)?;
+        if !vaddr_range_loaded(loads, load_count, info.symtab, sym_bytes as u64, false) {
+            return Err(Error::Invalid);
+        }
+        Ok(nchain)
+    }
+
+    fn apply_relocations(
+        info: &DynamicInfo,
+        bias: u64,
+        symbol_count: usize,
+        loads: &[LoadSegment; MAX_LOAD_SEGMENTS],
+        load_count: usize,
+    ) -> Result<usize> {
+        if info.relasz == 0 {
+            return Ok(0);
+        }
+        if info.rela == 0 || info.relasz % info.relaent != 0 {
+            return Err(Error::Invalid);
+        }
+        let count = info.relasz / info.relaent;
+        if count > MAX_RELOCATIONS
+            || !vaddr_range_loaded(loads, load_count, info.rela, info.relasz as u64, false)
+        {
+            return Err(Error::Invalid);
+        }
+
+        let mut idx = 0usize;
+        while idx < count {
+            let rela = unsafe {
+                read_runtime::<Elf64Rela>(
+                    runtime_addr(bias, info.rela)? + idx as u64 * info.relaent as u64,
+                )
+            };
+            let r_type = (rela.r_info & 0xffff_ffff) as u32;
+            let r_sym = (rela.r_info >> 32) as usize;
+            if r_type == R_X86_64_NONE {
+                idx += 1;
+                continue;
+            }
+            if !vaddr_range_loaded(loads, load_count, rela.r_offset, 8, true) {
+                return Err(Error::Invalid);
+            }
+            let value = match r_type {
+                R_X86_64_RELATIVE => checked_add_i64(bias, rela.r_addend)?,
+                R_X86_64_64 | R_X86_64_GLOB_DAT | R_X86_64_JUMP_SLOT => {
+                    let sym_value = symbol_value(info, bias, symbol_count, r_sym)?;
+                    checked_add_i64(sym_value, rela.r_addend)?
+                }
+                _ => return Err(Error::Invalid),
+            };
+            unsafe {
+                ptr::write_unaligned(runtime_addr(bias, rela.r_offset)? as *mut u64, value);
+            }
+            idx += 1;
+        }
+        Ok(count)
+    }
+
+    fn symbol_value(
+        info: &DynamicInfo,
+        bias: u64,
+        symbol_count: usize,
+        index: usize,
+    ) -> Result<u64> {
+        if index == 0 || index >= symbol_count {
+            return Err(Error::Invalid);
+        }
+        let sym = unsafe {
+            read_runtime::<Elf64Sym>(
+                runtime_addr(bias, info.symtab)? + index as u64 * info.syment as u64,
+            )
+        };
+        if sym.st_shndx == 0 || sym.st_value == 0 {
+            return Err(Error::Invalid);
+        }
+        runtime_addr(bias, sym.st_value)
+    }
+
+    fn protect_load_segments(loads: &[LoadSegment; MAX_LOAD_SEGMENTS], count: usize) -> Result<()> {
+        let mut idx = 0usize;
+        while idx < count {
+            let flags = loads[idx].flags;
+            if flags & PF_W != 0 && flags & PF_X != 0 {
+                return Err(Error::Invalid);
+            }
+            let prot = if flags & PF_X != 0 {
+                memory::PROT_EXEC
+            } else if flags & PF_W != 0 {
+                memory::PROT_WRITE
+            } else {
+                0
+            };
+            memory::mprotect(loads[idx].map_start, loads[idx].map_len as usize, prot)?;
+            idx += 1;
+        }
+        Ok(())
+    }
+
+    fn program_header(
+        image: &[u8],
+        header: &Elf64Header,
+        index: u16,
+    ) -> Result<Elf64ProgramHeader> {
+        let off = header.e_phoff as usize + index as usize * header.e_phentsize as usize;
+        read_struct::<Elf64ProgramHeader>(image, off).ok_or(Error::Invalid)
+    }
+
+    fn vaddr_range_loaded(
+        loads: &[LoadSegment; MAX_LOAD_SEGMENTS],
+        count: usize,
+        vaddr: u64,
+        len: u64,
+        writable: bool,
+    ) -> bool {
+        if len == 0 {
+            return false;
+        }
+        let Some(end) = vaddr.checked_add(len) else {
+            return false;
+        };
+        let mut idx = 0usize;
+        while idx < count {
+            let load = loads[idx];
+            if vaddr >= load.vaddr_start
+                && end <= load.vaddr_end
+                && (!writable || load.flags & PF_W != 0)
+            {
+                return true;
+            }
+            idx += 1;
+        }
+        false
+    }
+
+    fn cstr_eq(addr: u64, max_len: usize, name: &[u8]) -> bool {
+        let mut idx = 0usize;
+        loop {
+            if idx >= max_len {
+                return false;
+            }
+            let byte = unsafe { ptr::read((addr + idx as u64) as *const u8) };
+            if idx == name.len() {
+                return byte == 0;
+            }
+            if byte == 0 || byte != name[idx] {
+                return false;
+            }
+            idx += 1;
+        }
+    }
+
+    fn read_struct<T: Copy>(bytes: &[u8], offset: usize) -> Option<T> {
+        let end = offset.checked_add(mem::size_of::<T>())?;
+        if end > bytes.len() {
+            return None;
+        }
+        Some(unsafe { ptr::read_unaligned(bytes.as_ptr().add(offset) as *const T) })
+    }
+
+    unsafe fn read_runtime<T: Copy>(addr: u64) -> T {
+        ptr::read_unaligned(addr as *const T)
+    }
+
+    fn runtime_addr(bias: u64, vaddr: u64) -> Result<u64> {
+        bias.checked_add(vaddr).ok_or(Error::Invalid)
+    }
+
+    fn checked_add_i64(base: u64, value: i64) -> Result<u64> {
+        if value >= 0 {
+            base.checked_add(value as u64).ok_or(Error::Invalid)
+        } else {
+            base.checked_sub(value.wrapping_neg() as u64)
+                .ok_or(Error::Invalid)
+        }
+    }
+
+    fn align_down(value: u64, align: u64) -> u64 {
+        value & !(align - 1)
+    }
+
+    fn align_up(value: u64, align: u64) -> Result<u64> {
+        value
+            .checked_add(align - 1)
+            .map(|v| v & !(align - 1))
+            .ok_or(Error::Invalid)
+    }
+
+    fn ranges_overlap(a_start: u64, a_end: u64, b_start: u64, b_end: u64) -> bool {
+        a_start < b_end && b_start < a_end
     }
 }
 
@@ -2184,7 +2901,7 @@ pub mod prelude {
         poll, wait_child, wait_fd_read, wait_gui_event, wait_socket_read, PollDesc,
     };
     pub use crate::io::{close, create, open, pipe, read, write, write_all, write_stdout, File};
-    pub use crate::memory::mmap;
+    pub use crate::memory::{mmap, mmap_flags, mprotect, PROT_EXEC, PROT_WRITE};
     pub use crate::process::{
         abi_version, exit, get_process_group, getpid, set_process_group, signal, signal_group,
         sleep_ms, spawn, spawn_args, spawn_fds_args, waitpid, yield_now, Signal,

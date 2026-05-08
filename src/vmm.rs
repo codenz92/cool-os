@@ -291,6 +291,62 @@ pub fn map_region(
     Ok(())
 }
 
+/// Change leaf PTE flags for an already-mapped user region.
+///
+/// This is used by the dynamic-loader path to copy shared-object text into
+/// writable pages, apply relocations, and then transition those pages to
+/// executable/non-writable. It only mutates existing 4 KiB user mappings.
+pub fn protect_region(
+    pml4_frame: PhysFrame,
+    virt: VirtAddr,
+    len: u64,
+    flags: PageTableFlags,
+) -> Result<(), &'static str> {
+    if virt.as_u64() & 0xfff != 0 || len == 0 || len & 0xfff != 0 {
+        return Err("protection range is not page aligned");
+    }
+
+    let end = virt.as_u64().checked_add(len).ok_or("range overflow")?;
+    let mut addr = virt.as_u64();
+    while addr < end {
+        protect_page_in(pml4_frame, VirtAddr::new(addr), flags)?;
+        x86_64::instructions::tlb::flush(VirtAddr::new(addr));
+        addr += 4096;
+    }
+    Ok(())
+}
+
+fn protect_page_in(
+    pml4_frame: PhysFrame,
+    virt: VirtAddr,
+    flags: PageTableFlags,
+) -> Result<(), &'static str> {
+    let page: Page<Size4KiB> = Page::containing_address(virt);
+    let pml4 = unsafe { table_at(pml4_frame.start_address()) };
+    let l4 = &pml4[page.p4_index()];
+    if !entry_allows(l4.flags(), false) {
+        return Err("missing user p4 entry");
+    }
+    let l3_table = unsafe { table_at(l4.addr()) };
+    let l3 = &l3_table[page.p3_index()];
+    if !entry_allows(l3.flags(), false) || l3.flags().contains(PageTableFlags::HUGE_PAGE) {
+        return Err("missing user p3 entry");
+    }
+    let l2_table = unsafe { table_at(l3.addr()) };
+    let l2 = &l2_table[page.p2_index()];
+    if !entry_allows(l2.flags(), false) || l2.flags().contains(PageTableFlags::HUGE_PAGE) {
+        return Err("missing user p2 entry");
+    }
+    let l1_table = unsafe { table_at(l2.addr()) };
+    let l1 = &mut l1_table[page.p1_index()];
+    if !entry_allows(l1.flags(), false) {
+        return Err("missing user p1 entry");
+    }
+
+    l1.set_flags(flags);
+    Ok(())
+}
+
 pub fn owned_leaf_pages(pml4_frame: PhysFrame) -> usize {
     let spaces = ADDRESS_SPACES.lock();
     spaces

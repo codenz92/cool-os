@@ -306,7 +306,52 @@ fn process_kernel_supervisor_only() -> bool {
             flags,
         ) {
             Ok(()) => {
-                crate::vmm::user_range_accessible_in(pml4, crate::vmm::USER_MMAP_BASE, 8, true)
+                let mapped_writable =
+                    crate::vmm::user_range_accessible_in(pml4, crate::vmm::USER_MMAP_BASE, 8, true);
+                let readonly_flags = x86_64::structures::paging::PageTableFlags::PRESENT
+                    | x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE
+                    | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
+                let readonly_ok = crate::vmm::protect_region(
+                    pml4,
+                    x86_64::VirtAddr::new(crate::vmm::USER_MMAP_BASE),
+                    4096,
+                    readonly_flags,
+                )
+                .is_ok()
+                    && crate::vmm::user_range_accessible_in(
+                        pml4,
+                        crate::vmm::USER_MMAP_BASE,
+                        8,
+                        false,
+                    )
+                    && !crate::vmm::user_range_accessible_in(
+                        pml4,
+                        crate::vmm::USER_MMAP_BASE,
+                        8,
+                        true,
+                    );
+                let exec_flags = x86_64::structures::paging::PageTableFlags::PRESENT
+                    | x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE;
+                let exec_transition_ok = crate::vmm::protect_region(
+                    pml4,
+                    x86_64::VirtAddr::new(crate::vmm::USER_MMAP_BASE),
+                    4096,
+                    exec_flags,
+                )
+                .is_ok()
+                    && crate::vmm::user_range_accessible_in(
+                        pml4,
+                        crate::vmm::USER_MMAP_BASE,
+                        8,
+                        false,
+                    )
+                    && !crate::vmm::user_range_accessible_in(
+                        pml4,
+                        crate::vmm::USER_MMAP_BASE,
+                        8,
+                        true,
+                    );
+                mapped_writable && readonly_ok && exec_transition_ok
             }
             Err(_) => {
                 crate::vmm::free_unmapped_frame(frame);

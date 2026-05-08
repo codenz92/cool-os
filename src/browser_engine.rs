@@ -13,7 +13,7 @@ const WPE_READY_PATH: &str = "/SYSTEM/BROWSER-ENGINE/WPE.READY";
 
 const DEFAULT_CONFIG: &[u8] = b"preferred=wpe-webkit\nfallback=coolos-native\nmode=port-prep\nengine_abi=1\nsurface=rgba-shmem\ninput=gui-events\nnetwork=kernel-http-tls\n";
 
-const INITIAL_LOG: &[u8] = b"coolOS browser engine port log\nphase=74\npreferred=wpe-webkit\nactive=coolos-native\nstatus=port-prep\nthreads_futex=ready\ntls_pthread=ready\nposix_libc=partial\n";
+const INITIAL_LOG: &[u8] = b"coolOS browser engine port log\nphase=75\npreferred=wpe-webkit\nactive=coolos-native\nstatus=port-prep\nthreads_futex=ready\ntls_pthread=ready\nposix_libc=partial\ndynamic_linker=partial\nwx_mprotect=ready\n";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RequirementStatus {
@@ -97,14 +97,16 @@ const REQUIREMENTS: &[Requirement] = &[
     },
     Requirement {
         key: "dynamic-linker",
-        status: RequirementStatus::Missing,
-        detail: "ELF loader handles static no_std binaries only",
-        next: "load shared objects, relocations, TLS, and C/C++ runtime support",
+        status: RequirementStatus::Partial,
+        detail:
+            "ET_DYN loader maps /lib objects, applies RELA, resolves symbols, and runs init arrays",
+        next:
+            "add DT_NEEDED dependency graphs, ELF TLS records, libc ld.so, and C++ runtime support",
     },
     Requirement {
         key: "jit-execmem",
-        status: RequirementStatus::Missing,
-        detail: "no W^X/JIT allocation policy or executable userspace mappings",
+        status: RequirementStatus::Partial,
+        detail: "ABI 13 mprotect supports W^X executable mmap transitions for loaded text",
         next: "define signed-engine JIT policy or force JavaScriptCore interpreter mode",
     },
     Requirement {
@@ -169,6 +171,7 @@ pub fn manifest_lines() -> Vec<String> {
         String::from("network=kernel-http-tls-and-sockets"),
         String::from("process=shell-plus-web-process-planned"),
         String::from("posix=partial-libc-pthread-shim"),
+        String::from("dynamic_linker=partial-et-dyn-rela-symbol-init"),
         String::from("storage=/CONFIG/BROWSER.*, /Downloads, /TMP"),
         String::from("font_source=/FONTS"),
         String::from("backend_probe=/SYSTEM/BROWSER-ENGINE/WPE.READY"),

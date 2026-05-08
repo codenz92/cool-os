@@ -61,6 +61,7 @@
 ///   50 thread_tls_set(base, flags) → 0 on success
 ///   51 thread_tls_get() → current FS/TLS base
 ///   52 thread_spawn_tls(desc_ptr) → tid, desc=[entry,arg,tls_base,flags]
+///   53 mprotect(addr, len, flags) → 0 on success
 ///
 /// Output path: sys_write routes bytes to the current task's controlling TTY
 /// when one is assigned unless fd 1/2 is explicitly mapped in the task fd
@@ -81,6 +82,8 @@ const STAT_RECORD_BYTES: u64 = 40;
 const MAX_POLL_DESCS: u64 = 16;
 const POLL_DESC_BYTES: u64 = 32;
 const MAX_FUTEX_WAKE_COUNT: u64 = 64;
+const USER_PROT_WRITE: u64 = 1;
+const USER_PROT_EXEC: u64 = 2;
 const FUTEX_WAIT_MISMATCH: u64 = 1;
 const FUTEX_WAIT_TIMEOUT: u64 = 2;
 const ZERO8: AtomicU8 = AtomicU8::new(0);
@@ -299,6 +302,7 @@ extern "C" fn syscall_dispatch(
         50 => sys_thread_tls_set(a1, a2),
         51 => sys_thread_tls_get(),
         52 => sys_thread_spawn_tls(a1 as *const u8),
+        53 => sys_mprotect(a1, a2, a3),
         _ => u64::MAX,
     }
 }
@@ -344,13 +348,19 @@ fn sys_getpid() -> u64 {
 }
 
 /// Map `len` bytes at virtual address `addr` in the calling process's address
-/// space with the given protection flags (bit 0 = writable).  Allocates
-/// physical frames and inserts PTEs.  Returns `addr` on success, `u64::MAX`
-/// on failure.
+/// space with the given protection flags (bit 0 = writable, bit 1 =
+/// executable). Writable+executable is rejected. Allocates physical frames and
+/// inserts PTEs. Returns `addr` on success, `u64::MAX` on failure.
 fn sys_mmap(addr: u64, len: u64, flags: u64) -> u64 {
     use x86_64::{structures::paging::PageTableFlags, VirtAddr};
 
     if addr == 0 || len == 0 {
+        return u64::MAX;
+    }
+    if flags & !(USER_PROT_WRITE | USER_PROT_EXEC) != 0 {
+        return u64::MAX;
+    }
+    if flags & USER_PROT_WRITE != 0 && flags & USER_PROT_EXEC != 0 {
         return u64::MAX;
     }
 
@@ -368,10 +378,12 @@ fn sys_mmap(addr: u64, len: u64, flags: u64) -> u64 {
     }
 
     let mut pte_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
-    if flags & 1 != 0 {
+    if flags & USER_PROT_WRITE != 0 {
         pte_flags |= PageTableFlags::WRITABLE;
     }
-    pte_flags |= PageTableFlags::NO_EXECUTE;
+    if flags & USER_PROT_EXEC == 0 {
+        pte_flags |= PageTableFlags::NO_EXECUTE;
+    }
 
     // Determine the current process's PML4.
     let pml4 = crate::vmm::current_pml4();
@@ -382,6 +394,50 @@ fn sys_mmap(addr: u64, len: u64, flags: u64) -> u64 {
 
     match crate::vmm::map_region(pml4, VirtAddr::new(addr), len_aligned, pte_flags) {
         Ok(()) => addr,
+        Err(_) => u64::MAX,
+    }
+}
+
+/// Change protections for existing mmap-arena pages in the calling process.
+/// This keeps executable shared-object mappings W^X by rejecting write+exec and
+/// by requiring the range to live inside the explicit userspace mmap arena.
+fn sys_mprotect(addr: u64, len: u64, flags: u64) -> u64 {
+    use x86_64::{structures::paging::PageTableFlags, VirtAddr};
+
+    if addr == 0 || len == 0 || addr & 0xfff != 0 {
+        return u64::MAX;
+    }
+    if flags & !(USER_PROT_WRITE | USER_PROT_EXEC) != 0 {
+        return u64::MAX;
+    }
+    if flags & USER_PROT_WRITE != 0 && flags & USER_PROT_EXEC != 0 {
+        return u64::MAX;
+    }
+
+    let Some(len_aligned) = len.checked_add(4095).map(|value| value & !4095) else {
+        return u64::MAX;
+    };
+    if !valid_user_address_range(addr, len_aligned, MAX_USER_BUFFER * 64)
+        || !crate::vmm::valid_user_mmap_range(addr, len_aligned)
+    {
+        return u64::MAX;
+    }
+
+    let mut pte_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+    if flags & USER_PROT_WRITE != 0 {
+        pte_flags |= PageTableFlags::WRITABLE;
+    }
+    if flags & USER_PROT_EXEC == 0 {
+        pte_flags |= PageTableFlags::NO_EXECUTE;
+    }
+
+    match crate::vmm::protect_region(
+        crate::vmm::current_pml4(),
+        VirtAddr::new(addr),
+        len_aligned,
+        pte_flags,
+    ) {
+        Ok(()) => 0,
         Err(_) => u64::MAX,
     }
 }

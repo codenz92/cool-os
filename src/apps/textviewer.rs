@@ -25,7 +25,7 @@ const SUBTLE: u32 = 0x00_66_AA_DD;
 const MUTED: u32 = 0x00_55_7A_92;
 
 const ABOUT: &[&str] = &[
-    " coolOS v7.38",
+    " coolOS v7.39",
     " Bare-metal OS in Rust",
     "",
     " == Current Platform ==",
@@ -45,6 +45,7 @@ const ABOUT: &[&str] = &[
     " Signed package payloads with transaction rollback and repair",
     " Browser engine port ABI targeting WPE WebKit",
     " Userspace threads, futexes, TLS, and POSIX pthread/libc shims",
+    " ET_DYN /lib loader, RELA relocations, and W^X mprotect",
     " Boot health with last-known-good auto rollback",
     "",
     " == Commands ==",
