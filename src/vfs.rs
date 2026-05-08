@@ -1234,6 +1234,34 @@ pub fn inherit_fds(parent_task: usize, child_task: usize, mappings: &[(usize, us
     true
 }
 
+pub fn inherit_all_fds(parent_task: usize, child_task: usize) -> bool {
+    let mut vfs = VFS.lock();
+    vfs.ensure_task(parent_task);
+    vfs.ensure_task(child_task);
+
+    let parent_entries = vfs.task_fds[parent_task].entries;
+    let mut installed: Vec<usize> = Vec::new();
+    for (fd, entry) in parent_entries.iter().enumerate() {
+        let Some(entry) = *entry else {
+            continue;
+        };
+        if !vfs.retain_fd(entry) || !vfs.task_fds[child_task].install_fd(fd, entry) {
+            if vfs.current_entry(child_task, fd).is_none() {
+                let _ = vfs.release_fd(entry);
+            }
+            for installed_fd in installed {
+                if let Some(rollback) = vfs.task_fds[child_task].entries[installed_fd].take() {
+                    let _ = vfs.release_fd(rollback);
+                }
+            }
+            return false;
+        }
+        installed.push(fd);
+    }
+
+    true
+}
+
 pub fn vfs_open(path: &str) -> usize {
     let path = normalize_path(path);
     let data = match vfs_read_file(&path) {

@@ -35,6 +35,7 @@ mod fat32;
 mod font;
 mod framebuffer;
 mod fs_hardening;
+mod futex;
 mod fw_cfg;
 mod gdt;
 mod interrupts;

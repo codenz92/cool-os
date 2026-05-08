@@ -57,6 +57,12 @@ pub const USER_STACK_TOP: u64 = 0x0000_7fff_0010_0000;
 pub const USER_STACK_SIZE: u64 = 64 * 1024;
 /// Bottom of the user stack (guard page sits just below this).
 pub const USER_STACK_BOTTOM: u64 = USER_STACK_TOP - USER_STACK_SIZE;
+/// Base of per-thread userspace stack slots for tasks sharing one address space.
+pub const USER_THREAD_STACK_BASE: u64 = 0x0000_7fff_0020_0000;
+/// Virtual spacing between userspace thread stacks. Unmapped gaps serve as guards.
+pub const USER_THREAD_STACK_SLOT_SIZE: u64 = 1024 * 1024;
+/// Number of thread stack slots reserved below the mmap arena.
+pub const USER_THREAD_STACK_SLOTS: usize = 128;
 /// Exclusive upper bound for canonical user addresses.
 pub const USER_TOP: u64 = 0x0000_8000_0000_0000;
 /// Base of the userspace ELF/linker region.
@@ -400,6 +406,19 @@ pub fn valid_user_mmap_range(addr: u64, len_aligned: u64) -> bool {
         return false;
     };
     addr >= USER_MMAP_BASE && end <= USER_MMAP_TOP
+}
+
+pub fn user_thread_stack_range(slot: usize) -> Option<(u64, u64)> {
+    if slot >= USER_THREAD_STACK_SLOTS {
+        return None;
+    }
+    let bottom = USER_THREAD_STACK_BASE
+        .checked_add((slot as u64).checked_mul(USER_THREAD_STACK_SLOT_SIZE)?)?;
+    let top = bottom.checked_add(USER_STACK_SIZE)?;
+    if top > USER_MMAP_BASE {
+        return None;
+    }
+    Some((bottom, top))
 }
 
 fn user_page_accessible_in(pml4_frame: PhysFrame, virt: VirtAddr, writable: bool) -> bool {

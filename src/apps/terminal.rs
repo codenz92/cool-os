@@ -3841,6 +3841,7 @@ fn diagnostics_lines() -> Vec<String> {
         "resource limits",
         crate::resource_limits::lines(),
     );
+    push_terminal_section(&mut lines, "futex", crate::futex::lines());
     push_terminal_section(&mut lines, "slab", crate::slab::lines());
     push_terminal_section(
         &mut lines,

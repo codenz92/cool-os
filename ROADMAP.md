@@ -4,7 +4,7 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–71 are complete. The current milestone gives coolOS a much more
+Phases 1–72 are complete. The current milestone gives coolOS a much more
 normal command-line and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
@@ -65,7 +65,14 @@ the selected target, the native browser remains the fallback/debug renderer,
 `/SDK/BROWSER_ENGINE_PORT.TXT` documents the host contract and blockers, and
 Terminal, Browser, Recovery, Diagnostics, and Sysreport expose the WPE readiness
 surface.
-Phases 45-71 focus on responsiveness, interactive terminal behavior, and
+Phase 72 adds the first userspace threading and futex substrate for hosted
+browser runtimes: ABI v11 exposes `thread_spawn`, `futex_wait`, and
+`futex_wake`; the scheduler can create same-address-space ring-3 threads with
+private user/kernel stacks; shared PML4s are freed only after the last sibling
+is reaped; `libcool::thread` wraps spawn/join/futex operations; `/bin/threaddemo`
+tests two worker threads plus futex wake/join; and diagnostics/sysreport expose
+futex counters plus thread-stack capacity.
+Phases 45-72 focus on responsiveness, interactive terminal behavior, and
 desktop-browser compatibility:
 cursor-only framebuffer updates,
 input-first idle-loop ordering, adaptive 36/144 Hz frame pacing, compositor
@@ -80,7 +87,8 @@ scheduler, VMM, VFS, shared memory, and sockets, low-memory recovery, durable
 service recovery, update rollback, boot-health rollback, signed update
 verification, update key rotation, downgrade refusal, signed package
 install/repair trust, package payload transactions, and the first explicit
-WPE WebKit port ABI for a future full browser engine.
+WPE WebKit port ABI plus the thread/futex prerequisite for a future full
+browser engine.
 
 ---
 
@@ -2169,9 +2177,47 @@ browser kept as a small fallback/debug renderer.
 **Current status:** complete. coolOS now has an explicit WPE WebKit port target
 and an inspectable browser engine host contract. A real WebKit backend is not
 booting yet; the readiness surface deliberately identifies the remaining OS
-work: userspace threads/futexes, dynamic linking/C runtime support, larger/file
-backed mappings, JavaScriptCore JIT/interpreter policy, richer POSIX socket/file
-semantics, scalable fonts/text shaping, and eventually graphics acceleration.
+work after Phase 72: TLS/pthread libc integration, dynamic linking/C runtime
+support, larger/file backed mappings, JavaScriptCore JIT/interpreter policy,
+richer POSIX socket/file semantics, scalable fonts/text shaping, and eventually
+graphics acceleration.
+
+---
+
+## ✅ Phase 72 — Userspace Threads and Futex ABI
+
+**Goal:** Add the first same-address-space userspace threading primitive and a
+word-address futex wait/wake ABI so a hosted WebKit-class runtime has a real
+blocking synchronization substrate instead of processes only.
+
+- [x] Extend scheduler tasks with thread-group ids and per-thread user-stack
+      slot metadata.
+- [x] Add reserved userspace thread-stack slots below the mmap arena and map a
+      fresh 64 KiB stack for each spawned thread.
+- [x] Add `thread_spawn(entry, arg, flags)` as ABI v11 syscall 47. The spawned
+      task shares the caller's PML4, inherits fd references, starts in ring 3
+      with `rdi=arg`, and has its own kernel syscall/IRQ stack.
+- [x] Rework wait/reap/OOM cleanup so shared address spaces are not freed until
+      the last sibling using that PML4 has been reaped.
+- [x] Add kernel futex waiter tracking plus `futex_wait(addr, expected,
+      timeout_ms)` and `futex_wake(addr, count, flags)` as ABI v11 syscalls 48
+      and 49.
+- [x] Add futex cleanup on task exit/fault/kill and futex counters in
+      Diagnostics and Sysreport.
+- [x] Add `libcool::thread::{spawn,join,futex_wait,futex_wake}` wrappers and
+      `/bin/threaddemo` to exercise two worker threads, shared atomics, futex
+      wake, and `waitpid`-based joins.
+- [x] Update the browser-engine requirement table so `threads-futex` is partial
+      instead of missing, with TLS/pthread libc integration called out as the
+      next layer.
+- [x] Add `make smoke-phase72-threads-futex` and update SDK/README/Roadmap docs
+      for ABI v11.
+
+**Current status:** complete. coolOS now has the kernel primitive needed for
+threaded userspace runtimes: same-address-space ring-3 tasks, private stacks,
+futex wait/wake, and join/reap semantics. This is not a complete POSIX pthread
+stack yet; TLS segment setup, libc pthread shims, robust futex variants, and
+shared process-wide signal/exit policy remain future work.
 
 ---
 
@@ -2189,8 +2235,8 @@ Userspace binaries are written in `#![no_std]` Rust and link against
 `userspace/libcool`. The SDK owns `_start`, panic aborts, initial argv parsing,
 raw syscall assembly, and convenience APIs such as `println!`, `File::open`,
 `File::create`, `pipe`, `mmap`, `shmem_create`, `spawn_args`,
-`spawn_fds_args`, `evented::poll`, `tty::enter_raw_mode`, `read_event`,
-`dns_resolve`, TCP sockets, time, and filesystem utility calls plus GUI windows through `libcool::fs` and
+`spawn_fds_args`, `thread::spawn`, `thread::futex_wait`, `evented::poll`,
+`tty::enter_raw_mode`, `read_event`, `dns_resolve`, TCP sockets, time, and filesystem utility calls plus GUI windows through `libcool::fs` and
 `libcool::gui`.
 
 ### Real hardware vs QEMU
@@ -2262,4 +2308,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.32 | Phase 68 complete: Update key rotation and anti-rollback |
 | v7.33 | Phase 69 complete: Package trust and repair |
 | v7.34 | Phase 70 complete: Package payloads and transactional installs |
-| v7.35 | Current — Phase 71 complete: Browser engine port ABI |
+| v7.35 | Phase 71 complete: Browser engine port ABI |
+| v7.36 | Current — Phase 72 complete: Userspace threads and futex ABI |

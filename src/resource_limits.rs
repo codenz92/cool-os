@@ -18,10 +18,11 @@ pub fn lines() -> Vec<String> {
     let net = crate::net::resource_stats();
     vec![
         format!(
-            "tasks active={}/{} user={} slots={} reaped={}",
+            "tasks active={}/{} user={} user_threads={} slots={} reaped={}",
             sched.active_tasks,
             sched.max_active_tasks,
             sched.user_tasks,
+            sched.user_threads,
             sched.task_slots,
             sched.reaped_tasks
         ),
@@ -48,6 +49,12 @@ pub fn lines() -> Vec<String> {
             vfs.shmem_frames,
             MAX_SHMEM_BYTES_PER_TASK,
             MAX_SHMEM_REGION_BYTES
+        ),
+        format!(
+            "thread stacks slots={} stack_size={} bytes slot_size={} bytes",
+            crate::vmm::USER_THREAD_STACK_SLOTS,
+            crate::vmm::USER_STACK_SIZE,
+            crate::vmm::USER_THREAD_STACK_SLOT_SIZE
         ),
         format!(
             "net sockets={}/{} slots={} per_task_max={} kernel_owned={}",

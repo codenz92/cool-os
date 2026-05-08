@@ -1,4 +1,4 @@
-.PHONY: run run-net run-usb run-usb-init run-smooth run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-phase31-accounts smoke-phase32-isolation smoke-phase33-process-control smoke-phase34-tty-jobs smoke-phase35-tty-input smoke-phase36-userspace-shell smoke-phase37-coreutils smoke-phase38-apps smoke-phase39-recovery smoke-phase40-shell-semantics smoke-phase41-fs-durability smoke-phase42-app-consistency smoke-phase43-observability smoke-phase44-devkit smoke-phase45-smoothness smoke-phase46-adaptive-refresh smoke-phase47-evented-userspace smoke-phase48-terminal-tui smoke-phase49-browser-engine smoke-phase50-css-layout smoke-phase51-browser-forms smoke-phase52-dom-events smoke-phase53-dom-forms smoke-phase54-browser-post smoke-phase55-browser-session smoke-phase56-css-box-model smoke-phase57-browser-layout smoke-phase58-browser-subresources smoke-phase59-browser-js smoke-phase60-browser-webapi smoke-phase61-browser-compat smoke-phase62-resource-limits smoke-phase63-memory-pressure smoke-phase64-services smoke-phase65-update-rollback smoke-phase66-boot-health smoke-phase67-update-trust smoke-phase68-update-keys smoke-phase69-package-trust smoke-phase70-package-payloads smoke-phase71-browser-engine-port smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
+.PHONY: run run-net run-usb run-usb-init run-smooth run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-phase31-accounts smoke-phase32-isolation smoke-phase33-process-control smoke-phase34-tty-jobs smoke-phase35-tty-input smoke-phase36-userspace-shell smoke-phase37-coreutils smoke-phase38-apps smoke-phase39-recovery smoke-phase40-shell-semantics smoke-phase41-fs-durability smoke-phase42-app-consistency smoke-phase43-observability smoke-phase44-devkit smoke-phase45-smoothness smoke-phase46-adaptive-refresh smoke-phase47-evented-userspace smoke-phase48-terminal-tui smoke-phase49-browser-engine smoke-phase50-css-layout smoke-phase51-browser-forms smoke-phase52-dom-events smoke-phase53-dom-forms smoke-phase54-browser-post smoke-phase55-browser-session smoke-phase56-css-box-model smoke-phase57-browser-layout smoke-phase58-browser-subresources smoke-phase59-browser-js smoke-phase60-browser-webapi smoke-phase61-browser-compat smoke-phase62-resource-limits smoke-phase63-memory-pressure smoke-phase64-services smoke-phase65-update-rollback smoke-phase66-boot-health smoke-phase67-update-trust smoke-phase68-update-keys smoke-phase69-package-trust smoke-phase70-package-payloads smoke-phase71-browser-engine-port smoke-phase72-threads-futex smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -40,6 +40,7 @@ USER_SYNC_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release
 USER_DEVKIT_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/devkit
 USER_POLLDEMO_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/polldemo
 USER_TUIDEMO_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/tuidemo
+USER_THREADDEMO_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/threaddemo
 USER_NETDEMO_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/netdemo
 USER_WGET_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/wget
 USER_SDKDEMO_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/sdkdemo
@@ -472,7 +473,7 @@ smoke-userspace-sdk: build
 		--pre-type-delay $(SMOKE_PRE_TYPE_DELAY) \
 		--type-text "exec /bin/sdkdemo alpha\n" \
 		--post-hmp-delay 2.0 \
-		--expect "sdkdemo: libcool sdk=1 abi=10" \
+		--expect "sdkdemo: libcool sdk=1 abi=11" \
 		--expect "sdkdemo: argv [0]=/bin/sdkdemo [1]=alpha" \
 		--expect "sdkdemo: sdk pipe ok" \
 		--expect "sdkdemo: mmap ok" \
@@ -841,11 +842,11 @@ smoke-phase36-userspace-shell: build
 		--retries $(SMOKE_RETRIES) \
 		--fw-cmd "sh" \
 		--no-auto-login \
-		--interact-after "sh: ready abi=10" \
+		--interact-after "sh: ready abi=11" \
 		--type-text "pwd\nls /bin\ncat /bin/hello.txt\necho userspace shell ok\nexit\n" \
 		--expect "[selftest] kernel unit checks ok=27 fail=0" \
 		--expect "foreground /bin/sh" \
-		--expect "sh: ready abi=10" \
+		--expect "sh: ready abi=11" \
 		--expect "Hello from /bin/hello.txt!" \
 		--expect "userspace shell ok" \
 		--expect "[fg done] /bin/sh pid=3 exit=0" \
@@ -862,11 +863,11 @@ smoke-phase37-coreutils: build
 		--retries $(SMOKE_RETRIES) \
 		--fw-cmd "sh" \
 		--no-auto-login \
-		--interact-after "sh: ready abi=10" \
+		--interact-after "sh: ready abi=11" \
 		--type-text "run /bin/pwd\nrun /bin/echo external coreutils ok\nrun /bin/ls /bin\nrun /bin/cat /bin/hello.txt\nrun /bin/mkdir /TMP/PH37\nrun /bin/writefile /TMP/PH37/NOTE coreutils file ok\nrun /bin/cat /TMP/PH37/NOTE\nrun /bin/touch /TMP/PH37/EMPTY\nrun /bin/rm /TMP/PH37/EMPTY\nrun /bin/rm /TMP/PH37\nexit\n" \
 		--expect "[selftest] kernel unit checks ok=27 fail=0" \
 		--expect "foreground /bin/sh" \
-		--expect "sh: ready abi=10" \
+		--expect "sh: ready abi=11" \
 		--expect "external coreutils ok" \
 		--expect "F	ls" \
 		--expect "Hello from /bin/hello.txt!" \
@@ -950,15 +951,15 @@ smoke-phase40-shell-semantics: build
 		--retries $(SMOKE_RETRIES) \
 		--fw-cmd "sh" \
 		--no-auto-login \
-		--interact-after "sh: ready abi=10" \
+		--interact-after "sh: ready abi=11" \
 		--type-key-delay $(SMOKE_TYPE_KEY_DELAY) \
 		--type-text "cd /TMP\npwd\necho phase40 redirect ok > p40.txt\ncat p40.txt\ncat p40.txt | grep redirect\ncp p40.txt p40-copy.txt\nmv p40-copy.txt p40-moved.txt\nstat p40-moved.txt\nuname\ndate\nsync\nexit\n" \
 		--expect "[selftest] kernel unit checks ok=27 fail=0" \
-		--expect "sh: ready abi=10" \
+		--expect "sh: ready abi=11" \
 		--expect "/tmp" \
 		--expect "phase40 redirect ok" \
 		--expect "kind=file size=" \
-		--expect "coolOS coolOS-userspace-abi/10 x86_64" \
+		--expect "coolOS coolOS-userspace-abi/11 x86_64" \
 		--expect "sync: ok" \
 		--expect "[fg done] /bin/sh pid=3 exit=0" \
 		--expect "[boot] desktop ready"
@@ -978,7 +979,7 @@ smoke-phase41-fs-durability: build
 		--retries $(SMOKE_RETRIES) \
 		--fw-cmd "sh" \
 		--no-auto-login \
-		--interact-after "sh: ready abi=10" \
+		--interact-after "sh: ready abi=11" \
 		--type-key-delay $(SMOKE_TYPE_KEY_DELAY) \
 		--type-text "echo phase41 durable ok > /TMP/P41.TXT\nsync\nexit\n" \
 		--expect "sync: ok" \
@@ -995,7 +996,7 @@ smoke-phase41-fs-durability: build
 		--retries $(SMOKE_RETRIES) \
 		--fw-cmd "sh" \
 		--no-auto-login \
-		--interact-after "sh: ready abi=10" \
+		--interact-after "sh: ready abi=11" \
 		--type-key-delay $(SMOKE_TYPE_KEY_DELAY) \
 		--type-text "cat /TMP/P41.TXT\nstat /TMP/P41.TXT\nexit\n" \
 		--expect "phase41 durable ok" \
@@ -1017,7 +1018,7 @@ smoke-phase42-app-consistency: build
 		--expect "LOG VIEW" \
 		--expect "BOOT/SESSION PROFILER" \
 		--expect "DEVKIT" \
-		--expect "coolOS devkit ABI=10" \
+		--expect "coolOS devkit ABI=11" \
 		--expect "[boot] desktop ready"
 
 smoke-phase43-observability: build
@@ -1047,9 +1048,9 @@ smoke-phase44-devkit: build
 		--seconds 45 \
 		--retries $(SMOKE_RETRIES) \
 		--fw-cmd "devkit;;cat /SDK/README.TXT;;cat /SDK/BROWSER_ENGINE_PORT.TXT;;exec /bin/devkit" \
-		--expect "coolOS devkit ABI=10" \
+		--expect "coolOS devkit ABI=11" \
 		--expect "coolOS SDK" \
-		--expect "ABI version: 10" \
+		--expect "ABI version: 11" \
 		--expect "Target engine: WPE WebKit." \
 		--expect "foreground /bin/devkit" \
 		--expect "template: /SDK/APP_TEMPLATE.RS" \
@@ -1103,7 +1104,7 @@ smoke-phase47-evented-userspace: build
 		--seconds 45 \
 		--retries $(SMOKE_RETRIES) \
 		--fw-cmd "exec /bin/polldemo" \
-		--expect "polldemo: abi=10" \
+		--expect "polldemo: abi=11" \
 		--expect "polldemo: timeout ok" \
 		--expect "polldemo: pipe ok" \
 		--expect "polldemo: child ok" \
@@ -1124,7 +1125,7 @@ smoke-phase48-terminal-tui: build
 		--interact-after "tuidemo: raw ready" \
 		--type-key-delay $(SMOKE_TYPE_KEY_DELAY) \
 		--type-text "q" \
-		--expect "tuidemo: abi=10" \
+		--expect "tuidemo: abi=11" \
 		--expect "tuidemo: raw ready" \
 		--expect "press q to exit without Enter" \
 		--expect "tuidemo: raw exit key=q" \
@@ -1866,12 +1867,31 @@ smoke-phase71-browser-engine-port: build
 		--expect "BROWSER ENGINE PORT" \
 		--expect "engine-port abi=1 target=wpe-webkit fallback=coolos-native active=coolos-native" \
 		--expect "surface=rgba-shmem" \
-		--expect "req.threads-futex=missing" \
+		--expect "req.threads-futex=partial" \
 		--expect "backend_probe=/SYSTEM/BROWSER-ENGINE/WPE.READY" \
 		--expect "browser: opening browser://engine" \
 		--expect "== browser engine ==" \
 		--expect "browser_engine=port-prep target=wpe-webkit active=coolos-native abi=1" \
 		--expect "Target engine: WPE WebKit." \
+		--expect "[boot] desktop ready"
+
+smoke-phase72-threads-futex: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds $(SMOKE_FRAMEBUFFER_SECONDS) \
+		--fw-cmd "exec /bin/threaddemo;;diagnostics;;engine requirements;;sysreport write;;cat /LOGS/SYSREPORT.TXT" \
+		--expect "threaddemo: abi=11" \
+		--expect "threaddemo: spawned" \
+		--expect "threaddemo: futex woke done=2 sum=72" \
+		--expect "threaddemo: join 21 51" \
+		--expect "threaddemo: phase72 ok" \
+		--expect "futex waiters=0" \
+		--expect "req.threads-futex=partial" \
+		--expect "wrote /LOGS/SYSREPORT.TXT" \
 		--expect "[boot] desktop ready"
 
 smoke-coolfs-native: build
@@ -2112,7 +2132,7 @@ build:
 		--target-dir $(CURDIR)/target/userspace/hello \
 		-Z build-std=core,compiler_builtins
 	(cd disk-image && cargo run --bin disk-image -- "$(KERNEL)")
-	(cd disk-image && cargo run --bin fs-image -- "$(FSIMG)" "$(USER_TARGET)" "$(USER_EXEC_TARGET)" "$(USER_PIPE_TARGET)" "$(USER_READ_TARGET)" "$(USER_PIPERD_TARGET)" "$(USER_PIPEWR_TARGET)" "$(USER_KEYECHO_TARGET)" "$(USER_TERMINAL_TARGET)" "$(USER_TTYREAD_TARGET)" "$(USER_NETDEMO_TARGET)" "$(USER_WGET_TARGET)" "$(USER_SDKDEMO_TARGET)" "$(USER_GUIDEMO_TARGET)" "$(USER_NOTES_TARGET)" "$(USER_EDITOR_TARGET)" "$(USER_TRASH_TARGET)" "$(USER_SCREENSHOT_TARGET)" "$(USER_PROCDEMO_TARGET)" "$(USER_PROCSLEEP_TARGET)" "$(USER_SENTINEL_TARGET)" "$(USER_BADPTR_TARGET)" "$(USER_BADWRITE_TARGET)" "$(USER_BADMMAP_TARGET)" "$(USER_BADEXEC_TARGET)" "$(USER_BADUSERREAD_TARGET)" "$(USER_SH_TARGET)" "$(USER_LS_TARGET)" "$(USER_CAT_TARGET)" "$(USER_ECHO_TARGET)" "$(USER_PWD_TARGET)" "$(USER_MKDIR_TARGET)" "$(USER_TOUCH_TARGET)" "$(USER_RM_TARGET)" "$(USER_WRITEFILE_TARGET)" "$(USER_CP_TARGET)" "$(USER_MV_TARGET)" "$(USER_GREP_TARGET)" "$(USER_HEAD_TARGET)" "$(USER_TAIL_TARGET)" "$(USER_DATE_TARGET)" "$(USER_UNAME_TARGET)" "$(USER_CLEAR_TARGET)" "$(USER_STAT_TARGET)" "$(USER_SYNC_TARGET)" "$(USER_DEVKIT_TARGET)" "$(USER_POLLDEMO_TARGET)" "$(USER_TUIDEMO_TARGET)")
+	(cd disk-image && cargo run --bin fs-image -- "$(FSIMG)" "$(USER_TARGET)" "$(USER_EXEC_TARGET)" "$(USER_PIPE_TARGET)" "$(USER_READ_TARGET)" "$(USER_PIPERD_TARGET)" "$(USER_PIPEWR_TARGET)" "$(USER_KEYECHO_TARGET)" "$(USER_TERMINAL_TARGET)" "$(USER_TTYREAD_TARGET)" "$(USER_NETDEMO_TARGET)" "$(USER_WGET_TARGET)" "$(USER_SDKDEMO_TARGET)" "$(USER_GUIDEMO_TARGET)" "$(USER_NOTES_TARGET)" "$(USER_EDITOR_TARGET)" "$(USER_TRASH_TARGET)" "$(USER_SCREENSHOT_TARGET)" "$(USER_PROCDEMO_TARGET)" "$(USER_PROCSLEEP_TARGET)" "$(USER_SENTINEL_TARGET)" "$(USER_BADPTR_TARGET)" "$(USER_BADWRITE_TARGET)" "$(USER_BADMMAP_TARGET)" "$(USER_BADEXEC_TARGET)" "$(USER_BADUSERREAD_TARGET)" "$(USER_SH_TARGET)" "$(USER_LS_TARGET)" "$(USER_CAT_TARGET)" "$(USER_ECHO_TARGET)" "$(USER_PWD_TARGET)" "$(USER_MKDIR_TARGET)" "$(USER_TOUCH_TARGET)" "$(USER_RM_TARGET)" "$(USER_WRITEFILE_TARGET)" "$(USER_CP_TARGET)" "$(USER_MV_TARGET)" "$(USER_GREP_TARGET)" "$(USER_HEAD_TARGET)" "$(USER_TAIL_TARGET)" "$(USER_DATE_TARGET)" "$(USER_UNAME_TARGET)" "$(USER_CLEAR_TARGET)" "$(USER_STAT_TARGET)" "$(USER_SYNC_TARGET)" "$(USER_DEVKIT_TARGET)" "$(USER_POLLDEMO_TARGET)" "$(USER_TUIDEMO_TARGET)" "$(USER_THREADDEMO_TARGET)")
 
 build-usb-init: build
 

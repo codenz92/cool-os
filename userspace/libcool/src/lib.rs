@@ -3,7 +3,7 @@
 use core::arch::asm;
 
 pub const SDK_VERSION: u64 = 1;
-pub const ABI_VERSION: u64 = 10;
+pub const ABI_VERSION: u64 = 11;
 pub const U64_MAX: u64 = u64::MAX;
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -75,6 +75,9 @@ pub mod sys {
     pub const TIME: u64 = 44;
     pub const POLL: u64 = 45;
     pub const TTY_CONTROL: u64 = 46;
+    pub const THREAD_SPAWN: u64 = 47;
+    pub const FUTEX_WAIT: u64 = 48;
+    pub const FUTEX_WAKE: u64 = 49;
 
     #[inline]
     pub unsafe fn syscall0(nr: u64) -> u64 {
@@ -351,6 +354,51 @@ pub mod process {
 
     pub fn signal_group(group: u64, signal: Signal) -> Result<u64> {
         let ret = unsafe { sys::syscall2(sys::SIGNAL_GROUP, group, signal.code()) };
+        Error::from_ret(ret)
+    }
+}
+
+pub mod thread {
+    use super::{process, sys, Error, Result};
+
+    pub type Entry = extern "C" fn(u64) -> !;
+
+    pub const FUTEX_WAIT_MISMATCH: u64 = 1;
+    pub const FUTEX_WAIT_TIMEOUT: u64 = 2;
+    pub const TIMEOUT_FOREVER: u64 = u64::MAX;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum FutexWait {
+        Woken,
+        Mismatch,
+        Timeout,
+    }
+
+    pub fn spawn(entry: Entry, arg: u64) -> Result<u64> {
+        let ret = unsafe { sys::syscall3(sys::THREAD_SPAWN, entry as usize as u64, arg, 0) };
+        Error::from_ret(ret)
+    }
+
+    pub fn join(tid: u64) -> Result<u64> {
+        process::waitpid(tid)
+    }
+
+    pub fn id() -> u64 {
+        process::getpid()
+    }
+
+    pub fn futex_wait(addr: *const u64, expected: u64, timeout_ms: u64) -> Result<FutexWait> {
+        let ret = unsafe { sys::syscall3(sys::FUTEX_WAIT, addr as u64, expected, timeout_ms) };
+        match Error::from_ret(ret)? {
+            0 => Ok(FutexWait::Woken),
+            FUTEX_WAIT_MISMATCH => Ok(FutexWait::Mismatch),
+            FUTEX_WAIT_TIMEOUT => Ok(FutexWait::Timeout),
+            _ => Err(Error::Failed),
+        }
+    }
+
+    pub fn futex_wake(addr: *const u64, count: u64) -> Result<u64> {
+        let ret = unsafe { sys::syscall3(sys::FUTEX_WAKE, addr as u64, count, 0) };
         Error::from_ret(ret)
     }
 }
@@ -1280,6 +1328,7 @@ pub mod prelude {
         abi_version, exit, get_process_group, getpid, set_process_group, signal, signal_group,
         sleep_ms, spawn, spawn_args, spawn_fds_args, waitpid, yield_now, Signal,
     };
+    pub use crate::thread::{self, FutexWait};
     pub use crate::tty;
     pub use crate::{entry, print, println, Error, Result, ABI_VERSION, SDK_VERSION};
 }

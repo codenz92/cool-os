@@ -116,8 +116,8 @@ fn execute_tokens(tokens: &Tokens) {
         return;
     }
 
-    let has_redirection =
-        find_token(tokens, b">", 0, tokens.len).is_some() || find_token(tokens, b"<", 0, tokens.len).is_some();
+    let has_redirection = find_token(tokens, b">", 0, tokens.len).is_some()
+        || find_token(tokens, b"<", 0, tokens.len).is_some();
     if !has_redirection && run_builtin(tokens) {
         return;
     }

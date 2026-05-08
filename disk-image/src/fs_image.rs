@@ -619,15 +619,15 @@ fn phase70_guidemo_package(payload: &[u8]) -> String {
 
 const BROWSER_ENGINE_CONFIG: &[u8] = b"preferred=wpe-webkit\nfallback=coolos-native\nmode=port-prep\nengine_abi=1\nsurface=rgba-shmem\ninput=gui-events\nnetwork=kernel-http-tls\n";
 
-const BROWSER_ENGINE_LOG: &[u8] = b"coolOS browser engine port log\nphase=71\npreferred=wpe-webkit\nactive=coolos-native\nstatus=port-prep\n";
+const BROWSER_ENGINE_LOG: &[u8] = b"coolOS browser engine port log\nphase=72\npreferred=wpe-webkit\nactive=coolos-native\nstatus=port-prep\nthreads_futex=partial\n";
 
-const SDK_README: &[u8] = b"coolOS SDK\n\nABI version: 10\nUserspace apps are no_std Rust ELF64 binaries linked with userspace/libcool.\nUseful APIs: process::spawn_args, process::spawn_fds_args, evented::poll, tty::{size,set_mode,enter_raw_mode}, fs::{stat,rename,chdir,getcwd,sync}, io::{open,create,pipe}, gui::Window.\nPackage manifests live under /Packages, must be signed with pkg sign or pkg sign-as, and install transactionally into /APPS/<command>/APP.CFG with an OWNER.TXT trust record.\nUse payload=<target>|<source>|<sha256>|<mode> to copy real files, such as an ELF from /Packages into /bin, with installed payload hashes verified by pkg verify and restored by pkg repair.\nBrowser engine porting starts at /SDK/BROWSER_ENGINE_PORT.TXT and targets WPE WebKit with the native browser kept as fallback.\n";
+const SDK_README: &[u8] = b"coolOS SDK\n\nABI version: 11\nUserspace apps are no_std Rust ELF64 binaries linked with userspace/libcool.\nUseful APIs: process::spawn_args, process::spawn_fds_args, thread::{spawn,join,futex_wait,futex_wake}, evented::poll, tty::{size,set_mode,enter_raw_mode}, fs::{stat,rename,chdir,getcwd,sync}, io::{open,create,pipe}, gui::Window.\nPackage manifests live under /Packages, must be signed with pkg sign or pkg sign-as, and install transactionally into /APPS/<command>/APP.CFG with an OWNER.TXT trust record.\nUse payload=<target>|<source>|<sha256>|<mode> to copy real files, such as an ELF from /Packages into /bin, with installed payload hashes verified by pkg verify and restored by pkg repair.\nBrowser engine porting starts at /SDK/BROWSER_ENGINE_PORT.TXT and targets WPE WebKit with the native browser kept as fallback.\n";
 
 const SDK_APP_TEMPLATE: &[u8] = b"#![no_std]\n#![no_main]\n\nuse libcool::{io, prelude::*};\n\nlibcool::entry!(main);\n\nfn main(args: Args) -> ! {\n    io::write_stdout(b\"hello from a coolOS app\\n\");\n    if let Some(name) = args.get(1) {\n        io::write_stdout(b\"arg: \");\n        io::write_stdout(name);\n        io::write_stdout(b\"\\n\");\n    }\n    exit(0);\n}\n";
 
 const SDK_PACKAGE_TEMPLATE: &[u8] = b"id=app.example\nname=Example App\ncommand=example\nversion=1.0\nicon=EX\ncategory=Development\npermission=filesystem\nexec=/bin/example\naliases=example,demo\nassociations=TXT\ndepends=\nmin_os_version=1\npayload=/bin/example|/Packages/example.elf|<sha256>|755\n";
 
-const SDK_BROWSER_ENGINE_PORT: &[u8] = b"coolOS Browser Engine Port ABI v1\n\nTarget engine: WPE WebKit.\nFallback engine: coolos-native.\n\nGoal\nRun a mature WebKit-class engine for modern sites while keeping the existing native browser as a small fallback/debug surface.\n\nHost contract\n- Surface output: RGBA shared-memory buffers presented through the GUI window API.\n- Input: keyboard, pointer, focus, and resize events translated from coolOS GUI events.\n- Network: DNS/TCP/TLS and HTTP paths through the kernel networking stack until a fuller POSIX socket layer exists.\n- Storage: /CONFIG/BROWSER.*, /Downloads, /TMP, and package-owned engine files.\n- Fonts: /FONTS with scalable font lookup planned.\n- Process model: browser shell plus isolated web process planned.\n\nKnown blockers before real WPE boots\n- Userspace threads, futex wait/wake, TLS segments, and a pthread-compatible ABI.\n- Shared-library loader, relocations, and C/C++ runtime support.\n- Larger mmap/file-backed mapping support and higher address-space budgets.\n- JavaScriptCore JIT policy or interpreter-only engine configuration.\n- Software rendering backend first; EGL/OpenGL/WebGL can come later.\n\nDiagnostics\n- Terminal: engine, engine abi, engine requirements, engine config, engine log, engine recovery.\n- Browser: browser://engine.\n- Sysreport/recovery include browser engine readiness.\n";
+const SDK_BROWSER_ENGINE_PORT: &[u8] = b"coolOS Browser Engine Port ABI v1\n\nTarget engine: WPE WebKit.\nFallback engine: coolos-native.\n\nGoal\nRun a mature WebKit-class engine for modern sites while keeping the existing native browser as a small fallback/debug surface.\n\nHost contract\n- Surface output: RGBA shared-memory buffers presented through the GUI window API.\n- Input: keyboard, pointer, focus, and resize events translated from coolOS GUI events.\n- Network: DNS/TCP/TLS and HTTP paths through the kernel networking stack until a fuller POSIX socket layer exists.\n- Storage: /CONFIG/BROWSER.*, /Downloads, /TMP, and package-owned engine files.\n- Fonts: /FONTS with scalable font lookup planned.\n- Process model: browser shell plus isolated web process planned.\n- Threading: ABI 11 exposes shared-address-space userspace threads plus futex wait/wake for engine run loops.\n\nKnown blockers before real WPE boots\n- TLS segments and a pthread-compatible libc ABI on top of the kernel thread/futex primitives.\n- Shared-library loader, relocations, and C/C++ runtime support.\n- Larger mmap/file-backed mapping support and higher address-space budgets.\n- JavaScriptCore JIT policy or interpreter-only engine configuration.\n- Software rendering backend first; EGL/OpenGL/WebGL can come later.\n\nDiagnostics\n- Terminal: engine, engine abi, engine requirements, engine config, engine log, engine recovery.\n- Browser: browser://engine.\n- Sysreport/recovery include browser engine readiness and futex telemetry.\n";
 
 fn sha256_hex(data: &[u8]) -> String {
     let digest = sha256(data);
@@ -642,21 +642,20 @@ fn sha256_hex(data: &[u8]) -> String {
 
 fn sha256(data: &[u8]) -> [u8; 32] {
     const H0: [u32; 8] = [
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c,
-        0x1f83d9ab, 0x5be0cd19,
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
     ];
     const K: [u32; 64] = [
-        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1,
-        0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
-        0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786,
-        0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147,
-        0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
-        0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
-        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a,
-        0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
-        0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+        0xc67178f2,
     ];
     let mut state = H0;
     let mut chunks = data.chunks_exact(64);
@@ -670,8 +669,7 @@ fn sha256(data: &[u8]) -> [u8; 32] {
         for idx in 16..64 {
             let s0 =
                 w[idx - 15].rotate_right(7) ^ w[idx - 15].rotate_right(18) ^ (w[idx - 15] >> 3);
-            let s1 =
-                w[idx - 2].rotate_right(17) ^ w[idx - 2].rotate_right(19) ^ (w[idx - 2] >> 10);
+            let s1 = w[idx - 2].rotate_right(17) ^ w[idx - 2].rotate_right(19) ^ (w[idx - 2] >> 10);
             w[idx] = w[idx - 16]
                 .wrapping_add(s0)
                 .wrapping_add(w[idx - 7])
@@ -684,7 +682,11 @@ fn sha256(data: &[u8]) -> [u8; 32] {
     let mut final_blocks = [0u8; 128];
     final_blocks[..remainder.len()].copy_from_slice(remainder);
     final_blocks[remainder.len()] = 0x80;
-    let len_pos = if remainder.len() + 1 + 8 <= 64 { 56 } else { 120 };
+    let len_pos = if remainder.len() + 1 + 8 <= 64 {
+        56
+    } else {
+        120
+    };
     final_blocks[len_pos..len_pos + 8].copy_from_slice(&bit_len.to_be_bytes());
     for block in final_blocks[..if len_pos == 56 { 64 } else { 128 }].chunks(64) {
         let mut w = [0u32; 64];
@@ -696,8 +698,7 @@ fn sha256(data: &[u8]) -> [u8; 32] {
         for idx in 16..64 {
             let s0 =
                 w[idx - 15].rotate_right(7) ^ w[idx - 15].rotate_right(18) ^ (w[idx - 15] >> 3);
-            let s1 =
-                w[idx - 2].rotate_right(17) ^ w[idx - 2].rotate_right(19) ^ (w[idx - 2] >> 10);
+            let s1 = w[idx - 2].rotate_right(17) ^ w[idx - 2].rotate_right(19) ^ (w[idx - 2] >> 10);
             w[idx] = w[idx - 16]
                 .wrapping_add(s0)
                 .wrapping_add(w[idx - 7])

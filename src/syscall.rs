@@ -55,6 +55,9 @@
 ///   44 time() → packed UTC-ish RTC timestamp
 ///   45 poll(desc_ptr, count, timeout_ms) → ready descriptor count
 ///   46 tty_control(op, arg1, arg2) → mode/size/control result
+///   47 thread_spawn(entry, arg, flags) → tid sharing caller address space
+///   48 futex_wait(addr, expected, timeout_ms) → 0 woken, 1 mismatch, 2 timeout
+///   49 futex_wake(addr, count, flags) → waiter count woken
 ///
 /// Output path: sys_write routes bytes to the current task's controlling TTY
 /// when one is assigned unless fd 1/2 is explicitly mapped in the task fd
@@ -74,6 +77,9 @@ const MAX_USER_DIR_LISTING: u64 = 16 * 1024;
 const STAT_RECORD_BYTES: u64 = 40;
 const MAX_POLL_DESCS: u64 = 16;
 const POLL_DESC_BYTES: u64 = 32;
+const MAX_FUTEX_WAKE_COUNT: u64 = 64;
+const FUTEX_WAIT_MISMATCH: u64 = 1;
+const FUTEX_WAIT_TIMEOUT: u64 = 2;
 const ZERO8: AtomicU8 = AtomicU8::new(0);
 static OUTPUT_BUF: [AtomicU8; OUTPUT_SIZE] = [ZERO8; OUTPUT_SIZE];
 static OUTPUT_HEAD: AtomicUsize = AtomicUsize::new(0);
@@ -284,6 +290,9 @@ extern "C" fn syscall_dispatch(
         44 => sys_time(),
         45 => sys_poll(a1 as *mut u8, a2, a3),
         46 => sys_tty_control(a1, a2, a3),
+        47 => sys_thread_spawn(a1, a2, a3),
+        48 => sys_futex_wait(a1, a2, a3),
+        49 => sys_futex_wake(a1, a2, a3),
         _ => u64::MAX,
     }
 }
@@ -447,6 +456,154 @@ fn sys_tty_control(op: u64, arg1: u64, arg2: u64) -> u64 {
         return u64::MAX;
     };
     crate::tty::control(tty, op, arg1, arg2).unwrap_or(u64::MAX)
+}
+
+fn sys_thread_spawn(entry: u64, arg: u64, flags: u64) -> u64 {
+    use x86_64::{structures::paging::PageTableFlags, VirtAddr};
+
+    if flags != 0
+        || entry == 0
+        || !valid_user_address_range(entry, 1, 1)
+        || !crate::vmm::user_range_accessible(entry, 1, false)
+    {
+        return u64::MAX;
+    }
+    let Some(pml4) = crate::scheduler::current_user_pml4() else {
+        return u64::MAX;
+    };
+    if !crate::scheduler::can_spawn_user_task() {
+        return u64::MAX;
+    }
+    let Some(slot) = crate::scheduler::next_user_thread_stack_slot() else {
+        return u64::MAX;
+    };
+    let Some((stack_bottom, stack_top)) = crate::vmm::user_thread_stack_range(slot) else {
+        return u64::MAX;
+    };
+
+    let flags = PageTableFlags::PRESENT
+        | PageTableFlags::WRITABLE
+        | PageTableFlags::USER_ACCESSIBLE
+        | PageTableFlags::NO_EXECUTE;
+    if !crate::vmm::can_add_owned_pages(pml4, (crate::vmm::USER_STACK_SIZE / 4096) as usize) {
+        return u64::MAX;
+    }
+    if crate::vmm::map_region(
+        pml4,
+        VirtAddr::new(stack_bottom),
+        crate::vmm::USER_STACK_SIZE,
+        flags,
+    )
+    .is_err()
+    {
+        return u64::MAX;
+    }
+
+    let user_rsp = stack_top - 8;
+    if !validate_user_range(user_rsp, 8, 8, true) {
+        return u64::MAX;
+    }
+    unsafe {
+        core::ptr::write_volatile(user_rsp as *mut u64, 0);
+    }
+
+    crate::scheduler::spawn_user_thread(entry, user_rsp, arg, stack_bottom)
+        .map(|tid| tid as u64)
+        .unwrap_or(u64::MAX)
+}
+
+fn sys_futex_wait(addr: u64, expected: u64, timeout_ms: u64) -> u64 {
+    let task_id = crate::scheduler::current_task_id();
+    let Some(value) = read_user_futex(addr) else {
+        return u64::MAX;
+    };
+    if value != expected {
+        crate::futex::record_mismatch(addr, task_id);
+        return FUTEX_WAIT_MISMATCH;
+    }
+    if timeout_ms == 0 {
+        crate::futex::record_timeout(addr, task_id);
+        return FUTEX_WAIT_TIMEOUT;
+    }
+    if !crate::futex::register_waiter(addr, task_id) {
+        return u64::MAX;
+    }
+    if read_user_futex(addr).unwrap_or(u64::MAX) != expected {
+        crate::futex::unregister_waiter(addr, task_id);
+        crate::futex::record_mismatch(addr, task_id);
+        return FUTEX_WAIT_MISMATCH;
+    }
+
+    let deadline = futex_deadline(timeout_ms);
+    crate::wait_queue::wait("futex", task_id);
+    if let Some(wake_tick) = deadline {
+        crate::scheduler::block_current_until(wake_tick);
+    } else {
+        crate::scheduler::block_current();
+    }
+    while crate::scheduler::current_task_blocked() {
+        if crate::scheduler::current_has_pending_signal() {
+            break;
+        }
+        unsafe {
+            core::arch::asm!("sti; hlt; cli", options(nomem, nostack));
+        }
+    }
+    x86_64::instructions::interrupts::disable();
+
+    let still_waiting = crate::futex::unregister_waiter(addr, task_id);
+    if still_waiting {
+        crate::wait_queue::wake("futex", task_id);
+    }
+    if crate::scheduler::current_has_pending_signal() {
+        if still_waiting {
+            crate::futex::record_interrupted(addr, task_id);
+        }
+        return u64::MAX;
+    }
+    if still_waiting && futex_deadline_expired(deadline) {
+        crate::futex::record_timeout(addr, task_id);
+        return FUTEX_WAIT_TIMEOUT;
+    }
+    0
+}
+
+fn sys_futex_wake(addr: u64, count: u64, flags: u64) -> u64 {
+    if flags != 0
+        || count > MAX_FUTEX_WAKE_COUNT
+        || !validate_user_range(addr, 8, 8, false)
+        || addr & 7 != 0
+    {
+        return u64::MAX;
+    }
+    let tasks = crate::futex::wake(addr, count as usize);
+    let woken = tasks.len() as u64;
+    crate::evented::wake_tasks("futex", tasks);
+    woken
+}
+
+fn read_user_futex(addr: u64) -> Option<u64> {
+    if addr & 7 != 0 || !validate_user_range(addr, 8, 8, false) {
+        return None;
+    }
+    Some(unsafe { core::ptr::read_volatile(addr as *const u64) })
+}
+
+fn futex_deadline(timeout_ms: u64) -> Option<u64> {
+    if timeout_ms == crate::evented::TIMEOUT_FOREVER {
+        None
+    } else {
+        Some(
+            crate::interrupts::ticks()
+                .wrapping_add(crate::interrupts::ticks_for_millis(timeout_ms.max(1))),
+        )
+    }
+}
+
+fn futex_deadline_expired(deadline: Option<u64>) -> bool {
+    deadline
+        .map(|deadline| crate::interrupts::ticks() >= deadline)
+        .unwrap_or(false)
 }
 
 fn sys_socket(domain: u64, socket_type: u64, protocol: u64) -> u64 {

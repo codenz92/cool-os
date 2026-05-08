@@ -42,6 +42,7 @@ pub fn lines() -> Vec<String> {
         "resource limits",
         crate::resource_limits::lines(),
     );
+    push_section(&mut lines, "futex", crate::futex::lines());
     push_section(&mut lines, "wait queues", crate::wait_queue::lines());
     push_section(&mut lines, "vfs", crate::vfs::mount_lines());
     push_section(&mut lines, "writeback", crate::writeback::lines());

@@ -49,6 +49,7 @@ pub struct SchedulerResourceStats {
     pub task_slots: usize,
     pub reaped_tasks: usize,
     pub user_tasks: usize,
+    pub user_threads: usize,
 }
 
 #[derive(Clone)]
@@ -56,6 +57,8 @@ pub struct TaskMemoryStats {
     pub pid: usize,
     pub name: &'static str,
     pub status: TaskStatus,
+    pub thread_group: usize,
+    pub address_space_threads: usize,
     pub user_pages: usize,
     pub shmem_pages: usize,
     pub kernel_stack_bytes: usize,
@@ -107,6 +110,10 @@ pub struct Task {
     pub wake_tick: Option<u64>,
     pub credentials: crate::security::Credentials,
     pub cwd: String,
+    /// Thread-group leader id. Standalone processes use their own task id.
+    pub thread_group: usize,
+    /// Userspace stack bottom for diagnostics and per-address-space stack slots.
+    pub user_stack_bottom: Option<u64>,
     /// Per-process PML4 frame.  None = kernel task, shares the boot PML4.
     pub pml4: Option<PhysFrame>,
 }
@@ -149,6 +156,8 @@ impl Scheduler {
             wake_tick: None,
             credentials: crate::security::interactive_credentials(),
             cwd: String::from("/"),
+            thread_group: 0,
+            user_stack_bottom: None,
             pml4: None,
         });
         crate::vfs::init_task(0);
@@ -164,6 +173,8 @@ impl Scheduler {
         rsp: Option<u64>,
         ss: u64,
         pml4: Option<PhysFrame>,
+        initial_rdi: u64,
+        initial_rsi: u64,
     ) -> Option<usize> {
         if !crate::memory_pressure::has_allocation_reserve(STACK_SIZE) {
             return None;
@@ -203,6 +214,8 @@ impl Scheduler {
         for slot in frame[0..15].iter_mut() {
             *slot = 0;
         }
+        frame[9] = initial_rdi;
+        frame[10] = initial_rsi;
         frame[15] = rip;
         frame[16] = cs; // CS
         frame[17] = 0x202; // RFLAGS: IF=1, reserved bit 1
@@ -242,9 +255,14 @@ impl Scheduler {
             wake_tick: None,
             credentials,
             cwd,
+            thread_group: 0,
+            user_stack_bottom: None,
             pml4,
         });
         let task_id = self.tasks.len() - 1;
+        if let Some(task) = self.tasks.get_mut(task_id) {
+            task.thread_group = task_id;
+        }
         crate::vfs::init_task(task_id);
         Some(task_id)
     }
@@ -274,7 +292,7 @@ impl Scheduler {
             core::arch::asm!("mov {0:x}, cs", out(reg) cs);
             core::arch::asm!("mov {0:x}, ss", out(reg) ss);
         }
-        let _ = self.spawn_context(name, entry as usize as u64, cs, None, ss, pml4);
+        let _ = self.spawn_context(name, entry as usize as u64, cs, None, ss, pml4, 0, 0);
     }
 
     /// Spawn a ring-3 task that will enter at `entry` with the given user stack.
@@ -312,9 +330,16 @@ impl Scheduler {
         let user_cs = crate::gdt::user_code_selector().0 as u64;
         let user_ss = crate::gdt::user_data_selector().0 as u64;
         let parent = self.current;
-        let Some(task_id) =
-            self.spawn_context(name, entry, user_cs, Some(user_rsp), user_ss, Some(pml4))
-        else {
+        let Some(task_id) = self.spawn_context(
+            name,
+            entry,
+            user_cs,
+            Some(user_rsp),
+            user_ss,
+            Some(pml4),
+            0,
+            0,
+        ) else {
             crate::vmm::free_address_space(pml4);
             return false;
         };
@@ -322,6 +347,9 @@ impl Scheduler {
             if let Some(task) = self.tasks.get_mut(task_id) {
                 task.credentials = credentials;
             }
+        }
+        if let Some(task) = self.tasks.get_mut(task_id) {
+            task.user_stack_bottom = Some(crate::vmm::USER_STACK_BOTTOM);
         }
         if crate::vfs::inherit_fds(parent, task_id, inherited_fds) {
             true
@@ -331,6 +359,64 @@ impl Scheduler {
             crate::vmm::free_address_space(pml4);
             false
         }
+    }
+
+    pub fn spawn_user_thread(
+        &mut self,
+        entry: u64,
+        user_rsp: u64,
+        arg: u64,
+        stack_bottom: u64,
+    ) -> Option<usize> {
+        if self.active_task_count() >= crate::resource_limits::MAX_ACTIVE_TASKS {
+            return None;
+        }
+        let parent = self.current;
+        let parent_task = self.tasks.get(parent)?;
+        let pml4 = parent_task.pml4?;
+        let thread_group = parent_task.thread_group;
+        let user_cs = crate::gdt::user_code_selector().0 as u64;
+        let user_ss = crate::gdt::user_data_selector().0 as u64;
+        let task_id = self.spawn_context(
+            "user-thread",
+            entry,
+            user_cs,
+            Some(user_rsp),
+            user_ss,
+            Some(pml4),
+            arg,
+            0,
+        )?;
+        if let Some(task) = self.tasks.get_mut(task_id) {
+            task.thread_group = thread_group;
+            task.user_stack_bottom = Some(stack_bottom);
+        }
+        if crate::vfs::inherit_all_fds(parent, task_id) {
+            Some(task_id)
+        } else {
+            crate::vfs::drop_task(task_id);
+            if let Some(task) = self.tasks.get_mut(task_id) {
+                release_task_stack(task);
+            }
+            self.tasks.pop();
+            None
+        }
+    }
+
+    fn next_thread_stack_slot_for(&self, pml4: PhysFrame) -> Option<usize> {
+        for slot in 0..crate::vmm::USER_THREAD_STACK_SLOTS {
+            let Some((bottom, _top)) = crate::vmm::user_thread_stack_range(slot) else {
+                continue;
+            };
+            let in_use = self
+                .tasks
+                .iter()
+                .any(|task| task.pml4 == Some(pml4) && task.user_stack_bottom == Some(bottom));
+            if !in_use {
+                return Some(slot);
+            }
+        }
+        None
     }
 
     fn active_task_count(&self) -> usize {
@@ -446,6 +532,22 @@ pub fn can_spawn_user_task() -> bool {
     sched.active_task_count() < crate::resource_limits::MAX_ACTIVE_TASKS
 }
 
+pub fn current_user_pml4() -> Option<PhysFrame> {
+    let sched = SCHEDULER.lock();
+    sched.tasks.get(sched.current).and_then(|task| task.pml4)
+}
+
+pub fn next_user_thread_stack_slot() -> Option<usize> {
+    let sched = SCHEDULER.lock();
+    let pml4 = sched.tasks.get(sched.current).and_then(|task| task.pml4)?;
+    sched.next_thread_stack_slot_for(pml4)
+}
+
+pub fn spawn_user_thread(entry: u64, user_rsp: u64, arg: u64, stack_bottom: u64) -> Option<usize> {
+    let mut sched = SCHEDULER.lock();
+    sched.spawn_user_thread(entry, user_rsp, arg, stack_bottom)
+}
+
 pub fn resource_stats() -> SchedulerResourceStats {
     let sched = SCHEDULER.lock();
     let active_tasks = sched.active_task_count();
@@ -459,17 +561,34 @@ pub fn resource_stats() -> SchedulerResourceStats {
         .iter()
         .filter(|task| task.pml4.is_some() && task.status != TaskStatus::Reaped)
         .count();
+    let user_threads = sched
+        .tasks
+        .iter()
+        .enumerate()
+        .filter(|(idx, task)| {
+            task.pml4.is_some() && task.status != TaskStatus::Reaped && *idx != task.thread_group
+        })
+        .count();
     SchedulerResourceStats {
         active_tasks,
         max_active_tasks: crate::resource_limits::MAX_ACTIVE_TASKS,
         task_slots: sched.tasks.len(),
         reaped_tasks,
         user_tasks,
+        user_threads,
     }
 }
 
 pub fn task_memory_stats() -> Vec<TaskMemoryStats> {
-    let seeds: Vec<(usize, &'static str, TaskStatus, Option<PhysFrame>, bool)> = {
+    let seeds: Vec<(
+        usize,
+        &'static str,
+        TaskStatus,
+        usize,
+        usize,
+        Option<PhysFrame>,
+        bool,
+    )> = {
         let sched = SCHEDULER.lock();
         sched
             .tasks
@@ -477,10 +596,24 @@ pub fn task_memory_stats() -> Vec<TaskMemoryStats> {
             .enumerate()
             .filter(|(pid, task)| *pid != 0 && task.status != TaskStatus::Reaped)
             .map(|(pid, task)| {
+                let address_space_threads = task
+                    .pml4
+                    .map(|pml4| {
+                        sched
+                            .tasks
+                            .iter()
+                            .filter(|other| {
+                                other.pml4 == Some(pml4) && other.status != TaskStatus::Reaped
+                            })
+                            .count()
+                    })
+                    .unwrap_or(0);
                 (
                     pid,
                     task.name,
                     task.status,
+                    task.thread_group,
+                    address_space_threads,
                     task.pml4,
                     !task.stack.is_empty(),
                 )
@@ -489,8 +622,18 @@ pub fn task_memory_stats() -> Vec<TaskMemoryStats> {
     };
 
     let mut out = Vec::new();
-    for (pid, name, status, pml4, has_stack) in seeds {
-        let user_pages = pml4.map(crate::vmm::owned_leaf_pages).unwrap_or(0);
+    let mut seen_address_spaces = Vec::new();
+    for (pid, name, status, thread_group, address_space_threads, pml4, has_stack) in seeds {
+        let user_pages = if let Some(pml4) = pml4 {
+            if seen_address_spaces.iter().any(|&seen| seen == pml4) {
+                0
+            } else {
+                seen_address_spaces.push(pml4);
+                crate::vmm::owned_leaf_pages(pml4)
+            }
+        } else {
+            0
+        };
         let shmem_pages = crate::vfs::task_shmem_pages(pid);
         let kernel_stack_bytes = if has_stack { STACK_SIZE } else { 0 };
         let open_fds = crate::vfs::task_open_fd_count(pid);
@@ -505,6 +648,8 @@ pub fn task_memory_stats() -> Vec<TaskMemoryStats> {
             pid,
             name,
             status,
+            thread_group,
+            address_space_threads,
             user_pages,
             shmem_pages,
             kernel_stack_bytes,
@@ -524,10 +669,12 @@ pub fn task_memory_lines() -> Vec<String> {
     let mut lines = Vec::new();
     for task in stats.iter().take(16) {
         lines.push(format!(
-            "pid={} name={} state={} user_pages={} shmem_pages={} kstack={} fds={} sockets={} estimated={}",
+            "pid={} name={} state={} tgid={} threads={} user_pages={} shmem_pages={} kstack={} fds={} sockets={} estimated={}",
             task.pid,
             task.name,
             task_status_label(task.status),
+            task.thread_group,
+            task.address_space_threads,
             task.user_pages,
             task.shmem_pages,
             task.kernel_stack_bytes,
@@ -1117,6 +1264,7 @@ fn signal_error_from_kill(err: KillError) -> SignalError {
 }
 
 fn cleanup_task_resources(task_id: usize) {
+    crate::futex::drop_task_waiters(task_id);
     crate::vfs::drop_task(task_id);
     crate::net::close_owner_sockets(task_id);
 }
@@ -1139,6 +1287,21 @@ fn release_task_stack(task: &mut Task) {
     }
     task.stack_ptr = 0;
     task.syscall_stack_top = 0;
+}
+
+fn take_reap_pml4_locked(sched: &mut Scheduler, task_id: usize) -> Option<PhysFrame> {
+    let pml4 = sched.tasks.get_mut(task_id)?.pml4.take()?;
+    let still_live = sched.tasks.iter().enumerate().any(|(idx, task)| {
+        idx != task_id && task.pml4 == Some(pml4) && task.status != TaskStatus::Reaped
+    });
+    if still_live {
+        if let Some(task) = sched.tasks.get_mut(task_id) {
+            task.pml4 = Some(pml4);
+        }
+        None
+    } else {
+        Some(pml4)
+    }
 }
 
 fn force_reclaim_task(task_id: usize, code: u64) -> Result<(), KillError> {
@@ -1165,7 +1328,7 @@ fn force_reclaim_task(task_id: usize, code: u64) -> Result<(), KillError> {
         task.exit_code = Some(code);
         task.wake_tick = None;
         release_task_stack(task);
-        let pml4 = task.pml4.take();
+        let pml4 = take_reap_pml4_locked(&mut sched, task_id);
         (name, parent, pml4)
     };
 
@@ -1200,7 +1363,7 @@ pub fn waitpid(parent: usize, task_id: usize) -> Result<u64, WaitError> {
                 let code = task.exit_code.unwrap_or(0);
                 task.status = TaskStatus::Reaped;
                 release_task_stack(task);
-                pml4_to_free = task.pml4.take();
+                pml4_to_free = take_reap_pml4_locked(&mut sched, task_id);
                 Ok(code)
             }
             TaskStatus::Reaped => Err(WaitError::AlreadyReaped),
@@ -1301,16 +1464,26 @@ pub fn reap_all_exited(parent: usize) -> usize {
     let count = {
         let mut sched = SCHEDULER.lock();
         let mut count = 0usize;
-        for (idx, task) in sched.tasks.iter_mut().enumerate() {
-            if idx == 0 || task.status != TaskStatus::Exited {
+        for idx in 0..sched.tasks.len() {
+            if idx == 0 {
                 continue;
             }
-            if task.parent != Some(parent) && parent != 0 {
+            let should_reap = sched
+                .tasks
+                .get(idx)
+                .map(|task| {
+                    task.status == TaskStatus::Exited
+                        && (task.parent == Some(parent) || parent == 0)
+                })
+                .unwrap_or(false);
+            if !should_reap {
                 continue;
             }
-            task.status = TaskStatus::Reaped;
-            release_task_stack(task);
-            if let Some(pml4) = task.pml4.take() {
+            if let Some(task) = sched.tasks.get_mut(idx) {
+                task.status = TaskStatus::Reaped;
+                release_task_stack(task);
+            }
+            if let Some(pml4) = take_reap_pml4_locked(&mut sched, idx) {
                 pml4s_to_free.push(pml4);
             }
             count += 1;
