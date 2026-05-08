@@ -18,11 +18,12 @@ pub fn lines() -> Vec<String> {
     let net = crate::net::resource_stats();
     vec![
         format!(
-            "tasks active={}/{} user={} user_threads={} slots={} reaped={}",
+            "tasks active={}/{} user={} user_threads={} tls_threads={} slots={} reaped={}",
             sched.active_tasks,
             sched.max_active_tasks,
             sched.user_tasks,
             sched.user_threads,
+            sched.tls_threads,
             sched.task_slots,
             sched.reaped_tasks
         ),

@@ -13,7 +13,7 @@ const WPE_READY_PATH: &str = "/SYSTEM/BROWSER-ENGINE/WPE.READY";
 
 const DEFAULT_CONFIG: &[u8] = b"preferred=wpe-webkit\nfallback=coolos-native\nmode=port-prep\nengine_abi=1\nsurface=rgba-shmem\ninput=gui-events\nnetwork=kernel-http-tls\n";
 
-const INITIAL_LOG: &[u8] = b"coolOS browser engine port log\nphase=72\npreferred=wpe-webkit\nactive=coolos-native\nstatus=port-prep\nthreads_futex=partial\n";
+const INITIAL_LOG: &[u8] = b"coolOS browser engine port log\nphase=73\npreferred=wpe-webkit\nactive=coolos-native\nstatus=port-prep\nthreads_futex=ready\ntls_pthread=partial\n";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RequirementStatus {
@@ -91,9 +91,9 @@ const REQUIREMENTS: &[Requirement] = &[
     },
     Requirement {
         key: "threads-futex",
-        status: RequirementStatus::Partial,
-        detail: "userspace thread groups and futex wait/wake ABI exist",
-        next: "add TLS segments and pthread-compatible libc integration",
+        status: RequirementStatus::Ready,
+        detail: "thread groups, futex wait/wake, FS-base TLS, and pthread-style libcool primitives exist",
+        next: "wire the hosted C/POSIX pthread ABI to the libc runtime",
     },
     Requirement {
         key: "dynamic-linker",

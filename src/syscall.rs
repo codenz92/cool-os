@@ -58,6 +58,9 @@
 ///   47 thread_spawn(entry, arg, flags) → tid sharing caller address space
 ///   48 futex_wait(addr, expected, timeout_ms) → 0 woken, 1 mismatch, 2 timeout
 ///   49 futex_wake(addr, count, flags) → waiter count woken
+///   50 thread_tls_set(base, flags) → 0 on success
+///   51 thread_tls_get() → current FS/TLS base
+///   52 thread_spawn_tls(desc_ptr) → tid, desc=[entry,arg,tls_base,flags]
 ///
 /// Output path: sys_write routes bytes to the current task's controlling TTY
 /// when one is assigned unless fd 1/2 is explicitly mapped in the task fd
@@ -293,6 +296,9 @@ extern "C" fn syscall_dispatch(
         47 => sys_thread_spawn(a1, a2, a3),
         48 => sys_futex_wait(a1, a2, a3),
         49 => sys_futex_wake(a1, a2, a3),
+        50 => sys_thread_tls_set(a1, a2),
+        51 => sys_thread_tls_get(),
+        52 => sys_thread_spawn_tls(a1 as *const u8),
         _ => u64::MAX,
     }
 }
@@ -459,12 +465,28 @@ fn sys_tty_control(op: u64, arg1: u64, arg2: u64) -> u64 {
 }
 
 fn sys_thread_spawn(entry: u64, arg: u64, flags: u64) -> u64 {
+    sys_thread_spawn_common(entry, arg, 0, flags)
+}
+
+fn sys_thread_spawn_tls(desc_ptr: *const u8) -> u64 {
+    let Some(desc) = user_descriptor4(desc_ptr) else {
+        return u64::MAX;
+    };
+    let entry = desc[0];
+    let arg = desc[1];
+    let tls_base = desc[2];
+    let flags = desc[3];
+    sys_thread_spawn_common(entry, arg, tls_base, flags)
+}
+
+fn sys_thread_spawn_common(entry: u64, arg: u64, tls_base: u64, flags: u64) -> u64 {
     use x86_64::{structures::paging::PageTableFlags, VirtAddr};
 
     if flags != 0
         || entry == 0
         || !valid_user_address_range(entry, 1, 1)
         || !crate::vmm::user_range_accessible(entry, 1, false)
+        || !valid_user_tls_base(tls_base)
     {
         return u64::MAX;
     }
@@ -507,9 +529,33 @@ fn sys_thread_spawn(entry: u64, arg: u64, flags: u64) -> u64 {
         core::ptr::write_volatile(user_rsp as *mut u64, 0);
     }
 
-    crate::scheduler::spawn_user_thread(entry, user_rsp, arg, stack_bottom)
+    crate::scheduler::spawn_user_thread(entry, user_rsp, arg, stack_bottom, tls_base)
         .map(|tid| tid as u64)
         .unwrap_or(u64::MAX)
+}
+
+fn sys_thread_tls_set(base: u64, flags: u64) -> u64 {
+    if flags != 0 || !valid_user_tls_base(base) {
+        return u64::MAX;
+    }
+    if crate::scheduler::set_current_tls_base(base) {
+        0
+    } else {
+        u64::MAX
+    }
+}
+
+fn sys_thread_tls_get() -> u64 {
+    crate::scheduler::current_tls_base()
+}
+
+fn valid_user_tls_base(base: u64) -> bool {
+    if base == 0 {
+        return true;
+    }
+    base & 7 == 0
+        && valid_user_address_range(base, 8, 8)
+        && crate::vmm::user_range_accessible(base, 8, true)
 }
 
 fn sys_futex_wait(addr: u64, expected: u64, timeout_ms: u64) -> u64 {
@@ -1572,11 +1618,13 @@ fn sys_exec(frame: &mut SyscallFrame, path_ptr: *const u8, path_len: u64) -> u64
         let mut sched = crate::scheduler::SCHEDULER.lock();
         let cur = sched.current;
         let old = sched.tasks[cur].pml4.replace(image.pml4);
+        sched.tasks[cur].tls_base = 0;
         (cur, old)
     };
     crate::app_lifecycle::record_process_start(cur, &path, &path);
 
     unsafe { crate::vmm::switch_to(image.pml4) };
+    let _ = crate::scheduler::set_current_tls_base(0);
     crate::vfs::drop_task_shmem_refs(cur);
     if let Some(old_pml4) = old_pml4 {
         crate::vmm::free_address_space(old_pml4);

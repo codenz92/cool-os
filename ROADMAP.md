@@ -4,7 +4,7 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–72 are complete. The current milestone gives coolOS a much more
+Phases 1–73 are complete. The current milestone gives coolOS a much more
 normal command-line and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
@@ -71,8 +71,12 @@ browser runtimes: ABI v11 exposes `thread_spawn`, `futex_wait`, and
 private user/kernel stacks; shared PML4s are freed only after the last sibling
 is reaped; `libcool::thread` wraps spawn/join/futex operations; `/bin/threaddemo`
 tests two worker threads plus futex wake/join; and diagnostics/sysreport expose
-futex counters plus thread-stack capacity.
-Phases 45-72 focus on responsiveness, interactive terminal behavior, and
+futex counters plus thread-stack capacity. Phase 73 adds per-thread FS-base TLS
+state, ABI v12 `thread_tls_set`, `thread_tls_get`, and `thread_spawn_tls`,
+libcool TLS blocks/keys plus pthread-style mutex/condvar/once helpers,
+`/bin/tlsdemo`, and browser-engine readiness that marks `threads-futex` ready
+while leaving hosted libc/POSIX pthread wiring for the next runtime layer.
+Phases 45-73 focus on responsiveness, interactive terminal behavior, and
 desktop-browser compatibility:
 cursor-only framebuffer updates,
 input-first idle-loop ordering, adaptive 36/144 Hz frame pacing, compositor
@@ -87,8 +91,8 @@ scheduler, VMM, VFS, shared memory, and sockets, low-memory recovery, durable
 service recovery, update rollback, boot-health rollback, signed update
 verification, update key rotation, downgrade refusal, signed package
 install/repair trust, package payload transactions, and the first explicit
-WPE WebKit port ABI plus the thread/futex prerequisite for a future full
-browser engine.
+WPE WebKit port ABI plus thread/futex/TLS runtime prerequisites for a future
+full browser engine.
 
 ---
 
@@ -2177,10 +2181,10 @@ browser kept as a small fallback/debug renderer.
 **Current status:** complete. coolOS now has an explicit WPE WebKit port target
 and an inspectable browser engine host contract. A real WebKit backend is not
 booting yet; the readiness surface deliberately identifies the remaining OS
-work after Phase 72: TLS/pthread libc integration, dynamic linking/C runtime
-support, larger/file backed mappings, JavaScriptCore JIT/interpreter policy,
-richer POSIX socket/file semantics, scalable fonts/text shaping, and eventually
-graphics acceleration.
+work after Phase 73: hosted libc/POSIX pthread integration, dynamic linking/C
+runtime support, larger/file backed mappings, JavaScriptCore JIT/interpreter
+policy, richer POSIX socket/file semantics, scalable fonts/text shaping, and
+eventually graphics acceleration.
 
 ---
 
@@ -2221,6 +2225,42 @@ shared process-wide signal/exit policy remain future work.
 
 ---
 
+## ✅ Phase 73 — Thread-Local Storage and Pthread Runtime Groundwork
+
+**Goal:** Turn the raw thread/futex ABI into the next runtime layer a hosted
+browser engine expects: per-thread TLS state, spawn-with-TLS, and pthread-style
+synchronization helpers that can later back a libc/POSIX pthread ABI.
+
+- [x] Add per-task FS-base TLS state to the scheduler and reload it on every
+      context switch alongside CR3 and TSS RSP0.
+- [x] Add ABI v12 syscalls `thread_tls_set(base, flags)`,
+      `thread_tls_get()`, and `thread_spawn_tls(desc_ptr)` where the descriptor
+      carries entry, argument, initial TLS base, and flags.
+- [x] Reset the current task's TLS base on `exec` so replaced images do not
+      inherit stale thread-control-block pointers.
+- [x] Extend scheduler/resource diagnostics with TLS-base and TLS-thread
+      counts for task memory/sysreport output.
+- [x] Add `libcool::thread::TlsBlock`, TLS keys, FS read/write helpers,
+      `spawn_tls`, `install_tls_block`, and `bind_current_tls_os_tid`.
+- [x] Add futex-backed `PThreadMutex`, `PThreadCondvar`, and `PThreadOnce`
+      helpers to establish the pthread-shaped synchronization surface.
+- [x] Add `/bin/tlsdemo` to verify independent per-thread FS-base TLS,
+      TLS-key slots, condition-variable wakeups, once initialization, and
+      join/reap results.
+- [x] Update the browser-engine requirement table so `threads-futex` is ready
+      and the next blocker is hosted libc/POSIX pthread wiring.
+- [x] Add `make smoke-phase73-tls-pthread` and update SDK/README/Roadmap docs
+      for ABI v12.
+
+**Current status:** complete. coolOS now saves and restores a real user TLS
+base per scheduled task, can launch a userspace thread with its TLS base already
+installed before first instruction, and has SDK-level pthread-style blocking
+primitives on top of futexes. This is still not an upstream libc pthread ABI:
+dynamic linking, ELF TLS relocations, errno/`pthread_*` symbol compatibility,
+and process-wide multi-thread signal/exit policy remain separate phases.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -2235,7 +2275,9 @@ Userspace binaries are written in `#![no_std]` Rust and link against
 `userspace/libcool`. The SDK owns `_start`, panic aborts, initial argv parsing,
 raw syscall assembly, and convenience APIs such as `println!`, `File::open`,
 `File::create`, `pipe`, `mmap`, `shmem_create`, `spawn_args`,
-`spawn_fds_args`, `thread::spawn`, `thread::futex_wait`, `evented::poll`,
+`spawn_fds_args`, `thread::spawn`, `thread::spawn_tls`,
+`thread::set_tls_base`, `thread::futex_wait`, `thread::PThreadMutex`,
+`thread::PThreadCondvar`, `thread::PThreadOnce`, `evented::poll`,
 `tty::enter_raw_mode`, `read_event`, `dns_resolve`, TCP sockets, time, and filesystem utility calls plus GUI windows through `libcool::fs` and
 `libcool::gui`.
 
@@ -2309,4 +2351,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.33 | Phase 69 complete: Package trust and repair |
 | v7.34 | Phase 70 complete: Package payloads and transactional installs |
 | v7.35 | Phase 71 complete: Browser engine port ABI |
-| v7.36 | Current — Phase 72 complete: Userspace threads and futex ABI |
+| v7.36 | Phase 72 complete: Userspace threads and futex ABI |
+| v7.37 | Current — Phase 73 complete: Thread-local storage and pthread runtime groundwork |

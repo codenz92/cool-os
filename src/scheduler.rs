@@ -50,6 +50,7 @@ pub struct SchedulerResourceStats {
     pub reaped_tasks: usize,
     pub user_tasks: usize,
     pub user_threads: usize,
+    pub tls_threads: usize,
 }
 
 #[derive(Clone)]
@@ -59,6 +60,7 @@ pub struct TaskMemoryStats {
     pub status: TaskStatus,
     pub thread_group: usize,
     pub address_space_threads: usize,
+    pub tls_base: u64,
     pub user_pages: usize,
     pub shmem_pages: usize,
     pub kernel_stack_bytes: usize,
@@ -114,6 +116,8 @@ pub struct Task {
     pub thread_group: usize,
     /// Userspace stack bottom for diagnostics and per-address-space stack slots.
     pub user_stack_bottom: Option<u64>,
+    /// Per-thread userspace FS base. Used by libc/pthread-style TLS runtimes.
+    pub tls_base: u64,
     /// Per-process PML4 frame.  None = kernel task, shares the boot PML4.
     pub pml4: Option<PhysFrame>,
 }
@@ -158,6 +162,7 @@ impl Scheduler {
             cwd: String::from("/"),
             thread_group: 0,
             user_stack_bottom: None,
+            tls_base: 0,
             pml4: None,
         });
         crate::vfs::init_task(0);
@@ -175,6 +180,7 @@ impl Scheduler {
         pml4: Option<PhysFrame>,
         initial_rdi: u64,
         initial_rsi: u64,
+        tls_base: u64,
     ) -> Option<usize> {
         if !crate::memory_pressure::has_allocation_reserve(STACK_SIZE) {
             return None;
@@ -257,6 +263,7 @@ impl Scheduler {
             cwd,
             thread_group: 0,
             user_stack_bottom: None,
+            tls_base,
             pml4,
         });
         let task_id = self.tasks.len() - 1;
@@ -292,7 +299,7 @@ impl Scheduler {
             core::arch::asm!("mov {0:x}, cs", out(reg) cs);
             core::arch::asm!("mov {0:x}, ss", out(reg) ss);
         }
-        let _ = self.spawn_context(name, entry as usize as u64, cs, None, ss, pml4, 0, 0);
+        let _ = self.spawn_context(name, entry as usize as u64, cs, None, ss, pml4, 0, 0, 0);
     }
 
     /// Spawn a ring-3 task that will enter at `entry` with the given user stack.
@@ -339,6 +346,7 @@ impl Scheduler {
             Some(pml4),
             0,
             0,
+            0,
         ) else {
             crate::vmm::free_address_space(pml4);
             return false;
@@ -367,6 +375,7 @@ impl Scheduler {
         user_rsp: u64,
         arg: u64,
         stack_bottom: u64,
+        tls_base: u64,
     ) -> Option<usize> {
         if self.active_task_count() >= crate::resource_limits::MAX_ACTIVE_TASKS {
             return None;
@@ -386,6 +395,7 @@ impl Scheduler {
             Some(pml4),
             arg,
             0,
+            tls_base,
         )?;
         if let Some(task) = self.tasks.get_mut(task_id) {
             task.thread_group = thread_group;
@@ -509,6 +519,7 @@ impl Scheduler {
             self.tasks[next].syscall_stack_top as u64
         };
         crate::gdt::set_privilege_stack_top(privilege_stack_top);
+        load_tls_base(self.tasks[next].tls_base);
 
         // Switch address space: load the winning task's PML4, or restore the
         // boot PML4 for kernel tasks (pml4=None) so they never run with a
@@ -526,6 +537,13 @@ impl Scheduler {
 
 pub static SCHEDULER: spin::Mutex<Scheduler> = spin::Mutex::new(Scheduler::empty());
 pub static CURRENT_SYSCALL_STACK_TOP: AtomicU64 = AtomicU64::new(0);
+const IA32_FS_BASE: u32 = 0xC000_0100;
+
+fn load_tls_base(base: u64) {
+    unsafe {
+        x86_64::registers::model_specific::Msr::new(IA32_FS_BASE).write(base);
+    }
+}
 
 pub fn can_spawn_user_task() -> bool {
     let sched = SCHEDULER.lock();
@@ -543,9 +561,38 @@ pub fn next_user_thread_stack_slot() -> Option<usize> {
     sched.next_thread_stack_slot_for(pml4)
 }
 
-pub fn spawn_user_thread(entry: u64, user_rsp: u64, arg: u64, stack_bottom: u64) -> Option<usize> {
+pub fn spawn_user_thread(
+    entry: u64,
+    user_rsp: u64,
+    arg: u64,
+    stack_bottom: u64,
+    tls_base: u64,
+) -> Option<usize> {
     let mut sched = SCHEDULER.lock();
-    sched.spawn_user_thread(entry, user_rsp, arg, stack_bottom)
+    sched.spawn_user_thread(entry, user_rsp, arg, stack_bottom, tls_base)
+}
+
+pub fn set_current_tls_base(base: u64) -> bool {
+    let mut sched = SCHEDULER.lock();
+    let current = sched.current;
+    let Some(task) = sched.tasks.get_mut(current) else {
+        return false;
+    };
+    if task.pml4.is_none() {
+        return false;
+    }
+    task.tls_base = base;
+    load_tls_base(base);
+    true
+}
+
+pub fn current_tls_base() -> u64 {
+    let sched = SCHEDULER.lock();
+    sched
+        .tasks
+        .get(sched.current)
+        .map(|task| task.tls_base)
+        .unwrap_or(0)
 }
 
 pub fn resource_stats() -> SchedulerResourceStats {
@@ -569,6 +616,13 @@ pub fn resource_stats() -> SchedulerResourceStats {
             task.pml4.is_some() && task.status != TaskStatus::Reaped && *idx != task.thread_group
         })
         .count();
+    let tls_threads = sched
+        .tasks
+        .iter()
+        .filter(|task| {
+            task.pml4.is_some() && task.status != TaskStatus::Reaped && task.tls_base != 0
+        })
+        .count();
     SchedulerResourceStats {
         active_tasks,
         max_active_tasks: crate::resource_limits::MAX_ACTIVE_TASKS,
@@ -576,6 +630,7 @@ pub fn resource_stats() -> SchedulerResourceStats {
         reaped_tasks,
         user_tasks,
         user_threads,
+        tls_threads,
     }
 }
 
@@ -588,6 +643,7 @@ pub fn task_memory_stats() -> Vec<TaskMemoryStats> {
         usize,
         Option<PhysFrame>,
         bool,
+        u64,
     )> = {
         let sched = SCHEDULER.lock();
         sched
@@ -616,6 +672,7 @@ pub fn task_memory_stats() -> Vec<TaskMemoryStats> {
                     address_space_threads,
                     task.pml4,
                     !task.stack.is_empty(),
+                    task.tls_base,
                 )
             })
             .collect()
@@ -623,7 +680,8 @@ pub fn task_memory_stats() -> Vec<TaskMemoryStats> {
 
     let mut out = Vec::new();
     let mut seen_address_spaces = Vec::new();
-    for (pid, name, status, thread_group, address_space_threads, pml4, has_stack) in seeds {
+    for (pid, name, status, thread_group, address_space_threads, pml4, has_stack, tls_base) in seeds
+    {
         let user_pages = if let Some(pml4) = pml4 {
             if seen_address_spaces.iter().any(|&seen| seen == pml4) {
                 0
@@ -650,6 +708,7 @@ pub fn task_memory_stats() -> Vec<TaskMemoryStats> {
             status,
             thread_group,
             address_space_threads,
+            tls_base,
             user_pages,
             shmem_pages,
             kernel_stack_bytes,
@@ -669,12 +728,13 @@ pub fn task_memory_lines() -> Vec<String> {
     let mut lines = Vec::new();
     for task in stats.iter().take(16) {
         lines.push(format!(
-            "pid={} name={} state={} tgid={} threads={} user_pages={} shmem_pages={} kstack={} fds={} sockets={} estimated={}",
+            "pid={} name={} state={} tgid={} threads={} tls_base={:#x} user_pages={} shmem_pages={} kstack={} fds={} sockets={} estimated={}",
             task.pid,
             task.name,
             task_status_label(task.status),
             task.thread_group,
             task.address_space_threads,
+            task.tls_base,
             task.user_pages,
             task.shmem_pages,
             task.kernel_stack_bytes,
