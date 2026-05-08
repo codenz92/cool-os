@@ -17,6 +17,10 @@ path = "src/fs_image.rs"
 name = "phase75-dso"
 path = "src/bin/phase75_dso.rs"
 
+[[bin]]
+name = "phase76-dsos"
+path = "src/bin/phase76_dsos.rs"
+
 [dependencies]
 bootloader = { path = "../vendor/bootloader", default-features = false, features = ["bios"] }
 fatfs = "0.3"

@@ -4,7 +4,7 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–74 are complete. The current milestone gives coolOS a much more
+Phases 1–76 are complete. The current milestone gives coolOS a much more
 normal command-line and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
@@ -83,7 +83,10 @@ mutex/condvar/once/key APIs, per-thread `errno`, `gettid`, `sched_yield`,
 thread/TLS/futex substrate. Phase 75 adds ABI v13 `mprotect`, `/lib`
 shared-object image placement, `libcool::dynlink`, `/bin/lddemo`, ET_DYN
 `PT_DYNAMIC` parsing, RELA relocations, dynsym export lookup, init-array
-execution, and W^X executable text transitions. Phases 45-75 focus on responsiveness,
+execution, and W^X executable text transitions. Phase 76 extends that path to
+bounded `DT_NEEDED` dependency graphs, soname lookup, cross-object dynsym
+resolution, ELF TLS template copying, TLS relocations, dependency-order init
+arrays, and `/lib/libphase76*.so` smoke coverage. Phases 45-76 focus on responsiveness,
 interactive terminal behavior, and
 desktop-browser compatibility:
 cursor-only framebuffer updates,
@@ -2189,7 +2192,7 @@ browser kept as a small fallback/debug renderer.
 **Current status:** complete. coolOS now has an explicit WPE WebKit port target
 and an inspectable browser engine host contract. A real WebKit backend is not
 booting yet; the readiness surface deliberately identifies the remaining OS
-work after Phase 75: full dynamic-link dependency/TLS/C runtime support,
+work after Phase 76: libc `ld.so`/C runtime support,
 larger/file-backed mappings, JavaScriptCore JIT/interpreter policy, richer
 POSIX socket/file semantics, scalable fonts/text shaping, remaining pthread
 edge cases, and eventually graphics acceleration.
@@ -2330,18 +2333,57 @@ ring-3 proof that code loaded from `/lib` can be invoked safely.
 - [x] Add `/lib` to the generated FAT/CoolFS image and route `.so` build
       artifacts there while keeping normal extra ELFs under `/bin`.
 - [x] Update browser-engine readiness so dynamic linking and executable memory
-      policy move from missing to partial, with the remaining `DT_NEEDED`, ELF
-      TLS, libc `ld.so`, C++ runtime, and JIT policy work called out.
+      policy move from missing to partial, with the remaining dependency,
+      ELF TLS, libc `ld.so`, C++ runtime, and JIT policy work called out.
 - [x] Add `make smoke-phase75-dynlink` and update README, Roadmap, SDK, in-OS
       About text, and browser-engine docs/logs for v7.39.
 
 **Current status:** complete. coolOS can now load a bounded shared object from
 `/lib`, apply dynamic relocations, seal text pages executable/non-writable, run
 an init array, resolve exports, and call loaded code from ring 3. This is not a
-complete ELF dynamic linker yet: dependency graphs (`DT_NEEDED`), soname/cache
-resolution, ELF TLS records, PLT/lazy binding, symbol versioning, libc `ld.so`,
-C++ runtime constructors/destructors, file-backed mappings, and browser-engine
-JIT policy remain future work.
+complete ELF dynamic linker yet: dependency graphs (`DT_NEEDED`),
+soname/cache resolution, ELF TLS records, PLT/lazy binding, symbol versioning,
+libc `ld.so`, C++ runtime constructors/destructors, file-backed mappings, and
+browser-engine JIT policy remain future work at the end of Phase 75.
+
+---
+
+## ✅ Phase 76 — Dynamic Linker Dependencies and ELF TLS
+
+**Goal:** Turn the Phase 75 single-object loader into the next hosted-runtime
+piece a WebKit-class port needs: bounded dependency loading, cross-object
+symbols, ELF TLS records, and an in-OS proof that a loaded object can call into
+a needed shared object.
+
+- [x] Add `dynlink::Workspace` and `dynlink::load_with_deps` so userspace owns
+      bounded image/TLS scratch storage without adding heap allocation.
+- [x] Parse `DT_NEEDED` and `DT_SONAME` from ET_DYN dynamic tables and resolve
+      needed sonames under `/lib` with duplicate-load suppression.
+- [x] Load dependencies before dependents at separated virtual bases, resolve
+      undefined `GLOB_DAT`, `JUMP_SLOT`, and `64` relocations against already
+      loaded objects, and preserve the Phase 75 W^X segment sealing rules.
+- [x] Parse `PT_TLS`, copy bounded TLS templates into loader-owned storage, and
+      support `R_X86_64_DTPMOD64` and `R_X86_64_DTPOFF64` TLS relocations for
+      early hosted-runtime experiments.
+- [x] Keep dependency init arrays ordered before dependent init arrays and
+      expose object/dependency/relocation/init/TLS counters through
+      `LoadedSet`.
+- [x] Generate `/lib/libphase76dep.so` and `/lib/libphase76main.so` at build
+      time; the main object has `DT_NEEDED`, cross-object relocations, TLS
+      relocations, and an init-array marker.
+- [x] Extend `/bin/lddemo` to run the Phase 75 single-object proof and the
+      Phase 76 dependency/TLS proof, verifying a result of `72` and TLS value
+      `23`.
+- [x] Add `make smoke-phase76-dynlink-deps` and update README, Roadmap, SDK,
+      in-OS About text, and browser-engine docs/logs for v7.40.
+
+**Current status:** complete. coolOS can now load a bounded `/lib`
+shared-object dependency graph, apply cross-object dynamic relocations, provide
+ELF TLS template storage and TLS relocation values, run dependency init arrays
+before dependents, and call code that crosses object boundaries from ring 3.
+This is still not a complete ELF dynamic linker: libc `ld.so` entry points,
+symbol versioning, lazy PLT binding, destructors, C++ runtime support,
+file-backed mappings, and browser-engine JIT policy remain future work.
 
 ---
 
@@ -2362,7 +2404,8 @@ raw syscall assembly, and convenience APIs such as `println!`, `File::open`,
 `spawn_fds_args`, `thread::spawn`, `thread::spawn_tls`,
 `thread::set_tls_base`, `thread::futex_wait`, `thread::PThreadMutex`,
 `thread::PThreadCondvar`, `thread::PThreadOnce`, `evented::poll`,
-`tty::enter_raw_mode`, `dynlink::load`, `memory::mprotect`, `read_event`,
+`tty::enter_raw_mode`, `dynlink::load`, `dynlink::load_with_deps`,
+`dynlink::Workspace`, `memory::mprotect`, `read_event`,
 `dns_resolve`, TCP sockets, time, and filesystem utility calls plus GUI windows through `libcool::fs` and
 `libcool::gui`.
 
@@ -2439,4 +2482,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.36 | Phase 72 complete: Userspace threads and futex ABI |
 | v7.37 | Phase 73 complete: Thread-local storage and pthread runtime groundwork |
 | v7.38 | Phase 74 complete: POSIX pthread and libc shim |
-| v7.39 | Current — Phase 75 complete: dynamic loader foundation |
+| v7.39 | Phase 75 complete: dynamic loader foundation |
+| v7.40 | Current — Phase 76 complete: dynamic linker dependencies and ELF TLS |

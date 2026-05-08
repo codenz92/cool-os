@@ -13,7 +13,7 @@ pub fn lines() -> Vec<String> {
     alloc::vec![
         format!("{} version {}", KERNEL_ABI_NAME, KERNEL_ABI_VERSION),
         String::from(
-            "sdk: libcool v1 wraps startup, argv, process, files, pipes, threads, futexes, TLS, POSIX pthread/libc shims, dynlink, mmap/mprotect, shmem, net",
+            "sdk: libcool v1 wraps startup, argv, process, files, pipes, threads, futexes, TLS, POSIX pthread/libc shims, dynlink deps/TLS, mmap/mprotect, shmem, net",
         ),
         String::from("syscalls: exit/write/yield/getpid/mmap/open/read/close/exec"),
         String::from("syscalls: pipe/dup/shmem/waitpid/spawn/sleep_ms/abi/dns/http"),
