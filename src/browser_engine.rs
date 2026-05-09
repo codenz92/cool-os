@@ -13,7 +13,7 @@ const WPE_READY_PATH: &str = "/SYSTEM/BROWSER-ENGINE/WPE.READY";
 
 const DEFAULT_CONFIG: &[u8] = b"preferred=wpe-webkit\nfallback=coolos-native\nmode=port-prep\nengine_abi=1\nsurface=rgba-shmem\ninput=gui-events\nnetwork=kernel-http-tls\n";
 
-const INITIAL_LOG: &[u8] = b"coolOS browser engine port log\nphase=76\npreferred=wpe-webkit\nactive=coolos-native\nstatus=port-prep\nthreads_futex=ready\ntls_pthread=ready\nposix_libc=partial\ndynamic_linker=partial-needed-tls\nwx_mprotect=ready\n";
+const INITIAL_LOG: &[u8] = b"coolOS browser engine port log\nphase=77\npreferred=wpe-webkit\nactive=coolos-native\nstatus=port-prep\nthreads_futex=ready\ntls_pthread=ready\nposix_libc=partial-open-flags\ndynamic_linker=partial-file-mmap\nwx_mprotect=ready\nfile_mmap=partial-readonly\n";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RequirementStatus {
@@ -68,14 +68,14 @@ const REQUIREMENTS: &[Requirement] = &[
     Requirement {
         key: "filesystem",
         status: RequirementStatus::Partial,
-        detail: "CoolFS/VFS provides files, dirs, metadata, rename, fd tables",
-        next: "add broader POSIX errno/open flags, temp files, mmap-backed files",
+        detail: "CoolFS/VFS provides files, dirs, metadata, rename, fd tables, /TMP, and read-only mmap_file",
+        next: "add broader POSIX errno/open flags, unlink-on-close, and writable mmap sync",
     },
     Requirement {
         key: "memory-map",
         status: RequirementStatus::Partial,
-        detail: "mmap and shared memory exist with bounded per-task limits",
-        next: "raise per-process address-space caps and support file-backed mappings",
+        detail: "mmap, mprotect, shared memory, and read-only file-backed mappings exist with bounded per-task limits",
+        next: "raise per-process address-space caps and support shared/writable file mappings",
     },
     Requirement {
         key: "timers-poll",
@@ -99,14 +99,14 @@ const REQUIREMENTS: &[Requirement] = &[
         key: "dynamic-linker",
         status: RequirementStatus::Partial,
         detail:
-            "ET_DYN loader maps /lib objects, follows DT_NEEDED, resolves global symbols, handles TLS records, and runs init arrays",
+            "ET_DYN loader maps /lib objects, file-backs read-only segments, follows DT_NEEDED, resolves global symbols, handles TLS records, and runs init arrays",
         next:
             "add libc ld.so entry points, symbol versioning, lazy PLT binding, and C++ runtime support",
     },
     Requirement {
         key: "jit-execmem",
         status: RequirementStatus::Partial,
-        detail: "ABI 13 mprotect supports W^X executable mmap transitions for loaded text",
+        detail: "ABI 14 mmap_file and mprotect support W^X executable mappings for loaded text",
         next: "define signed-engine JIT policy or force JavaScriptCore interpreter mode",
     },
     Requirement {
@@ -170,8 +170,9 @@ pub fn manifest_lines() -> Vec<String> {
         String::from("input=gui-events"),
         String::from("network=kernel-http-tls-and-sockets"),
         String::from("process=shell-plus-web-process-planned"),
-        String::from("posix=partial-libc-pthread-shim"),
-        String::from("dynamic_linker=partial-needed-tls"),
+        String::from("posix=partial-libc-pthread-open-flags"),
+        String::from("dynamic_linker=partial-file-mmap"),
+        String::from("file_mmap=partial-readonly"),
         String::from("storage=/CONFIG/BROWSER.*, /Downloads, /TMP"),
         String::from("font_source=/FONTS"),
         String::from("backend_probe=/SYSTEM/BROWSER-ENGINE/WPE.READY"),

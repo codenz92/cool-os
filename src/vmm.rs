@@ -37,6 +37,7 @@ struct AddressSpaceFrames {
     pml4: PhysFrame,
     table_frames: Vec<PhysFrame>,
     leaf_frames: Vec<PhysFrame>,
+    file_backed_pages: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -44,6 +45,7 @@ pub struct VmmResourceStats {
     pub address_spaces: usize,
     pub page_table_pages: usize,
     pub owned_leaf_pages: usize,
+    pub file_backed_pages: usize,
 }
 
 struct TrackingFrameAllocator<'a> {
@@ -213,6 +215,7 @@ pub fn new_process_pml4() -> Option<PhysFrame> {
         pml4: frame,
         table_frames: Vec::new(),
         leaf_frames: Vec::new(),
+        file_backed_pages: 0,
     });
 
     Some(frame)
@@ -264,6 +267,21 @@ pub fn map_owned_frame_in(
     }
     map_page_in(pml4_frame, virt, phys_frame, flags)?;
     record_leaf_frame(pml4_frame, phys_frame);
+    Ok(())
+}
+
+/// Map a page whose initial contents came from a file descriptor. The frame is
+/// still private to the process and reclaimed with the address space; the extra
+/// counter lets diagnostics distinguish file-backed mappings from anonymous
+/// mmap pages.
+pub fn map_file_frame_in(
+    pml4_frame: PhysFrame,
+    virt: VirtAddr,
+    phys_frame: PhysFrame,
+    flags: PageTableFlags,
+) -> Result<(), &'static str> {
+    map_owned_frame_in(pml4_frame, virt, phys_frame, flags)?;
+    record_file_backed_page(pml4_frame);
     Ok(())
 }
 
@@ -365,14 +383,17 @@ pub fn resource_stats() -> VmmResourceStats {
     let spaces = ADDRESS_SPACES.lock();
     let mut page_table_pages = 0usize;
     let mut owned_leaf_pages = 0usize;
+    let mut file_backed_pages = 0usize;
     for space in spaces.iter() {
         page_table_pages = page_table_pages.saturating_add(space.table_frames.len());
         owned_leaf_pages = owned_leaf_pages.saturating_add(space.leaf_frames.len());
+        file_backed_pages = file_backed_pages.saturating_add(space.file_backed_pages);
     }
     VmmResourceStats {
         address_spaces: spaces.len(),
         page_table_pages,
         owned_leaf_pages,
+        file_backed_pages,
     }
 }
 
@@ -525,6 +546,13 @@ fn record_leaf_frame(pml4_frame: PhysFrame, frame: PhysFrame) {
     let mut spaces = ADDRESS_SPACES.lock();
     if let Some(space) = spaces.iter_mut().find(|space| space.pml4 == pml4_frame) {
         space.leaf_frames.push(frame);
+    }
+}
+
+fn record_file_backed_page(pml4_frame: PhysFrame) {
+    let mut spaces = ADDRESS_SPACES.lock();
+    if let Some(space) = spaces.iter_mut().find(|space| space.pml4 == pml4_frame) {
+        space.file_backed_pages = space.file_backed_pages.saturating_add(1);
     }
 }
 

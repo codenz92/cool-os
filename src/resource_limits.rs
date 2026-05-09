@@ -28,8 +28,9 @@ pub fn lines() -> Vec<String> {
             sched.reaped_tasks
         ),
         format!(
-            "address-space owned_pages={} table_pages={} spaces={} max_per_task={} bytes mmap_call_max={} bytes",
+            "address-space owned_pages={} file_backed_pages={} table_pages={} spaces={} max_per_task={} bytes mmap_call_max={} bytes",
             vmm.owned_leaf_pages,
+            vmm.file_backed_pages,
             vmm.page_table_pages,
             vmm.address_spaces,
             MAX_USER_ADDRESS_SPACE_BYTES,

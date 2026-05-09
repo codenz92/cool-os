@@ -86,7 +86,11 @@ shared-object image placement, `libcool::dynlink`, `/bin/lddemo`, ET_DYN
 execution, and W^X executable text transitions. Phase 76 extends that path to
 bounded `DT_NEEDED` dependency graphs, soname lookup, cross-object dynsym
 resolution, ELF TLS template copying, TLS relocations, dependency-order init
-arrays, and `/lib/libphase76*.so` smoke coverage. Phases 45-76 focus on responsiveness,
+arrays, and `/lib/libphase76*.so` smoke coverage. Phase 77 adds ABI v14
+`mmap_file(desc_ptr)`, read-only file-backed mappings, POSIX-shaped
+`open_flags`, VFS read-at mapping support, file-backed VMM diagnostics,
+read-only ET_DYN segment mapping, `/bin/mmapdemo`, and
+`make smoke-phase77-file-mmap`. Phases 45-77 focus on responsiveness,
 interactive terminal behavior, and
 desktop-browser compatibility:
 cursor-only framebuffer updates,
@@ -2192,8 +2196,8 @@ browser kept as a small fallback/debug renderer.
 **Current status:** complete. coolOS now has an explicit WPE WebKit port target
 and an inspectable browser engine host contract. A real WebKit backend is not
 booting yet; the readiness surface deliberately identifies the remaining OS
-work after Phase 76: libc `ld.so`/C runtime support,
-larger/file-backed mappings, JavaScriptCore JIT/interpreter policy, richer
+work after Phase 77: libc `ld.so`/C runtime support,
+larger/shared/writable file mappings, JavaScriptCore JIT/interpreter policy, richer
 POSIX socket/file semantics, scalable fonts/text shaping, remaining pthread
 edge cases, and eventually graphics acceleration.
 
@@ -2383,7 +2387,46 @@ ELF TLS template storage and TLS relocation values, run dependency init arrays
 before dependents, and call code that crosses object boundaries from ring 3.
 This is still not a complete ELF dynamic linker: libc `ld.so` entry points,
 symbol versioning, lazy PLT binding, destructors, C++ runtime support,
-file-backed mappings, and browser-engine JIT policy remain future work.
+shared/writable file mappings, and browser-engine JIT policy remain future work.
+
+---
+
+## ✅ Phase 77 — File-Backed mmap and POSIX File Runtime
+
+**Goal:** Add the file-mapping primitive a hosted browser/runtime expects:
+read-only file-backed pages from regular fds, SDK/POSIX-shaped wrappers,
+dynamic-loader use for shared-object text, and diagnostics that show mapped file
+pages distinctly from anonymous mmap pages.
+
+- [x] Add ABI v14 `mmap_file(desc_ptr)` where the descriptor carries
+      `[fd, addr, len, file_offset, flags]`.
+- [x] Keep the initial implementation deliberately private and read-only:
+      readable and executable file mappings are allowed, writable mappings are
+      rejected until dirty-page/writeback semantics exist.
+- [x] Add `vfs_read_fd_at` so file mappings can populate pages from a regular
+      read-only fd without advancing its seek offset.
+- [x] Add `vmm::map_file_frame_in` and `file_backed_pages` resource reporting
+      so Diagnostics/Sysreport distinguish file-backed owned pages from
+      anonymous owned pages.
+- [x] Extend `libcool::memory` with `mmap_file` and `libcool::io` with
+      POSIX-shaped `open_flags`, `O_RDONLY`, `O_WRONLY`, `O_CREAT`, and
+      `O_TRUNC`.
+- [x] Teach `libcool::dynlink` to keep `/lib` fds open while loading and map
+      read-only ET_DYN segments through `mmap_file`; writable segments still use
+      private anonymous pages for relocations and data.
+- [x] Add `/bin/mmapdemo` to verify `/TMP` create/open_flags, read-only mapping,
+      `/bin/motd.txt` mapping, write-map denial, executable mapping of
+      `/lib/libphase75.so`, and phase success output.
+- [x] Update browser-engine readiness and SDK docs so file-mmap is now
+      partial-readonly instead of a blocker.
+- [x] Add `make smoke-phase77-file-mmap` and update README, Roadmap, SDK,
+      in-OS About text, and browser-engine docs/logs for v7.41.
+
+**Current status:** complete. coolOS now has the first real file-backed mapping
+ABI needed by hosted runtimes and can use it in the shared-object loader. This
+is not a full POSIX `mmap`: shared mappings, writable dirty-page tracking,
+`msync`/truncate behavior, eviction, and larger address-space budgets remain
+future work.
 
 ---
 
@@ -2405,7 +2448,7 @@ raw syscall assembly, and convenience APIs such as `println!`, `File::open`,
 `thread::set_tls_base`, `thread::futex_wait`, `thread::PThreadMutex`,
 `thread::PThreadCondvar`, `thread::PThreadOnce`, `evented::poll`,
 `tty::enter_raw_mode`, `dynlink::load`, `dynlink::load_with_deps`,
-`dynlink::Workspace`, `memory::mprotect`, `read_event`,
+`dynlink::Workspace`, `memory::mmap_file`, `memory::mprotect`, `io::open_flags`, `read_event`,
 `dns_resolve`, TCP sockets, time, and filesystem utility calls plus GUI windows through `libcool::fs` and
 `libcool::gui`.
 
@@ -2483,4 +2526,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.37 | Phase 73 complete: Thread-local storage and pthread runtime groundwork |
 | v7.38 | Phase 74 complete: POSIX pthread and libc shim |
 | v7.39 | Phase 75 complete: dynamic loader foundation |
-| v7.40 | Current — Phase 76 complete: dynamic linker dependencies and ELF TLS |
+| v7.40 | Phase 76 complete: dynamic linker dependencies and ELF TLS |
+| v7.41 | Current — Phase 77 complete: file-backed mmap and POSIX file runtime |

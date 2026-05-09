@@ -62,6 +62,7 @@
 ///   51 thread_tls_get() → current FS/TLS base
 ///   52 thread_spawn_tls(desc_ptr) → tid, desc=[entry,arg,tls_base,flags]
 ///   53 mprotect(addr, len, flags) → 0 on success
+///   54 mmap_file(desc_ptr) → addr, desc=[fd,addr,len,file_offset,flags]
 ///
 /// Output path: sys_write routes bytes to the current task's controlling TTY
 /// when one is assigned unless fd 1/2 is explicitly mapped in the task fd
@@ -303,6 +304,7 @@ extern "C" fn syscall_dispatch(
         51 => sys_thread_tls_get(),
         52 => sys_thread_spawn_tls(a1 as *const u8),
         53 => sys_mprotect(a1, a2, a3),
+        54 => sys_mmap_file(a1 as *const u8),
         _ => u64::MAX,
     }
 }
@@ -440,6 +442,84 @@ fn sys_mprotect(addr: u64, len: u64, flags: u64) -> u64 {
         Ok(()) => 0,
         Err(_) => u64::MAX,
     }
+}
+
+/// Map file bytes into the calling process as private read-only pages. Phase 77
+/// intentionally exposes read-only and executable mappings only; writable file
+/// mappings need dirty-page tracking and fsync semantics before they can be
+/// made correct.
+fn sys_mmap_file(desc_ptr: *const u8) -> u64 {
+    use x86_64::{structures::paging::PageTableFlags, VirtAddr};
+
+    let Some(desc) = user_descriptor5(desc_ptr) else {
+        return u64::MAX;
+    };
+    let fd = desc[0];
+    let addr = desc[1];
+    let len = desc[2];
+    let file_offset = desc[3];
+    let flags = desc[4];
+
+    if fd > usize::MAX as u64
+        || addr == 0
+        || len == 0
+        || addr & 0xfff != 0
+        || file_offset & 0xfff != 0
+    {
+        return u64::MAX;
+    }
+    if flags & !USER_PROT_EXEC != 0 {
+        return u64::MAX;
+    }
+
+    let Some(len_aligned) = len.checked_add(4095).map(|value| value & !4095) else {
+        return u64::MAX;
+    };
+    if !valid_user_address_range(addr, len_aligned, MAX_USER_BUFFER * 64)
+        || !crate::vmm::valid_user_mmap_range(addr, len_aligned)
+    {
+        return u64::MAX;
+    }
+    if len_aligned > crate::resource_limits::MAX_USER_MMAP_BYTES_PER_CALL {
+        return u64::MAX;
+    }
+
+    let pml4 = crate::vmm::current_pml4();
+    let pages = len_aligned.saturating_div(4096) as usize;
+    if !crate::vmm::can_add_owned_pages(pml4, pages) {
+        return u64::MAX;
+    }
+
+    let mut pte_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+    if flags & USER_PROT_EXEC == 0 {
+        pte_flags |= PageTableFlags::NO_EXECUTE;
+    }
+
+    let mut offset = 0u64;
+    while offset < len_aligned {
+        let Some(page_offset) = file_offset.checked_add(offset) else {
+            return u64::MAX;
+        };
+        let Some(frame) = crate::vmm::alloc_zeroed_frame() else {
+            return u64::MAX;
+        };
+        let ptr = crate::vmm::phys_to_virt(frame.start_address()).as_mut_ptr::<u8>();
+        let dst = unsafe { core::slice::from_raw_parts_mut(ptr, 4096) };
+        let n = crate::vfs::vfs_read_fd_at(fd as usize, page_offset, dst);
+        if n == usize::MAX {
+            crate::vmm::free_unmapped_frame(frame);
+            return u64::MAX;
+        }
+        if crate::vmm::map_file_frame_in(pml4, VirtAddr::new(addr + offset), frame, pte_flags)
+            .is_err()
+        {
+            crate::vmm::free_unmapped_frame(frame);
+            return u64::MAX;
+        }
+        offset += 4096;
+    }
+
+    addr
 }
 
 fn sys_exit(_code: u64) {
@@ -1742,6 +1822,17 @@ fn user_descriptor4(desc_ptr: *const u8) -> Option<[u64; 4]> {
         u64::from_le_bytes(bytes[8..16].try_into().ok()?),
         u64::from_le_bytes(bytes[16..24].try_into().ok()?),
         u64::from_le_bytes(bytes[24..32].try_into().ok()?),
+    ])
+}
+
+fn user_descriptor5(desc_ptr: *const u8) -> Option<[u64; 5]> {
+    let bytes = user_slice(desc_ptr, 40, 40)?;
+    Some([
+        u64::from_le_bytes(bytes[0..8].try_into().ok()?),
+        u64::from_le_bytes(bytes[8..16].try_into().ok()?),
+        u64::from_le_bytes(bytes[16..24].try_into().ok()?),
+        u64::from_le_bytes(bytes[24..32].try_into().ok()?),
+        u64::from_le_bytes(bytes[32..40].try_into().ok()?),
     ])
 }
 

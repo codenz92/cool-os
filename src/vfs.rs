@@ -1612,6 +1612,37 @@ pub fn vfs_read_blocking(fd: usize, buf: &mut [u8], len: usize) -> usize {
     }
 }
 
+/// Read from a regular file descriptor at an absolute byte offset without
+/// advancing the fd's seek position. This is the VFS side of file-backed mmap;
+/// writable fds are excluded so dirty buffered writes cannot race mapping.
+pub fn vfs_read_fd_at(fd: usize, offset: u64, buf: &mut [u8]) -> usize {
+    let task_id = crate::scheduler::current_task_id();
+    let Ok(offset) = usize::try_from(offset) else {
+        return usize::MAX;
+    };
+    let vfs = VFS.lock();
+    let Some(entry) = vfs.current_entry(task_id, fd) else {
+        return usize::MAX;
+    };
+
+    let Some(object) = vfs.objects.get(entry.object).and_then(Option::as_ref) else {
+        return usize::MAX;
+    };
+
+    match (&object.kind, entry.access) {
+        (SharedKind::File(file), FdAccess::File) if !file.writable => {
+            if offset >= file.data.len() {
+                return 0;
+            }
+            let available = file.data.len() - offset;
+            let to_read = available.min(buf.len());
+            buf[..to_read].copy_from_slice(&file.data[offset..offset + to_read]);
+            to_read
+        }
+        _ => usize::MAX,
+    }
+}
+
 pub fn vfs_close(fd: usize) {
     let task_id = crate::scheduler::current_task_id();
     let event = {

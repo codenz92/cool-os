@@ -2,7 +2,7 @@ extern crate alloc;
 
 use alloc::{format, string::String, vec::Vec};
 
-pub const KERNEL_ABI_VERSION: u64 = 13;
+pub const KERNEL_ABI_VERSION: u64 = 14;
 pub const KERNEL_ABI_NAME: &str = "coolOS-userspace-abi";
 
 pub fn version() -> u64 {
@@ -13,7 +13,7 @@ pub fn lines() -> Vec<String> {
     alloc::vec![
         format!("{} version {}", KERNEL_ABI_NAME, KERNEL_ABI_VERSION),
         String::from(
-            "sdk: libcool v1 wraps startup, argv, process, files, pipes, threads, futexes, TLS, POSIX pthread/libc shims, dynlink deps/TLS, mmap/mprotect, shmem, net",
+            "sdk: libcool v1 wraps startup, argv, process, files, pipes, threads, futexes, TLS, POSIX pthread/libc shims, dynlink deps/TLS, mmap/mprotect, file-backed mmap, shmem, net",
         ),
         String::from("syscalls: exit/write/yield/getpid/mmap/open/read/close/exec"),
         String::from("syscalls: pipe/dup/shmem/waitpid/spawn/sleep_ms/abi/dns/http"),
@@ -25,7 +25,7 @@ pub fn lines() -> Vec<String> {
             "syscalls: chdir/getcwd/stat/rename/open_write/spawn_fds_args/sync/time/poll/tty_control",
         ),
         String::from("syscalls: thread_spawn/futex_wait/futex_wake/thread_tls_set/thread_tls_get/thread_spawn_tls"),
-        String::from("syscalls: mprotect for W^X dynamic-loader mappings"),
+        String::from("syscalls: mprotect and mmap_file(desc) for W^X file-backed mappings"),
         format!(
             "browser-engine-port abi={} target={} fallback={}",
             crate::browser_engine::PORT_ABI_VERSION,

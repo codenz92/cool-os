@@ -3,7 +3,7 @@
 use core::arch::asm;
 
 pub const SDK_VERSION: u64 = 1;
-pub const ABI_VERSION: u64 = 13;
+pub const ABI_VERSION: u64 = 14;
 pub const U64_MAX: u64 = u64::MAX;
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -82,6 +82,7 @@ pub mod sys {
     pub const THREAD_TLS_GET: u64 = 51;
     pub const THREAD_SPAWN_TLS: u64 = 52;
     pub const MPROTECT: u64 = 53;
+    pub const MMAP_FILE: u64 = 54;
 
     #[inline]
     pub unsafe fn syscall0(nr: u64) -> u64 {
@@ -1285,6 +1286,12 @@ pub mod memory {
         let ret = unsafe { sys::syscall3(sys::MPROTECT, addr, len as u64, flags) };
         Error::from_ret(ret).map(|_| ())
     }
+
+    pub fn mmap_file(fd: u64, addr: u64, len: usize, file_offset: u64, flags: u64) -> Result<u64> {
+        let desc = [fd, addr, len as u64, file_offset, flags];
+        let ret = unsafe { sys::syscall1(sys::MMAP_FILE, desc.as_ptr() as u64) };
+        Error::from_ret(ret)
+    }
 }
 
 pub mod io {
@@ -1295,6 +1302,11 @@ pub mod io {
     pub const STDIN: u64 = 0;
     pub const STDOUT: u64 = 1;
     pub const STDERR: u64 = 2;
+    pub const O_RDONLY: u64 = 0;
+    pub const O_WRONLY: u64 = 1;
+    pub const O_RDWR: u64 = 2;
+    pub const O_CREAT: u64 = 0x40;
+    pub const O_TRUNC: u64 = 0x200;
 
     pub fn write(fd: u64, bytes: &[u8]) -> Result<usize> {
         if bytes.is_empty() {
@@ -1351,6 +1363,21 @@ pub mod io {
         Error::from_ret(ret)
     }
 
+    pub fn open_flags(path: &[u8], flags: u64) -> Result<u64> {
+        let access = flags & 0x3;
+        let allowed = O_CREAT | O_TRUNC | 0x3;
+        if flags & !allowed != 0 || access == O_RDWR {
+            return Err(Error::Invalid);
+        }
+        if access == O_WRONLY || flags & (O_CREAT | O_TRUNC) != 0 {
+            if access != O_WRONLY || flags & O_CREAT == 0 {
+                return Err(Error::Invalid);
+            }
+            return create(path);
+        }
+        open(path)
+    }
+
     pub fn close(fd: u64) {
         unsafe {
             sys::syscall1(sys::CLOSE, fd);
@@ -1379,6 +1406,10 @@ pub mod io {
 
         pub fn create(path: &[u8]) -> Result<Self> {
             create(path).map(|fd| File { fd })
+        }
+
+        pub fn open_flags(path: &[u8], flags: u64) -> Result<Self> {
+            open_flags(path, flags).map(|fd| File { fd })
         }
 
         #[inline]
@@ -1911,8 +1942,11 @@ pub mod dynlink {
         if image.len() > MAX_IMAGE_BYTES || load_base & (PAGE_SIZE - 1) != 0 {
             return Err(Error::Invalid);
         }
-        let len = read_whole_file(path, image)?;
-        load_image(&image[..len], load_base)
+        let file = io::File::open(path)?;
+        let len = read_file_contents(&file, image)?;
+        let object = load_image_from_file(&image[..len], load_base, Some(file.fd()))?;
+        file.close();
+        Ok(object)
     }
 
     pub fn load_with_deps(
@@ -1929,6 +1963,14 @@ pub mod dynlink {
     }
 
     pub fn load_image(image: &[u8], load_base: u64) -> Result<LoadedObject> {
+        load_image_from_file(image, load_base, None)
+    }
+
+    fn load_image_from_file(
+        image: &[u8],
+        load_base: u64,
+        file_fd: Option<u64>,
+    ) -> Result<LoadedObject> {
         let header = parse_header(image)?;
         let mut loads = [LoadSegment::empty(); MAX_LOAD_SEGMENTS];
         let load_count = collect_load_segments(image, &header, load_base, &mut loads)?;
@@ -1941,7 +1983,7 @@ pub mod dynlink {
 
         let mut idx = 0usize;
         while idx < load_count {
-            map_load_segment(image, &loads[idx], bias, &header)?;
+            map_load_segment(image, &loads[idx], bias, &header, file_fd)?;
             idx += 1;
         }
 
@@ -2011,7 +2053,8 @@ pub mod dynlink {
         }
         let image_index = set.image_count;
         set.image_count += 1;
-        let len = read_whole_file(path, &mut workspace.images[image_index])?;
+        let file = io::File::open(path)?;
+        let len = read_file_contents(&file, &mut workspace.images[image_index])?;
 
         let mut needed = [NeededName::empty(); MAX_NEEDED];
         let needed_count = {
@@ -2045,7 +2088,9 @@ pub mod dynlink {
             )
             .ok_or(Error::Invalid)?;
         let image = &workspace.images[image_index][..len];
-        let object = load_image_with_set(image, object_base, path, &mut workspace.tls, set)?;
+        let object =
+            load_image_with_set(image, object_base, path, &mut workspace.tls, set, Some(file.fd()))?;
+        file.close();
         set.objects[object_index] = object;
         set.object_count += 1;
         set.relocation_count = set
@@ -2066,6 +2111,7 @@ pub mod dynlink {
         path: &[u8],
         tls_workspace: &mut [u8; MAX_TLS_BYTES],
         set: &mut LoadedSet,
+        file_fd: Option<u64>,
     ) -> Result<LoadedObject> {
         let header = parse_header(image)?;
         let mut loads = [LoadSegment::empty(); MAX_LOAD_SEGMENTS];
@@ -2079,7 +2125,7 @@ pub mod dynlink {
 
         let mut idx = 0usize;
         while idx < load_count {
-            map_load_segment(image, &loads[idx], bias, &header)?;
+            map_load_segment(image, &loads[idx], bias, &header, file_fd)?;
             idx += 1;
         }
 
@@ -2156,17 +2202,22 @@ pub mod dynlink {
         Ok(object)
     }
 
+    #[allow(dead_code)]
     fn read_whole_file(path: &[u8], image: &mut [u8]) -> Result<usize> {
         let file = io::File::open(path)?;
+        let len = read_file_contents(&file, image)?;
+        file.close();
+        Ok(len)
+    }
+
+    fn read_file_contents(file: &io::File, image: &mut [u8]) -> Result<usize> {
         let mut total = 0usize;
         loop {
             if total == image.len() {
-                file.close();
                 return Err(Error::Invalid);
             }
             let n = file.read(&mut image[total..])?;
             if n == 0 {
-                file.close();
                 return Ok(total);
             }
             total = total.checked_add(n).ok_or(Error::Invalid)?;
@@ -2292,14 +2343,32 @@ pub mod dynlink {
         load: &LoadSegment,
         bias: u64,
         header: &Elf64Header,
+        file_fd: Option<u64>,
     ) -> Result<()> {
-        memory::mmap(load.map_start, load.map_len as usize, true)?;
-
         let mut i = 0u16;
         while i < header.e_phnum {
             let ph = program_header(image, header, i)?;
             let start = align_down(ph.p_vaddr, PAGE_SIZE);
             if ph.p_type == PT_LOAD && start == load.vaddr_start {
+                if let Some(fd) = file_fd {
+                    if can_file_back_segment(image, load, &ph)? {
+                        let prot = if ph.p_flags & PF_X != 0 {
+                            memory::PROT_EXEC
+                        } else {
+                            0
+                        };
+                        memory::mmap_file(
+                            fd,
+                            load.map_start,
+                            load.map_len as usize,
+                            align_down(ph.p_offset, PAGE_SIZE),
+                            prot,
+                        )?;
+                        return Ok(());
+                    }
+                }
+
+                memory::mmap(load.map_start, load.map_len as usize, true)?;
                 if ph.p_filesz != 0 {
                     let dst = runtime_addr(bias, ph.p_vaddr)? as *mut u8;
                     let src = image.as_ptr().wrapping_add(ph.p_offset as usize);
@@ -2312,6 +2381,36 @@ pub mod dynlink {
             i += 1;
         }
         Err(Error::Invalid)
+    }
+
+    fn can_file_back_segment(
+        image: &[u8],
+        load: &LoadSegment,
+        ph: &Elf64ProgramHeader,
+    ) -> Result<bool> {
+        if ph.p_flags & PF_W != 0 {
+            return Ok(false);
+        }
+        let file_map_start = align_down(ph.p_offset, PAGE_SIZE);
+        let Some(file_map_end) = file_map_start.checked_add(load.map_len) else {
+            return Err(Error::Invalid);
+        };
+        let Some(file_data_end) = ph.p_offset.checked_add(ph.p_filesz) else {
+            return Err(Error::Invalid);
+        };
+        let image_len = image.len() as u64;
+        if file_data_end > image_len {
+            return Err(Error::Invalid);
+        }
+        let mut idx = file_data_end as usize;
+        let end = file_map_end.min(image_len) as usize;
+        while idx < end {
+            if image[idx] != 0 {
+                return Ok(false);
+            }
+            idx += 1;
+        }
+        Ok(true)
     }
 
     fn parse_dynamic(image: &[u8], header: &Elf64Header) -> Result<DynamicInfo> {
@@ -3767,8 +3866,11 @@ pub mod prelude {
     pub use crate::evented::{
         poll, wait_child, wait_fd_read, wait_gui_event, wait_socket_read, PollDesc,
     };
-    pub use crate::io::{close, create, open, pipe, read, write, write_all, write_stdout, File};
-    pub use crate::memory::{mmap, mmap_flags, mprotect, PROT_EXEC, PROT_WRITE};
+    pub use crate::io::{
+        close, create, open, open_flags, pipe, read, write, write_all, write_stdout, File, O_CREAT,
+        O_RDONLY, O_TRUNC, O_WRONLY,
+    };
+    pub use crate::memory::{mmap, mmap_file, mmap_flags, mprotect, PROT_EXEC, PROT_WRITE};
     pub use crate::process::{
         abi_version, exit, get_process_group, getpid, set_process_group, signal, signal_group,
         sleep_ms, spawn, spawn_args, spawn_fds_args, waitpid, yield_now, Signal,
