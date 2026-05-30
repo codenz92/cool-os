@@ -663,6 +663,13 @@ pub struct WindowManager {
     greeter_message: String,
     greeter_error: bool,
     greeter_attempts: u32,
+    first_boot_owner: String,
+    first_boot_password: String,
+    first_boot_confirm: String,
+    first_boot_device: String,
+    first_boot_focus: FirstBootFocus,
+    first_boot_message: String,
+    first_boot_error: bool,
     session_ready: bool,
     session_dirty: bool,
     last_session_save_tick: u64,
@@ -760,6 +767,13 @@ impl WindowManager {
             greeter_message: String::new(),
             greeter_error: false,
             greeter_attempts: 0,
+            first_boot_owner: String::new(),
+            first_boot_password: String::new(),
+            first_boot_confirm: String::new(),
+            first_boot_device: String::new(),
+            first_boot_focus: FirstBootFocus::Owner,
+            first_boot_message: String::new(),
+            first_boot_error: false,
             session_ready: true,
             session_dirty: false,
             last_session_save_tick: 0,
@@ -1040,6 +1054,241 @@ impl WindowManager {
         self.login_with_credentials(&user, &password)
     }
 
+    fn first_boot_required(&self) -> bool {
+        crate::security::first_run_required() && !crate::fw_cfg::smoke_mode()
+    }
+
+    fn complete_first_boot_setup(&mut self) -> bool {
+        let owner = String::from(self.first_boot_owner.trim());
+        let password = self.first_boot_password.clone();
+        let confirm = self.first_boot_confirm.clone();
+        let device = if self.first_boot_device.trim().is_empty() {
+            String::from("coolOS")
+        } else {
+            String::from(self.first_boot_device.trim())
+        };
+
+        if owner.is_empty() {
+            self.first_boot_message = String::from("Enter an owner name");
+            self.first_boot_focus = FirstBootFocus::Owner;
+            self.first_boot_error = true;
+            crate::wm::request_repaint();
+            return false;
+        }
+        if password != confirm {
+            self.first_boot_message = String::from("Passwords do not match");
+            self.first_boot_password.clear();
+            self.first_boot_confirm.clear();
+            self.first_boot_focus = FirstBootFocus::Password;
+            self.first_boot_error = true;
+            crate::wm::request_repaint();
+            return false;
+        }
+
+        match crate::security::complete_first_run_admin(&owner, &password) {
+            Ok(user) => {
+                if crate::security::mark_first_boot_complete(&user.name, &device).is_err() {
+                    crate::println!("[install] first boot state write failed");
+                }
+                self.session_locked = false;
+                self.greeter_user = user.name.clone();
+                self.greeter_password.clear();
+                self.greeter_focus = GreeterFocus::Password;
+                self.greeter_message = format!("Welcome, {}", user.name);
+                self.greeter_error = false;
+                self.greeter_attempts = 0;
+                self.first_boot_password.clear();
+                self.first_boot_confirm.clear();
+                self.first_boot_message.clear();
+                self.first_boot_error = false;
+                self.full_damage_next = true;
+                crate::notifications::push("Setup complete", "owner account created");
+                crate::wm::request_repaint();
+                crate::println!(
+                    "[install] first boot complete user={} device={}",
+                    user.name,
+                    device
+                );
+                crate::println!("[session] login {} uid={}", user.name, user.uid);
+                true
+            }
+            Err(err) => {
+                self.first_boot_message = format!("Setup failed: {}", err.as_str());
+                self.first_boot_error = true;
+                match err {
+                    crate::security::AccountError::PasswordTooShort => {
+                        self.first_boot_password.clear();
+                        self.first_boot_confirm.clear();
+                        self.first_boot_focus = FirstBootFocus::Password;
+                    }
+                    crate::security::AccountError::InvalidName
+                    | crate::security::AccountError::DuplicateUser
+                    | crate::security::AccountError::ProtectedUser => {
+                        self.first_boot_focus = FirstBootFocus::Owner;
+                    }
+                    _ => {}
+                }
+                crate::wm::request_repaint();
+                crate::println!("[install] first boot failed: {}", err.as_str());
+                false
+            }
+        }
+    }
+
+    fn handle_first_boot_input(&mut self, input: KeyInput) {
+        if input.has_ctrl() || input.has_alt() {
+            return;
+        }
+        match input.key {
+            Key::Tab => {
+                let step = if input.modifiers & crate::keyboard::MOD_SHIFT != 0 {
+                    -1
+                } else {
+                    1
+                };
+                self.cycle_first_boot_focus(step);
+                self.first_boot_error = false;
+                crate::wm::request_repaint();
+            }
+            Key::Enter => {
+                self.advance_or_complete_first_boot();
+            }
+            Key::Backspace => {
+                self.pop_first_boot_char();
+                self.first_boot_error = false;
+                crate::wm::request_repaint();
+            }
+            Key::Escape => {
+                self.handle_first_boot_escape();
+                crate::wm::request_repaint();
+            }
+            Key::ArrowUp => {
+                self.cycle_first_boot_focus(-1);
+                crate::wm::request_repaint();
+            }
+            Key::ArrowDown => {
+                self.cycle_first_boot_focus(1);
+                crate::wm::request_repaint();
+            }
+            Key::Space => self.push_first_boot_char(' '),
+            Key::Character(c) => self.push_first_boot_char(c),
+            _ => {}
+        }
+    }
+
+    fn advance_or_complete_first_boot(&mut self) {
+        match self.first_boot_focus {
+            FirstBootFocus::Owner if !self.first_boot_owner.trim().is_empty() => {
+                self.first_boot_focus = FirstBootFocus::Password;
+                self.first_boot_error = false;
+                crate::wm::request_repaint();
+            }
+            FirstBootFocus::Password if !self.first_boot_password.is_empty() => {
+                self.first_boot_focus = FirstBootFocus::Confirm;
+                self.first_boot_error = false;
+                crate::wm::request_repaint();
+            }
+            FirstBootFocus::Confirm if !self.first_boot_confirm.is_empty() => {
+                self.first_boot_focus = FirstBootFocus::Device;
+                self.first_boot_error = false;
+                crate::wm::request_repaint();
+            }
+            _ => {
+                self.complete_first_boot_setup();
+            }
+        }
+    }
+
+    fn cycle_first_boot_focus(&mut self, step: i32) {
+        let current = match self.first_boot_focus {
+            FirstBootFocus::Owner => 0,
+            FirstBootFocus::Password => 1,
+            FirstBootFocus::Confirm => 2,
+            FirstBootFocus::Device => 3,
+        };
+        self.first_boot_focus = match (current + step).rem_euclid(4) {
+            0 => FirstBootFocus::Owner,
+            1 => FirstBootFocus::Password,
+            2 => FirstBootFocus::Confirm,
+            _ => FirstBootFocus::Device,
+        };
+    }
+
+    fn pop_first_boot_char(&mut self) {
+        match self.first_boot_focus {
+            FirstBootFocus::Owner => {
+                self.first_boot_owner.pop();
+            }
+            FirstBootFocus::Password => {
+                self.first_boot_password.pop();
+            }
+            FirstBootFocus::Confirm => {
+                self.first_boot_confirm.pop();
+            }
+            FirstBootFocus::Device => {
+                self.first_boot_device.pop();
+            }
+        }
+    }
+
+    fn handle_first_boot_escape(&mut self) {
+        if !self.first_boot_message.is_empty() {
+            self.first_boot_message.clear();
+            self.first_boot_error = false;
+            return;
+        }
+        match self.first_boot_focus {
+            FirstBootFocus::Owner => {
+                self.first_boot_message = String::from("Setup is required before sign in");
+                self.first_boot_error = false;
+            }
+            FirstBootFocus::Password if !self.first_boot_password.is_empty() => {
+                self.first_boot_password.clear();
+            }
+            FirstBootFocus::Confirm if !self.first_boot_confirm.is_empty() => {
+                self.first_boot_confirm.clear();
+            }
+            FirstBootFocus::Device if !self.first_boot_device.is_empty() => {
+                self.first_boot_device.clear();
+            }
+            _ => self.cycle_first_boot_focus(-1),
+        }
+    }
+
+    fn push_first_boot_char(&mut self, c: char) {
+        if c < ' ' || c == '\u{7f}' || c == ':' || c == '\n' || c == '\r' {
+            return;
+        }
+        match self.first_boot_focus {
+            FirstBootFocus::Owner => {
+                if (c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                    && self.first_boot_owner.chars().count() < 16
+                {
+                    self.first_boot_owner.push(c);
+                }
+            }
+            FirstBootFocus::Password => {
+                if self.first_boot_password.chars().count() < 64 {
+                    self.first_boot_password.push(c);
+                }
+            }
+            FirstBootFocus::Confirm => {
+                if self.first_boot_confirm.chars().count() < 64 {
+                    self.first_boot_confirm.push(c);
+                }
+            }
+            FirstBootFocus::Device => {
+                if (c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ' ')
+                    && self.first_boot_device.chars().count() < 24
+                {
+                    self.first_boot_device.push(c);
+                }
+            }
+        }
+        self.first_boot_error = false;
+        crate::wm::request_repaint();
+    }
+
     fn run_locked_startup_command(&mut self, command: &str) -> bool {
         let mut words = command.split_whitespace();
         match words.next() {
@@ -1085,6 +1334,10 @@ impl WindowManager {
     }
 
     fn handle_greeter_input(&mut self, input: KeyInput) {
+        if self.first_boot_required() {
+            self.handle_first_boot_input(input);
+            return;
+        }
         if input.has_ctrl() || input.has_alt() {
             return;
         }
@@ -1157,6 +1410,10 @@ impl WindowManager {
     }
 
     fn handle_greeter_click(&mut self, mx: i32, my: i32, sw: i32, taskbar_y: i32) {
+        if self.first_boot_required() {
+            self.handle_first_boot_click(mx, my, sw, taskbar_y);
+            return;
+        }
         let layout = greeter_layout(sw, taskbar_y);
         if rect_contains(
             layout.user_x,
@@ -1220,6 +1477,72 @@ impl WindowManager {
             if row >= 4 {
                 break;
             }
+        }
+    }
+
+    fn handle_first_boot_click(&mut self, mx: i32, my: i32, sw: i32, taskbar_y: i32) {
+        let layout = first_boot_layout(sw, taskbar_y);
+        if rect_contains(
+            layout.field_x,
+            layout.owner_y,
+            layout.field_w,
+            GREETER_FIELD_H,
+            mx,
+            my,
+        ) {
+            self.first_boot_focus = FirstBootFocus::Owner;
+            self.first_boot_error = false;
+            crate::wm::request_repaint();
+            return;
+        }
+        if rect_contains(
+            layout.field_x,
+            layout.pass_y,
+            layout.field_w,
+            GREETER_FIELD_H,
+            mx,
+            my,
+        ) {
+            self.first_boot_focus = FirstBootFocus::Password;
+            self.first_boot_error = false;
+            crate::wm::request_repaint();
+            return;
+        }
+        if rect_contains(
+            layout.field_x,
+            layout.confirm_y,
+            layout.field_w,
+            GREETER_FIELD_H,
+            mx,
+            my,
+        ) {
+            self.first_boot_focus = FirstBootFocus::Confirm;
+            self.first_boot_error = false;
+            crate::wm::request_repaint();
+            return;
+        }
+        if rect_contains(
+            layout.field_x,
+            layout.device_y,
+            layout.field_w,
+            GREETER_FIELD_H,
+            mx,
+            my,
+        ) {
+            self.first_boot_focus = FirstBootFocus::Device;
+            self.first_boot_error = false;
+            crate::wm::request_repaint();
+            return;
+        }
+        if rect_contains(
+            layout.field_x,
+            layout.button_y,
+            layout.field_w,
+            GREETER_FIELD_H,
+            mx,
+            my,
+        ) {
+            self.complete_first_boot_setup();
         }
     }
 
@@ -3605,7 +3928,21 @@ impl WindowManager {
             self.taskbar_button_hit(mx_i, my_i, sw as i32, taskbar_y)
         };
         let current_workspace = self.current_workspace;
-        let greeter_snapshot = if self.session_locked {
+        let first_boot_active = self.session_locked && self.first_boot_required();
+        let first_boot_snapshot = if first_boot_active {
+            Some((
+                self.first_boot_owner.clone(),
+                self.first_boot_password.chars().count(),
+                self.first_boot_confirm.chars().count(),
+                self.first_boot_device.clone(),
+                self.first_boot_focus,
+                self.first_boot_message.clone(),
+                self.first_boot_error,
+            ))
+        } else {
+            None
+        };
+        let greeter_snapshot = if self.session_locked && !first_boot_active {
             Some((
                 self.greeter_user.clone(),
                 self.greeter_password.chars().count(),
@@ -3984,7 +4321,26 @@ impl WindowManager {
                 draw_file_drag_badge(s, sw, mx_i + 16, my_i + 18, file_drag.paths.len());
             }
 
-            if let Some((user, password_len, focus, message, error, attempts)) = &greeter_snapshot {
+            if let Some((owner, password_len, confirm_len, device, focus, message, error)) =
+                &first_boot_snapshot
+            {
+                draw_first_boot_overlay(
+                    s,
+                    sw,
+                    taskbar_y,
+                    owner,
+                    *password_len,
+                    *confirm_len,
+                    device,
+                    *focus,
+                    message,
+                    *error,
+                    mx_i,
+                    my_i,
+                );
+            } else if let Some((user, password_len, focus, message, error, attempts)) =
+                &greeter_snapshot
+            {
                 draw_greeter_overlay(
                     s,
                     sw,

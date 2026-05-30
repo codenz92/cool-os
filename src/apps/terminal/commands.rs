@@ -392,6 +392,8 @@ impl TerminalApp {
 
             Some("setup") => self.cmd_setup(words.next(), words.next()),
 
+            Some("install") => self.cmd_install(words.next()),
+
             Some("account") => self.cmd_account(words.collect()),
 
             Some("umask") => self.cmd_umask(words.next()),
@@ -781,6 +783,7 @@ impl TerminalApp {
             ("logout", "return to guest session"),
             ("passwd <old> <new>", "change current password"),
             ("setup <user> <pass>", "complete first-run admin setup"),
+            ("install [status]", "first-boot installer state"),
             ("account <op>", "admin user management"),
             ("umask [mode]", "view/set file creation mask"),
             ("users", "user/security status"),
@@ -1674,6 +1677,16 @@ impl TerminalApp {
                 self.print_char('\n');
             }
             Err(err) => self.print_account_error("setup", err),
+        }
+    }
+
+    fn cmd_install(&mut self, op: Option<&str>) {
+        match op.unwrap_or("status") {
+            "status" => self.cmd_lines("INSTALL", crate::security::lines()),
+            _ => {
+                self.set_fg(FG_ERROR);
+                self.print_str("usage: install [status]\n");
+            }
         }
     }
 

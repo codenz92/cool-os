@@ -271,13 +271,19 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         "[ui] ready pinned={}",
         app_lifecycle::pinned_order_summary()
     );
-    println!("[boot] login ready");
+    let first_boot_required = security::first_run_required() && !fw_cfg::smoke_mode();
+    if first_boot_required {
+        let _ = security::mark_first_boot_in_progress();
+        println!("[boot] first boot ready");
+    } else {
+        println!("[boot] login ready");
+    }
     println!("[boot] desktop ready");
     profiler::record_boot_stage("desktop ready", boot_splash::BOOT_PROGRESS_TOTAL);
     boot_watchdog::complete();
     boot_health::mark_good("desktop ready");
     let smoke_commands = fw_cfg::smoke_commands();
-    if !smoke_commands.is_empty() {
+    if !smoke_commands.is_empty() && !first_boot_required {
         apps::terminal::set_debug_mirror(true);
         wm::queue_startup_command_immediate("login root cool");
     }

@@ -4,6 +4,7 @@ use alloc::{format, string::String, vec::Vec};
 use spin::Mutex;
 
 const USERS_PATH: &str = "/CONFIG/USERS.DB";
+const FIRST_BOOT_PATH: &str = "/CONFIG/FIRSTBOOT.CFG";
 const MIN_PASSWORD_LEN: usize = 8;
 const MAX_LOGIN_FAILURES: u32 = 3;
 const LOGIN_LOCKOUT_MS: u64 = 5_000;
@@ -156,6 +157,23 @@ pub enum AccountError {
     Io,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FirstBootState {
+    Required,
+    InProgress,
+    Complete,
+}
+
+impl FirstBootState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            FirstBootState::Required => "required",
+            FirstBootState::InProgress => "in_progress",
+            FirstBootState::Complete => "complete",
+        }
+    }
+}
+
 impl AccountError {
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -219,6 +237,40 @@ pub fn revision() -> u64 {
 
 pub fn first_run_required() -> bool {
     SECURITY.lock().users.iter().any(is_default_admin_password)
+}
+
+pub fn first_boot_state() -> FirstBootState {
+    if !first_run_required() {
+        return FirstBootState::Complete;
+    }
+    let Some(bytes) = crate::vfs::vfs_kernel_read_file(FIRST_BOOT_PATH) else {
+        return FirstBootState::Required;
+    };
+    let Ok(text) = core::str::from_utf8(&bytes) else {
+        return FirstBootState::Required;
+    };
+    for line in text.lines() {
+        let Some(value) = line.trim().strip_prefix("state=") else {
+            continue;
+        };
+        return match value.trim() {
+            "in_progress" => FirstBootState::InProgress,
+            "complete" => FirstBootState::Complete,
+            _ => FirstBootState::Required,
+        };
+    }
+    FirstBootState::Required
+}
+
+pub fn mark_first_boot_in_progress() -> Result<(), crate::fat32::FsError> {
+    if !first_run_required() {
+        return mark_first_boot_complete("", "");
+    }
+    write_first_boot_state(FirstBootState::InProgress, "", "")
+}
+
+pub fn mark_first_boot_complete(user: &str, device: &str) -> Result<(), crate::fat32::FsError> {
+    write_first_boot_state(FirstBootState::Complete, user, device)
 }
 
 #[allow(dead_code)]
@@ -436,6 +488,7 @@ pub fn complete_first_run_admin(name: &str, password: &str) -> Result<User, Acco
     };
     persist_users().map_err(|_| AccountError::Io)?;
     ensure_home_dirs();
+    let _ = mark_first_boot_complete(&user.name, "");
     set_session_from_user(&user);
     crate::event_bus::emit("security", "first-run", &user.name);
     Ok(public_user(&user))
@@ -844,6 +897,11 @@ pub fn lines() -> Vec<String> {
                 "complete"
             }
         ),
+        format!(
+            "first-boot state={} path={}",
+            first_boot_state().as_str(),
+            FIRST_BOOT_PATH
+        ),
         String::from("users:"),
     ];
     for user in users() {
@@ -1188,6 +1246,39 @@ fn persist_users() -> Result<(), crate::fat32::FsError> {
     }
     let _ = crate::vfs::vfs_kernel_create_dir("/CONFIG");
     crate::vfs::vfs_kernel_safe_write_file(USERS_PATH, out.as_bytes())
+}
+
+fn write_first_boot_state(
+    state: FirstBootState,
+    user: &str,
+    device: &str,
+) -> Result<(), crate::fat32::FsError> {
+    let mut out = String::from("# coolOS first boot v1\n");
+    out.push_str("version=80\n");
+    out.push_str("state=");
+    out.push_str(state.as_str());
+    out.push('\n');
+    if !user.trim().is_empty() {
+        out.push_str("user=");
+        push_safe_config_value(&mut out, user.trim());
+        out.push('\n');
+    }
+    if !device.trim().is_empty() {
+        out.push_str("device=");
+        push_safe_config_value(&mut out, device.trim());
+        out.push('\n');
+    }
+    let _ = crate::vfs::vfs_kernel_create_dir("/CONFIG");
+    crate::vfs::vfs_kernel_safe_write_file(FIRST_BOOT_PATH, out.as_bytes())
+}
+
+fn push_safe_config_value(out: &mut String, value: &str) {
+    for ch in value.chars() {
+        if ch == '\n' || ch == '\r' || ch == '=' {
+            continue;
+        }
+        out.push(ch);
+    }
 }
 
 fn default_users() -> Vec<UserRecord> {

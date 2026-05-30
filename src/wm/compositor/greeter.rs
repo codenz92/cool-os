@@ -11,6 +11,14 @@ pub(super) enum GreeterFocus {
     Password,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum FirstBootFocus {
+    Owner,
+    Password,
+    Confirm,
+    Device,
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct GreeterLayout {
     pub(super) panel_x: i32,
@@ -30,6 +38,27 @@ pub(super) struct GreeterLayout {
     pub(super) message_y: i32,
     pub(super) users_y: i32,
     pub(super) row_w: i32,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct FirstBootLayout {
+    pub(super) panel_x: i32,
+    pub(super) panel_y: i32,
+    pub(super) panel_w: i32,
+    pub(super) panel_h: i32,
+    pub(super) avatar_x: i32,
+    pub(super) avatar_y: i32,
+    pub(super) avatar_size: i32,
+    pub(super) title_x: i32,
+    pub(super) title_y: i32,
+    pub(super) field_x: i32,
+    pub(super) field_w: i32,
+    pub(super) owner_y: i32,
+    pub(super) pass_y: i32,
+    pub(super) confirm_y: i32,
+    pub(super) device_y: i32,
+    pub(super) button_y: i32,
+    pub(super) message_y: i32,
 }
 
 // ── AppWindow ─────────────────────────────────────────────────────────────────
@@ -282,6 +311,231 @@ pub(super) fn draw_greeter_overlay(
     }
 }
 
+pub(super) fn draw_first_boot_overlay(
+    s: &mut [u32],
+    sw: usize,
+    taskbar_y: i32,
+    owner: &str,
+    password_len: usize,
+    confirm_len: usize,
+    device: &str,
+    focus: FirstBootFocus,
+    message: &str,
+    error: bool,
+    mx: i32,
+    my: i32,
+) {
+    let sw_i = sw as i32;
+    let sh_i = if sw > 0 {
+        (s.len() / sw) as i32
+    } else {
+        taskbar_y
+    };
+    let layout = first_boot_layout(sw_i, taskbar_y);
+
+    draw_greeter_backdrop(s, sw, sw_i, sh_i);
+    fill_vertical_gradient(
+        s,
+        sw,
+        layout.panel_x,
+        layout.panel_y,
+        layout.panel_w,
+        layout.panel_h,
+        GREETER_PANEL_BG,
+        GREETER_PANEL_BG_2,
+    );
+    s_fill(
+        s,
+        sw,
+        layout.panel_x + 2,
+        layout.panel_y + 2,
+        layout.panel_w - 4,
+        1,
+        0x00_1A_2A_38,
+    );
+    draw_glass_panel_outline(
+        s,
+        sw,
+        layout.panel_x,
+        layout.panel_y,
+        layout.panel_w,
+        layout.panel_h,
+        ACCENT,
+    );
+
+    draw_greeter_avatar(s, sw, layout.avatar_x, layout.avatar_y, layout.avatar_size);
+    s_draw_str_scaled_with_tracking(
+        s,
+        sw,
+        layout.title_x,
+        layout.title_y,
+        "Set up coolOS",
+        GREETER_TITLE,
+        2,
+        0,
+    );
+    s_draw_str_small_transparent(
+        s,
+        sw,
+        layout.field_x,
+        layout.title_y + 34,
+        "Create the owner account for this install.",
+        0x00_9A_C9_D8,
+        layout.field_x + layout.field_w,
+    );
+
+    draw_first_boot_label(s, sw, &layout, layout.owner_y, "Owner name");
+    draw_greeter_field(
+        s,
+        sw,
+        layout.field_x,
+        layout.owner_y,
+        layout.field_w,
+        owner,
+        focus == FirstBootFocus::Owner,
+        GREETER_FIELD_BG,
+    );
+
+    let password_text = masked_password(password_len);
+    draw_first_boot_label(s, sw, &layout, layout.pass_y, "Password");
+    draw_greeter_field(
+        s,
+        sw,
+        layout.field_x,
+        layout.pass_y,
+        layout.field_w,
+        &password_text,
+        focus == FirstBootFocus::Password,
+        GREETER_FIELD_BG,
+    );
+
+    let masked_confirm = masked_password(confirm_len);
+    draw_first_boot_label(s, sw, &layout, layout.confirm_y, "Confirm password");
+    draw_greeter_field(
+        s,
+        sw,
+        layout.field_x,
+        layout.confirm_y,
+        layout.field_w,
+        &masked_confirm,
+        focus == FirstBootFocus::Confirm,
+        GREETER_FIELD_BG,
+    );
+
+    draw_first_boot_label(s, sw, &layout, layout.device_y, "Device name");
+    draw_greeter_field(
+        s,
+        sw,
+        layout.field_x,
+        layout.device_y,
+        layout.field_w,
+        device,
+        focus == FirstBootFocus::Device,
+        GREETER_FIELD_BG,
+    );
+
+    let button_hot = rect_contains(
+        layout.field_x,
+        layout.button_y,
+        layout.field_w,
+        GREETER_FIELD_H,
+        mx,
+        my,
+    );
+    let button_bg = if button_hot {
+        blend_color(0x00_0D_17_24, ACCENT, 42)
+    } else {
+        0x00_0D_17_24
+    };
+    fill_vertical_gradient(
+        s,
+        sw,
+        layout.field_x,
+        layout.button_y,
+        layout.field_w,
+        GREETER_FIELD_H,
+        button_bg,
+        blend_color(button_bg, 0x00_02_08_12, 80),
+    );
+    s_fill(
+        s,
+        sw,
+        layout.field_x,
+        layout.button_y,
+        layout.field_w,
+        2,
+        if button_hot { ACCENT_HOV } else { ACCENT },
+    );
+    draw_rect_border(
+        s,
+        sw,
+        layout.field_x,
+        layout.button_y,
+        layout.field_w,
+        GREETER_FIELD_H,
+        if button_hot {
+            ACCENT_HOV
+        } else {
+            0x00_2A_5F_78
+        },
+    );
+    let label = "Create account";
+    let label_w = label.chars().count() as i32 * 8;
+    s_draw_str_small_transparent(
+        s,
+        sw,
+        layout.field_x + (layout.field_w - label_w) / 2,
+        layout.button_y + 11,
+        label,
+        WHITE,
+        layout.field_x + layout.field_w,
+    );
+
+    let msg = if message.is_empty() {
+        "Tab moves fields. Enter creates the account."
+    } else {
+        message
+    };
+    s_draw_str_small_transparent(
+        s,
+        sw,
+        layout.field_x,
+        layout.message_y,
+        msg,
+        if error { 0x00_FF_88_88 } else { 0x00_88_DD_CC },
+        layout.field_x + layout.field_w,
+    );
+}
+
+fn draw_first_boot_label(
+    s: &mut [u32],
+    sw: usize,
+    layout: &FirstBootLayout,
+    field_y: i32,
+    label: &str,
+) {
+    s_draw_str_small_transparent(
+        s,
+        sw,
+        layout.field_x,
+        field_y - 15,
+        label,
+        0x00_88_CC_EE,
+        layout.field_x + layout.field_w,
+    );
+}
+
+fn masked_password(len: usize) -> String {
+    let mut masked = String::new();
+    for _ in 0..len.min(28) {
+        masked.push('*');
+    }
+    if len > 28 {
+        masked.push_str("...");
+    }
+    masked
+}
+
 pub(super) fn draw_greeter_backdrop(s: &mut [u32], sw: usize, w: i32, h: i32) {
     if sw == 0 || s.is_empty() {
         return;
@@ -491,6 +745,47 @@ pub(super) fn greeter_layout(sw: i32, taskbar_y: i32) -> GreeterLayout {
         message_y,
         users_y,
         row_w: field_w,
+    }
+}
+
+pub(super) fn first_boot_layout(sw: i32, taskbar_y: i32) -> FirstBootLayout {
+    let panel_w = 500.min((sw - 32).max(320));
+    let panel_h = 500.min((taskbar_y - 28).max(420));
+    let panel_x = ((sw - panel_w) / 2).max(8);
+    let panel_y = ((taskbar_y - panel_h) / 2).max(14);
+    let avatar_size = 48;
+    let avatar_x = panel_x + (panel_w - avatar_size) / 2;
+    let avatar_y = panel_y + 26;
+    let title = "Set up coolOS";
+    let title_w = s_text_width_scaled_with_tracking(title, 2, 0);
+    let title_x = panel_x + (panel_w - title_w) / 2;
+    let title_y = avatar_y + avatar_size + 12;
+    let field_w = (panel_w - 96).min(372).max(260);
+    let field_x = panel_x + (panel_w - field_w) / 2;
+    let owner_y = title_y + 70;
+    let pass_y = owner_y + 48;
+    let confirm_y = pass_y + 48;
+    let device_y = confirm_y + 48;
+    let button_y = device_y + 48;
+    let message_y = button_y + GREETER_FIELD_H + 10;
+    FirstBootLayout {
+        panel_x,
+        panel_y,
+        panel_w,
+        panel_h,
+        avatar_x,
+        avatar_y,
+        avatar_size,
+        title_x,
+        title_y,
+        field_x,
+        field_w,
+        owner_y,
+        pass_y,
+        confirm_y,
+        device_y,
+        button_y,
+        message_y,
     }
 }
 

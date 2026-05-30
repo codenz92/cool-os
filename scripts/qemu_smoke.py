@@ -135,6 +135,11 @@ def parse_args() -> argparse.Namespace:
         help="Terminal command exposed to the guest through QEMU fw_cfg opt/coolos/smoke",
     )
     parser.add_argument(
+        "--first-boot",
+        action="store_true",
+        help="Do not mark the guest as a smoke run, so the first-boot wizard is shown when required",
+    )
+    parser.add_argument(
         "--interact-after",
         default="[boot] desktop ready",
         help="Output substring to wait for before HMP/input/screendump actions; empty disables the pre-interaction wait",
@@ -213,6 +218,8 @@ def build_command(args: argparse.Namespace, monitor_socket: str | None = None) -
         )
     if args.fw_cmd:
         cmd.extend(["-fw_cfg", f"name=opt/coolos/smoke,string={args.fw_cmd}"])
+    if not args.first_boot:
+        cmd.extend(["-fw_cfg", "name=opt/coolos/smoke-mode,string=1"])
     return cmd
 
 

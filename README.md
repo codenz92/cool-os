@@ -17,7 +17,7 @@ tables.
 
 ---
 
-# Current state — v7.41
+# Current state — v7.42
 
 The kernel boots into a graphical desktop at **1920×1080, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -43,13 +43,20 @@ owner records under `/APPS/<command>/OWNER.TXT` pin the source path, signer,
 manifest digests, version, and dependencies. Manifest permission labels become
 launch-time task capabilities, and the VFS/syscall layer enforces filesystem,
 network, desktop, and execute access.
-The desktop now starts behind a compositor-owned greeter; the active session is
+Fresh interactive images now start with a compositor-owned first-boot setup
+card when the default `root/cool` handoff is still present. The wizard creates
+the real owner admin account, writes `/CONFIG/FIRSTBOOT.CFG`, disables the
+default handoff through the same account path as Terminal `setup`, and then
+continues into the desktop. After setup, the desktop starts behind the normal
+compositor-owned greeter; the active session is
 backed by a persistent CoolFS user database, so
 Terminal commands, launched ELF tasks, and package apps inherit the logged-in
 user's uid/gid and non-admin users cannot mutate protected ownership or service
 state without switching back to an admin session. Phase 31 adds a first-run
 admin handoff, account create/disable/role/password/delete flows, login
-throttling, and persistence smoke coverage for those account records. Phase 32
+throttling, and persistence smoke coverage for those account records; Phase 80
+adds the graphical first-boot installer flow on top of that existing security
+model. Phase 32
 keeps copied kernel mappings supervisor-only for ring-3 tasks, removes broad
 lazy lower-half page allocation, and turns denied user pointers into task
 faults instead of kernel crashes. Phase 33 exposes process control through ABI
@@ -301,6 +308,7 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `hash <path>` | Print file length and byte-sum for storage checks |
 | `whoami` | Print current user and task capabilities |
 | `setup <user> <pass>` | Complete first-run admin setup and replace the default `root` handoff if needed |
+| `install [status]` | Report first-boot installer state and account setup status |
 | `account <op>` | Admin account management: `list`, `add`, `enable`, `disable`, `role`, `pass`, and `delete` |
 | `perm <path>` | Print owner, group, mode, type, and size |
 | `chmod <mode> <path>` | Change a CoolFS inode mode |
@@ -692,6 +700,16 @@ Terminal `account` command or the Accounts settings panel, with checks that keep
 one enabled admin account available, protect built-in records, enforce stronger
 new passwords, and throttle repeated failed login attempts.
 
+**Installer and first boot (Phase 80).** Interactive boots now show a modern
+first-boot setup card instead of asking users to sign in with the default
+handoff. The setup flow collects an owner name, password confirmation, and
+optional device name, calls the same `complete_first_run_admin` path as
+Terminal `setup`, persists `/CONFIG/FIRSTBOOT.CFG`, and unlocks directly into
+the new owner session. `install status` reports the installer state, while
+existing automated smokes use a QEMU fw_cfg smoke marker to keep legacy
+regression paths deterministic; `make smoke-phase80-firstboot` exercises the
+real wizard and persistence flow.
+
 **User/kernel isolation hardening (Phase 32).** Process address spaces still
 copy the kernel's upper-half PML4 entries so syscall and interrupt entry can run
 without rebuilding mappings, but those copied entries stay supervisor-only for
@@ -904,7 +922,10 @@ adds `dynlink::load_with_deps`, `DT_NEEDED` dependency graphs,
 cross-object dynsym resolution, ELF TLS records, `/lib/libphase76*.so`, and
 `make smoke-phase76-dynlink-deps`. Phase 77 adds `mmap_file`, POSIX-shaped
 `open_flags`, read-only file-backed ET_DYN segments, file-backed page
-diagnostics, `/bin/mmapdemo`, and `make smoke-phase77-file-mmap`.
+diagnostics, `/bin/mmapdemo`, and `make smoke-phase77-file-mmap`. Phase 80
+adds the graphical first-boot installer, `/CONFIG/FIRSTBOOT.CFG`,
+`install status`, and `make smoke-phase80-firstboot` for wizard, completion,
+and persistence coverage.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
@@ -1001,5 +1022,6 @@ while kernel faults still panic.
 | 75 | Dynamic loader foundation — ABI v13 `mprotect`, `/lib` ET_DYN loading, RELA relocations, dynsym/init arrays, `/bin/lddemo`, and docs | **Done** |
 | 76 | Dynamic linker dependencies and ELF TLS — `DT_NEEDED`, soname lookup, cross-object symbols, TLS records/relocations, dependency init order, and docs | **Done** |
 | 77 | File-backed mmap and POSIX file runtime — ABI v14 `mmap_file`, `open_flags`, read-only ET_DYN file maps, `/bin/mmapdemo`, and docs | **Done** |
+| 80 | Installer and first boot — graphical owner-account setup, `/CONFIG/FIRSTBOOT.CFG`, setup persistence, and Phase 80 smoke coverage | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

@@ -1,6 +1,7 @@
 extern crate alloc;
 
 use alloc::{string::String, vec::Vec};
+use core::sync::atomic::{AtomicU8, Ordering};
 use x86_64::instructions::port::Port;
 
 const FW_CFG_SELECTOR: u16 = 0x510;
@@ -8,7 +9,9 @@ const FW_CFG_DATA: u16 = 0x511;
 const FW_CFG_SIGNATURE: u16 = 0x0000;
 const FW_CFG_FILE_DIR: u16 = 0x0019;
 const SMOKE_COMMAND_FILE: &[u8] = b"opt/coolos/smoke";
+const SMOKE_MODE_FILE: &[u8] = b"opt/coolos/smoke-mode";
 const MAX_SMOKE_COMMAND: usize = 256;
+static SMOKE_MODE_CACHE: AtomicU8 = AtomicU8::new(0);
 
 pub fn smoke_command() -> Option<String> {
     if !has_qemu_signature() {
@@ -40,6 +43,24 @@ pub fn smoke_commands() -> Vec<String> {
         }
     }
     commands
+}
+
+pub fn smoke_mode() -> bool {
+    match SMOKE_MODE_CACHE.load(Ordering::Relaxed) {
+        1 => return false,
+        2 => return true,
+        _ => {}
+    }
+    let active = has_qemu_signature()
+        && read_named_file(SMOKE_MODE_FILE)
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .map(|value| {
+                let value = value.trim_matches(char::from(0)).trim();
+                value == "1" || value.eq_ignore_ascii_case("true")
+            })
+            .unwrap_or(false);
+    SMOKE_MODE_CACHE.store(if active { 2 } else { 1 }, Ordering::Relaxed);
+    active
 }
 
 fn read_named_file(name: &[u8]) -> Option<Vec<u8>> {
