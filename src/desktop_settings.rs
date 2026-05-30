@@ -58,17 +58,17 @@ impl WallpaperPreset {
 
     pub fn label(self) -> &'static str {
         match self {
-            WallpaperPreset::Phosphor => "Phosphor Blue",
-            WallpaperPreset::Aurora => "Aurora Grid",
-            WallpaperPreset::Midnight => "Midnight Core",
+            WallpaperPreset::Phosphor => "Studio Glass",
+            WallpaperPreset::Aurora => "Aurora Mist",
+            WallpaperPreset::Midnight => "Midnight Slate",
         }
     }
 
     pub fn description(self) -> &'static str {
         match self {
-            WallpaperPreset::Phosphor => "classic coolOS bloom",
-            WallpaperPreset::Aurora => "cool cyan-green sweep",
-            WallpaperPreset::Midnight => "darker navy-violet shell",
+            WallpaperPreset::Phosphor => "soft graphite with teal depth",
+            WallpaperPreset::Aurora => "cyan-green diagonal wash",
+            WallpaperPreset::Midnight => "quiet violet-blue workspace",
         }
     }
 }

@@ -2,8 +2,8 @@ extern crate alloc;
 
 use alloc::{format, string::String, vec::Vec};
 
+use crate::apps::theme;
 use crate::apps::FileManagerOpenRequest;
-use crate::framebuffer::{LIGHT_GRAY, WHITE, YELLOW};
 use crate::wm::window::{Window, TITLE_H};
 
 const UTILITY_W: i32 = 620;
@@ -23,15 +23,17 @@ const NOTES_PATH: &str = "/Documents/NOTES.TXT";
 const EDITOR_PATH: &str = "/Documents/UNTITLED.TXT";
 const MAX_TEXT_BYTES: usize = 16 * 1024;
 
-const BG_A: u32 = 0x00_03_07_14;
-const BG_B: u32 = 0x00_01_03_0A;
-const PANEL: u32 = 0x00_00_0A_1C;
-const PANEL_ALT: u32 = 0x00_00_0E_24;
-const PANEL_BORDER: u32 = 0x00_18_3C_62;
-const ACCENT: u32 = 0x00_44_DD_FF;
-const ACCENT_ALT: u32 = 0x00_88_FF_CC;
-const MUTED: u32 = 0x00_6F_91_AE;
-const DANGER: u32 = 0x00_FF_88_66;
+const BG_A: u32 = theme::BG_TOP;
+const BG_B: u32 = theme::BG_BOTTOM;
+const PANEL: u32 = theme::CARD_SURFACE;
+const PANEL_ALT: u32 = theme::CONTROL_FILL;
+const PANEL_BORDER: u32 = theme::DIVIDER;
+const ACCENT: u32 = theme::ACCENT;
+const ACCENT_ALT: u32 = theme::ACCENT_ALT;
+const TEXT: u32 = theme::TEXT;
+const MUTED: u32 = theme::TEXT_MUTED;
+const STATUS: u32 = theme::STATUS_WARNING;
+const DANGER: u32 = theme::DANGER;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum UtilityMode {
@@ -230,7 +232,7 @@ impl UtilityApp {
         summary.push_str(" items, ");
         push_number(&mut summary, total_size as usize);
         summary.push_str(" bytes");
-        self.put_str(stride, PAD_X, 28, &summary, LIGHT_GRAY);
+        self.put_str(stride, PAD_X, 28, &summary, MUTED);
 
         if self.trash_entries.is_empty() {
             self.put_str(stride, PAD_X, TEXT_Y, "Trash is empty", MUTED);
@@ -256,7 +258,7 @@ impl UtilityApp {
                 if row % 2 == 0 {
                     self.fill_rect(stride, PAD_X - 6, y - 1, width - PAD_X * 2, LINE_H, PANEL);
                 }
-                self.put_truncated(stride, PAD_X, y, &line, WHITE);
+                self.put_truncated(stride, PAD_X, y, &line, TEXT);
             }
         }
 
@@ -292,11 +294,11 @@ impl UtilityApp {
             PANEL_BORDER,
         );
         self.put_str(stride, PAD_X, panel_y + 8, "Target folder", MUTED);
-        self.put_str(stride, PAD_X, panel_y + 22, PICTURES_PATH, WHITE);
+        self.put_str(stride, PAD_X, panel_y + 22, PICTURES_PATH, TEXT);
         self.put_str(stride, PAD_X, panel_y + 48, "Next capture name", MUTED);
         let next = next_screenshot_path();
-        self.put_str(stride, PAD_X, panel_y + 62, &next, LIGHT_GRAY);
-        self.put_str(stride, PAD_X, panel_y + 94, &self.status.clone(), YELLOW);
+        self.put_str(stride, PAD_X, panel_y + 62, &next, MUTED);
+        self.put_str(stride, PAD_X, panel_y + 94, &self.status.clone(), STATUS);
         self.draw_footer("Enter/s capture   o open Pictures");
     }
 
@@ -355,7 +357,7 @@ impl UtilityApp {
             let (start, end) = lines[line_idx];
             if start <= end && end <= self.text.len() {
                 let line = String::from(&self.text[start..end]);
-                self.put_truncated(stride, PAD_X, TEXT_Y + row * LINE_H, &line, WHITE);
+                self.put_truncated(stride, PAD_X, TEXT_Y + row * LINE_H, &line, TEXT);
             }
         }
 
@@ -407,7 +409,7 @@ impl UtilityApp {
     fn draw_header(&mut self, title: &str, subtitle: &str) {
         let stride = self.window.width.max(1) as usize;
         self.fill_rect(stride, PAD_X - 10, 12, 3, 22, ACCENT);
-        self.put_str(stride, PAD_X, 12, title, WHITE);
+        self.put_str(stride, PAD_X, 12, title, TEXT);
         self.put_str(stride, PAD_X, 28, subtitle, MUTED);
     }
 
@@ -431,12 +433,12 @@ impl UtilityApp {
             y as usize,
             w as usize,
             h as usize,
-            0x00_05_12_24,
+            theme::CONTROL_FILL,
         );
         self.draw_rect(
             stride, x as usize, y as usize, w as usize, h as usize, accent,
         );
-        self.put_str(stride, x as usize + 9, y as usize + 7, label, WHITE);
+        self.put_str(stride, x as usize + 9, y as usize + 7, label, TEXT);
     }
 
     fn fill_rect(&mut self, stride: usize, x: usize, y: usize, w: usize, h: usize, color: u32) {

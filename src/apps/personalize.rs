@@ -1,5 +1,4 @@
-use font8x8::UnicodeFonts;
-
+use crate::apps::theme;
 use crate::desktop_settings::{self, DesktopSettings, WallpaperPreset};
 use crate::framebuffer::WHITE;
 use crate::wm::window::{Window, TITLE_H};
@@ -7,14 +6,15 @@ use crate::wm::window::{Window, TITLE_H};
 pub const PERSONALIZE_W: i32 = 460;
 pub const PERSONALIZE_H: i32 = 300;
 
-const BG_A: u32 = 0x00_04_06_15;
-const BG_B: u32 = 0x00_02_03_0A;
-const PANEL: u32 = 0x00_00_0A_1E;
-const PANEL_ALT: u32 = 0x00_00_0F_26;
-const BORDER: u32 = 0x00_00_44_88;
-const ACCENT: u32 = 0x00_AA_55_FF;
-const LABEL: u32 = 0x00_CC_EE_FF;
-const MUTED: u32 = 0x00_66_AA_DD;
+const BG_A: u32 = theme::BG_TOP;
+const BG_B: u32 = theme::BG_BOTTOM;
+const PANEL: u32 = theme::CARD_SURFACE;
+const PANEL_ALT: u32 = theme::CONTROL_FILL;
+const BORDER: u32 = theme::BORDER;
+const DIVIDER: u32 = theme::DIVIDER;
+const ACCENT: u32 = theme::ACCENT;
+const LABEL: u32 = theme::TEXT;
+const MUTED: u32 = theme::TEXT_MUTED;
 
 pub struct PersonalizeApp {
     pub window: Window,
@@ -108,7 +108,7 @@ impl PersonalizeApp {
             y + 1,
             w.saturating_sub(2),
             h.saturating_sub(2),
-            0x00_00_18_30,
+            DIVIDER,
         );
 
         let preview_x = x + 12;
@@ -122,7 +122,7 @@ impl PersonalizeApp {
             preview_y,
             preview_w,
             preview_h,
-            if selected { WHITE } else { 0x00_00_55_88 },
+            if selected { WHITE } else { BORDER },
         );
 
         self.put_str(stride, x + 124, y + 14, preset.label(), text);
@@ -153,10 +153,10 @@ impl PersonalizeApp {
         }
         self.fill_rect(stride, x + w / 3, y + 6, w / 3, h.saturating_sub(12), glow);
         for col in (x + 6..x + w.saturating_sub(6)).step_by(18) {
-            self.fill_rect(stride, col, y + 4, 1, h.saturating_sub(8), 0x00_00_22_44);
+            self.fill_rect(stride, col, y + 4, 1, h.saturating_sub(8), DIVIDER);
         }
         for row in (y + 4..y + h.saturating_sub(4)).step_by(9) {
-            self.fill_rect(stride, x + 4, row, w.saturating_sub(8), 1, 0x00_00_22_44);
+            self.fill_rect(stride, x + 4, row, w.saturating_sub(8), 1, DIVIDER);
         }
     }
 
@@ -201,16 +201,15 @@ impl PersonalizeApp {
 
     fn put_str(&mut self, stride: usize, x: usize, y: usize, s: &str, color: u32) {
         for (i, ch) in s.chars().enumerate() {
-            if let Some(glyph) = font8x8::BASIC_FONTS.get(ch) {
-                for (gy, &byte) in glyph.iter().enumerate() {
-                    for gx in 0..8 {
-                        if (byte >> gx) & 1 == 1 {
-                            let px = x + i * 8 + gx;
-                            let py = y + gy;
-                            let idx = py * stride + px;
-                            if idx < self.window.buf.len() {
-                                self.window.buf[idx] = color;
-                            }
+            let glyph = crate::font::glyph_rows(ch, crate::font::UI_FONT);
+            for (gy, &byte) in glyph.iter().enumerate() {
+                for gx in 0..8 {
+                    if (byte >> gx) & 1 == 1 {
+                        let px = x + i * 8 + gx;
+                        let py = y + gy;
+                        let idx = py * stride + px;
+                        if idx < self.window.buf.len() {
+                            self.window.buf[idx] = color;
                         }
                     }
                 }
@@ -221,9 +220,9 @@ impl PersonalizeApp {
 
 fn preview_colors(preset: WallpaperPreset) -> (u32, u32, u32) {
     match preset {
-        WallpaperPreset::Phosphor => (0x00_00_03_0C, 0x00_00_01_06, 0x00_00_66_DD),
-        WallpaperPreset::Aurora => (0x00_00_09_10, 0x00_00_03_08, 0x00_11_CC_BB),
-        WallpaperPreset::Midnight => (0x00_03_02_10, 0x00_01_01_08, 0x00_33_55_CC),
+        WallpaperPreset::Phosphor => (0x00_0B_10_1A, 0x00_05_17_18, 0x00_2A_A7_A4),
+        WallpaperPreset::Aurora => (0x00_0A_14_18, 0x00_04_0F_12, 0x00_35_C7_AE),
+        WallpaperPreset::Midnight => (0x00_13_10_20, 0x00_07_0A_14, 0x00_66_7A_DA),
     }
 }
 

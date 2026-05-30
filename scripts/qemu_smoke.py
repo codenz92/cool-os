@@ -41,7 +41,20 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--smp", default="1", help="QEMU SMP CPU count")
     parser.add_argument("--vga", default="std", help="QEMU VGA adapter")
-    parser.add_argument("--usb", action="store_true", help="Attach xHCI with USB keyboard and mouse")
+    parser.add_argument("--usb", action="store_true", help="Attach xHCI with USB keyboard and pointer")
+    parser.add_argument(
+        "--usb-pointer",
+        choices=("mouse", "tablet"),
+        default="mouse",
+        help="USB pointer device to attach with --usb; defaults to relative mouse for legacy smokes",
+    )
+    parser.add_argument(
+        "--usb-tablet",
+        action="store_const",
+        const="tablet",
+        dest="usb_pointer",
+        help="Shortcut for --usb-pointer tablet",
+    )
     parser.add_argument("--net", action="store_true", help="Attach legacy virtio-net with QEMU user networking")
     parser.add_argument(
         "--expect",
@@ -174,6 +187,11 @@ def build_command(args: argparse.Namespace, monitor_socket: str | None = None) -
     if monitor_socket:
         cmd.extend(["-monitor", f"unix:{monitor_socket},server,nowait"])
     if args.usb:
+        pointer_device = (
+            "usb-tablet,bus=xhci.0"
+            if args.usb_pointer == "tablet"
+            else "usb-mouse,bus=xhci.0"
+        )
         cmd.extend(
             [
                 "-device",
@@ -181,7 +199,7 @@ def build_command(args: argparse.Namespace, monitor_socket: str | None = None) -
                 "-device",
                 "usb-kbd,bus=xhci.0",
                 "-device",
-                "usb-mouse,bus=xhci.0",
+                pointer_device,
             ]
         )
     if args.net:

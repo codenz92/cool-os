@@ -1,8 +1,8 @@
 extern crate alloc;
 
 use alloc::string::String;
-use font8x8::UnicodeFonts;
 
+use crate::apps::theme;
 use crate::desktop_settings::{self, DesktopSettings, DesktopSortMode};
 use crate::framebuffer::WHITE;
 use crate::settings_state::SystemSettings;
@@ -11,16 +11,19 @@ use crate::wm::window::{Window, TITLE_H};
 pub const DISPLAY_SETTINGS_W: i32 = 520;
 pub const DISPLAY_SETTINGS_H: i32 = 388;
 
-const BG_A: u32 = 0x00_03_07_16;
-const BG_B: u32 = 0x00_01_03_0B;
-const PANEL: u32 = 0x00_00_0A_1E;
-const PANEL_ALT: u32 = 0x00_00_0F_28;
-const BORDER: u32 = 0x00_00_44_88;
-const ACCENT: u32 = 0x00_00_BB_FF;
-const ACCENT_DIM: u32 = 0x00_00_55_88;
-const LABEL: u32 = 0x00_66_AA_DD;
-const MUTED: u32 = 0x00_55_7A_92;
-const GOOD: u32 = 0x00_00_FF_AA;
+const BG_A: u32 = theme::BG_TOP;
+const BG_B: u32 = theme::BG_BOTTOM;
+const PANEL: u32 = theme::CARD_SURFACE;
+const PANEL_ALT: u32 = theme::CONTROL_FILL;
+const BORDER: u32 = theme::BORDER;
+const ACCENT: u32 = theme::ACCENT;
+const ACCENT_DIM: u32 = theme::CONTROL_DISABLED;
+const DIVIDER: u32 = theme::DIVIDER;
+const CARD_HOVER: u32 = theme::CARD_HOVER;
+const TEXT_ON_ACCENT: u32 = theme::TEXT_ON_ACCENT;
+const LABEL: u32 = theme::TEXT;
+const MUTED: u32 = theme::TEXT_MUTED;
+const GOOD: u32 = theme::SUCCESS;
 const TAB_X: usize = 14;
 const TAB_Y: usize = 46;
 const TAB_W: usize = 62;
@@ -204,7 +207,7 @@ impl DisplaySettingsApp {
             stride,
             18,
             24,
-            "desktop, accessibility, diagnostics, logs, network, storage, accounts",
+            "desktop, access, diagnostics, logs, network, storage, accounts",
             MUTED,
         );
         self.draw_page_tabs(stride);
@@ -229,7 +232,8 @@ impl DisplaySettingsApp {
 
         self.put_str(stride, 28, 92, "CURRENT MODE", LABEL);
         self.put_resolution_line(stride, 28, 108);
-        self.put_str(stride, 250, 108, "live shell controls", GOOD);
+        self.put_str(stride, 250, 108, "Sort", MUTED);
+        self.put_str(stride, 290, 108, settings.sort_mode.label(), GOOD);
 
         self.draw_toggle_row(
             stride,
@@ -585,7 +589,7 @@ impl DisplaySettingsApp {
                 y,
                 288,
                 22,
-                if selected { 0x00_00_18_34 } else { PANEL },
+                if selected { CARD_HOVER } else { PANEL },
             );
             if selected {
                 self.fill_rect(stride, 28, y, 3, 22, ACCENT);
@@ -671,7 +675,7 @@ impl DisplaySettingsApp {
                 x + 4,
                 TAB_Y + 7,
                 label,
-                if active { 0x00_00_09_18 } else { LABEL },
+                if active { TEXT_ON_ACCENT } else { LABEL },
             );
         }
     }
@@ -696,8 +700,6 @@ impl DisplaySettingsApp {
         push_number(&mut line, crate::framebuffer::width());
         line.push('x');
         push_number(&mut line, crate::framebuffer::height());
-        line.push_str("    Sort ");
-        line.push_str(desktop_settings::snapshot().sort_mode.label());
         self.put_str(stride, x, y, &line, WHITE);
     }
 
@@ -722,7 +724,7 @@ impl DisplaySettingsApp {
             pill_x + 11,
             y + 7,
             if active { "ON" } else { "OFF" },
-            if active { 0x00_00_09_18 } else { WHITE },
+            if active { TEXT_ON_ACCENT } else { WHITE },
         );
     }
 
@@ -770,7 +772,7 @@ impl DisplaySettingsApp {
                 bx + (button_w.saturating_sub(mode.label().len() * 8)) / 2,
                 y + 6,
                 mode.label(),
-                if active { 0x00_00_09_18 } else { WHITE },
+                if active { TEXT_ON_ACCENT } else { WHITE },
             );
         }
     }
@@ -809,7 +811,7 @@ impl DisplaySettingsApp {
         self.fill_rect(stride, x, y, w, h, PANEL);
         self.draw_rect_border(stride, x, y, w, h, BORDER);
         if h > 2 && w > 2 {
-            self.draw_rect_border(stride, x + 1, y + 1, w - 2, h - 2, 0x00_00_18_30);
+            self.draw_rect_border(stride, x + 1, y + 1, w - 2, h - 2, DIVIDER);
         }
     }
 
@@ -854,16 +856,15 @@ impl DisplaySettingsApp {
 
     fn put_str(&mut self, stride: usize, x: usize, y: usize, s: &str, color: u32) {
         for (i, ch) in s.chars().enumerate() {
-            if let Some(glyph) = font8x8::BASIC_FONTS.get(ch) {
-                for (gy, &byte) in glyph.iter().enumerate() {
-                    for gx in 0..8 {
-                        if (byte >> gx) & 1 == 1 {
-                            let px = x + i * 8 + gx;
-                            let py = y + gy;
-                            let idx = py * stride + px;
-                            if idx < self.window.buf.len() {
-                                self.window.buf[idx] = color;
-                            }
+            let glyph = crate::font::glyph_rows(ch, crate::font::UI_FONT);
+            for (gy, &byte) in glyph.iter().enumerate() {
+                for gx in 0..8 {
+                    if (byte >> gx) & 1 == 1 {
+                        let px = x + i * 8 + gx;
+                        let py = y + gy;
+                        let idx = py * stride + px;
+                        if idx < self.window.buf.len() {
+                            self.window.buf[idx] = color;
                         }
                     }
                 }

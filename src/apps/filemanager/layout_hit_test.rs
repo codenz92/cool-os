@@ -1,6 +1,96 @@
 use super::*;
 
 impl FileManagerApp {
+    pub(super) fn active_tab_rect(&self, layout: Layout) -> Rect {
+        Rect {
+            x: 10,
+            y: 4,
+            w: (layout.width / 3).clamp(180, 260),
+            h: TABBAR_H - 4,
+        }
+    }
+
+    pub(super) fn command_button_rect(&self, item: CommandBarItem) -> Rect {
+        let mut x = 12;
+        for cmd in command_bar_items() {
+            let w = cmd.width();
+            if cmd == item {
+                return Rect {
+                    x,
+                    y: TABBAR_H + 4,
+                    w,
+                    h: COMMAND_BAR_H - 8,
+                };
+            }
+            x += w + COMMAND_GAP;
+        }
+        Rect {
+            x: 12,
+            y: TABBAR_H + 4,
+            w: item.width(),
+            h: COMMAND_BAR_H - 8,
+        }
+    }
+
+    pub(super) fn hit_command_button(&self, lx: i32, ly: i32) -> Option<CommandBarItem> {
+        if !(TABBAR_H..TABBAR_H + COMMAND_BAR_H).contains(&ly) {
+            return None;
+        }
+        command_bar_items()
+            .into_iter()
+            .find(|&cmd| self.command_button_rect(cmd).hit(lx, ly))
+    }
+
+    pub(super) fn command_menu_rect(&self, kind: CommandMenuKind) -> Rect {
+        let anchor = match kind {
+            CommandMenuKind::New => self.command_button_rect(CommandBarItem::New),
+            CommandMenuKind::Sort => self.command_button_rect(CommandBarItem::Sort),
+            CommandMenuKind::More => self.command_button_rect(CommandBarItem::More),
+        };
+        let rows = self.command_menu_items(kind).len() as i32;
+        Rect {
+            x: anchor.x,
+            y: anchor.y + anchor.h + 4,
+            w: match kind {
+                CommandMenuKind::More => 168,
+                _ => 132,
+            },
+            h: rows * MENU_ROW_H + 6,
+        }
+    }
+
+    pub(super) fn command_menu_items(
+        &self,
+        kind: CommandMenuKind,
+    ) -> Vec<(&'static str, ContextAction)> {
+        match kind {
+            CommandMenuKind::New => alloc::vec![
+                ("Folder", ContextAction::NewFolder),
+                ("Text File", ContextAction::NewFile),
+            ],
+            CommandMenuKind::Sort => alloc::vec![
+                ("Name", ContextAction::Refresh),
+                ("Type", ContextAction::Refresh),
+                ("Size", ContextAction::Refresh),
+            ],
+            CommandMenuKind::More => self.context_menu_items(self.focused),
+        }
+    }
+
+    pub(super) fn hit_command_menu_row(&self, lx: i32, ly: i32) -> Option<usize> {
+        let kind = self.command_menu?;
+        let rect = self.command_menu_rect(kind);
+        if !rect.hit(lx, ly) {
+            return None;
+        }
+        let rel_y = ly - rect.y - 3;
+        if rel_y < 0 {
+            return None;
+        }
+        let row = (rel_y / MENU_ROW_H) as usize;
+        (row < self.command_menu_items(kind).len()).then_some(row)
+    }
+
     pub(super) fn context_menu_rect(&self, menu: &ContextMenuState) -> Rect {
         let items = self.context_menu_items(menu.target);
         Rect {
@@ -115,15 +205,14 @@ impl FileManagerApp {
         COMMAND_H + PATHBAR_H + 14
     }
 
-    pub(super) fn summary_cards_y(&self) -> i32 {
+    pub(super) fn section_start_y(&self) -> i32 {
         self.title_y() + 34
     }
 
-    pub(super) fn section_start_y(&self) -> i32 {
-        self.summary_cards_y() + self.summary_cards_height(self.layout()) + 18
-    }
-
     pub(super) fn detail_rect(&self, layout: Layout) -> Option<Rect> {
+        if !self.details_visible {
+            return None;
+        }
         if layout.main_w < 520 {
             return None;
         }
@@ -150,23 +239,6 @@ impl FileManagerApp {
 
     pub(super) fn content_width(&self, layout: Layout) -> i32 {
         (self.content_right(layout) - self.content_left(layout)).max(120)
-    }
-
-    pub(super) fn summary_card_cols(&self, layout: Layout) -> i32 {
-        let available_w = self.content_width(layout);
-        if available_w >= 3 * 104 + SUMMARY_CARD_GAP * 2 {
-            3
-        } else if available_w >= 2 * 104 + SUMMARY_CARD_GAP {
-            2
-        } else {
-            1
-        }
-    }
-
-    pub(super) fn summary_cards_height(&self, layout: Layout) -> i32 {
-        let cols = self.summary_card_cols(layout).max(1);
-        let rows = ((3 + cols - 1) / cols).max(1);
-        rows * SUMMARY_CARD_H + (rows - 1) * SUMMARY_CARD_GAP
     }
 
     pub(super) fn folder_indices(&self) -> Vec<usize> {
@@ -202,10 +274,8 @@ impl FileManagerApp {
         }
     }
 
-    pub(super) fn file_rows_y(&self, layout: Layout) -> i32 {
-        let folders = self.folder_indices();
-        let files_y = self.section_start_y() + self.folder_section_height(layout, &folders) + 18;
-        files_y + 22 + FILE_HEADER_H
+    pub(super) fn file_rows_y(&self, _layout: Layout) -> i32 {
+        self.section_start_y() + 22 + FILE_HEADER_H
     }
 
     pub(super) fn root_directory_names() -> Vec<String> {
@@ -389,26 +459,18 @@ impl FileManagerApp {
         )
     }
 
-    pub(super) fn hit_directory_entry(&self, lx: i32, ly: i32) -> Option<usize> {
+    pub(super) fn hit_directory_entry(&self, _lx: i32, ly: i32) -> Option<usize> {
         let layout = self.layout();
-        let folders = self.folder_indices();
-        let files = self.file_indices();
-        let section_y = self.section_start_y();
-        if let Some(idx) = self.hit_folder_grid(layout, section_y, &folders, lx, ly) {
-            return Some(idx);
-        }
-
-        let files_y = section_y + self.folder_section_height(layout, &folders) + 18;
-        let list_y = files_y + 22 + FILE_HEADER_H;
+        let list_y = self.file_rows_y(layout);
         if ly < list_y || ly >= layout.status_y - 10 {
             return None;
         }
         let visible = self.total_rows.max(1);
-        let idx_in_files = self.offset + ((ly - list_y) / LIST_ROW_H) as usize;
-        if idx_in_files >= files.len() || idx_in_files >= self.offset + visible {
+        let entry_idx = self.offset + ((ly - list_y) / LIST_ROW_H) as usize;
+        if entry_idx >= self.entries.len() || entry_idx >= self.offset + visible {
             return None;
         }
-        Some(files[idx_in_files])
+        Some(entry_idx)
     }
 
     pub(super) fn hit_file_header_column(&self, lx: i32, ly: i32) -> Option<SortColumn> {
@@ -445,7 +507,7 @@ impl FileManagerApp {
         let tile_y = top + 22;
         let tile_w = ((content_w - 24 - TILE_GAP_X * 2) / 3).max(140);
         let cols = (content_w / (tile_w + TILE_GAP_X)).max(1) as usize;
-        for (visual_idx, &entry_idx) in indices.iter().enumerate() {
+        for (visual_idx, &entry_idx) in indices.iter().take(6).enumerate() {
             let col = (visual_idx % cols).min(2);
             let row = visual_idx / cols;
             let rect = Rect {
@@ -497,7 +559,8 @@ impl FileManagerApp {
         let content_w = self.content_width(layout);
         let tile_w = ((content_w - 24 - TILE_GAP_X * 2) / 3).max(140);
         let cols = (content_w / (tile_w + TILE_GAP_X)).max(1) as usize;
-        let rows = ((indices.len() + cols - 1) / cols).max(1) as i32;
+        let display_count = indices.len().min(6);
+        let rows = ((display_count + cols - 1) / cols).max(1) as i32;
         22 + rows * TILE_H + (rows - 1) * TILE_GAP_Y
     }
 }

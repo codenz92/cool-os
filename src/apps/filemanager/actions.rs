@@ -14,10 +14,6 @@ impl FileManagerApp {
     ) {
         self.path.clear();
         self.path.push_str(dir);
-        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.clear();
-            tab.push_str(dir);
-        }
         self.search_filter.clear();
         self.search_active = false;
         let (mut new_entries, mut entry_kinds, mut entry_paths) = self.load_entries_for_path(dir);
@@ -56,6 +52,7 @@ impl FileManagerApp {
         self.offset = preferred_offset.unwrap_or(0).min(max_offset);
         self.ensure_selected_visible();
         self.context_menu = None;
+        self.command_menu = None;
         self.status_note = None;
         self.render();
     }
@@ -125,6 +122,107 @@ impl FileManagerApp {
                 self.apply_search_filter();
             }
             _ => {}
+        }
+        self.render();
+    }
+
+    pub(super) fn command_enabled(&self, item: CommandBarItem) -> bool {
+        match item {
+            CommandBarItem::Cut
+            | CommandBarItem::Copy
+            | CommandBarItem::Rename
+            | CommandBarItem::Delete => self.focused.is_some() || !self.selected.is_empty(),
+            CommandBarItem::Paste => self.clipboard.is_some(),
+            _ => true,
+        }
+    }
+
+    pub(super) fn run_command_bar_action(&mut self, item: CommandBarItem) {
+        if !self.command_enabled(item) {
+            self.status_note = Some(String::from("command unavailable"));
+            self.render();
+            return;
+        }
+        match item {
+            CommandBarItem::New => self.toggle_command_menu(CommandMenuKind::New),
+            CommandBarItem::Cut => {
+                self.command_menu = None;
+                self.copy_selection(true);
+                self.render();
+            }
+            CommandBarItem::Copy => {
+                self.command_menu = None;
+                self.copy_selection(false);
+                self.render();
+            }
+            CommandBarItem::Paste => {
+                self.command_menu = None;
+                self.paste_clipboard();
+            }
+            CommandBarItem::Rename => {
+                self.command_menu = None;
+                self.rename_focused();
+                self.render();
+            }
+            CommandBarItem::Delete => {
+                self.command_menu = None;
+                let targets = self.selected.clone();
+                if !targets.is_empty() {
+                    self.confirm_delete_entries(&targets);
+                } else {
+                    self.render();
+                }
+            }
+            CommandBarItem::Sort => self.toggle_command_menu(CommandMenuKind::Sort),
+            CommandBarItem::Details => {
+                self.command_menu = None;
+                self.details_visible = !self.details_visible;
+                self.status_note = Some(if self.details_visible {
+                    String::from("details pane shown")
+                } else {
+                    String::from("details pane hidden")
+                });
+                self.render();
+            }
+            CommandBarItem::Refresh => {
+                self.command_menu = None;
+                self.refresh_current_dir();
+            }
+            CommandBarItem::More => self.toggle_command_menu(CommandMenuKind::More),
+        }
+    }
+
+    pub(super) fn toggle_command_menu(&mut self, kind: CommandMenuKind) {
+        self.context_menu = None;
+        self.command_menu = if self.command_menu == Some(kind) {
+            None
+        } else {
+            Some(kind)
+        };
+        self.render();
+    }
+
+    pub(super) fn run_command_menu_row(&mut self, row: usize) {
+        let Some(kind) = self.command_menu.take() else {
+            return;
+        };
+        match kind {
+            CommandMenuKind::New => match row {
+                0 => self.run_context_action(ContextAction::NewFolder, None),
+                1 => self.run_context_action(ContextAction::NewFile, None),
+                _ => {}
+            },
+            CommandMenuKind::Sort => match row {
+                0 => self.change_sort(SortColumn::Name),
+                1 => self.change_sort(SortColumn::Type),
+                2 => self.change_sort(SortColumn::Size),
+                _ => {}
+            },
+            CommandMenuKind::More => {
+                if let Some((_, action)) = self.command_menu_items(kind).get(row).copied() {
+                    self.run_context_action(action, self.focused);
+                }
+            }
         }
         self.render();
     }
@@ -218,6 +316,7 @@ impl FileManagerApp {
             }
             '\u{001B}' => {
                 self.context_menu = None;
+                self.command_menu = None;
                 true
             }
             ' ' => self.toggle_focused_selection(),
@@ -234,14 +333,6 @@ impl FileManagerApp {
             }
             'r' | 'R' => {
                 self.refresh_current_dir();
-                false
-            }
-            't' | 'T' => {
-                self.open_new_tab();
-                false
-            }
-            'w' | 'W' => {
-                self.close_active_tab();
                 false
             }
             's' | 'S' => {
@@ -287,6 +378,23 @@ impl FileManagerApp {
 
     pub fn handle_click(&mut self, lx: i32, ly: i32) {
         if self.handle_modal_click(lx, ly) {
+            self.render();
+            return;
+        }
+
+        if let Some(row) = self.hit_command_menu_row(lx, ly) {
+            self.run_command_menu_row(row);
+            return;
+        }
+
+        if let Some(command) = self.hit_command_button(lx, ly) {
+            self.context_menu = None;
+            self.run_command_bar_action(command);
+            return;
+        }
+
+        if self.command_menu.is_some() {
+            self.command_menu = None;
             self.render();
             return;
         }
@@ -504,11 +612,7 @@ impl FileManagerApp {
             Some(s) => s,
             None => return,
         };
-        let files = self.file_indices();
-        let sel = files
-            .iter()
-            .position(|&idx| idx == sel)
-            .unwrap_or(self.offset);
+        let sel = sel.min(self.entries.len().saturating_sub(1));
         let visible_rows = self.visible_row_capacity().max(1);
         if sel < self.offset {
             self.offset = sel;
@@ -717,27 +821,6 @@ impl FileManagerApp {
         }
         let parent = Self::parent_path(&self.path);
         self.navigate_to(&parent);
-    }
-
-    pub(super) fn open_new_tab(&mut self) {
-        if self.tabs.len() < 6 {
-            self.tabs.push(self.path.clone());
-            self.active_tab = self.tabs.len() - 1;
-            self.status_note = Some(String::from("new tab opened"));
-            self.render();
-        }
-    }
-
-    pub(super) fn close_active_tab(&mut self) {
-        if self.tabs.len() <= 1 {
-            self.status_note = Some(String::from("last tab kept open"));
-            self.render();
-            return;
-        }
-        self.tabs.remove(self.active_tab);
-        self.active_tab = self.active_tab.saturating_sub(1).min(self.tabs.len() - 1);
-        let path = self.tabs[self.active_tab].clone();
-        self.load_dir(&path);
     }
 
     pub(super) fn sort_entries(

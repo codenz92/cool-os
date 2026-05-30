@@ -30,7 +30,6 @@ pub fn request_repaint() {
 }
 
 pub fn request_cursor_repaint() {
-    boost_active_frame_pacing();
     CURSOR_REPAINT.store(true, Ordering::Relaxed);
 }
 
@@ -52,10 +51,9 @@ pub fn compose_if_needed() {
     let cursor = CURSOR_REPAINT.swap(false, Ordering::Relaxed);
     let tick = FRAME_TICK.swap(false, Ordering::Relaxed);
     let now = crate::interrupts::ticks();
-    let paced_due = tick && paced_frame_due(now);
     let startup_due = startup_command_due_at(now);
 
-    if full || startup_due || paced_due {
+    if full || startup_due {
         mark_paced_frame(now);
         compositor::WM.lock().compose();
     } else if cursor {
@@ -64,6 +62,8 @@ pub fn compose_if_needed() {
             mark_paced_frame(now);
             wm.compose();
         }
+    } else if tick && paced_frame_due(now) {
+        compositor::WM.lock().compose();
     }
 }
 

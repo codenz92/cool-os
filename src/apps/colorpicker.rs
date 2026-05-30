@@ -1,9 +1,9 @@
+use crate::apps::theme;
 use crate::framebuffer::WHITE;
 use crate::wm::window::{Window, TITLE_H};
-use font8x8::UnicodeFonts;
 
 pub const PICKER_W: i32 = 480;
-pub const PICKER_H: i32 = 320;
+pub const PICKER_H: i32 = 348;
 
 const GRID_COLS: usize = 4;
 const GRID_ROWS: usize = 4;
@@ -17,14 +17,16 @@ const PREVIEW_W: usize = 232;
 const PREVIEW_H: usize = 228;
 const CHAR_W: usize = 8;
 
-const BG_A: u32 = 0x00_05_07_15;
-const BG_B: u32 = 0x00_02_03_09;
-const PANEL: u32 = 0x00_00_0B_1C;
-const PANEL_ALT: u32 = 0x00_00_0F_24;
-const BORDER: u32 = 0x00_00_44_88;
-const ACCENT: u32 = 0x00_AA_55_FF;
-const LABEL: u32 = 0x00_CC_EE_FF;
-const MUTED: u32 = 0x00_66_AA_DD;
+const BG_A: u32 = theme::BG_TOP;
+const BG_B: u32 = theme::BG_BOTTOM;
+const PANEL: u32 = theme::CARD_SURFACE;
+const PANEL_ALT: u32 = theme::CONTROL_FILL;
+const BORDER: u32 = theme::BORDER;
+const DIVIDER: u32 = theme::DIVIDER;
+const ACCENT: u32 = theme::ACCENT;
+const LABEL: u32 = theme::TEXT;
+const TEXT: u32 = theme::TEXT;
+const MUTED: u32 = theme::TEXT_MUTED;
 
 /// True RGB colors matching the classic EGA/VGA 16-colour palette.
 const COLORS: [(&str, u32); 16] = [
@@ -105,7 +107,7 @@ impl ColorPickerApp {
             PREVIEW_Y + 1,
             PREVIEW_W - 2,
             PREVIEW_H - 2,
-            0x00_00_18_30,
+            DIVIDER,
         );
 
         self.put_str(stride, 18, 12, "PALETTE LAB", LABEL);
@@ -147,7 +149,7 @@ impl ColorPickerApp {
                 "CURRENT SWATCH",
                 LABEL,
             );
-            self.put_str(stride, PREVIEW_X + 16, PREVIEW_Y + 30, name, WHITE);
+            self.put_str(stride, PREVIEW_X + 16, PREVIEW_Y + 30, name, TEXT);
 
             self.fill_rect(stride, PREVIEW_X + 16, PREVIEW_Y + 50, 92, 92, rgb);
             self.draw_rect_border(stride, PREVIEW_X + 16, PREVIEW_Y + 50, 92, 92, WHITE);
@@ -163,16 +165,16 @@ impl ColorPickerApp {
             let mut hex = ['#', '0', '0', '0', '0', '0', '0'];
             write_hex(&mut hex[1..], r as u32, g as u32, b as u32);
             let hex_string: alloc::string::String = hex.iter().collect();
-            self.put_str(stride, PREVIEW_X + 126, PREVIEW_Y + 78, &hex_string, WHITE);
+            self.put_str(stride, PREVIEW_X + 126, PREVIEW_Y + 78, &hex_string, TEXT);
 
             self.put_str(stride, PREVIEW_X + 126, PREVIEW_Y + 100, "RGB", MUTED);
-            let mut rgb_line = alloc::string::String::from("R ");
+            let mut rgb_line = alloc::string::String::new();
             push_number(&mut rgb_line, r);
-            rgb_line.push_str("  G ");
+            rgb_line.push(',');
             push_number(&mut rgb_line, g);
-            rgb_line.push_str("  B ");
+            rgb_line.push(',');
             push_number(&mut rgb_line, b);
-            self.put_str(stride, PREVIEW_X + 126, PREVIEW_Y + 116, &rgb_line, WHITE);
+            self.put_str(stride, PREVIEW_X + 126, PREVIEW_Y + 116, &rgb_line, TEXT);
 
             self.put_str(stride, PREVIEW_X + 16, PREVIEW_Y + 160, "CHANNELS", LABEL);
             self.put_str(stride, PREVIEW_X + 16, PREVIEW_Y + 178, "RED", MUTED);
@@ -275,8 +277,8 @@ impl ColorPickerApp {
         value: usize,
         fill: u32,
     ) {
-        self.fill_rect(stride, x, y, w, h, 0x00_11_22_33);
-        self.draw_rect_border(stride, x, y, w, h, 0x00_00_18_30);
+        self.fill_rect(stride, x, y, w, h, theme::FIELD);
+        self.draw_rect_border(stride, x, y, w, h, DIVIDER);
         let fill_w = (w.saturating_sub(2) * value.min(255)) / 255;
         if fill_w > 0 {
             self.fill_rect(stride, x + 1, y + 1, fill_w, h.saturating_sub(2), fill);
@@ -341,9 +343,7 @@ fn blend_color(a: u32, b: u32, t: u32) -> u32 {
 }
 
 fn put_char_transparent(buf: &mut [u32], stride: usize, px0: usize, py0: usize, c: char, fg: u32) {
-    let glyph = font8x8::BASIC_FONTS
-        .get(c)
-        .unwrap_or_else(|| font8x8::BASIC_FONTS.get(' ').unwrap());
+    let glyph = crate::font::glyph_rows(c, crate::font::UI_FONT);
     for (gy, &byte) in glyph.iter().enumerate() {
         for bit in 0..8usize {
             if byte & (1 << bit) == 0 {

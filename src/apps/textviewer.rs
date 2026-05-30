@@ -2,7 +2,7 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::framebuffer::{LIGHT_GRAY, WHITE, YELLOW};
+use crate::apps::theme;
 use crate::wm::window::{Window, TITLE_H};
 
 pub const VIEWER_W: i32 = 640;
@@ -15,14 +15,17 @@ const FOOTER_H: usize = 18;
 const PAD_X: usize = 18;
 const GLYPH_Y_INSET: usize = 1;
 
-const BG_A: u32 = 0x00_03_08_15;
-const BG_B: u32 = 0x00_01_03_0A;
-const PANEL: u32 = 0x00_00_0A_1C;
-const PANEL_ALT: u32 = 0x00_00_0E_24;
-const PANEL_BORDER: u32 = 0x00_00_44_88;
-const ACCENT: u32 = 0x00_00_DD_FF;
-const SUBTLE: u32 = 0x00_66_AA_DD;
-const MUTED: u32 = 0x00_55_7A_92;
+const BG_A: u32 = theme::BG_TOP;
+const BG_B: u32 = theme::BG_BOTTOM;
+const PANEL: u32 = theme::CARD_SURFACE;
+const PANEL_ALT: u32 = theme::CONTROL_FILL;
+const PANEL_BORDER: u32 = theme::DIVIDER;
+const ACCENT: u32 = theme::ACCENT;
+const TEXT: u32 = theme::TEXT;
+const HEADING: u32 = theme::STATUS_WARNING;
+const BODY_MUTED: u32 = theme::TEXT_MUTED;
+const SUBTLE: u32 = theme::TEXT_MUTED;
+const MUTED: u32 = theme::TEXT_DIM;
 
 const ABOUT: &[&str] = &[
     " coolOS v7.41",
@@ -275,7 +278,7 @@ impl TextViewerApp {
             String::from("Welcome to coolOS"),
             String::from(""),
             String::from("Shortcuts"),
-            String::from("  Ctrl+Space       launcher/search palette"),
+            String::from("  Ctrl+Space       Start search"),
             String::from("  Alt+Tab          app switcher"),
             String::from("  Win+1..4         switch workspaces"),
             String::from("  F2               rename selected item where supported"),
@@ -396,7 +399,7 @@ impl TextViewerApp {
 
         let heading = self.heading.clone();
         let subheading = self.subheading.clone();
-        self.put_str(stride, PAD_X, 12, &heading, WHITE);
+        self.put_str(stride, PAD_X, 12, &heading, TEXT);
         self.put_str(stride, PAD_X, 24, &subheading, SUBTLE);
 
         for screen_row in 0..self.rows {
@@ -407,14 +410,14 @@ impl TextViewerApp {
             let line = self.lines[doc_row].clone();
             let py = text_y0 + screen_row * LINE_H + GLYPH_Y_INSET;
             let fg = if line.starts_with(" ==") {
-                YELLOW
+                HEADING
             } else if line.starts_with("  ") {
-                LIGHT_GRAY
+                BODY_MUTED
             } else {
-                WHITE
+                TEXT
             };
             if line.starts_with(" ==") {
-                self.fill_rect(stride, PAD_X - 6, py + 1, 3, 6, YELLOW);
+                self.fill_rect(stride, PAD_X - 6, py + 1, 3, 6, HEADING);
             }
             for (ci, c) in line.chars().enumerate() {
                 if ci >= self.cols {
@@ -451,7 +454,7 @@ impl TextViewerApp {
             140,
             6,
             progress,
-            0x00_11_22_33,
+            theme::FIELD,
             ACCENT,
         );
         self.window.mark_dirty_all();

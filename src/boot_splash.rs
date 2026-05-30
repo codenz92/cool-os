@@ -4,7 +4,6 @@ use core::{
     hint::spin_loop,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
-use font8x8::UnicodeFonts;
 
 use crate::framebuffer;
 
@@ -16,18 +15,17 @@ pub const BOOT_PROGRESS_TOTAL: usize = 24;
 const PROGRESS_SUBSTEPS: usize = 4;
 const FRAME_DELAY_SPINS: usize = 10_000;
 
-const BG_TOP: u32 = 0x00_02_04_10;
-const BG_BOTTOM: u32 = 0x00_00_01_06;
-const GLOW: u32 = 0x00_00_6E_DD;
-const PANEL_BG: u32 = 0x00_02_08_16;
-const PANEL_EDGE: u32 = 0x00_00_BB_FF;
-const PANEL_EDGE_DIM: u32 = 0x00_00_3E_70;
-const TITLE: u32 = 0x00_EE_FB_FF;
-const LABEL: u32 = 0x00_58_8A_A8;
-const TEXT: u32 = 0x00_C8_F6_FF;
-const BAR_BG: u32 = 0x00_01_04_0A;
-const BAR_FILL: u32 = 0x00_00_BB_FF;
-const BAR_FILL_GLOW: u32 = 0x00_44_D8_FF;
+const BG_TOP: u32 = 0x00_0B_10_1A;
+const BG_BOTTOM: u32 = 0x00_05_0B_12;
+const BG_SIDE: u32 = 0x00_16_18_25;
+const GLOW: u32 = 0x00_2A_A7_A4;
+const ACCENT: u32 = 0x00_2B_C8_E8;
+const ACCENT_HOV: u32 = 0x00_7D_E7_F7;
+const TITLE: u32 = 0x00_EB_F4_F8;
+const BAR_BG: u32 = 0x00_12_1A_24;
+const BAR_RIM: u32 = 0x00_2A_36_46;
+const BAR_FILL: u32 = ACCENT;
+const BAR_FILL_GLOW: u32 = ACCENT_HOV;
 
 pub fn show(stage: &str, completed: usize, total: usize) {
     crate::boot_watchdog::record(stage, completed);
@@ -59,145 +57,96 @@ fn draw_static() {
     }
 
     let glow_cx = w / 2;
-    let glow_cy = h * 2 / 5;
-    let glow_rx = (w * 11 / 40).max(1);
-    let glow_ry = (h * 9 / 28).max(1);
+    let glow_cy = h / 2;
+    let glow_rx = (w * 13 / 40).max(1);
+    let glow_ry = (h * 7 / 20).max(1);
 
     for y in 0..h {
-        let base = lerp_color(BG_TOP, BG_BOTTOM, y as usize, (h - 1).max(1) as usize);
+        let vertical = lerp_color(BG_TOP, BG_BOTTOM, y as usize, (h - 1).max(1) as usize);
         for x in 0..w {
+            let edge = ((x - (w / 2)).abs() as i64 * 255 / (w / 2).max(1) as i64).min(255) as u8;
+            let base = mix(vertical, BG_SIDE, edge / 6);
             let dx = (x - glow_cx).abs() as i64;
             let dy = (y - glow_cy).abs() as i64;
             let nx = dx * 255 / glow_rx as i64;
             let ny = dy * 255 / glow_ry as i64;
             let dist = (nx + ny).min(255) as u8;
             let glow = 255u8.saturating_sub(dist);
-            let mut color = mix(base, GLOW, glow / 3);
-            if y % 3 == 2 {
-                color = darken(color, 26);
-            }
+            let color = mix(base, GLOW, glow / 5);
             framebuffer::put_pixel(x as usize, y as usize, color);
         }
     }
 
-    let panel_w = (w * 9 / 20).max(420);
-    let panel_h = 188;
-    let panel_x = (w - panel_w) / 2;
-    let panel_y = (h - panel_h) / 2 - 22;
-    fill_rect(panel_x, panel_y, panel_w, panel_h, PANEL_BG);
-    draw_rect(
-        panel_x - 2,
-        panel_y - 2,
-        panel_w + 4,
-        panel_h + 4,
-        PANEL_EDGE_DIM,
-    );
-    draw_rect(panel_x, panel_y, panel_w, panel_h, PANEL_EDGE);
-    draw_rect(
-        panel_x + 1,
-        panel_y + 1,
-        panel_w - 2,
-        panel_h - 2,
-        PANEL_EDGE_DIM,
-    );
+    let logo_scale = 3;
+    let title_scale = 4;
+    let logo_size = 18 * logo_scale;
+    let title_w = text_width_scaled_with_tracking("coolOS", title_scale as usize, 0);
+    let title_h = 8 * title_scale;
+    let lockup_gap = 24;
+    let lockup_w = logo_size + lockup_gap + title_w;
+    let lockup_x = (w - lockup_w) / 2;
+    let lockup_y = h / 2 - 52;
+    let title_x = lockup_x + logo_size + lockup_gap;
+    let title_y = lockup_y + (logo_size - title_h) / 2;
 
-    let icon_s = 84;
-    let title_y = panel_y + 52;
-    let title_w = text_width_scaled_with_tracking("coolOS", 4, 0);
-    let text_w = title_w;
-    let lockup_gap = 28;
-    let lockup_w = icon_s + lockup_gap + text_w;
-    let lockup_x = panel_x + (panel_w - lockup_w) / 2;
-    let icon_x = lockup_x;
-    let text_x = icon_x + icon_s + lockup_gap;
-    let logo_size = 18 * 4;
-    let logo_y = title_y + ((8 * 4) - logo_size) / 2;
-    draw_logo_icon(icon_x + 6, logo_y);
-
-    draw_str_scaled_with_tracking(text_x, title_y, "coolOS", TITLE, 4, 0);
-    draw_str_scaled(
-        panel_x + 36,
-        panel_y + panel_h - 78,
-        "boot sequence",
-        LABEL,
-        1,
-    );
+    draw_logo_icon(lockup_x, lockup_y, logo_scale, BAR_FILL, BAR_FILL_GLOW);
+    draw_str_scaled_with_tracking(title_x, title_y, "coolOS", TITLE, title_scale as usize, 0);
+    draw_progress_line(0, BOOT_PROGRESS_TOTAL * PROGRESS_SUBSTEPS);
 }
 
-fn draw_progress(stage: &str, completed_units: usize, total_units: usize, phase: usize) {
+fn draw_progress(_stage: &str, completed_units: usize, total_units: usize, _phase: usize) {
     let w = framebuffer::width() as i32;
     let h = framebuffer::height() as i32;
     if w <= 0 || h <= 0 {
         return;
     }
 
-    let panel_w = (w * 9 / 20).max(420);
-    let panel_h = 188;
-    let panel_x = (w - panel_w) / 2;
-    let panel_y = (h - panel_h) / 2 - 22;
+    draw_progress_line(completed_units, total_units);
+}
 
-    let bar_x = panel_x + 36;
-    let bar_y = panel_y + panel_h - 52;
-    let bar_w = panel_w - 72;
-    let bar_h = 16;
-    let stage_y = bar_y - 22;
+fn draw_progress_line(completed_units: usize, total_units: usize) {
+    let w = framebuffer::width() as i32;
+    let h = framebuffer::height() as i32;
+    if w <= 0 || h <= 0 {
+        return;
+    }
 
-    fill_rect(bar_x, stage_y - 4, bar_w, 18, PANEL_BG);
-    draw_str_scaled(bar_x, stage_y, stage, TEXT, 1);
+    let bar_w = (w / 4).clamp(180, 360);
+    let bar_h = 3;
+    let bar_x = (w - bar_w) / 2;
+    let bar_y = h / 2 + 46;
 
+    fill_rect(bar_x - 1, bar_y - 1, bar_w + 2, bar_h + 2, BAR_RIM);
     fill_rect(bar_x, bar_y, bar_w, bar_h, BAR_BG);
-    draw_rect(bar_x, bar_y, bar_w, bar_h, PANEL_EDGE_DIM);
 
     let fill = if total_units == 0 {
-        bar_w - 4
+        bar_w
     } else {
-        (((bar_w - 4) as i64 * completed_units.min(total_units) as i64) / total_units as i64) as i32
+        ((bar_w as i64 * completed_units.min(total_units) as i64) / total_units as i64) as i32
     };
     if fill > 0 {
-        fill_rect(bar_x + 2, bar_y + 2, fill, bar_h - 4, BAR_FILL);
-        if fill > 6 {
-            fill_rect(bar_x + 2, bar_y + 2, fill, 3, BAR_FILL_GLOW);
-            let stripe_offset = (phase as i32 * 7) % 18;
-            let mut sx = bar_x + 2 - stripe_offset;
-            while sx < bar_x + 2 + fill {
-                let stripe_x = sx.max(bar_x + 2);
-                let stripe_w = (6).min(bar_x + 2 + fill - stripe_x);
-                if stripe_w > 0 {
-                    fill_rect(
-                        stripe_x,
-                        bar_y + 5,
-                        stripe_w,
-                        bar_h - 8,
-                        mix(BAR_FILL, framebuffer::WHITE, 46),
-                    );
-                }
-                sx += 18;
-            }
+        fill_rect(bar_x, bar_y, fill, bar_h, BAR_FILL);
+        fill_rect(bar_x, bar_y, fill, 1, BAR_FILL_GLOW);
 
-            let head_w = 12.min(fill);
-            fill_rect(
-                bar_x + 2 + fill - head_w,
-                bar_y + 2,
-                head_w,
-                bar_h - 4,
-                mix(BAR_FILL_GLOW, framebuffer::WHITE, 70),
-            );
-        }
+        let head_w = 10.min(fill);
+        fill_rect(
+            bar_x + fill - head_w,
+            bar_y - 1,
+            head_w,
+            bar_h + 2,
+            mix(BAR_FILL_GLOW, framebuffer::WHITE, 60),
+        );
     }
 }
 
-fn draw_logo_icon(x: i32, y: i32) {
+fn draw_logo_icon(x: i32, y: i32, scale: i32, primary: u32, secondary: u32) {
     for rect in crate::branding::SNOWFLAKE_LOGO_RECTS.iter() {
-        let color = if rect.highlight {
-            BAR_FILL_GLOW
-        } else {
-            BAR_FILL
-        };
+        let color = if rect.highlight { secondary } else { primary };
         fill_rect(
-            x + rect.x * 4,
-            y + rect.y * 4,
-            rect.w * 4,
-            rect.h * 4,
+            x + rect.x * scale,
+            y + rect.y * scale,
+            rect.w * scale,
+            rect.h * scale,
             color,
         );
     }
@@ -218,20 +167,6 @@ fn fill_rect(x: i32, y: i32, w: i32, h: i32, color: u32) {
             framebuffer::put_pixel(px as usize, py as usize, color);
         }
     }
-}
-
-fn draw_rect(x: i32, y: i32, w: i32, h: i32, color: u32) {
-    if w <= 0 || h <= 0 {
-        return;
-    }
-    fill_rect(x, y, w, 1, color);
-    fill_rect(x, y + h - 1, w, 1, color);
-    fill_rect(x, y, 1, h, color);
-    fill_rect(x + w - 1, y, 1, h, color);
-}
-
-fn draw_str_scaled(x: i32, y: i32, text: &str, color: u32, scale: usize) {
-    draw_str_scaled_with_tracking(x, y, text, color, scale, scale as i32);
 }
 
 fn draw_str_scaled_with_tracking(
@@ -259,9 +194,7 @@ fn text_width_scaled_with_tracking(text: &str, scale: usize, tracking: i32) -> i
 }
 
 fn draw_char_scaled(x: i32, y: i32, c: char, color: u32, scale: usize) {
-    let glyph = font8x8::BASIC_FONTS
-        .get(c)
-        .unwrap_or_else(|| font8x8::BASIC_FONTS.get(' ').unwrap());
+    let glyph = crate::font::glyph_rows(c, crate::font::UI_FONT);
     for (gy, &byte) in glyph.iter().enumerate() {
         for bit in 0..8usize {
             if byte & (1 << bit) == 0 {
@@ -301,14 +234,6 @@ fn mix(base: u32, accent: u32, alpha: u8) -> u32 {
     (((br * inv + ar * alpha) / 255) << 16)
         | (((bg * inv + ag * alpha) / 255) << 8)
         | ((bb * inv + ab * alpha) / 255)
-}
-
-fn darken(color: u32, amount: u8) -> u32 {
-    let factor = 255u32.saturating_sub(amount as u32);
-    let r = ((color >> 16) & 0xFF) * factor / 255;
-    let g = ((color >> 8) & 0xFF) * factor / 255;
-    let b = (color & 0xFF) * factor / 255;
-    (r << 16) | (g << 8) | b
 }
 
 fn short_delay() {

@@ -299,7 +299,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     loop {
         // Do NOT disable interrupts here — the WM mutex inside compose()
         // provides the only exclusion needed.  Holding interrupts off for
-        // an entire frame (≈2.8 M MMIO writes at 1280×720×3 bpp) would
+        // an entire frame (≈6.2 M MMIO writes at 1920×1080×3 bpp) would
         // block mouse and keyboard for tens of milliseconds per frame.
         usb::poll();
         wm::compose_if_needed();

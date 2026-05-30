@@ -165,10 +165,7 @@ pub fn put_pixel(x: usize, y: usize, color: u32) {
 /// Draw a single character directly onto the hardware framebuffer at
 /// character-grid cell `(col, row)`, scaled by `FONT_SCALE`.
 pub fn draw_char(col: usize, row: usize, c: char, fg: u32, bg: u32) {
-    use font8x8::UnicodeFonts;
-    let glyph = font8x8::BASIC_FONTS
-        .get(c)
-        .unwrap_or_else(|| font8x8::BASIC_FONTS.get(' ').unwrap());
+    let glyph = crate::font::glyph_rows(c, crate::font::UI_FONT);
 
     let x0 = col * CHAR_W;
     let y0 = row * CHAR_H;
@@ -199,10 +196,7 @@ pub fn draw_char(col: usize, row: usize, c: char, fg: u32, bg: u32) {
 
 /// Draw a single character at 1× scale (8×8 pixels) to a buffer.
 pub fn draw_char_small(buf: &mut [u32], stride: usize, x: i32, y: i32, c: char, fg: u32, bg: u32) {
-    use font8x8::UnicodeFonts;
-    let glyph = font8x8::BASIC_FONTS
-        .get(c)
-        .unwrap_or_else(|| font8x8::BASIC_FONTS.get(' ').unwrap());
+    let glyph = crate::font::glyph_rows(c, crate::font::UI_FONT);
     let sh = if stride > 0 { buf.len() / stride } else { 0 };
     for (gy, &byte) in glyph.iter().enumerate() {
         for bit in 0..8usize {

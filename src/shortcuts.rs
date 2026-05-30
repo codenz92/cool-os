@@ -9,7 +9,7 @@ const CONFIG_PATH: &str = "/CONFIG/SHORTCUT.CFG";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Action {
-    Launcher,
+    StartSearch,
     Notifications,
 }
 
@@ -89,7 +89,7 @@ fn ensure_loaded() {
 fn default_shortcuts() -> Vec<Shortcut> {
     alloc::vec![
         Shortcut {
-            action: Action::Launcher,
+            action: Action::StartSearch,
             ctrl: true,
             alt: false,
             shift: false,
@@ -107,7 +107,7 @@ fn default_shortcuts() -> Vec<Shortcut> {
 
 fn parse_action(name: &str) -> Option<Action> {
     match name {
-        "launcher" => Some(Action::Launcher),
+        "start_search" | "launcher" => Some(Action::StartSearch),
         "notifications" => Some(Action::Notifications),
         _ => None,
     }
@@ -171,7 +171,7 @@ impl Shortcut {
     fn summary(self) -> String {
         let mut out = String::new();
         out.push_str(match self.action {
-            Action::Launcher => "launcher=",
+            Action::StartSearch => "start_search=",
             Action::Notifications => "notifications=",
         });
         if self.ctrl {

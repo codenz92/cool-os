@@ -1,11 +1,19 @@
+use crate::apps::theme;
+
 pub const FILEMAN_W: i32 = 760;
 pub const FILEMAN_H: i32 = 500;
 
 const CW: usize = 8;
-const COMMAND_H: i32 = 0;
+const TABBAR_H: i32 = 26;
+const COMMAND_BAR_H: i32 = 30;
+const COMMAND_H: i32 = TABBAR_H + COMMAND_BAR_H;
 const PATHBAR_H: i32 = 30;
 const STATUS_H: i32 = 20;
 const SIDEBAR_W: i32 = 176;
+const COMMAND_ICON_X: i32 = 6;
+const COMMAND_TEXT_X: i32 = 22;
+const COMMAND_RIGHT_PAD: i32 = 8;
+const COMMAND_GAP: i32 = 4;
 const SECTION_HDR_H: i32 = 18;
 const TILE_H: i32 = 58;
 const TILE_GAP_X: i32 = 12;
@@ -14,8 +22,6 @@ const DRIVE_H: i32 = 52;
 const DRIVE_GAP_Y: i32 = 10;
 const LIST_ROW_H: i32 = 18;
 const NAV_ROW_H: i32 = 18;
-const SUMMARY_CARD_H: i32 = 42;
-const SUMMARY_CARD_GAP: i32 = 10;
 const FILE_HEADER_H: i32 = 20;
 const DETAIL_W: i32 = 186;
 const DETAIL_GAP: i32 = 14;
@@ -66,27 +72,31 @@ const DESKTOP_APP_LINKS: [(&str, &str); 8] = [
     ("Trash", "Trash Bin"),
 ];
 
-const FM_BG_TOP: u32 = 0x00_06_0C_18;
-const FM_BG_BOT: u32 = 0x00_03_07_12;
-const FM_SHELL: u32 = 0x00_08_11_20;
-const FM_PANEL: u32 = 0x00_0D_18_2A;
-const FM_PANEL_ALT: u32 = 0x00_12_1E_33;
-const FM_PANEL_SOFT: u32 = 0x00_10_1A_2B;
-const FM_BORDER: u32 = 0x00_26_4A_72;
-const FM_BORDER_SOFT: u32 = 0x00_1B_33_50;
-const FM_ACCENT: u32 = 0x00_44_C8_F5;
-const FM_ACCENT_SOFT: u32 = 0x00_1D_73_A2;
-const FM_SELECTION: u32 = 0x00_17_3A_58;
-const FM_SELECTION_GLOW: u32 = 0x00_27_9B_CB;
-const FM_TEXT: u32 = 0x00_E7_F6_FF;
-const FM_TEXT_DIM: u32 = 0x00_99_BF_DA;
-const FM_TEXT_MUTED: u32 = 0x00_6F_91_AE;
-const FM_FOLDER: u32 = 0x00_54_B9_FF;
-const FM_FOLDER_SHADE: u32 = 0x00_2D_73_B0;
-const FM_FILE: u32 = 0x00_8F_E4_D0;
-const FM_DRIVE: u32 = 0x00_C9_EE_FD;
-const FM_DRIVE_FILL: u32 = 0x00_3C_DA_F8;
-const FM_SEARCH: u32 = 0x00_0B_14_24;
+const FM_BG_TOP: u32 = theme::BG_TOP;
+const FM_BG_BOT: u32 = theme::BG_BOTTOM;
+const FM_SHELL: u32 = theme::BG_DEEP;
+const FM_PANEL: u32 = theme::CARD_SURFACE;
+const FM_PANEL_ALT: u32 = theme::CONTROL_FILL;
+const FM_PANEL_SOFT: u32 = theme::CONTROL_DISABLED;
+const FM_CARD_HOVER: u32 = theme::CARD_HOVER;
+const FM_BORDER: u32 = theme::BORDER;
+const FM_BORDER_SOFT: u32 = theme::DIVIDER;
+const FM_ACCENT: u32 = theme::ACCENT;
+const FM_ACCENT_SOFT: u32 = theme::SELECTION_GLOW;
+const FM_FIELD_FOCUS: u32 = theme::INPUT_FOCUS;
+const FM_SELECTION: u32 = theme::SELECTION;
+const FM_SELECTION_GLOW: u32 = theme::SELECTION_GLOW;
+const FM_TEXT: u32 = theme::TEXT;
+const FM_TEXT_DIM: u32 = theme::TEXT_DIM;
+const FM_TEXT_MUTED: u32 = theme::TEXT_MUTED;
+const FM_FOLDER: u32 = theme::ACCENT_HOVER;
+const FM_FOLDER_SHADE: u32 = theme::SELECTION_GLOW;
+const FM_FILE: u32 = theme::ACCENT_ALT;
+const FM_DRIVE: u32 = theme::STATUS_INFO;
+const FM_DRIVE_FILL: u32 = theme::ACCENT;
+const FM_SEARCH: u32 = theme::FIELD;
+const FM_WARNING: u32 = theme::STATUS_WARNING;
+const FM_DANGER: u32 = theme::STATUS_DANGER;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SortColumn {
@@ -182,6 +192,64 @@ enum ContextAction {
     Duplicate,
     Properties,
     Refresh,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CommandMenuKind {
+    New,
+    Sort,
+    More,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CommandBarItem {
+    New,
+    Cut,
+    Copy,
+    Paste,
+    Rename,
+    Delete,
+    Sort,
+    Details,
+    Refresh,
+    More,
+}
+
+impl CommandBarItem {
+    fn label(self) -> &'static str {
+        match self {
+            CommandBarItem::New => "New",
+            CommandBarItem::Cut => "Cut",
+            CommandBarItem::Copy => "Copy",
+            CommandBarItem::Paste => "Paste",
+            CommandBarItem::Rename => "Rename",
+            CommandBarItem::Delete => "Delete",
+            CommandBarItem::Sort => "Sort",
+            CommandBarItem::Details => "Details",
+            CommandBarItem::Refresh => "Refresh",
+            CommandBarItem::More => "More",
+        }
+    }
+
+    fn width(self) -> i32 {
+        let label_w = self.label().len() as i32 * CW as i32;
+        (COMMAND_TEXT_X + label_w + COMMAND_RIGHT_PAD).max(54)
+    }
+}
+
+fn command_bar_items() -> [CommandBarItem; 10] {
+    [
+        CommandBarItem::New,
+        CommandBarItem::Cut,
+        CommandBarItem::Copy,
+        CommandBarItem::Paste,
+        CommandBarItem::Rename,
+        CommandBarItem::Delete,
+        CommandBarItem::Sort,
+        CommandBarItem::Details,
+        CommandBarItem::Refresh,
+        CommandBarItem::More,
+    ]
 }
 
 struct ContextMenuState {
@@ -341,13 +409,13 @@ pub struct FileManagerApp {
     modal: Option<ModalState>,
     back_stack: Vec<String>,
     forward_stack: Vec<String>,
-    tabs: Vec<String>,
-    active_tab: usize,
     split_view: bool,
     search_filter: String,
     search_active: bool,
     clipboard: Option<ClipboardState>,
     active_file_op: Option<FileOperationState>,
+    details_visible: bool,
+    command_menu: Option<CommandMenuKind>,
 }
 
 impl FileManagerApp {
@@ -381,13 +449,13 @@ impl FileManagerApp {
             modal: None,
             back_stack: Vec::new(),
             forward_stack: Vec::new(),
-            tabs: alloc::vec![String::from(dir)],
-            active_tab: 0,
             split_view: false,
             search_filter: String::new(),
             search_active: false,
             clipboard: None,
             active_file_op: None,
+            details_visible: false,
+            command_menu: None,
         };
         app.load_dir(dir);
         app

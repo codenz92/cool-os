@@ -3,9 +3,11 @@ extern crate alloc;
 use alloc::{format, string::String, vec, vec::Vec};
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-pub const HEAP_LOW_FREE_BYTES: usize = 8 * 1024 * 1024;
-pub const HEAP_CRITICAL_FREE_BYTES: usize = 4 * 1024 * 1024;
-pub const HEAP_ADMISSION_RESERVE_BYTES: usize = 2 * 1024 * 1024;
+pub const HEAP_LOW_FREE_BYTES: usize = 16 * 1024 * 1024;
+pub const HEAP_CRITICAL_FREE_BYTES: usize = 8 * 1024 * 1024;
+pub const HEAP_ADMISSION_RESERVE_BYTES: usize = 4 * 1024 * 1024;
+const HEAP_LOW_USED_PCT: usize = 85;
+const HEAP_CRITICAL_USED_PCT: usize = 92;
 
 const CHECK_INTERVAL_TICKS: u64 = crate::interrupts::TIMER_HZ as u64;
 const COOLFS_TRIM_KEEP_BLOCKS: usize = 8;
@@ -69,9 +71,9 @@ pub fn pressure_level(free_bytes: usize, total_bytes: usize) -> PressureLevel {
     } else {
         used_bytes.saturating_mul(100) / total_bytes
     };
-    if free_bytes <= HEAP_CRITICAL_FREE_BYTES || used_pct >= 90 {
+    if free_bytes <= HEAP_CRITICAL_FREE_BYTES || used_pct >= HEAP_CRITICAL_USED_PCT {
         PressureLevel::Critical
-    } else if free_bytes <= HEAP_LOW_FREE_BYTES || used_pct >= 75 {
+    } else if free_bytes <= HEAP_LOW_FREE_BYTES || used_pct >= HEAP_LOW_USED_PCT {
         PressureLevel::Low
     } else {
         PressureLevel::Normal

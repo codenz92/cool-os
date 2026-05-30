@@ -8,6 +8,8 @@ impl FileManagerApp {
         self.view_h = (layout.height - COMMAND_H - PATHBAR_H - STATUS_H).max(0);
 
         self.fill_background();
+        self.draw_tab_bar(layout);
+        self.draw_command_bar(layout);
         self.draw_path_bar(layout);
         self.draw_sidebar(layout);
         self.draw_main_shell(layout);
@@ -21,8 +23,153 @@ impl FileManagerApp {
         self.draw_detail_panel(layout);
         self.draw_status_bar(layout);
         self.draw_context_menu();
+        self.draw_command_menu();
         self.draw_modal();
         self.window.mark_dirty_all();
+    }
+
+    pub(super) fn draw_tab_bar(&mut self, layout: Layout) {
+        self.fill_rect(0, 0, layout.width, TABBAR_H, FM_SHELL);
+        self.fill_rect(0, TABBAR_H - 1, layout.width, 1, FM_BORDER_SOFT);
+        let tab = self.active_tab_rect(layout);
+        self.draw_glass_surface(tab, FM_PANEL, FM_BORDER_SOFT, Some(FM_ACCENT));
+        let title = if self.path == "/" {
+            String::from("This PC")
+        } else {
+            Self::path_name(&self.path)
+        };
+        self.draw_folder_icon(tab.x + 9, tab.y + 7, 14);
+        self.put_str(
+            (tab.x + 29) as usize,
+            (tab.y + 8) as usize,
+            &Self::clip_text(&title, ((tab.w - 58).max(8) as usize) / CW),
+            FM_TEXT,
+        );
+        self.put_str(
+            (tab.x + tab.w - 18) as usize,
+            (tab.y + 8) as usize,
+            "x",
+            FM_TEXT_MUTED,
+        );
+        self.draw_control_surface(
+            Rect {
+                x: tab.x + tab.w + 8,
+                y: tab.y + 4,
+                w: 18,
+                h: 18,
+            },
+            false,
+            false,
+        );
+        self.put_str(
+            (tab.x + tab.w + 13) as usize,
+            (tab.y + 9) as usize,
+            "+",
+            FM_TEXT_MUTED,
+        );
+    }
+
+    pub(super) fn draw_command_bar(&mut self, layout: Layout) {
+        self.fill_rect(0, TABBAR_H, layout.width, COMMAND_BAR_H, FM_PANEL);
+        self.fill_rect(
+            0,
+            TABBAR_H,
+            layout.width,
+            1,
+            blend(FM_ACCENT, FM_PANEL, 110),
+        );
+        self.fill_rect(
+            0,
+            TABBAR_H + COMMAND_BAR_H - 1,
+            layout.width,
+            1,
+            FM_BORDER_SOFT,
+        );
+        for cmd in command_bar_items() {
+            let rect = self.command_button_rect(cmd);
+            let enabled = self.command_enabled(cmd);
+            self.draw_command_button(rect, cmd, enabled);
+        }
+    }
+
+    pub(super) fn draw_command_button(&mut self, rect: Rect, item: CommandBarItem, enabled: bool) {
+        let active = match (self.command_menu, item) {
+            (Some(CommandMenuKind::New), CommandBarItem::New)
+            | (Some(CommandMenuKind::Sort), CommandBarItem::Sort)
+            | (Some(CommandMenuKind::More), CommandBarItem::More) => true,
+            _ => item == CommandBarItem::Details && self.details_visible,
+        };
+        self.draw_control_surface(rect, active, enabled);
+        let color = if enabled { FM_TEXT } else { FM_TEXT_MUTED };
+        self.draw_command_icon(rect.x + COMMAND_ICON_X, rect.y + 6, item, enabled);
+        self.put_str(
+            (rect.x + COMMAND_TEXT_X) as usize,
+            (rect.y + 7) as usize,
+            item.label(),
+            color,
+        );
+    }
+
+    pub(super) fn draw_command_icon(
+        &mut self,
+        x: i32,
+        y: i32,
+        item: CommandBarItem,
+        enabled: bool,
+    ) {
+        let color = if enabled { FM_ACCENT } else { FM_TEXT_MUTED };
+        match item {
+            CommandBarItem::New => {
+                self.draw_folder_icon(x, y + 1, 12);
+                self.fill_rect(x + 10, y + 1, 1, 7, color);
+                self.fill_rect(x + 7, y + 4, 7, 1, color);
+            }
+            CommandBarItem::Cut => {
+                self.fill_rect(x + 1, y + 2, 8, 1, color);
+                self.fill_rect(x + 4, y + 1, 1, 7, color);
+                self.draw_rect_border(x + 8, y + 1, 4, 4, color);
+                self.draw_rect_border(x, y + 7, 4, 4, color);
+            }
+            CommandBarItem::Copy => {
+                self.draw_rect_border(x + 4, y + 1, 8, 9, color);
+                self.draw_rect_border(x, y + 4, 8, 9, color);
+            }
+            CommandBarItem::Paste => {
+                self.draw_rect_border(x + 2, y + 3, 10, 10, color);
+                self.fill_rect(x + 4, y, 6, 3, color);
+            }
+            CommandBarItem::Rename => {
+                self.draw_document_icon(x + 1, y, 12);
+                self.fill_rect(x + 8, y + 9, 6, 1, color);
+                self.fill_rect(x + 12, y + 7, 1, 4, color);
+            }
+            CommandBarItem::Delete => {
+                self.fill_rect(x + 2, y + 3, 10, 1, color);
+                self.fill_rect(x + 4, y + 1, 6, 2, color);
+                self.draw_rect_border(x + 3, y + 5, 8, 8, color);
+            }
+            CommandBarItem::Sort => {
+                self.fill_rect(x, y + 2, 12, 1, color);
+                self.fill_rect(x, y + 6, 8, 1, color);
+                self.fill_rect(x, y + 10, 4, 1, color);
+            }
+            CommandBarItem::Details => {
+                self.draw_rect_border(x, y + 1, 12, 12, color);
+                self.fill_rect(x + 3, y + 4, 6, 1, color);
+                self.fill_rect(x + 3, y + 7, 6, 1, color);
+                self.fill_rect(x + 3, y + 10, 4, 1, color);
+            }
+            CommandBarItem::Refresh => {
+                self.draw_rect_border(x + 1, y + 2, 10, 9, color);
+                self.fill_rect(x + 8, y, 4, 3, color);
+                self.fill_rect(x, y + 10, 4, 3, color);
+            }
+            CommandBarItem::More => {
+                self.fill_rect(x + 1, y + 6, 2, 2, color);
+                self.fill_rect(x + 6, y + 6, 2, 2, color);
+                self.fill_rect(x + 11, y + 6, 2, 2, color);
+            }
+        }
     }
 
     pub(super) fn draw_path_bar(&mut self, layout: Layout) {
@@ -31,7 +178,14 @@ impl FileManagerApp {
         let crumb = self.breadcrumb_rect();
         let search = self.search_rect(layout);
 
-        self.fill_rect(0, COMMAND_H, layout.width, PATHBAR_H, FM_PANEL_ALT);
+        self.fill_rect(0, COMMAND_H, layout.width, PATHBAR_H, FM_SHELL);
+        self.fill_rect(
+            0,
+            COMMAND_H,
+            layout.width,
+            1,
+            blend(FM_ACCENT, FM_SHELL, 80),
+        );
         self.fill_rect(
             0,
             COMMAND_H + PATHBAR_H - 1,
@@ -42,37 +196,26 @@ impl FileManagerApp {
 
         self.draw_back_button(back);
         self.draw_forward_button(fwd);
-        self.fill_rect(crumb.x, crumb.y, crumb.w, crumb.h, FM_PANEL);
-        self.draw_rect_border(crumb.x, crumb.y, crumb.w, crumb.h, FM_BORDER);
+        self.draw_field_surface(crumb, false);
         self.draw_breadcrumbs(crumb);
 
-        let search_bg = if self.search_active {
-            FM_SELECTION
-        } else {
-            FM_SEARCH
-        };
-        let search_border = if self.search_active {
-            FM_SELECTION_GLOW
-        } else {
-            FM_BORDER_SOFT
-        };
-        self.fill_rect(search.x, search.y, search.w, search.h, search_bg);
-        self.draw_rect_border(search.x, search.y, search.w, search.h, search_border);
+        self.draw_field_surface(search, self.search_active);
         let search_text = if self.search_active && !self.search_filter.is_empty() {
             self.search_filter.clone()
         } else if self.search_active {
             String::from("_")
         } else {
-            String::from("search")
+            String::from("Search")
         };
         let search_color = if self.search_active {
             FM_TEXT
         } else {
             FM_TEXT_MUTED
         };
-        let max_chars = ((search.w - 20).max(0) as usize) / CW;
+        self.draw_search_icon(search.x + 8, search.y + 7, self.search_active);
+        let max_chars = ((search.w - 36).max(0) as usize) / CW;
         self.put_str(
-            (search.x + 10) as usize,
+            (search.x + 25) as usize,
             (search.y + 7) as usize,
             &Self::clip_text(&search_text, max_chars),
             search_color,
@@ -81,31 +224,8 @@ impl FileManagerApp {
 
     pub(super) fn draw_forward_button(&mut self, rect: Rect) {
         let enabled = !self.forward_stack.is_empty();
-        self.fill_rect(rect.x, rect.y, rect.w, rect.h, FM_PANEL);
-        self.draw_rect_border(
-            rect.x,
-            rect.y,
-            rect.w,
-            rect.h,
-            if enabled { FM_BORDER } else { FM_BORDER_SOFT },
-        );
-        self.fill_rect(
-            rect.x + 1,
-            rect.y + 1,
-            rect.w - 2,
-            3,
-            if enabled {
-                FM_SELECTION_GLOW
-            } else {
-                FM_BORDER_SOFT
-            },
-        );
-        self.put_str(
-            (rect.x + 8) as usize,
-            (rect.y + 7) as usize,
-            ">",
-            if enabled { FM_TEXT } else { FM_TEXT_MUTED },
-        );
+        self.draw_control_surface(rect, false, enabled);
+        self.draw_chevron_icon(rect.x + 9, rect.y + 7, true, enabled);
     }
 
     pub(super) fn draw_context_menu(&mut self) {
@@ -117,18 +237,57 @@ impl FileManagerApp {
         };
         let items = self.context_menu_items(menu.target);
         let rect = self.context_menu_rect(menu);
-        self.fill_rect(rect.x, rect.y, rect.w, rect.h, FM_PANEL);
-        self.draw_rect_border(rect.x, rect.y, rect.w, rect.h, FM_BORDER);
-        self.fill_rect(rect.x, rect.y, rect.w, 3, FM_SELECTION_GLOW);
+        self.draw_glass_surface(rect, FM_PANEL, FM_BORDER, Some(FM_ACCENT));
         for (idx, (label, _)) in items.iter().enumerate() {
             let row_y = rect.y + 3 + idx as i32 * MENU_ROW_H;
-            self.fill_rect(rect.x + 1, row_y, rect.w - 2, MENU_ROW_H, FM_PANEL);
-            self.put_str((rect.x + 10) as usize, (row_y + 6) as usize, label, FM_TEXT);
+            let row = Rect {
+                x: rect.x + 4,
+                y: row_y,
+                w: rect.w - 8,
+                h: MENU_ROW_H,
+            };
+            self.put_str((row.x + 8) as usize, (row.y + 6) as usize, label, FM_TEXT);
             if idx + 1 < items.len() {
                 self.fill_rect(
-                    rect.x + 8,
+                    rect.x + 10,
                     row_y + MENU_ROW_H - 1,
-                    rect.w - 16,
+                    rect.w - 20,
+                    1,
+                    FM_BORDER_SOFT,
+                );
+            }
+        }
+    }
+
+    pub(super) fn draw_command_menu(&mut self) {
+        if self.modal.is_some() {
+            return;
+        }
+        let Some(kind) = self.command_menu else {
+            return;
+        };
+        let rect = self.command_menu_rect(kind);
+        let items = self.command_menu_items(kind);
+        self.draw_glass_surface(rect, FM_PANEL, FM_BORDER, Some(FM_ACCENT));
+        for (idx, (label, _)) in items.iter().enumerate() {
+            let row_y = rect.y + 3 + idx as i32 * MENU_ROW_H;
+            self.put_str((rect.x + 12) as usize, (row_y + 6) as usize, label, FM_TEXT);
+            if kind == CommandMenuKind::Sort {
+                let active = match idx {
+                    0 => self.sort_column == SortColumn::Name,
+                    1 => self.sort_column == SortColumn::Type,
+                    2 => self.sort_column == SortColumn::Size,
+                    _ => false,
+                };
+                if active {
+                    self.fill_rect(rect.x + 4, row_y + 6, 3, 8, FM_ACCENT);
+                }
+            }
+            if idx + 1 < items.len() {
+                self.fill_rect(
+                    rect.x + 10,
+                    row_y + MENU_ROW_H - 1,
+                    rect.w - 20,
                     1,
                     FM_BORDER_SOFT,
                 );
@@ -142,7 +301,14 @@ impl FileManagerApp {
             COMMAND_H + PATHBAR_H,
             layout.sidebar_w,
             layout.status_y - COMMAND_H - PATHBAR_H,
-            FM_PANEL_SOFT,
+            FM_SHELL,
+        );
+        self.fill_rect(
+            0,
+            COMMAND_H + PATHBAR_H,
+            layout.sidebar_w,
+            1,
+            blend(FM_ACCENT, FM_SHELL, 120),
         );
         self.fill_rect(
             layout.sidebar_w,
@@ -157,6 +323,7 @@ impl FileManagerApp {
             match item.kind {
                 SidebarItemKind::Section => {
                     self.put_str(18, y as usize, &item.label, FM_TEXT_MUTED);
+                    self.fill_rect(18, y + 12, layout.sidebar_w - 36, 1, FM_BORDER_SOFT);
                     y += 16;
                 }
                 SidebarItemKind::Link => {
@@ -226,7 +393,8 @@ impl FileManagerApp {
     pub(super) fn draw_sidebar_item(&mut self, rect: Rect, item: &SidebarItem) {
         if item.active {
             self.fill_rect(rect.x, rect.y, rect.w, rect.h, FM_SELECTION);
-            self.fill_rect(rect.x, rect.y, 3, rect.h, FM_SELECTION_GLOW);
+            self.draw_rect_border(rect.x, rect.y, rect.w, rect.h, FM_BORDER_SOFT);
+            self.fill_rect(rect.x, rect.y + 2, 3, rect.h - 4, FM_FIELD_FOCUS);
         }
         let icon_x = rect.x + 8 + item.indent;
         let icon_y = rect.y + 4;
@@ -242,65 +410,37 @@ impl FileManagerApp {
     pub(super) fn draw_sidebar_icon(&mut self, x: i32, y: i32, icon: SidebarIcon, active: bool) {
         match icon {
             SidebarIcon::Computer => {
-                self.fill_rect(x, y + 4, 10, 6, if active { FM_TEXT } else { FM_DRIVE });
+                let screen = if active { FM_TEXT } else { FM_DRIVE };
+                self.draw_rect_border(x, y + 1, 12, 8, screen);
                 self.fill_rect(
-                    x + 1,
-                    y + 2,
+                    x + 2,
+                    y + 3,
                     8,
-                    3,
-                    if active {
-                        FM_SELECTION_GLOW
-                    } else {
-                        FM_ACCENT_SOFT
-                    },
+                    4,
+                    if active { FM_SELECTION } else { FM_SEARCH },
                 );
-                self.fill_rect(x + 3, y + 11, 4, 1, FM_TEXT_MUTED);
+                self.fill_rect(x + 4, y + 10, 4, 1, FM_TEXT_MUTED);
+                self.fill_rect(x + 2, y + 12, 8, 1, FM_TEXT_MUTED);
             }
             SidebarIcon::Folder => {
-                self.fill_rect(x + 1, y, 6, 2, if active { FM_TEXT } else { FM_FOLDER });
-                self.fill_rect(x, y + 2, 10, 6, if active { FM_TEXT } else { FM_FOLDER });
-                self.fill_rect(
-                    x + 1,
-                    y + 4,
-                    8,
-                    3,
-                    if active {
-                        FM_SELECTION_GLOW
-                    } else {
-                        FM_FOLDER_SHADE
-                    },
-                );
+                let body = if active { FM_TEXT } else { FM_FOLDER };
+                let shade = if active {
+                    FM_SELECTION_GLOW
+                } else {
+                    FM_FOLDER_SHADE
+                };
+                self.fill_rect(x + 2, y + 1, 5, 2, body);
+                self.fill_rect(x, y + 3, 13, 8, body);
+                self.fill_rect(x + 1, y + 5, 11, 5, shade);
+                self.fill_rect(x + 2, y + 4, 9, 1, blend(body, WHITE, 80));
             }
         }
     }
 
     pub(super) fn draw_back_button(&mut self, rect: Rect) {
         let enabled = !self.back_stack.is_empty();
-        self.fill_rect(rect.x, rect.y, rect.w, rect.h, FM_PANEL);
-        self.draw_rect_border(
-            rect.x,
-            rect.y,
-            rect.w,
-            rect.h,
-            if enabled { FM_BORDER } else { FM_BORDER_SOFT },
-        );
-        self.fill_rect(
-            rect.x + 1,
-            rect.y + 1,
-            rect.w - 2,
-            3,
-            if enabled {
-                FM_SELECTION_GLOW
-            } else {
-                FM_BORDER_SOFT
-            },
-        );
-        self.put_str(
-            (rect.x + 8) as usize,
-            (rect.y + 7) as usize,
-            "<",
-            if enabled { FM_TEXT } else { FM_TEXT_MUTED },
-        );
+        self.draw_control_surface(rect, false, enabled);
+        self.draw_chevron_icon(rect.x + 9, rect.y + 7, false, enabled);
     }
 
     pub(super) fn draw_main_shell(&mut self, layout: Layout) {
@@ -316,75 +456,12 @@ impl FileManagerApp {
         }
     }
 
-    pub(super) fn draw_summary_cards(
-        &mut self,
-        layout: Layout,
-        y: i32,
-        folder_count: usize,
-        file_count: usize,
-    ) {
-        let row_x = self.content_left(layout);
-        let available_w = self.content_width(layout);
-        let cols = self.summary_card_cols(layout).max(1);
-        let card_w = ((available_w - SUMMARY_CARD_GAP * (cols - 1)) / cols).max(72);
-
-        let mut folder_value = String::new();
-        fmt_push_u(&mut folder_value, folder_count as u64);
-        let mut file_value = String::new();
-        fmt_push_u(&mut file_value, file_count as u64);
-        let mut sort_value = String::new();
-        sort_value.push_str(self.sort_column.label());
-        sort_value.push(' ');
-        sort_value.push(if self.sort_desc { 'v' } else { '^' });
-        let cards = [
-            ("Folders", folder_value, FM_FOLDER),
-            ("Files", file_value, FM_FILE),
-            ("Sort", sort_value, FM_ACCENT),
-        ];
-        for (idx, (label, value, accent)) in cards.iter().enumerate() {
-            let col = idx as i32 % cols;
-            let row = idx as i32 / cols;
-            self.draw_summary_card(
-                Rect {
-                    x: row_x + col * (card_w + SUMMARY_CARD_GAP),
-                    y: y + row * (SUMMARY_CARD_H + SUMMARY_CARD_GAP),
-                    w: card_w,
-                    h: SUMMARY_CARD_H,
-                },
-                label,
-                value,
-                *accent,
-            );
-        }
-    }
-
-    pub(super) fn draw_summary_card(&mut self, rect: Rect, label: &str, value: &str, accent: u32) {
-        let max_chars = ((rect.w - 20).max(0) as usize) / CW;
-        self.fill_rect(rect.x, rect.y, rect.w, rect.h, FM_PANEL);
-        self.draw_rect_border(rect.x, rect.y, rect.w, rect.h, FM_BORDER);
-        self.fill_rect(rect.x + 1, rect.y + 1, rect.w - 2, 3, accent);
-        self.put_str(
-            (rect.x + 10) as usize,
-            (rect.y + 10) as usize,
-            &Self::clip_text(label, max_chars),
-            FM_TEXT_MUTED,
-        );
-        self.put_str(
-            (rect.x + 10) as usize,
-            (rect.y + 22) as usize,
-            &Self::clip_text(value, max_chars),
-            FM_TEXT,
-        );
-    }
-
     pub(super) fn draw_detail_panel(&mut self, layout: Layout) {
         let detail = match self.detail_rect(layout) {
             Some(detail) => detail,
             None => return,
         };
-        self.fill_rect(detail.x, detail.y, detail.w, detail.h, FM_PANEL);
-        self.draw_rect_border(detail.x, detail.y, detail.w, detail.h, FM_BORDER);
-        self.fill_rect(detail.x, detail.y, detail.w, 3, FM_SELECTION_GLOW);
+        self.draw_glass_surface(detail, FM_PANEL, FM_BORDER_SOFT, Some(FM_ACCENT_SOFT));
         self.put_str(
             (detail.x + 12) as usize,
             (detail.y + 10) as usize,
@@ -444,11 +521,11 @@ impl FileManagerApp {
                 );
 
                 let note = if self.desktop_app_for_idx(idx).is_some() {
-                    "Desktop launchers mirror the shell icons."
+                    "Shortcut opens an app."
                 } else if is_dir {
-                    "Folders stay in the shell view."
+                    "Folders open here."
                 } else {
-                    "Files open with the default app."
+                    "Files use default apps."
                 };
                 self.put_str(
                     (detail.x + 12) as usize,
@@ -507,27 +584,24 @@ impl FileManagerApp {
 
     pub(super) fn draw_large_entry_icon(&mut self, x: i32, y: i32, is_dir: bool) {
         if is_dir {
-            self.fill_rect(x + 4, y, 14, 6, FM_FOLDER);
-            self.fill_rect(x, y + 6, 26, 18, FM_FOLDER);
-            self.fill_rect(x + 2, y + 11, 22, 9, FM_FOLDER_SHADE);
+            self.draw_folder_icon(x, y, 30);
         } else {
-            self.fill_rect(x + 2, y, 18, 24, FM_FILE);
-            self.draw_rect_border(x + 2, y, 18, 24, blend(FM_FILE, BLACK, 120));
-            self.fill_rect(x + 12, y, 8, 6, WHITE);
-            self.fill_rect(x + 5, y + 10, 10, 2, blend(FM_FILE, WHITE, 110));
-            self.fill_rect(x + 5, y + 14, 10, 2, blend(FM_FILE, WHITE, 110));
+            self.draw_document_icon(x + 2, y, 24);
         }
     }
 
     pub(super) fn draw_file_header(&mut self, layout: Layout, y: i32) {
         let columns = self.file_columns(layout);
-        self.fill_rect(columns.row_x, y, columns.row_w, FILE_HEADER_H, FM_PANEL);
-        self.draw_rect_border(
-            columns.row_x,
-            y,
-            columns.row_w,
-            FILE_HEADER_H,
+        self.draw_glass_surface(
+            Rect {
+                x: columns.row_x,
+                y,
+                w: columns.row_w,
+                h: FILE_HEADER_H,
+            },
+            FM_PANEL,
             FM_BORDER_SOFT,
+            None,
         );
         self.draw_sort_header_label(columns.name_x, y + 6, "Name", SortColumn::Name);
         self.draw_sort_header_label(columns.type_x, y + 6, "Type", SortColumn::Type);
@@ -571,7 +645,6 @@ impl FileManagerApp {
 
         let folders = self.folder_indices();
         let files = self.file_indices();
-        self.draw_summary_cards(layout, self.summary_cards_y(), folders.len(), files.len());
         let section_y = self.section_start_y();
         let tiles_h = self.draw_folder_section(layout, section_y, &folders, true);
         let drives_y = section_y + tiles_h + 20;
@@ -604,13 +677,9 @@ impl FileManagerApp {
             FM_TEXT_MUTED,
         );
 
-        let folders = self.folder_indices();
-        let files = self.file_indices();
-        self.draw_summary_cards(layout, self.summary_cards_y(), folders.len(), files.len());
         let section_y = self.section_start_y();
-        let folders_h = self.draw_folder_section(layout, section_y, &folders, false);
-        let files_y = section_y + folders_h + 18;
-        self.draw_file_list_section(layout, files_y, &files);
+        let indices: Vec<usize> = (0..self.entries.len()).collect();
+        self.draw_file_list_section(layout, section_y, &indices);
     }
 
     pub(super) fn draw_folder_section(
@@ -653,7 +722,12 @@ impl FileManagerApp {
         let tile_w = ((content_w - 24 - TILE_GAP_X * 2) / 3).max(140);
         let cols = (content_w / (tile_w + TILE_GAP_X)).max(1) as usize;
 
-        for (visual_idx, &entry_idx) in indices.iter().enumerate() {
+        let display_count = if root_mode {
+            indices.len().min(6)
+        } else {
+            indices.len()
+        };
+        for (visual_idx, &entry_idx) in indices.iter().take(display_count).enumerate() {
             let col = (visual_idx % cols).min(2);
             let row = visual_idx / cols;
             let rect = Rect {
@@ -665,7 +739,20 @@ impl FileManagerApp {
             self.draw_folder_tile(rect, entry_idx);
         }
 
-        let rows = ((indices.len() + cols - 1) / cols).max(1) as i32;
+        if indices.len() > display_count {
+            let mut more = String::from("+");
+            fmt_push_u(&mut more, (indices.len() - display_count) as u64);
+            more.push_str(" more");
+            self.put_str(
+                (content_left + content_w - (more.len() as i32 * CW as i32) - 4).max(content_left)
+                    as usize,
+                y as usize,
+                &more,
+                FM_TEXT_MUTED,
+            );
+        }
+
+        let rows = ((display_count + cols - 1) / cols).max(1) as i32;
         22 + rows * TILE_H + (rows - 1) * TILE_GAP_Y
     }
 
@@ -733,7 +820,7 @@ impl FileManagerApp {
     ) {
         let content_left = self.content_left(layout);
         let content_w = self.content_width(layout);
-        self.put_str(content_left as usize, y as usize, "Files", FM_TEXT_DIM);
+        self.put_str(content_left as usize, y as usize, "Items", FM_TEXT_DIM);
         self.fill_rect(
             content_left,
             y + SECTION_HDR_H - 2,
@@ -757,7 +844,7 @@ impl FileManagerApp {
             self.put_str(
                 (content_left + 10) as usize,
                 (list_y + 8) as usize,
-                "(no files)",
+                "(empty)",
                 FM_TEXT_MUTED,
             );
             return;
@@ -790,7 +877,7 @@ impl FileManagerApp {
                 if selected {
                     FM_SELECTION
                 } else if visual_row % 2 == 0 {
-                    FM_PANEL_SOFT
+                    FM_CARD_HOVER
                 } else {
                     FM_BG_BOT
                 },
@@ -804,10 +891,19 @@ impl FileManagerApp {
                     row_y + 2,
                     columns.row_w - 4,
                     LIST_ROW_H - 4,
-                    FM_TEXT,
+                    FM_FIELD_FOCUS,
                 );
             }
-            self.draw_file_icon((columns.row_x + 10) as usize, (row_y + 4) as usize);
+            if self
+                .entries
+                .get(entry_idx)
+                .map(|entry| entry.is_dir)
+                .unwrap_or(false)
+            {
+                self.draw_folder_icon(columns.row_x + 8, row_y + 4, 15);
+            } else {
+                self.draw_file_icon((columns.row_x + 10) as usize, (row_y + 4) as usize);
+            }
 
             let name = Self::clip_text(&full_name, name_w);
             self.put_str(
@@ -825,7 +921,16 @@ impl FileManagerApp {
                     .unwrap_or("File"),
                 FM_TEXT_MUTED,
             );
-            let size = Self::format_size(size);
+            let size = if self
+                .entries
+                .get(entry_idx)
+                .map(|entry| entry.is_dir)
+                .unwrap_or(false)
+            {
+                String::new()
+            } else {
+                Self::format_size(size)
+            };
             self.put_str(
                 columns.size_x as usize,
                 (row_y + 5) as usize,
@@ -867,15 +972,14 @@ impl FileManagerApp {
 
             let bar_x = (layout.width / 2).max(260);
             let bar_w = (layout.width - bar_x - 190).clamp(80, 220);
-            self.fill_rect(bar_x, layout.status_y + 7, bar_w, 6, FM_PANEL);
+            self.fill_rect(bar_x, layout.status_y + 7, bar_w, 6, FM_SEARCH);
             self.draw_rect_border(bar_x, layout.status_y + 7, bar_w, 6, FM_BORDER_SOFT);
             let fill_w = ((bar_w - 2).max(0) as usize * progress as usize / 100) as i32;
             self.fill_rect(bar_x + 1, layout.status_y + 8, fill_w, 4, FM_ACCENT);
 
             let toggle = self.file_op_toggle_rect(layout);
             let cancel = self.file_op_cancel_rect(layout);
-            self.fill_rect(toggle.x, toggle.y, toggle.w, toggle.h, FM_PANEL_ALT);
-            self.draw_rect_border(toggle.x, toggle.y, toggle.w, toggle.h, FM_BORDER);
+            self.draw_control_surface(toggle, false, true);
             self.put_str(
                 (toggle.x + 8) as usize,
                 (toggle.y + 3) as usize,
@@ -886,8 +990,7 @@ impl FileManagerApp {
                 },
                 FM_TEXT,
             );
-            self.fill_rect(cancel.x, cancel.y, cancel.w, cancel.h, FM_PANEL_ALT);
-            self.draw_rect_border(cancel.x, cancel.y, cancel.w, cancel.h, FM_BORDER);
+            self.draw_control_surface(cancel, false, true);
             self.put_str(
                 (cancel.x + 8) as usize,
                 (cancel.y + 3) as usize,
@@ -963,24 +1066,17 @@ impl FileManagerApp {
         let segments = self.breadcrumb_segment_rects(rect);
         for (idx, (seg, label, _path)) in segments.iter().enumerate() {
             let active = idx + 1 == segments.len();
-            self.fill_rect(
-                seg.x,
-                seg.y,
-                seg.w,
-                seg.h,
-                if active { FM_SELECTION } else { FM_PANEL_ALT },
-            );
-            self.draw_rect_border(
-                seg.x,
-                seg.y,
-                seg.w,
-                seg.h,
-                if active {
-                    FM_SELECTION_GLOW
-                } else {
-                    FM_BORDER_SOFT
-                },
-            );
+            if active {
+                self.fill_rect(seg.x, seg.y, seg.w, seg.h, FM_SELECTION);
+                self.draw_rect_border(seg.x, seg.y, seg.w, seg.h, FM_SELECTION_GLOW);
+                self.fill_rect(
+                    seg.x + 1,
+                    seg.y + 1,
+                    seg.w - 2,
+                    1,
+                    blend(FM_SELECTION, WHITE, 28),
+                );
+            }
             self.put_str(
                 (seg.x + BREAD_SEG_PAD) as usize,
                 (seg.y + 4) as usize,
@@ -988,12 +1084,7 @@ impl FileManagerApp {
                 if active { FM_TEXT } else { FM_TEXT_DIM },
             );
             if idx + 1 < segments.len() {
-                self.put_str(
-                    (seg.x + seg.w + 2) as usize,
-                    (seg.y + 4) as usize,
-                    ">",
-                    FM_TEXT_MUTED,
-                );
+                self.draw_chevron_icon(seg.x + seg.w + 3, seg.y + 5, true, true);
             }
         }
     }
@@ -1001,30 +1092,26 @@ impl FileManagerApp {
     pub(super) fn draw_folder_tile(&mut self, rect: Rect, entry_idx: usize) {
         let selected = self.selected.contains(&entry_idx);
         let focused = self.focused == Some(entry_idx);
-        self.fill_rect(
-            rect.x,
-            rect.y,
-            rect.w,
-            rect.h,
+        self.draw_glass_surface(
+            rect,
             if selected { FM_SELECTION } else { FM_PANEL },
-        );
-        self.draw_rect_border(
-            rect.x,
-            rect.y,
-            rect.w,
-            rect.h,
             if selected {
                 FM_SELECTION_GLOW
             } else {
-                FM_BORDER
+                FM_BORDER_SOFT
             },
+            if selected { Some(FM_ACCENT) } else { None },
         );
         if focused {
-            self.draw_rect_border(rect.x + 2, rect.y + 2, rect.w - 4, rect.h - 4, FM_TEXT);
+            self.draw_rect_border(
+                rect.x + 2,
+                rect.y + 2,
+                rect.w - 4,
+                rect.h - 4,
+                FM_FIELD_FOCUS,
+            );
         }
-        self.fill_rect(rect.x + 10, rect.y + 12, 18, 12, FM_FOLDER);
-        self.fill_rect(rect.x + 8, rect.y + 16, 28, 18, FM_FOLDER);
-        self.fill_rect(rect.x + 10, rect.y + 20, 24, 10, FM_FOLDER_SHADE);
+        self.draw_folder_icon(rect.x + 8, rect.y + 12, 30);
 
         if let Some(entry) = self.entries.get(entry_idx) {
             let entry_name = entry.name.clone();
@@ -1050,26 +1137,24 @@ impl FileManagerApp {
     pub(super) fn draw_drive_card(&mut self, rect: Rect, entry_idx: usize) {
         let selected = self.selected.contains(&entry_idx);
         let focused = self.focused == Some(entry_idx);
-        self.fill_rect(
-            rect.x,
-            rect.y,
-            rect.w,
-            rect.h,
+        self.draw_glass_surface(
+            rect,
             if selected { FM_SELECTION } else { FM_PANEL },
-        );
-        self.draw_rect_border(
-            rect.x,
-            rect.y,
-            rect.w,
-            rect.h,
             if selected {
                 FM_SELECTION_GLOW
             } else {
-                FM_BORDER
+                FM_BORDER_SOFT
             },
+            if selected { Some(FM_ACCENT) } else { None },
         );
         if focused {
-            self.draw_rect_border(rect.x + 2, rect.y + 2, rect.w - 4, rect.h - 4, FM_TEXT);
+            self.draw_rect_border(
+                rect.x + 2,
+                rect.y + 2,
+                rect.w - 4,
+                rect.h - 4,
+                FM_FIELD_FOCUS,
+            );
         }
 
         self.draw_drive_icon((rect.x + 10) as usize, (rect.y + 12) as usize);
@@ -1113,6 +1198,13 @@ impl FileManagerApp {
                 6,
                 FM_DRIVE_FILL,
             );
+            self.fill_rect(
+                rect.x + 48,
+                rect.y + 36,
+                (((rect.w - 62) * usage / 100).max(4)).saturating_sub(2),
+                1,
+                blend(FM_DRIVE_FILL, WHITE, 110),
+            );
 
             let size = if entry_is_dir {
                 String::from("shell view")
@@ -1129,22 +1221,49 @@ impl FileManagerApp {
     }
 
     pub(super) fn draw_drive_icon(&mut self, x: usize, y: usize) {
-        self.fill_rect(x as i32, y as i32 + 8, 22, 8, FM_DRIVE);
-        self.fill_rect(
-            x as i32 + 2,
-            y as i32 + 4,
-            18,
-            6,
-            blend(FM_DRIVE, WHITE, 90),
-        );
-        self.fill_rect(x as i32 + 5, y as i32 + 11, 12, 2, FM_ACCENT);
-        self.draw_rect_border(x as i32, y as i32 + 8, 22, 8, blend(FM_DRIVE, BLACK, 120));
+        let x = x as i32;
+        let y = y as i32;
+        self.fill_rect(x + 1, y + 8, 24, 9, FM_DRIVE);
+        self.fill_rect(x + 3, y + 5, 20, 6, blend(FM_DRIVE, WHITE, 70));
+        self.fill_rect(x + 4, y + 13, 16, 2, FM_ACCENT);
+        self.fill_rect(x + 21, y + 13, 2, 2, FM_WARNING);
+        self.draw_rect_border(x + 1, y + 8, 24, 9, FM_BORDER_SOFT);
+        self.fill_rect(x + 3, y + 9, 20, 1, blend(FM_DRIVE, WHITE, 110));
     }
 
     pub(super) fn draw_file_icon(&mut self, x: usize, y: usize) {
-        self.fill_rect(x as i32 + 1, y as i32, 10, 12, FM_FILE);
-        self.draw_rect_border(x as i32 + 1, y as i32, 10, 12, blend(FM_FILE, BLACK, 120));
-        self.fill_rect(x as i32 + 6, y as i32, 4, 3, WHITE);
+        self.draw_document_icon(x as i32, y as i32, 14);
+    }
+
+    pub(super) fn draw_folder_icon(&mut self, x: i32, y: i32, size: i32) {
+        let w = size.max(14);
+        let h = ((size * 2) / 3).max(10);
+        let tab_w = (w / 2).max(7);
+        let tab_h = (h / 4).max(3);
+        self.fill_rect(x + 3, y + 1, tab_w, tab_h, FM_FOLDER);
+        self.fill_rect(x, y + tab_h, w, h - tab_h, FM_FOLDER);
+        self.fill_rect(x + 2, y + tab_h + 4, w - 4, h - tab_h - 6, FM_FOLDER_SHADE);
+        self.fill_rect(x + 3, y + tab_h + 1, w - 6, 1, blend(FM_FOLDER, WHITE, 100));
+        self.draw_rect_border(x, y + tab_h, w, h - tab_h, FM_BORDER_SOFT);
+    }
+
+    pub(super) fn draw_document_icon(&mut self, x: i32, y: i32, size: i32) {
+        let h = size.max(12);
+        let w = ((h * 3) / 4).max(10);
+        let fold = (h / 4).clamp(3, 6);
+        self.fill_rect(x + 1, y, w, h, FM_FILE);
+        self.draw_rect_border(x + 1, y, w, h, FM_BORDER_SOFT);
+        self.fill_rect(x + w - fold + 1, y, fold, fold, blend(FM_FILE, WHITE, 110));
+        self.fill_rect(
+            x + w - fold + 1,
+            y + fold,
+            fold,
+            1,
+            blend(FM_FILE, BLACK, 60),
+        );
+        let line = blend(FM_FILE, WHITE, 120);
+        self.fill_rect(x + 4, y + fold + 4, (w - 6).max(3), 1, line);
+        self.fill_rect(x + 4, y + fold + 7, (w - 8).max(3), 1, line);
     }
 
     pub(super) fn usage_ratio(entry: &DirEntryInfo) -> i32 {
@@ -1175,13 +1294,141 @@ impl FileManagerApp {
         clipped
     }
 
+    pub(super) fn draw_glass_surface(
+        &mut self,
+        rect: Rect,
+        fill: u32,
+        border: u32,
+        accent: Option<u32>,
+    ) {
+        self.fill_rect(rect.x, rect.y, rect.w, rect.h, fill);
+        self.draw_rect_border(rect.x, rect.y, rect.w, rect.h, border);
+        self.fill_rect(
+            rect.x + 1,
+            rect.y + 1,
+            rect.w - 2,
+            1,
+            blend(fill, WHITE, 34),
+        );
+        self.fill_rect(
+            rect.x + 1,
+            rect.y + 1,
+            1,
+            rect.h - 2,
+            blend(fill, WHITE, 18),
+        );
+        self.fill_rect(
+            rect.x + 1,
+            rect.y + rect.h - 2,
+            rect.w - 2,
+            1,
+            blend(fill, BLACK, 72),
+        );
+        self.fill_rect(
+            rect.x + rect.w - 2,
+            rect.y + 1,
+            1,
+            rect.h - 2,
+            blend(fill, BLACK, 62),
+        );
+        if let Some(accent) = accent {
+            self.fill_rect(rect.x + 1, rect.y + 1, rect.w - 2, 2, accent);
+        }
+    }
+
+    pub(super) fn draw_field_surface(&mut self, rect: Rect, focused: bool) {
+        self.fill_rect(rect.x, rect.y, rect.w, rect.h, FM_SEARCH);
+        self.draw_rect_border(
+            rect.x,
+            rect.y,
+            rect.w,
+            rect.h,
+            if focused {
+                FM_FIELD_FOCUS
+            } else {
+                FM_BORDER_SOFT
+            },
+        );
+        self.fill_rect(
+            rect.x + 1,
+            rect.y + 1,
+            rect.w - 2,
+            1,
+            blend(FM_SEARCH, WHITE, 24),
+        );
+        self.fill_rect(
+            rect.x + 1,
+            rect.y + rect.h - 2,
+            rect.w - 2,
+            1,
+            blend(FM_SEARCH, BLACK, 72),
+        );
+        if focused {
+            self.fill_rect(
+                rect.x + 4,
+                rect.y + rect.h - 3,
+                rect.w - 8,
+                2,
+                FM_FIELD_FOCUS,
+            );
+        }
+    }
+
+    pub(super) fn draw_control_surface(&mut self, rect: Rect, active: bool, enabled: bool) {
+        let fill = if active {
+            FM_SELECTION
+        } else if enabled {
+            FM_PANEL_ALT
+        } else {
+            FM_PANEL_SOFT
+        };
+        self.draw_glass_surface(
+            rect,
+            fill,
+            if enabled { FM_BORDER } else { FM_BORDER_SOFT },
+            if active && enabled {
+                Some(FM_ACCENT)
+            } else {
+                None
+            },
+        );
+    }
+
+    pub(super) fn draw_chevron_icon(&mut self, x: i32, y: i32, right: bool, enabled: bool) {
+        let color = if enabled { FM_TEXT } else { FM_TEXT_MUTED };
+        let points = if right {
+            [(0, 0), (1, 1), (2, 2), (3, 3), (2, 4), (1, 5), (0, 6)]
+        } else {
+            [(3, 0), (2, 1), (1, 2), (0, 3), (1, 4), (2, 5), (3, 6)]
+        };
+        for (dx, dy) in points {
+            self.fill_rect(x + dx, y + dy, 2, 1, color);
+        }
+    }
+
+    pub(super) fn draw_search_icon(&mut self, x: i32, y: i32, active: bool) {
+        let color = if active {
+            FM_FIELD_FOCUS
+        } else {
+            FM_TEXT_MUTED
+        };
+        self.fill_rect(x + 2, y, 5, 1, color);
+        self.fill_rect(x, y + 2, 1, 4, color);
+        self.fill_rect(x + 7, y + 2, 1, 4, color);
+        self.fill_rect(x + 2, y + 7, 5, 1, color);
+        self.fill_rect(x + 1, y + 1, 1, 1, color);
+        self.fill_rect(x + 6, y + 1, 1, 1, color);
+        self.fill_rect(x + 1, y + 6, 1, 1, color);
+        self.fill_rect(x + 6, y + 6, 1, 1, color);
+        self.fill_rect(x + 7, y + 7, 2, 2, color);
+        self.fill_rect(x + 9, y + 9, 3, 2, color);
+    }
+
     pub(super) fn put_str(&mut self, px: usize, py: usize, s: &str, color: u32) {
         let stride = self.window.width.max(0) as usize;
         let max_chars = stride.saturating_sub(px) / CW;
         for (ci, ch) in s.chars().take(max_chars).enumerate() {
-            let glyph = font8x8::BASIC_FONTS
-                .get(ch)
-                .unwrap_or_else(|| font8x8::BASIC_FONTS.get(' ').unwrap());
+            let glyph = crate::font::glyph_rows(ch, crate::font::UI_FONT);
             for (gi, &byte) in glyph.iter().enumerate() {
                 for bit in 0..8 {
                     if byte & (1 << bit) == 0 {

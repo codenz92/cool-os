@@ -19,11 +19,11 @@ tables.
 
 # Current state — v7.41
 
-The kernel boots into a graphical desktop at **1280×720, 24bpp** via a
+The kernel boots into a graphical desktop at **1920×1080, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
 on boot. Right-clicking the desktop opens a context menu to launch additional
 apps, and the shell also exposes desktop icons plus a start menu/taskbar flow,
-global keyboard shortcuts, a `Ctrl+Space` launcher/search palette, a task
+global keyboard shortcuts, `Ctrl+Space` Start-menu search, a task
 switcher overlay, edge/keyboard window snapping, taskbar previews/actions,
 boot-splash-style GUI login/lock screen with first-run setup, session restore,
 Accounts settings, File Manager
@@ -224,11 +224,11 @@ built-in trust roots, and SAN-first hostname validation coverage.
 
 | Subsystem | Details |
 | :-------- | :------ |
-| **Framebuffer** | `bootloader 0.11` linear framebuffer at ≥1280×720. 3bpp and 4bpp both handled. Shadow-buffer compositor with dirty row-span blits, adaptive 36/144 Hz frame pacing, and a hardware cursor overlay fast path that restores/draws only cursor rectangles for mouse-only motion. No tearing. |
+| **Framebuffer** | `bootloader 0.11` linear framebuffer at 1920×1080 on the normal QEMU `-vga std` BIOS/VBE path. 3bpp and 4bpp both handled. Shadow-buffer compositor with dirty row-span blits, adaptive 36/144 Hz frame pacing, and a hardware cursor overlay fast path that restores/draws only cursor rectangles for mouse-only motion. No tearing. |
 | **PS/2 mouse** | Full hardware init (CCB, 0xF6/0xF4), 9-bit signed X/Y deltas, IRQ12 packet collection via atomics. |
 | **Window manager** | Z-ordered windows, focus-on-click, title-bar drag, edge snapping, keyboard snapping, task switcher overlay, minimise/maximise/restore, resize grip, close button, taskbar previews/right-click actions, per-window pixel back-buffer. |
-| **Desktop shell** | Wallpaper, desktop icons, right-click context menu, start menu, taskbar window buttons, configurable shortcuts, launcher/search palette, login/lock greeter, Accounts settings, notification center, File Manager drag/drop/open-with routing, shared clipboard plumbing, userspace app lifecycle tracking with System Monitor controls, persistent settings, session restore, clock, and adaptive compositor smoothness telemetry. |
-| **Heap** | `LockedHeap` allocator — `String`, `Vec`, `Box` all work. 32 MiB heap to accommodate large shadow and window buffers, with high-water snapshots, low/critical pressure states, allocation admission reserves, and memory-pressure diagnostics. |
+| **Desktop shell** | Wallpaper, desktop icons, right-click context menu, searchable start menu, taskbar window buttons, configurable shortcuts, login/lock greeter, Accounts settings, notification center, File Manager drag/drop/open-with routing, shared clipboard plumbing, userspace app lifecycle tracking with System Monitor controls, persistent settings, session restore, clock, and adaptive compositor smoothness telemetry. |
+| **Heap** | `LockedHeap` allocator — `String`, `Vec`, `Box` all work. 96 MiB heap to accommodate 1080p shadow and window buffers, with high-water snapshots, low/critical pressure states, allocation admission reserves, and memory-pressure diagnostics. |
 | **Paging / VMM** | 4-level `OffsetPageTable` + global `BootInfoFrameAllocator`. Per-process PML4 cloned from kernel upper half; private user-space mappings in lower half. `vmm::` module exposes `new_process_pml4`, `map_page_in`, `map_region`, `map_file_frame_in`, `protect_region`, and `switch_to`, with resource stats distinguishing anonymous owned pages from file-backed pages. |
 | **IDT** | Breakpoint, Double Fault, Page Fault with user-task termination/crashdump handling for invalid ring-3 accesses, General Protection Fault, Invalid Opcode, Timer (IRQ0), Keyboard (IRQ1), Mouse (IRQ12). |
 | **Scheduler** | Preemptive round-robin at 288 Hz. Each task carries `pml4: Option<PhysFrame>` plus `uid`, `gid`, capability credentials, current working directory, process group, controlling TTY, pending signal state, thread-group id, optional user-stack slot, per-thread FS/TLS base, and a private 64 KiB kernel stack. The scheduler switches CR3 when needed, reloads the current task's TLS base, and updates TSS RSP0 to the selected task's stack so ring-3 IRQ frames never share one global stack. Task lifecycle now distinguishes ready/running/blocked/stopped/exited/reaped states, records parents and exit codes, supports blocking `waitpid`/reaping, supports same-address-space userspace threads without freeing a shared PML4 until the last sibling is reaped, supports kernel-side task termination and OOM reclaim of the largest non-current user task, and backs blocking pipe/TTY/futex waits with `block_current` / `unblock(id)`. |
@@ -255,25 +255,25 @@ built-in trust roots, and SAN-first hostname validation coverage.
 
 | App | How to open | Description |
 | :-- | :---------- | :---------- |
-| **Terminal** | Launcher / right-click | Interactive shell. Type commands, press Enter. |
+| **Terminal** | Start search / right-click | Interactive shell. Type commands, press Enter. |
 | **System Monitor** | Right-click | Live CPU vendor, heap usage and pressure state, uptime, service health, scheduler counts, USB/input status, and userspace app lifecycle controls for close, kill, and app path. |
 | **Text Viewer** | Right-click | Scrollable "About" doc; `j`/`k` to scroll. |
 | **Color Picker** | Right-click | Clickable 16-colour EGA palette grid. |
 | **File Manager** | Right-click / desktop icon | Browse and mutate the CoolFS root with breadcrumbs, recursive search, sorting, multi-select, clipboard copy/cut/paste, Trash-backed delete, properties, inline text editing, Open With Editor/Viewer, and ELF launch routing. |
-| **Web Browser** | Launcher / desktop icon | Native HTTP/HTTPS/local-file browser with address/search bar, redirects, decoded chunked responses, headings/lists/quotes/tables, CSS2-style cascade, box-model, positioning, float, z-index, table/list, parser-repair, external stylesheet/script loading, inline-image cache, subresource metadata hints, a bounded JavaScript/DOM runtime for text/class/value/checked mutations plus event handlers/timers, web-app APIs for storage, cookies, location/history, attributes/styles/classes, and same-origin fetch callbacks, robust raw script/style/head suppression, main-resource content-type routing, a Google/Search compatibility shell, styled text blocks, direct and HTML-sourced inline PNG previews, image metadata/placeholders for JPEG/GIF/WebP, clickable links/forms, session history, visible TLS trust-root status, persistent bookmarks, persistent cookies/storage, `browser://session`, `browser://cache`, `browser://js`, `browser://storage`, `browser://compat`, and `browser://engine`. |
-| **Accounts** | Launcher / Display Settings Users tab | Admin account management for first-run setup, account creation, role changes, enable/disable, password reset, and deletion. |
-| **Trash Bin** | Launcher / desktop icon / `exec /bin/trash` | Ring-3 GUI utility that lists deleted items staged in `/Trash` and can permanently empty them. |
-| **Screenshot** | Launcher / desktop icon / `exec /bin/screenshot` | Ring-3 GUI utility that queues a focused-window PPM capture to `/Pictures`. |
-| **Process Demo** | Launcher / `exec /bin/procdemo` | Ring-3 process-control proof for spawn, process groups, USR1, STOP/CONT, group TERM, and `waitpid`. |
-| **Notes** | Launcher / desktop icon / `exec /bin/notes [path]` | Ring-3 scratchpad backed by `/documents/notes.txt` by default, with New, Open, Save, and Save As document flow. |
-| **Text Editor** | Launcher / desktop icon / `exec /bin/editor [path]` | Ring-3 text editor backed by `/documents/editor.txt` by default, or any absolute file path passed as argv, with New, Open, Save, Save As, and cursor controls. |
-| **GUI Demo** | Launcher / `exec /bin/guidemo` | First ring-3 windowed app. It opens a compositor window, presents its own pixel buffer, and polls keyboard/mouse/close events through `libcool::gui`. |
+| **Web Browser** | Start search / desktop icon | Native HTTP/HTTPS/local-file browser with address/search bar, redirects, decoded chunked responses, headings/lists/quotes/tables, CSS2-style cascade, box-model, positioning, float, z-index, table/list, parser-repair, external stylesheet/script loading, inline-image cache, subresource metadata hints, a bounded JavaScript/DOM runtime for text/class/value/checked mutations plus event handlers/timers, web-app APIs for storage, cookies, location/history, attributes/styles/classes, and same-origin fetch callbacks, robust raw script/style/head suppression, main-resource content-type routing, a Google/Search compatibility shell, styled text blocks, direct and HTML-sourced inline PNG previews, image metadata/placeholders for JPEG/GIF/WebP, clickable links/forms, session history, visible TLS trust-root status, persistent bookmarks, persistent cookies/storage, `browser://session`, `browser://cache`, `browser://js`, `browser://storage`, `browser://compat`, and `browser://engine`. |
+| **Accounts** | Start search / Display Settings Users tab | Admin account management for first-run setup, account creation, role changes, enable/disable, password reset, and deletion. |
+| **Trash Bin** | Start search / desktop icon / `exec /bin/trash` | Ring-3 GUI utility that lists deleted items staged in `/Trash` and can permanently empty them. |
+| **Screenshot** | Start search / desktop icon / `exec /bin/screenshot` | Ring-3 GUI utility that queues a focused-window PPM capture to `/Pictures`. |
+| **Process Demo** | Start search / `exec /bin/procdemo` | Ring-3 process-control proof for spawn, process groups, USR1, STOP/CONT, group TERM, and `waitpid`. |
+| **Notes** | Start search / desktop icon / `exec /bin/notes [path]` | Ring-3 scratchpad backed by `/documents/notes.txt` by default, with New, Open, Save, and Save As document flow. |
+| **Text Editor** | Start search / desktop icon / `exec /bin/editor [path]` | Ring-3 text editor backed by `/documents/editor.txt` by default, or any absolute file path passed as argv, with New, Open, Save, Save As, and cursor controls. |
+| **GUI Demo** | Start search / `exec /bin/guidemo` | First ring-3 windowed app. It opens a compositor window, presents its own pixel buffer, and polls keyboard/mouse/close events through `libcool::gui`. |
 
 ### Desktop shortcuts
 
 | Shortcut | Action |
 | :------- | :----- |
-| **Ctrl+Space** | Open launcher/search palette for apps, paths, and commands. |
+| **Ctrl+Space** | Open Start-menu search for apps and files. |
 | **Ctrl+Alt+M** | Toggle notification center. |
 | **Alt+Tab** | Cycle focus to the previous visible window. |
 | **Alt+F4** | Close the focused window. |
@@ -378,8 +378,15 @@ brew install qemu
 make run
 ```
 
-For the smoothest QEMU pointer path, use the phase 46 tablet-input and
-adaptive-refresh profile:
+Interactive QEMU windows use Cocoa `zoom-to-fit` by default so the true
+1920×1080 guest framebuffer fits below the macOS menu/title bars. They also use
+QEMU USB tablet input by default for smoother absolute pointer tracking.
+Override with `QEMU_POINTER=mouse make run` to test the relative USB mouse path,
+`QEMU_DISPLAY=cocoa make run` for 1:1 pixels, or
+`QEMU_DISPLAY=cocoa,full-screen=on make run` for fullscreen.
+
+The phase 46 profile uses the same smooth tablet pointer path with the
+adaptive-refresh defaults:
 
 ```bash
 make run-smooth
@@ -395,8 +402,8 @@ The build process compiles the kernel ELF, compiles the userspace ELF binaries
 in `userspace/hello/`, wraps the kernel into a BIOS-bootable `bios.img`, and
 builds `fs.img` with the userspace binaries embedded into the native CoolFS `/bin`.
 
-Click inside the QEMU window to capture mouse input. Press **Ctrl+Alt+G** to
-release it.
+If using `QEMU_POINTER=mouse`, click inside the QEMU window to capture mouse
+input. Press **Ctrl+Alt+G** to release it.
 
 ---
 
@@ -426,7 +433,7 @@ src/
                    mark_all_user_accessible
   vmm.rs           Virtual Memory Manager — global frame alloc, new_process_pml4,
                    map_page_in, map_region, switch_to, switch_to_boot, alloc_zeroed_frame
-  allocator.rs     Heap allocator (linked_list_allocator, 32 MiB)
+  allocator.rs     Heap allocator (linked_list_allocator, 96 MiB)
   scheduler.rs     Preemptive scheduler — Task (with pml4 field), Scheduler,
                    SCHEDULER global, timer_schedule, spawn_with_pml4, cwd,
                    waitpid/reap, STOP/CONT, process groups, controlling TTYs,
@@ -543,7 +550,7 @@ borrow checker enforces ownership of hardware resources at compile time.
 (bootloader 0.9.x + `cargo bootimage`) shipped a fixed 320×200 VGA framebuffer.
 Phase 6 replaced it with a host-side `disk-image` crate that calls
 `BiosBoot::new(&kernel).set_boot_config(&cfg).create_disk_image(...)`,
-requesting ≥1280×720. The bootloader negotiates a VBE mode with QEMU's SeaBIOS
+requesting 1920×1080. The bootloader negotiates a VBE mode with QEMU's SeaBIOS
 and hands the kernel a `FrameBufferInfo` struct at boot time.
 
 **3bpp vs 4bpp.** QEMU's standard VGA (`-vga std`) delivers a 24bpp (3
@@ -745,16 +752,19 @@ passive frame tick instead of forcing a full repaint every interrupt; normal
 events still request explicit full repaint. Mouse packets distinguish plain
 motion from button/scroll/drag work, so simple cursor movement can restore the
 old cursor rectangle from the clean shadow scene and draw the new cursor
-directly to the hardware framebuffer without recomposing windows. The idle loop
-polls USB input before service/deferred/network maintenance and limits deferred
-work to a smaller budget so input-to-pixel latency wins. `compositor` and
-`smoothness` show full-frame count, cursor-fast count, passive frame cadence,
-damage rows/pixels, and cursor overlay pixel counts.
+directly to the hardware framebuffer without recomposing windows or boosting
+full-frame pacing. The idle loop polls USB input before service/deferred/network
+maintenance and limits deferred work to a smaller budget so input-to-pixel
+latency wins. `compositor` and `smoothness` show full-frame count,
+cursor-fast count, passive frame cadence, damage rows/pixels, cursor overlay
+pixel counts, and the active USB pointer kind.
 
 **Adaptive high refresh (Phase 46).** The desktop keeps the Phase 45 idle cadence
-at 36 Hz, but real input and explicit repaint work extend a 750 ms active boost
-window that paces full frames at 144 Hz. Explicit repaints mark the pacing clock
-so the compositor avoids immediate duplicate passive frames after an input-driven
+at 36 Hz, but clicks, drags, scrolls, app updates, and other explicit repaint
+work extend a 750 ms active boost window that paces full frames at 144 Hz. Pure
+cursor movement stays on the cursor-overlay path so a 1920×1080 desktop does not
+pay for unnecessary full recomposes. Explicit repaints mark the pacing clock so
+the compositor avoids immediate duplicate passive frames after an input-driven
 frame. Delayed startup commands are checked on due ticks instead of forcing a
 full compose every idle loop. `compositor`/`smoothness` now reports pacing mode,
 target/idle/active Hz, remaining boost time, target frame-budget ticks, and
@@ -919,7 +929,7 @@ while kernel faults still panic.
 | 3 | Window manager — draggable windows, focus, close | **Done** |
 | 4 | Desktop shell — taskbar, context menu, terminal app | **Done** |
 | 5 | Applications — system monitor, text viewer, color picker | **Done** |
-| 6 | High-resolution framebuffer via `bootloader 0.11` (1280×720) | **Done** |
+| 6 | High-resolution framebuffer via `bootloader 0.11` (1920×1080) | **Done** |
 | 7 | Input lag fixes — lock-free keyboard queue, scratch-buffer blit, release build | **Done** |
 | 8 | Preemptive scheduler + context switching (288 Hz PIT) | **Done** |
 | 9 | Ring-3 userspace + SYSCALL/SYSRET interface | **Done** |

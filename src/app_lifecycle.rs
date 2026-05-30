@@ -453,7 +453,11 @@ pub fn geometry_for(app: &str) -> Option<AppGeometry> {
 
 pub fn set_pinned(apps: Vec<String>) {
     ensure_loaded();
-    STATE.lock().pinned_apps = apps;
+    let mut pinned = apps;
+    if pinned.len() > MAX_PINNED {
+        pinned.truncate(MAX_PINNED);
+    }
+    STATE.lock().pinned_apps = pinned;
     let _ = save_to_disk();
 }
 

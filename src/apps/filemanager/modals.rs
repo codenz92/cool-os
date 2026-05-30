@@ -1,4 +1,4 @@
-use super::drawing::{blend, fmt_push_u};
+use super::drawing::fmt_push_u;
 use super::*;
 
 impl FileManagerApp {
@@ -73,9 +73,7 @@ impl FileManagerApp {
             NameDialogMode::Rename(_) => "Rename Item",
         };
 
-        self.fill_rect(rect.x, rect.y, rect.w, rect.h, FM_PANEL_ALT);
-        self.draw_rect_border(rect.x, rect.y, rect.w, rect.h, FM_BORDER);
-        self.fill_rect(rect.x, rect.y, rect.w, 3, FM_SELECTION_GLOW);
+        self.draw_glass_surface(rect, FM_PANEL_ALT, FM_BORDER, Some(FM_ACCENT));
         self.put_str(
             (rect.x + 14) as usize,
             (rect.y + 12) as usize,
@@ -89,8 +87,7 @@ impl FileManagerApp {
             FM_TEXT_MUTED,
         );
 
-        self.fill_rect(input.x, input.y, input.w, input.h, FM_SEARCH);
-        self.draw_rect_border(input.x, input.y, input.w, input.h, FM_BORDER_SOFT);
+        self.draw_field_surface(input, true);
         let max_chars = ((input.w - 16).max(8) as usize) / CW;
         self.put_str(
             (input.x + 8) as usize,
@@ -108,7 +105,7 @@ impl FileManagerApp {
                 (rect.x + 14) as usize,
                 (rect.y + 76) as usize,
                 &Self::clip_text(error, ((rect.w - 28).max(0) as usize) / CW),
-                blend(FM_ACCENT, WHITE, 72),
+                FM_DANGER,
             );
         }
 
@@ -126,9 +123,7 @@ impl FileManagerApp {
         let (cursor_line, cursor_col) = Self::text_cursor_line_col(&state.text, state.cursor);
         let lines = Self::text_lines(&state.text);
 
-        self.fill_rect(rect.x, rect.y, rect.w, rect.h, FM_PANEL_ALT);
-        self.draw_rect_border(rect.x, rect.y, rect.w, rect.h, FM_BORDER);
-        self.fill_rect(rect.x, rect.y, rect.w, 3, FM_SELECTION_GLOW);
+        self.draw_glass_surface(rect, FM_PANEL_ALT, FM_BORDER, Some(FM_ACCENT));
         self.put_str(
             (rect.x + 14) as usize,
             (rect.y + 12) as usize,
@@ -142,20 +137,7 @@ impl FileManagerApp {
             FM_TEXT_MUTED,
         );
 
-        self.fill_rect(
-            text_rect.x,
-            text_rect.y,
-            text_rect.w,
-            text_rect.h,
-            FM_SEARCH,
-        );
-        self.draw_rect_border(
-            text_rect.x,
-            text_rect.y,
-            text_rect.w,
-            text_rect.h,
-            FM_BORDER_SOFT,
-        );
+        self.draw_field_surface(text_rect, true);
         let max_chars = ((text_rect.w - 18).max(8) as usize) / CW;
         for screen_line in 0..visible_lines {
             let doc_line = state.scroll_line + screen_line;
@@ -180,7 +162,7 @@ impl FileManagerApp {
                 (rect.x + 14) as usize,
                 (rect.y + rect.h - 52) as usize,
                 &Self::clip_text(error, ((rect.w - 28).max(0) as usize) / CW),
-                blend(FM_ACCENT, WHITE, 72),
+                FM_DANGER,
             );
         }
 
@@ -194,9 +176,7 @@ impl FileManagerApp {
         let confirm = self.confirm_button_rect(rect);
         let cancel = self.confirm_cancel_button_rect(rect);
 
-        self.fill_rect(rect.x, rect.y, rect.w, rect.h, FM_PANEL_ALT);
-        self.draw_rect_border(rect.x, rect.y, rect.w, rect.h, FM_BORDER);
-        self.fill_rect(rect.x, rect.y, rect.w, 3, FM_SELECTION_GLOW);
+        self.draw_glass_surface(rect, FM_PANEL_ALT, FM_BORDER, Some(FM_WARNING));
         self.put_str(
             (rect.x + 14) as usize,
             (rect.y + 14) as usize,
@@ -227,9 +207,7 @@ impl FileManagerApp {
     pub(super) fn draw_conflict_dialog(&mut self, state: &ConflictDialogState) {
         let layout = self.layout();
         let rect = Self::centered_rect(layout, CONFLICT_W, CONFLICT_H);
-        self.fill_rect(rect.x, rect.y, rect.w, rect.h, FM_PANEL_ALT);
-        self.draw_rect_border(rect.x, rect.y, rect.w, rect.h, FM_BORDER);
-        self.fill_rect(rect.x, rect.y, rect.w, 3, FM_SELECTION_GLOW);
+        self.draw_glass_surface(rect, FM_PANEL_ALT, FM_BORDER, Some(FM_WARNING));
         self.put_str(
             (rect.x + 14) as usize,
             (rect.y + 14) as usize,
@@ -265,9 +243,7 @@ impl FileManagerApp {
         let rect = Self::centered_rect(layout, PROPERTIES_W, PROPERTIES_H);
         let close = self.properties_close_button_rect(rect);
 
-        self.fill_rect(rect.x, rect.y, rect.w, rect.h, FM_PANEL_ALT);
-        self.draw_rect_border(rect.x, rect.y, rect.w, rect.h, FM_BORDER);
-        self.fill_rect(rect.x, rect.y, rect.w, 3, FM_SELECTION_GLOW);
+        self.draw_glass_surface(rect, FM_PANEL_ALT, FM_BORDER, Some(FM_ACCENT_SOFT));
         self.put_str(
             (rect.x + 14) as usize,
             (rect.y + 12) as usize,
@@ -336,8 +312,7 @@ impl FileManagerApp {
     }
 
     pub(super) fn draw_dialog_button(&mut self, rect: Rect, label: &str) {
-        self.fill_rect(rect.x, rect.y, rect.w, rect.h, FM_PANEL);
-        self.draw_rect_border(rect.x, rect.y, rect.w, rect.h, FM_BORDER);
+        self.draw_control_surface(rect, false, true);
         let label_x = rect.x + ((rect.w - label.len() as i32 * CW as i32) / 2).max(6);
         self.put_str(label_x as usize, (rect.y + 7) as usize, label, FM_TEXT);
     }

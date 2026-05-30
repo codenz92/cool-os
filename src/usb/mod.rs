@@ -31,6 +31,10 @@ pub fn input_presence() -> (bool, bool) {
     xhci::runtime_input_presence()
 }
 
+pub fn pointer_kind() -> &'static str {
+    xhci::runtime_pointer_kind()
+}
+
 pub fn reconcile_input_fallbacks() {
     let current = input_presence();
     let mut last = LAST_INPUT_PRESENCE.lock();

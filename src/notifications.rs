@@ -16,6 +16,7 @@ pub struct Notification {
     pub body: String,
     pub unread: bool,
     pub dismissed: bool,
+    pub show_toast: bool,
     pub action: Option<String>,
 }
 
@@ -23,14 +24,14 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 static NOTIFICATIONS: Mutex<Vec<Notification>> = Mutex::new(Vec::new());
 
 pub fn push(title: &str, body: &str) {
-    push_inner(title, body, true);
+    push_inner(title, body, true, true);
 }
 
 pub fn push_transient(title: &str, body: &str) {
-    push_inner(title, body, false);
+    push_inner(title, body, false, should_toast_transient(title));
 }
 
-fn push_inner(title: &str, body: &str, persist: bool) {
+fn push_inner(title: &str, body: &str, persist: bool, show_toast: bool) {
     let notification = Notification {
         id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
         tick: crate::interrupts::ticks(),
@@ -38,6 +39,7 @@ fn push_inner(title: &str, body: &str, persist: bool) {
         body: String::from(body),
         unread: true,
         dismissed: false,
+        show_toast,
         action: None,
     };
 
@@ -53,6 +55,19 @@ fn push_inner(title: &str, body: &str, persist: bool) {
     crate::wm::request_repaint();
 }
 
+fn should_toast_transient(title: &str) -> bool {
+    matches!(
+        title,
+        "App crashed"
+            | "Task faulted"
+            | "Task killed"
+            | "App killed"
+            | "Kill failed"
+            | "Restart failed"
+            | "Screenshot failed"
+    )
+}
+
 #[allow(dead_code)]
 pub fn list() -> Vec<Notification> {
     NOTIFICATIONS.lock().clone()
@@ -66,6 +81,21 @@ pub fn latest(limit: usize) -> Vec<Notification> {
         .filter(|notification| !notification.dismissed)
         .cloned()
         .collect()
+}
+
+pub fn latest_toasts(limit: usize) -> Vec<Notification> {
+    let notifications = NOTIFICATIONS.lock();
+    let mut out = Vec::new();
+    for notification in notifications.iter().rev() {
+        if notification.show_toast && !notification.dismissed {
+            out.push(notification.clone());
+            if out.len() == limit {
+                break;
+            }
+        }
+    }
+    out.reverse();
+    out
 }
 
 pub fn unread_count() -> usize {

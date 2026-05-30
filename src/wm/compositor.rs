@@ -1,7 +1,7 @@
 /// Window compositor — desktop, windows, taskbar, cursor, context menu.
 /// All rendering targets a `Vec<u32>` shadow buffer; one blit per frame.
 ///
-/// Visual theme: Retro-Futuristic CRT Phosphor Blue
+/// Visual theme: modern dark glass desktop
 extern crate alloc;
 use alloc::{boxed::Box, format, string::String, vec::Vec};
 use core::{
@@ -18,6 +18,24 @@ use crate::desktop_settings::{self, DesktopSortMode, WallpaperPreset};
 use crate::framebuffer::{BLACK, WHITE};
 use crate::keyboard::{Key, KeyInput};
 use crate::wm::window::{Window, TITLE_H};
+
+mod desktop;
+mod dialogs;
+mod greeter;
+mod icons;
+mod notifications;
+mod primitives;
+mod start_menu;
+mod taskbar;
+
+use self::desktop::*;
+use self::dialogs::*;
+use self::greeter::*;
+use self::icons::*;
+use self::notifications::*;
+use self::primitives::*;
+use self::start_menu::*;
+use self::taskbar::*;
 
 // ── Layout constants ──────────────────────────────────────────────────────────
 
@@ -44,13 +62,21 @@ const TASKBAR_MENU_W: i32 = 152;
 const TASKBAR_MENU_ROW_H: i32 = 24;
 const TASKBAR_MENU_H: i32 = TASKBAR_MENU_ROW_H * 3 + 10;
 const START_MENU_SECTION_H: i32 = 11;
+const START_MENU_WIN7_W: i32 = 440;
+const START_MENU_WIN7_H: i32 = 468;
+const START_MENU_WIN7_MIN_W: i32 = 360;
+const START_MENU_WIN7_MIN_H: i32 = 340;
+const START_MENU_WIN7_RIGHT_W: i32 = 180;
+const START_MENU_WIN7_BOTTOM_H: i32 = 46;
+const START_MENU_WIN7_ROW_H: i32 = 32;
+const START_MENU_WIN7_LINK_H: i32 = 34;
 const START_POWER_MENU_W: i32 = 136;
 const START_POWER_MENU_ROW_H: i32 = 24;
 const START_POWER_MENU_PAD: i32 = 4;
-const GREETER_PANEL_W: i32 = 576;
-const GREETER_PANEL_H: i32 = 430;
-const GREETER_FIELD_H: i32 = 28;
-const GREETER_USER_ROW_H: i32 = 22;
+const GREETER_PANEL_W: i32 = 460;
+const GREETER_PANEL_H: i32 = 420;
+const GREETER_FIELD_H: i32 = 30;
+const GREETER_USER_ROW_H: i32 = 28;
 
 static COMPOSITOR_FPS: AtomicU64 = AtomicU64::new(0);
 static COMPOSITOR_FRAME_TICKS_LAST: AtomicU64 = AtomicU64::new(0);
@@ -97,6 +123,7 @@ pub fn compositor_stats() -> CompositorStats {
 
 pub fn compositor_lines() -> Vec<String> {
     let stats = compositor_stats();
+    let (usb_keyboard, usb_pointer) = crate::usb::input_presence();
     alloc::vec![
         format!("fps={} frames={}", stats.fps, stats.frames),
         format!(
@@ -131,59 +158,60 @@ pub fn compositor_lines() -> Vec<String> {
             "cursor_mode=overlay cursor_pixels_last={}",
             stats.cursor_pixels_last
         ),
+        format!(
+            "input usb_keyboard={} usb_pointer={} pointer_kind={}",
+            usb_keyboard,
+            usb_pointer,
+            crate::usb::pointer_kind()
+        ),
     ]
 }
 
-// ── Colors — Retro-Futuristic CRT Phosphor Blue ───────────────────────────────
+// ── Colors — modern dark glass desktop ────────────────────────────────────────
 
 // Taskbar / shell
-// Accent (CRT phosphor blue)
-const ACCENT: u32 = 0x00_00_BB_FF; // #00BBFF  bright phosphor blue (boosted)
-const ACCENT_HOV: u32 = 0x00_44_CC_FF; // #44CCFF  lit hover (richer)
+const ACCENT: u32 = 0x00_2B_C8_E8;
+const ACCENT_HOV: u32 = 0x00_7D_E7_F7;
 
-// Window chrome (CRT dark mode)
-const WIN_BAR_F: u32 = 0x00_00_12_2E; // #00122E  focused title bar — richer navy
-const WIN_BAR_U: u32 = 0x00_00_07_14; // #000714  unfocused — near-black
-const WIN_CONTENT: u32 = 0x00_00_09_1C; // #00091C  window body
-const WIN_BDR_F: u32 = 0x00_00_BB_FF; // #00BBFF  focused border — full phosphor glow
-const WIN_BDR_U: u32 = 0x00_00_33_66; // #003366  unfocused — dim blue
+// Window chrome
+const WIN_BAR_F: u32 = 0x00_13_1A_25;
+const WIN_BAR_U: u32 = 0x00_0B_10_18;
+const WIN_CONTENT: u32 = 0x00_0E_14_1E;
+const WIN_BDR_F: u32 = 0x00_35_B8_D8;
+const WIN_BDR_U: u32 = 0x00_2A_36_46;
 
 // Window caption buttons
-const CAP_NORMAL: u32 = 0x00_00_12_2E; // same as title bar
-const CAP_HOV: u32 = 0x00_00_26_4E; // slightly lighter navy
-const CLOSE_REST: u32 = 0x00_00_12_2E; // close resting
-const CLOSE_HOV: u32 = 0x00_CC_11_11; // #CC1111  red-CRT close (deeper red)
+const CAP_NORMAL: u32 = 0x00_13_1A_25;
+const CAP_HOV: u32 = 0x00_21_2D_3A;
+const CLOSE_REST: u32 = 0x00_13_1A_25;
+const CLOSE_HOV: u32 = 0x00_D9_4A_4A;
 
 /// Sentinel stored in window content buffers to mean "render the window background here".
 /// Apps that genuinely need to paint pure black should write `0x00_00_00_01` instead
 /// (visually identical, but not intercepted by the compositor blit).
 const WIN_TRANSPARENT: u32 = 0x00_00_00_00;
 
-// Desktop wallpaper — deep space phosphor
-const DESK_TL: u32 = 0x00_00_02_08; // top-left  pitch black with blue ghost
-const DESK_TR: u32 = 0x00_00_03_0C; // top-right
-const DESK_BL: u32 = 0x00_00_01_06; // bottom-left
-const DESK_BR: u32 = 0x00_00_02_0A; // bottom-right
-                                    // CRT phosphor glow toward screen centre
-const BLOOM_1: u32 = 0x00_00_55_CC; // primary phosphor blue bloom (richer)
+// Desktop wallpaper
+const DESK_TL: u32 = 0x00_0B_10_1A;
+const DESK_TR: u32 = 0x00_17_18_25;
+const DESK_BL: u32 = 0x00_05_17_18;
+const DESK_BR: u32 = 0x00_1A_12_1F;
+const BLOOM_1: u32 = 0x00_2A_A7_A4;
 
 // Splash/greeter
-const GREETER_BG_TOP: u32 = 0x00_02_04_10;
-const GREETER_BG_BOTTOM: u32 = 0x00_00_01_06;
-const GREETER_PANEL_BG: u32 = 0x00_02_08_16;
-const GREETER_PANEL_EDGE_DIM: u32 = 0x00_00_3E_70;
-const GREETER_TITLE: u32 = 0x00_EE_FB_FF;
-const GREETER_FIELD_BG: u32 = 0x00_00_05_10;
+const GREETER_BG_TOP: u32 = 0x00_0E_13_1F;
+const GREETER_BG_BOTTOM: u32 = 0x00_05_0B_12;
+const GREETER_BLOOM: u32 = 0x00_2A_A7_A4;
+const GREETER_PANEL_BG: u32 = 0x00_0D_15_21;
+const GREETER_PANEL_BG_2: u32 = 0x00_09_10_1A;
+const GREETER_TITLE: u32 = 0x00_EB_F4_F8;
+const GREETER_FIELD_BG: u32 = 0x00_08_0E_16;
 
-// Desktop icons — CRT phosphor colour set
-const ICON_TERM_BG: u32 = 0x00_00_16_08; // terminal — dark green-black
-const ICON_TERM_ACC: u32 = 0x00_00_FF_88; // #00FF88  phosphor green
-const ICON_MON_BG: u32 = 0x00_00_0E_1E; // monitor — deep blue-black
-const ICON_MON_ACC: u32 = 0x00_00_EE_FF; // #00EEFF  cyan phosphor
-const ICON_TXT_BG: u32 = 0x00_00_0A_22; // text — navy
-const ICON_TXT_ACC: u32 = 0x00_00_99_FF; // #0099FF  blue phosphor
-const ICON_COL_BG: u32 = 0x00_10_00_1E; // colour — dark purple-black
-const ICON_COL_ACC: u32 = 0x00_AA_44_FF; // #AA44FF  violet phosphor
+// Desktop icons
+const ICON_TERM_ACC: u32 = 0x00_4C_DD_A1;
+const ICON_MON_ACC: u32 = 0x00_54_C7_EB;
+const ICON_TXT_ACC: u32 = 0x00_7C_A7_F8;
+const ICON_COL_ACC: u32 = 0x00_C0_85_F5;
 
 // ── Cursor ────────────────────────────────────────────────────────────────────
 
@@ -251,317 +279,6 @@ const CURSOR_RESIZE_OUTLINE: [u16; CURSOR_H] = [
     0b0001111000110000,
 ];
 
-// ── Context menu ──────────────────────────────────────────────────────────────
-
-const CTX_W: i32 = 212;
-const CTX_SUB_W: i32 = 196;
-const CTX_ITEM_H: i32 = 26;
-const CTX_SEP_H: i32 = 8;
-const CTX_HEADER_H: i32 = 0;
-const CTX_PAD: i32 = 4;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum DesktopContextCommand {
-    ToggleDesktopIcons,
-    ToggleCompactSpacing,
-    SortByName,
-    SortByType,
-    Refresh,
-    CreateFolder,
-    CreateTextDocument,
-    DisplaySettings,
-    Personalize,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum DesktopContextSubmenu {
-    View,
-    SortBy,
-    New,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ContextEntryKind {
-    Action(DesktopContextCommand),
-    Submenu(DesktopContextSubmenu),
-    Separator,
-}
-
-#[derive(Clone, Copy)]
-struct ContextEntryDef {
-    label: &'static str,
-    kind: ContextEntryKind,
-    enabled: bool,
-}
-
-const DESKTOP_CONTEXT_MENU: &[ContextEntryDef] = &[
-    ContextEntryDef {
-        label: "View",
-        kind: ContextEntryKind::Submenu(DesktopContextSubmenu::View),
-        enabled: true,
-    },
-    ContextEntryDef {
-        label: "Sort by",
-        kind: ContextEntryKind::Submenu(DesktopContextSubmenu::SortBy),
-        enabled: true,
-    },
-    ContextEntryDef {
-        label: "Refresh",
-        kind: ContextEntryKind::Action(DesktopContextCommand::Refresh),
-        enabled: true,
-    },
-    ContextEntryDef {
-        label: "",
-        kind: ContextEntryKind::Separator,
-        enabled: false,
-    },
-    ContextEntryDef {
-        label: "Paste",
-        kind: ContextEntryKind::Action(DesktopContextCommand::Refresh),
-        enabled: false,
-    },
-    ContextEntryDef {
-        label: "Paste shortcut",
-        kind: ContextEntryKind::Action(DesktopContextCommand::Refresh),
-        enabled: false,
-    },
-    ContextEntryDef {
-        label: "",
-        kind: ContextEntryKind::Separator,
-        enabled: false,
-    },
-    ContextEntryDef {
-        label: "New",
-        kind: ContextEntryKind::Submenu(DesktopContextSubmenu::New),
-        enabled: true,
-    },
-    ContextEntryDef {
-        label: "",
-        kind: ContextEntryKind::Separator,
-        enabled: false,
-    },
-    ContextEntryDef {
-        label: "Display settings",
-        kind: ContextEntryKind::Action(DesktopContextCommand::DisplaySettings),
-        enabled: true,
-    },
-    ContextEntryDef {
-        label: "Personalize",
-        kind: ContextEntryKind::Action(DesktopContextCommand::Personalize),
-        enabled: true,
-    },
-];
-
-const CTX_VIEW_MENU: &[ContextEntryDef] = &[
-    ContextEntryDef {
-        label: "Show desktop icons",
-        kind: ContextEntryKind::Action(DesktopContextCommand::ToggleDesktopIcons),
-        enabled: true,
-    },
-    ContextEntryDef {
-        label: "Compact icon spacing",
-        kind: ContextEntryKind::Action(DesktopContextCommand::ToggleCompactSpacing),
-        enabled: true,
-    },
-];
-
-const CTX_SORT_MENU: &[ContextEntryDef] = &[
-    ContextEntryDef {
-        label: "Name",
-        kind: ContextEntryKind::Action(DesktopContextCommand::SortByName),
-        enabled: true,
-    },
-    ContextEntryDef {
-        label: "Type",
-        kind: ContextEntryKind::Action(DesktopContextCommand::SortByType),
-        enabled: true,
-    },
-];
-
-const CTX_NEW_MENU: &[ContextEntryDef] = &[
-    ContextEntryDef {
-        label: "Folder",
-        kind: ContextEntryKind::Action(DesktopContextCommand::CreateFolder),
-        enabled: true,
-    },
-    ContextEntryDef {
-        label: "Text Document",
-        kind: ContextEntryKind::Action(DesktopContextCommand::CreateTextDocument),
-        enabled: true,
-    },
-];
-
-struct ContextMenu {
-    x: i32,
-    y: i32,
-    submenu: Option<DesktopContextSubmenu>,
-}
-
-// ── Desktop icons ──────────────────────────────────────────────────────────────
-
-const ICON_SIZE: i32 = 52;
-const ICON_LABEL_H: i32 = 14;
-
-#[derive(Clone, Copy)]
-struct DesktopIconSpec {
-    label: &'static str,
-    app: &'static str,
-    type_rank: u8,
-}
-
-const DESKTOP_ICON_SPECS: [DesktopIconSpec; 9] = [
-    DesktopIconSpec {
-        label: "Terminal",
-        app: "Terminal",
-        type_rank: 2,
-    },
-    DesktopIconSpec {
-        label: "Monitor",
-        app: "System Mon",
-        type_rank: 1,
-    },
-    DesktopIconSpec {
-        label: "Files",
-        app: "File Manager",
-        type_rank: 0,
-    },
-    DesktopIconSpec {
-        label: "Viewer",
-        app: "Text Viewer",
-        type_rank: 3,
-    },
-    DesktopIconSpec {
-        label: "Browser",
-        app: "Web Browser",
-        type_rank: 1,
-    },
-    DesktopIconSpec {
-        label: "Colors",
-        app: "Color Pick",
-        type_rank: 4,
-    },
-    DesktopIconSpec {
-        label: "Notes",
-        app: "Notes",
-        type_rank: 3,
-    },
-    DesktopIconSpec {
-        label: "Shot",
-        app: "Screenshot",
-        type_rank: 4,
-    },
-    DesktopIconSpec {
-        label: "Trash",
-        app: "Trash Bin",
-        type_rank: 0,
-    },
-];
-
-struct DesktopIcon {
-    x: i32,
-    y: i32,
-    label: &'static str,
-    app: &'static str,
-}
-
-impl DesktopIcon {
-    fn hit(&self, px: i32, py: i32) -> bool {
-        px >= self.x
-            && px < self.x + ICON_SIZE
-            && py >= self.y
-            && py < self.y + ICON_SIZE + ICON_LABEL_H
-    }
-}
-
-fn canonical_app_title(name: &str) -> &str {
-    match name {
-        "Terminal" => "Terminal",
-        "System Mon" | "System Monitor" => "System Monitor",
-        "Diag" | "Diagnostics" => "Diagnostics",
-        "Text View" | "Text Viewer" => "Text Viewer",
-        "Editor" | "Text Edit" | "Text Editor" => "Text Editor",
-        "Note" | "Notes" => "Notes",
-        "Trash" | "Trash Bin" => "Trash Bin",
-        "Shot" | "Screenshot" => "Screenshot",
-        "Browser" | "Web" | "Web Browser" => "Web Browser",
-        "Color Pick" | "Color Picker" => "Color Picker",
-        "Display Settings" => "Display Settings",
-        "Account" | "Accounts" | "Users" => "Accounts",
-        "Personalize" => "Personalize",
-        "Crash Viewer" => "Crash Viewer",
-        "Log Viewer" => "Log Viewer",
-        "Boot Profiler" => "Boot Profiler",
-        "Welcome" => "Welcome",
-        "Gui Demo" | "GUI Demo" | "Userspace GUI" => "GUI Demo",
-        "Proc Demo" | "Process Demo" => "Process Demo",
-        "File Mgr" | "File Manager" => "File Manager",
-        _ => name,
-    }
-}
-
-fn window_accent(title: &str) -> u32 {
-    match canonical_app_title(title) {
-        "Terminal" => ICON_TERM_ACC,
-        "System Monitor" => ICON_MON_ACC,
-        "Diagnostics" => 0x00_55_FF_CC,
-        "Text Viewer" => ICON_TXT_ACC,
-        "Text Editor" => 0x00_88_FF_CC,
-        "Notes" => 0x00_FF_DD_66,
-        "Trash Bin" => 0x00_99_BB_CC,
-        "Screenshot" => 0x00_77_DD_FF,
-        "Web Browser" => 0x00_33_CC_99,
-        "Color Picker" => ICON_COL_ACC,
-        "Display Settings" => 0x00_66_CC_FF,
-        "Accounts" => 0x00_00_FF_AA,
-        "Personalize" => 0x00_CC_66_FF,
-        "Crash Viewer" => 0x00_FF_66_66,
-        "Log Viewer" => 0x00_55_FF_BB,
-        "Boot Profiler" => 0x00_FF_DD_55,
-        "Welcome" => 0x00_88_CC_FF,
-        "GUI Demo" => 0x00_88_FF_CC,
-        "Process Demo" => 0x00_FF_CC_66,
-        "File Manager" => 0x00_55_DD_FF,
-        _ => ACCENT,
-    }
-}
-
-fn window_glyph(title: &str) -> &'static str {
-    match canonical_app_title(title) {
-        "Terminal" => "T>",
-        "System Monitor" => "M#",
-        "Diagnostics" => "D!",
-        "Text Viewer" => "Tx",
-        "Text Editor" => "ED",
-        "Notes" => "NT",
-        "Trash Bin" => "TR",
-        "Screenshot" => "SS",
-        "Web Browser" => "WB",
-        "Color Picker" => "CP",
-        "Display Settings" => "DS",
-        "Accounts" => "U+",
-        "Personalize" => "P*",
-        "Crash Viewer" => "CV",
-        "Log Viewer" => "LV",
-        "Boot Profiler" => "BP",
-        "Welcome" => "W?",
-        "GUI Demo" => "UG",
-        "Process Demo" => "P3",
-        "File Manager" => "FM",
-        _ => "[]",
-    }
-}
-
-fn user_gui_window_title(title: &str) -> &'static str {
-    match title {
-        "editor" | "Editor" | "Text Edit" | "Text Editor" => "Text Editor",
-        "note" | "notes" | "Note" | "Notes" => "Notes",
-        "trash" | "Trash" | "Trash Bin" => "Trash Bin",
-        "shot" | "screenshot" | "Screenshot" => "Screenshot",
-        "guidemo" | "GUI Demo" | "Gui Demo" | "Userspace GUI" => "GUI Demo",
-        _ => "Userspace GUI",
-    }
-}
-
 fn month_abbrev(month: u8) -> &'static str {
     match month {
         1 => "JAN",
@@ -580,15 +297,50 @@ fn month_abbrev(month: u8) -> &'static str {
     }
 }
 
+#[allow(dead_code)]
 fn push_two_digits(out: &mut String, value: u8) {
     out.push((b'0' + (value / 10)) as char);
     out.push((b'0' + (value % 10)) as char);
 }
 
+#[allow(dead_code)]
 fn push_u16(out: &mut String, value: u16) {
     for &div in &[1000u16, 100, 10, 1] {
         out.push((b'0' + ((value / div) % 10) as u8) as char);
     }
+}
+
+fn push_u8_decimal(out: &mut String, value: u8) {
+    if value >= 10 {
+        out.push((b'0' + (value / 10)) as char);
+    }
+    out.push((b'0' + (value % 10)) as char);
+}
+
+fn taskbar_clock_lines(uptime_ticks: u64) -> (String, String) {
+    if let Some(datetime) = crate::rtc::read_datetime() {
+        let mut time = String::with_capacity(5);
+        push_two_digits(&mut time, datetime.hour);
+        time.push(':');
+        push_two_digits(&mut time, datetime.minute);
+
+        let mut date = String::with_capacity(10);
+        push_u8_decimal(&mut date, datetime.month);
+        date.push('/');
+        push_u8_decimal(&mut date, datetime.day);
+        date.push('/');
+        push_u16(&mut date, datetime.year);
+        return (time, date);
+    }
+
+    let secs = uptime_ticks / crate::interrupts::TIMER_HZ as u64;
+    let h = ((secs / 3600) % 24) as u8;
+    let m = ((secs / 60) % 60) as u8;
+    let mut time = String::with_capacity(5);
+    push_two_digits(&mut time, h);
+    time.push(':');
+    push_two_digits(&mut time, m);
+    (time, String::from("--/--/----"))
 }
 
 fn push_usize_bytes(out: &mut Vec<u8>, mut value: usize) {
@@ -617,6 +369,7 @@ fn merge_spans(a: (usize, usize), b: (usize, usize)) -> (usize, usize) {
     }
 }
 
+#[allow(dead_code)]
 fn start_menu_banner_clock(uptime_ticks: u64) -> (String, String) {
     if let Some(datetime) = crate::rtc::read_datetime() {
         let mut time = String::with_capacity(5);
@@ -643,29 +396,6 @@ fn start_menu_banner_clock(uptime_ticks: u64) -> (String, String) {
     push_two_digits(&mut time, m);
 
     (time, String::from("RTC offline"))
-}
-
-fn draw_snowflake_logo(
-    s: &mut [u32],
-    sw: usize,
-    x: i32,
-    y: i32,
-    scale: i32,
-    primary: u32,
-    secondary: u32,
-) {
-    for rect in crate::branding::SNOWFLAKE_LOGO_RECTS.iter() {
-        let color = if rect.highlight { secondary } else { primary };
-        s_fill(
-            s,
-            sw,
-            x + rect.x * scale,
-            y + rect.y * scale,
-            rect.w * scale,
-            rect.h * scale,
-            color,
-        );
-    }
 }
 
 // ── Drag state ────────────────────────────────────────────────────────────────
@@ -721,104 +451,6 @@ enum SnapTarget {
     BottomLeft,
     BottomRight,
 }
-
-struct LauncherState {
-    query: String,
-    selected: usize,
-}
-
-#[derive(Clone)]
-enum LauncherMatchKind {
-    App(String),
-    Path(String),
-    Command(String),
-    Inline(String),
-}
-
-#[derive(Clone, Copy)]
-enum LauncherAction {
-    Open,
-    RunAsAdmin,
-    OpenLocation,
-    Pin,
-    Uninstall,
-    Copy,
-}
-
-#[derive(Clone)]
-struct LauncherMatch {
-    label: String,
-    detail: String,
-    kind: LauncherMatchKind,
-    score: usize,
-}
-
-#[derive(Clone)]
-struct StartMenuEntry {
-    section: &'static str,
-    label: String,
-    detail: String,
-    kind: LauncherMatchKind,
-}
-
-#[derive(Clone, Copy)]
-struct StartMenuQuickAction {
-    label: &'static str,
-    glyph: &'static str,
-    action: &'static str,
-    accent: u32,
-}
-
-#[derive(Clone, Copy)]
-struct StartPowerAction {
-    label: &'static str,
-    glyph: &'static str,
-    action: &'static str,
-    accent: u32,
-}
-
-struct TaskbarMenu {
-    window: usize,
-    x: i32,
-    y: i32,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ShellDialogKind {
-    Error,
-    Crash,
-}
-
-#[derive(Clone)]
-struct ShellDialog {
-    title: String,
-    body: String,
-    kind: ShellDialogKind,
-    restart_target: Option<String>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum GreeterFocus {
-    User,
-    Password,
-}
-
-#[derive(Clone, Copy)]
-struct GreeterLayout {
-    panel_x: i32,
-    panel_y: i32,
-    panel_w: i32,
-    panel_h: i32,
-    user_x: i32,
-    user_y: i32,
-    field_w: i32,
-    pass_y: i32,
-    button_y: i32,
-    users_y: i32,
-    row_w: i32,
-}
-
-// ── AppWindow ─────────────────────────────────────────────────────────────────
 
 pub enum AppWindow {
     Terminal(TerminalApp),
@@ -1018,10 +650,10 @@ pub struct WindowManager {
     desktop_select_drag: Option<(i32, i32)>,
     start_menu_open: bool,
     start_power_menu_open: bool,
+    start_search: StartSearchState,
     start_menu_pinned: Vec<String>,
     start_menu_entries: Vec<StartMenuEntry>,
     notification_center_open: bool,
-    launcher: Option<LauncherState>,
     taskbar_menu: Option<TaskbarMenu>,
     dialog: Option<ShellDialog>,
     session_locked: bool,
@@ -1110,10 +742,15 @@ impl WindowManager {
             desktop_select_drag: None,
             start_menu_open: false,
             start_power_menu_open: false,
+            start_search: StartSearchState {
+                query: String::new(),
+                focused: false,
+                selected: 0,
+                show_all: false,
+            },
             start_menu_pinned: Vec::new(),
             start_menu_entries: Vec::new(),
             notification_center_open: false,
-            launcher: None,
             taskbar_menu: None,
             dialog: None,
             session_locked: true,
@@ -1314,8 +951,8 @@ impl WindowManager {
     fn clear_session_chrome(&mut self) {
         self.start_menu_open = false;
         self.start_power_menu_open = false;
+        self.reset_start_search();
         self.notification_center_open = false;
-        self.launcher = None;
         self.taskbar_menu = None;
         self.context_menu = None;
         self.dialog = None;
@@ -1565,14 +1202,14 @@ impl WindowManager {
             .filter(|user| user.login_enabled)
         {
             let y = layout.users_y + row * GREETER_USER_ROW_H;
-            if y + GREETER_USER_ROW_H > layout.panel_y + layout.panel_h - 12 {
+            if y + GREETER_USER_ROW_H > layout.panel_y + layout.panel_h - 8 {
                 break;
             }
             if rect_contains(
                 layout.user_x,
                 y,
                 layout.row_w,
-                GREETER_USER_ROW_H - 2,
+                GREETER_USER_ROW_H - 3,
                 mx,
                 my,
             ) {
@@ -1941,31 +1578,42 @@ impl WindowManager {
         self.focused = Some(win_idx);
     }
 
-    fn toggle_launcher(&mut self) {
-        if self.launcher.is_some() {
-            self.launcher = None;
-        } else {
-            self.launcher = Some(LauncherState {
-                query: String::new(),
-                selected: 0,
-            });
-            self.start_menu_open = false;
-            self.start_power_menu_open = false;
-            self.context_menu = None;
-            self.taskbar_menu = None;
-        }
+    fn reset_start_search(&mut self) {
+        self.start_search.query.clear();
+        self.start_search.focused = false;
+        self.start_search.selected = 0;
+        self.start_search.show_all = false;
+    }
+
+    fn close_start_menu(&mut self) {
+        self.start_menu_open = false;
+        self.start_power_menu_open = false;
+        self.reset_start_search();
+    }
+
+    fn open_start_menu_search(&mut self) {
+        self.refresh_start_menu_cache();
+        self.start_menu_open = true;
+        self.start_power_menu_open = false;
+        self.start_search.query.clear();
+        self.start_search.focused = true;
+        self.start_search.selected = 0;
+        self.start_search.show_all = false;
+        self.context_menu = None;
+        self.taskbar_menu = None;
+        self.notification_center_open = false;
     }
 
     fn toggle_start_menu(&mut self) {
         if self.start_menu_open {
-            self.start_menu_open = false;
+            self.close_start_menu();
         } else {
             self.refresh_start_menu_cache();
             self.start_menu_open = true;
+            self.reset_start_search();
         }
         self.start_power_menu_open = false;
         self.context_menu = None;
-        self.launcher = None;
         self.taskbar_menu = None;
         self.notification_center_open = false;
     }
@@ -1975,84 +1623,75 @@ impl WindowManager {
         self.start_menu_entries = build_start_menu_entries();
     }
 
-    fn handle_launcher_input(&mut self, input: KeyInput) -> bool {
-        if self.launcher.is_none() {
+    fn handle_start_menu_input(&mut self, input: KeyInput) -> bool {
+        if !self.start_menu_open {
             return false;
         }
 
-        let mut action: Option<LauncherAction> = None;
-        let mut close = false;
-        if let Some(state) = self.launcher.as_mut() {
-            match input.key {
-                Key::Escape => close = true,
-                Key::Backspace => {
-                    state.query.pop();
-                    state.selected = 0;
+        match input.key {
+            Key::Escape => {
+                if !self.start_search.query.is_empty() || self.start_search.show_all {
+                    self.start_search.query.clear();
+                    self.start_search.selected = 0;
+                    self.start_search.show_all = false;
+                    self.start_search.focused = true;
+                } else {
+                    self.close_start_menu();
                 }
-                Key::ArrowUp => {
-                    state.selected = state.selected.saturating_sub(1);
-                }
-                Key::ArrowDown => {
-                    let count = launcher_matches(&state.query).len();
-                    if count > 0 {
-                        state.selected = (state.selected + 1).min(count - 1);
-                    }
-                }
-                Key::Tab if !input.has_ctrl() && !input.has_alt() => {
-                    let count = launcher_matches(&state.query).len();
-                    if count > 0 {
-                        state.selected = (state.selected + 4).min(count - 1);
-                    }
-                }
-                Key::Enter if input.has_ctrl() => action = Some(LauncherAction::RunAsAdmin),
-                Key::Enter => action = Some(LauncherAction::Open),
-                Key::Character('p') | Key::Character('P') if input.has_ctrl() => {
-                    action = Some(LauncherAction::Pin)
-                }
-                Key::Character('l') | Key::Character('L') if input.has_ctrl() => {
-                    action = Some(LauncherAction::OpenLocation)
-                }
-                Key::Character('u') | Key::Character('U') if input.has_ctrl() => {
-                    action = Some(LauncherAction::Uninstall)
-                }
-                Key::Character('c') | Key::Character('C') if input.has_ctrl() => {
-                    action = Some(LauncherAction::Copy)
-                }
-                Key::Space if !input.has_ctrl() && !input.has_alt() => {
-                    state.query.push(' ');
-                    state.selected = 0;
-                }
-                Key::Character(c) if !input.has_ctrl() && !input.has_alt() => {
-                    if c >= ' ' && c != '\u{7f}' {
-                        state.query.push(c);
-                        state.selected = 0;
-                    }
-                }
-                _ => {}
+                return true;
             }
+            Key::Backspace
+                if self.start_search.focused && !input.has_ctrl() && !input.has_alt() =>
+            {
+                self.start_search.query.pop();
+                self.start_search.selected = 0;
+                self.start_search.show_all = false;
+                return true;
+            }
+            Key::ArrowUp if self.start_search.show_all || !self.start_search.query.is_empty() => {
+                self.start_search.selected = self.start_search.selected.saturating_sub(1);
+                return true;
+            }
+            Key::ArrowDown if self.start_search.show_all || !self.start_search.query.is_empty() => {
+                let count = start_menu_results(&self.start_search).len();
+                if count > 0 {
+                    self.start_search.selected = (self.start_search.selected + 1).min(count - 1);
+                }
+                return true;
+            }
+            Key::Enter if self.start_search.show_all || !self.start_search.query.is_empty() => {
+                self.activate_start_search_selection();
+                return true;
+            }
+            Key::Space if !input.has_ctrl() && !input.has_alt() => {
+                self.start_search.focused = true;
+                self.start_search.show_all = false;
+                self.start_search.query.push(' ');
+                self.start_search.selected = 0;
+                return true;
+            }
+            Key::Character(c) if !input.has_ctrl() && !input.has_alt() => {
+                if c >= ' ' && c != '\u{7f}' {
+                    self.start_search.focused = true;
+                    self.start_search.show_all = false;
+                    self.start_search.query.push(c);
+                    self.start_search.selected = 0;
+                    return true;
+                }
+            }
+            _ => {}
         }
-
-        if close {
-            self.launcher = None;
-            return true;
-        }
-        if let Some(action) = action {
-            self.activate_launcher_selection(action);
-        }
-        true
+        false
     }
 
-    fn activate_launcher_selection(&mut self, action: LauncherAction) {
-        let Some(state) = self.launcher.as_ref() else {
-            return;
-        };
-        let matches = launcher_matches(&state.query);
-        if matches.is_empty() {
+    fn activate_start_search_selection(&mut self) {
+        let results = start_menu_results(&self.start_search);
+        if results.is_empty() {
             return;
         }
-        let entry = matches[state.selected.min(matches.len() - 1)].clone();
-        let query = state.query.clone();
-        self.launcher = None;
+        let entry = results[self.start_search.selected.min(results.len() - 1)].clone();
+        let query = self.start_search.query.clone();
+        self.close_start_menu();
         if !query.trim().is_empty() {
             crate::app_lifecycle::record_search(&query);
         }
@@ -2060,87 +1699,23 @@ impl WindowManager {
         let off = self.windows.len() as i32 * 16;
         let wx = (16 + off).min(self.shadow_width as i32 - 220);
         let wy = (16 + off).min(taskbar_y - 120);
-
-        self.activate_launcher_match(&entry, action, wx, wy);
+        self.activate_start_search_kind(&entry.kind, wx, wy);
     }
 
-    fn activate_launcher_match(
-        &mut self,
-        entry: &LauncherMatch,
-        action: LauncherAction,
-        wx: i32,
-        wy: i32,
-    ) {
-        match action {
-            LauncherAction::Open => self.activate_launcher_kind(&entry.kind, wx, wy),
-            LauncherAction::RunAsAdmin => {
-                crate::notifications::push("Launcher", "run-as-admin requested");
-                self.activate_launcher_kind(&entry.kind, wx, wy);
-            }
-            LauncherAction::OpenLocation => self.open_launcher_location(entry, wx, wy),
-            LauncherAction::Pin => {
-                let pin = launcher_pin_label(entry);
-                if crate::app_lifecycle::is_pinned(&pin) {
-                    crate::notifications::push("Start menu", "item is already pinned");
-                } else {
-                    crate::app_lifecycle::pin_item(&pin);
-                    crate::notifications::push("Start menu", "item pinned");
-                }
-            }
-            LauncherAction::Uninstall => {
-                if let LauncherMatchKind::App(app) = &entry.kind {
-                    match crate::packages::uninstall(app) {
-                        Ok(()) => crate::notifications::push("Packages", "app uninstalled"),
-                        Err(err) => self.show_error_dialog("Uninstall failed", err),
-                    }
-                } else {
-                    self.show_error_dialog("Uninstall failed", "selected item is not an app");
-                }
-            }
-            LauncherAction::Copy => {
-                crate::clipboard::set_text(&launcher_copy_text(entry));
-                crate::notifications::push("Clipboard", "launcher item copied");
-            }
-        }
-    }
-
-    fn activate_launcher_kind(&mut self, kind: &LauncherMatchKind, wx: i32, wy: i32) {
+    fn activate_start_search_kind(&mut self, kind: &StartSearchKind, wx: i32, wy: i32) {
         match kind {
-            LauncherMatchKind::App(app) => self.launch_app(app, wx, wy),
-            LauncherMatchKind::Path(path) => {
+            StartSearchKind::App(app) => self.launch_app(app, wx, wy),
+            StartSearchKind::Path(path) => {
                 self.open_associated_path(path, wx, wy);
             }
-            LauncherMatchKind::Command(command) => {
+            StartSearchKind::Command(command) => {
                 self.run_terminal_command(command);
             }
-            LauncherMatchKind::Inline(action) => self.run_inline_launcher_action(action, wx, wy),
+            StartSearchKind::Inline(action) => self.run_start_inline_action(action, wx, wy),
         }
     }
 
-    fn open_launcher_location(&mut self, entry: &LauncherMatch, wx: i32, wy: i32) {
-        match &entry.kind {
-            LauncherMatchKind::Path(path) => self.launch_file_manager_at(parent_path(path), wx, wy),
-            LauncherMatchKind::App(app) => {
-                if let Some(meta) = crate::app_metadata::app_by_name(app) {
-                    let mut path = String::from("/APPS/");
-                    path.push_str(meta.command);
-                    self.launch_file_manager_at(&path, wx, wy);
-                } else if let Some(manifest) =
-                    crate::app_metadata::installed_manifest_by_id_or_command(app)
-                {
-                    let mut path = String::from("/APPS/");
-                    path.push_str(&manifest.command);
-                    self.launch_file_manager_at(&path, wx, wy);
-                } else {
-                    self.launch_file_manager_at("/APPS", wx, wy);
-                }
-            }
-            LauncherMatchKind::Command(_) => self.launch_app("Terminal", wx, wy),
-            LauncherMatchKind::Inline(_) => self.launch_file_manager_at("/CONFIG", wx, wy),
-        }
-    }
-
-    fn run_inline_launcher_action(&mut self, action: &str, wx: i32, wy: i32) {
+    fn run_start_inline_action(&mut self, action: &str, wx: i32, wy: i32) {
         if action == "refresh-index" {
             crate::search_index::refresh();
             crate::notifications::push("Search", "desktop index refreshed");
@@ -2182,34 +1757,41 @@ impl WindowManager {
             )));
             crate::app_lifecycle::record_app("Display Settings");
         } else if let Some(category) = action.strip_prefix("category:") {
-            self.launcher = Some(LauncherState {
-                query: {
-                    let mut query = String::from("@");
-                    query.push_str(category);
-                    query
-                },
-                selected: 0,
-            });
+            self.start_menu_open = true;
+            self.start_search.query.clear();
+            self.start_search.query.push_str(category);
+            self.start_search.focused = true;
+            self.start_search.selected = 0;
+            self.start_search.show_all = false;
         } else if let Some(query) = action.strip_prefix("search:") {
-            self.launcher = Some(LauncherState {
-                query: String::from(query),
-                selected: 0,
-            });
+            self.start_menu_open = true;
+            self.start_search.query = String::from(query);
+            self.start_search.focused = true;
+            self.start_search.selected = 0;
+            self.start_search.show_all = false;
         }
     }
 
     fn activate_start_item(&mut self, item: &str, wx: i32, wy: i32) {
         let kind = start_item_kind(item);
-        self.activate_launcher_kind(&kind, wx, wy);
+        self.activate_start_search_kind(&kind, wx, wy);
     }
 
+    #[allow(dead_code)]
     fn activate_start_menu_quick_action(&mut self, action: &str, wx: i32, wy: i32) {
         if let Some(app) = action.strip_prefix("app:") {
             self.launch_app(app, wx, wy);
         } else if let Some(path) = action.strip_prefix("path:") {
             self.launch_file_manager_at(path, wx, wy);
         } else {
-            self.run_inline_launcher_action(action, wx, wy);
+            self.run_start_inline_action(action, wx, wy);
+        }
+    }
+
+    fn activate_win7_start_action(&mut self, action: Win7StartAction, wx: i32, wy: i32) {
+        match action {
+            Win7StartAction::App(app) => self.launch_app(app, wx, wy),
+            Win7StartAction::Path(path) => self.launch_file_manager_at(path, wx, wy),
         }
     }
 
@@ -2287,7 +1869,7 @@ impl WindowManager {
             restart_target: None,
         });
         crate::notifications::push(title, body);
-        self.launcher = None;
+        self.close_start_menu();
         self.context_menu = None;
         self.taskbar_menu = None;
     }
@@ -2300,7 +1882,7 @@ impl WindowManager {
             restart_target: restart_target.map(String::from),
         });
         crate::notifications::push(title, body);
-        self.launcher = None;
+        self.close_start_menu();
         self.context_menu = None;
         self.taskbar_menu = None;
     }
@@ -2372,12 +1954,42 @@ impl WindowManager {
         self.notification_center_open = !self.notification_center_open;
         if self.notification_center_open {
             crate::notifications::mark_all_read();
-            self.launcher = None;
-            self.start_menu_open = false;
-            self.start_power_menu_open = false;
+            self.close_start_menu();
             self.context_menu = None;
             self.taskbar_menu = None;
         }
+    }
+
+    fn handle_notification_center_click(
+        &mut self,
+        mx: i32,
+        my: i32,
+        sw: i32,
+        taskbar_y: i32,
+    ) -> bool {
+        if !self.notification_center_open {
+            return false;
+        }
+        let layout = notification_center_layout(sw, taskbar_y);
+        if !layout.contains(mx, my) {
+            return false;
+        }
+
+        let rows = layout.max_rows();
+        let notes = crate::notifications::latest(rows);
+        if layout.clear_contains(mx, my) && !notes.is_empty() {
+            crate::notifications::clear();
+            return true;
+        }
+
+        for (row, note) in notes.iter().rev().enumerate() {
+            if layout.dismiss_contains(row, mx, my) {
+                let _ = crate::notifications::dismiss(note.id);
+                return true;
+            }
+        }
+
+        true
     }
 
     fn consume_window_open_request(&mut self, win_idx: usize, sw: usize, taskbar_y: i32) {
@@ -2579,8 +2191,8 @@ impl WindowManager {
         });
         self.start_menu_open = false;
         self.start_power_menu_open = false;
+        self.reset_start_search();
         self.context_menu = None;
-        self.launcher = None;
     }
 
     fn handle_taskbar_menu_click(&mut self, mx: i32, my: i32) -> bool {
@@ -2971,16 +2583,13 @@ impl WindowManager {
             crate::wm::request_repaint();
             return;
         }
-        if self.launcher.is_some()
-            && !crate::shortcuts::matches(crate::shortcuts::Action::Launcher, input)
-        {
-            self.handle_launcher_input(input);
-            crate::wm::request_repaint();
-            return;
-        }
         if self.task_switcher_until_tick > crate::interrupts::ticks()
             && self.handle_task_switcher_input(input)
         {
+            crate::wm::request_repaint();
+            return;
+        }
+        if self.start_menu_open && self.handle_start_menu_input(input) {
             crate::wm::request_repaint();
             return;
         }
@@ -3053,8 +2662,8 @@ impl WindowManager {
     }
 
     fn handle_global_shortcut(&mut self, input: KeyInput) -> bool {
-        if crate::shortcuts::matches(crate::shortcuts::Action::Launcher, input) {
-            self.toggle_launcher();
+        if crate::shortcuts::matches(crate::shortcuts::Action::StartSearch, input) {
+            self.open_start_menu_search();
             return true;
         }
         if crate::shortcuts::matches(crate::shortcuts::Action::Notifications, input) {
@@ -3315,7 +2924,6 @@ impl WindowManager {
             || self.context_menu.is_some()
             || self.taskbar_menu.is_some()
             || self.notification_center_open
-            || self.launcher.is_some()
             || self.dialog.is_some()
             || self.drag.is_some()
             || self.resize.is_some()
@@ -3488,6 +3096,14 @@ impl WindowManager {
             }
         }
 
+        if left_pressed
+            && !left_press_consumed
+            && self.handle_notification_center_click(mx_i, my_i, sw as i32, taskbar_y)
+        {
+            left_press_consumed = true;
+            crate::wm::request_repaint();
+        }
+
         if right_pressed && my_i >= taskbar_y {
             if let Some(btn_idx) = self.taskbar_button_hit(mx_i, my_i, sw as i32, taskbar_y) {
                 self.open_taskbar_menu(btn_idx, mx_i, taskbar_y, sw as i32);
@@ -3618,15 +3234,11 @@ impl WindowManager {
 
                 if my_i >= taskbar_y {
                     left_press_consumed = true;
-                    // Tray icon click → open System Monitor
-                    let tray_clk_x = sw as i32 - TASKBAR_CLOCK_W;
-                    let clock_box_x = tray_clk_x + TASKBAR_TRAY_W;
-                    let t_gap = 20i32;
-                    let t_start = tray_clk_x + (TASKBAR_TRAY_W - (t_gap * 2 + 13)) / 2;
-                    if mx_i >= clock_box_x {
+                    let tray = taskbar_tray_layout(sw as i32, taskbar_y);
+                    if tray.clock_contains(mx_i, my_i) {
                         self.toggle_notification_center();
                         crate::wm::request_repaint();
-                    } else if mx_i >= t_start && mx_i < t_start + t_gap * 2 + 14 {
+                    } else if tray.icons_contains(mx_i, my_i) {
                         let off = self.windows.len() as i32 * 16;
                         let wx = (10 + off).min(sw as i32 - 540);
                         let wy = (10 + off).min(taskbar_y - 310);
@@ -3722,132 +3334,106 @@ impl WindowManager {
 
         // Start menu item click.
         if left_pressed && self.start_menu_open {
-            let prefs = crate::app_lifecycle::start_menu_prefs();
-            let menu_w = prefs.width.clamp(460, sw as i32 - 8);
-            let menu_h = prefs.height.clamp(320, taskbar_y - 4);
-            let left_w = (if prefs.compact { 230i32 } else { 280i32 }).min(menu_w - 220);
-            let bottom_h = 36i32;
-            let left_hdr_h = 66i32;
-            let menu_x = 0i32;
-            let menu_y = taskbar_y - menu_h;
-            let bar_y = menu_y + menu_h - bottom_h;
-            let rc_x = menu_x + left_w + 1;
-            let right_w = menu_w - left_w;
-            let rc_w = right_w - 2;
-            if mx_i >= menu_x && mx_i < menu_x + menu_w && my_i >= menu_y && my_i < taskbar_y {
+            let layout = win7_start_menu_layout(sw as i32, taskbar_y);
+            if layout.contains(mx_i, my_i)
+                || (self.start_power_menu_open && {
+                    let (power_x, power_y, power_w, power_h) = start_power_menu_rect(
+                        layout.shutdown_x,
+                        layout.shutdown_y,
+                        layout.shutdown_w,
+                        layout.menu_x,
+                        layout.menu_y,
+                        layout.menu_w,
+                    );
+                    rect_contains(power_x, power_y, power_w, power_h, mx_i, my_i)
+                })
+            {
                 left_press_consumed = true;
-                // Left column — app list rows
-                if mx_i < menu_x + left_w {
-                    let pinned_apps = &self.start_menu_pinned;
-                    let item_h = if prefs.compact { 32i32 } else { 40i32 };
-                    let items_y = menu_y + left_hdr_h + 8;
-                    let srch_x = menu_x + 8;
-                    let srch_y = menu_y + 38;
-                    let srch_w = left_w - 16;
-                    let srch_h = 22i32;
-                    let limit = pinned_apps.len().min(start_menu_pinned_limit(
-                        menu_h, bottom_h, left_hdr_h, item_h,
-                    ));
-                    let all_y = bar_y - item_h;
-                    if mx_i >= srch_x
-                        && mx_i < srch_x + srch_w
-                        && my_i >= srch_y
-                        && my_i < srch_y + srch_h
+                let off = self.windows.len() as i32 * 16;
+                let wx = (10 + off).min(sw as i32 - 220);
+                let wy = (10 + off).min(taskbar_y - 120);
+                let (power_x, power_y, power_w, power_h) = start_power_menu_rect(
+                    layout.shutdown_x,
+                    layout.shutdown_y,
+                    layout.shutdown_w,
+                    layout.menu_x,
+                    layout.menu_y,
+                    layout.menu_w,
+                );
+                if self.start_power_menu_open
+                    && rect_contains(power_x, power_y, power_w, power_h, mx_i, my_i)
+                {
+                    if let Some(action) =
+                        start_power_action_at(mx_i, my_i, power_x, power_y, power_w)
                     {
-                        self.launcher = Some(LauncherState {
-                            query: String::new(),
-                            selected: 0,
-                        });
-                        self.start_menu_open = false;
-                        self.start_power_menu_open = false;
-                        crate::wm::request_repaint();
-                    } else if my_i >= items_y && my_i < items_y + item_h * limit as i32 {
-                        let item_idx = ((my_i - items_y) / item_h) as usize;
-                        if item_idx < limit {
-                            let item = pinned_apps[item_idx].clone();
-                            let off = self.windows.len() as i32 * 16;
-                            let wx = (10 + off).min(sw as i32 - 200);
-                            let wy = (10 + off).min(bar_y - 80);
-                            self.activate_start_item(&item, wx, wy);
-                            self.start_menu_open = false;
-                            self.start_power_menu_open = false;
-                            crate::wm::request_repaint();
-                        }
-                    } else if my_i >= all_y && my_i < all_y + item_h {
-                        self.launcher = Some(LauncherState {
-                            query: String::new(),
-                            selected: 0,
-                        });
-                        self.start_menu_open = false;
-                        self.start_power_menu_open = false;
-                        crate::wm::request_repaint();
+                        self.run_start_inline_action(action, wx, wy);
+                        self.close_start_menu();
                     }
+                    crate::wm::request_repaint();
+                } else if let Some(result) =
+                    start_menu_result_at(layout, &self.start_search, mx_i, my_i)
+                {
+                    let query = self.start_search.query.clone();
+                    self.close_start_menu();
+                    if !query.trim().is_empty() {
+                        crate::app_lifecycle::record_search(&query);
+                    }
+                    self.activate_start_search_kind(&result.kind, wx, wy);
+                    crate::wm::request_repaint();
+                } else if rect_contains(
+                    layout.all_x,
+                    layout.all_y,
+                    layout.all_w,
+                    layout.all_h,
+                    mx_i,
+                    my_i,
+                ) {
+                    self.start_search.query.clear();
+                    self.start_search.selected = 0;
+                    self.start_search.focused = false;
+                    self.start_search.show_all = true;
+                    self.start_power_menu_open = false;
+                    crate::wm::request_repaint();
+                } else if rect_contains(
+                    layout.search_x,
+                    layout.search_y,
+                    layout.search_w,
+                    layout.search_h,
+                    mx_i,
+                    my_i,
+                ) {
+                    self.start_search.focused = true;
+                    self.start_search.selected = 0;
+                    self.start_power_menu_open = false;
+                    crate::wm::request_repaint();
+                } else if rect_contains(
+                    layout.shutdown_arrow_x,
+                    layout.shutdown_y,
+                    layout.shutdown_arrow_w,
+                    layout.shutdown_h,
+                    mx_i,
+                    my_i,
+                ) {
+                    self.start_power_menu_open = !self.start_power_menu_open;
+                    crate::wm::request_repaint();
+                } else if rect_contains(
+                    layout.shutdown_x,
+                    layout.shutdown_y,
+                    layout.shutdown_w,
+                    layout.shutdown_h,
+                    mx_i,
+                    my_i,
+                ) {
+                    self.run_start_inline_action("shutdown", wx, wy);
+                    self.close_start_menu();
+                    crate::wm::request_repaint();
+                } else if let Some(action) = win7_start_right_action_at(layout, mx_i, my_i) {
+                    self.activate_win7_start_action(action, wx, wy);
+                    self.close_start_menu();
+                    crate::wm::request_repaint();
                 } else {
-                    let banner_x = rc_x + 6;
-                    let banner_y = menu_y + 10;
-                    let banner_w = rc_w - 12;
-                    let banner_h = 112i32;
-                    let link_h = 22i32;
-                    let links_y = banner_y + banner_h + 8;
-                    let sd_w = 96i32;
-                    let sd_x = menu_x + left_w + (right_w - sd_w) / 2;
-                    let sd_y = bar_y + 8;
-                    let sd_h = 20i32;
-                    let (power_x, power_y, power_w, power_h) =
-                        start_power_menu_rect(sd_x, sd_y, sd_w, menu_x, menu_y, menu_w);
-                    if self.start_power_menu_open
-                        && mx_i >= power_x
-                        && mx_i < power_x + power_w
-                        && my_i >= power_y
-                        && my_i < power_y + power_h
-                    {
-                        if let Some(action) =
-                            start_power_action_at(mx_i, my_i, power_x, power_y, power_w)
-                        {
-                            let off = self.windows.len() as i32 * 16;
-                            let wx = (10 + off).min(sw as i32 - 200);
-                            let wy = (10 + off).min(bar_y - 80);
-                            self.run_inline_launcher_action(action, wx, wy);
-                            self.start_menu_open = false;
-                            self.start_power_menu_open = false;
-                        }
-                        crate::wm::request_repaint();
-                    } else if let Some(action) =
-                        start_menu_quick_action_at(mx_i - banner_x, my_i - banner_y, banner_w)
-                    {
-                        let off = self.windows.len() as i32 * 16;
-                        let wx = (10 + off).min(sw as i32 - 200);
-                        let wy = (10 + off).min(bar_y - 80);
-                        self.activate_start_menu_quick_action(action, wx, wy);
-                        self.start_menu_open = false;
-                        self.start_power_menu_open = false;
-                        crate::wm::request_repaint();
-                    } else if mx_i >= sd_x
-                        && mx_i < sd_x + sd_w
-                        && my_i >= sd_y
-                        && my_i < sd_y + sd_h
-                    {
-                        self.start_power_menu_open = !self.start_power_menu_open;
-                        crate::wm::request_repaint();
-                    } else if mx_i >= rc_x && mx_i < rc_x + rc_w && my_i >= links_y {
-                        let entries = &self.start_menu_entries;
-                        let max_h = bar_y - links_y - 8;
-                        if let Some(entry_idx) =
-                            start_menu_entry_at(entries, my_i - links_y, link_h, max_h)
-                        {
-                            let kind = entries[entry_idx].kind.clone();
-                            let off = self.windows.len() as i32 * 16;
-                            let wx = (10 + off).min(sw as i32 - 200);
-                            let wy = (10 + off).min(bar_y - 80);
-                            self.activate_launcher_kind(&kind, wx, wy);
-                            self.start_menu_open = false;
-                            self.start_power_menu_open = false;
-                            crate::wm::request_repaint();
-                        }
-                    } else {
-                        self.start_power_menu_open = false;
-                        crate::wm::request_repaint();
-                    }
+                    self.start_power_menu_open = false;
+                    crate::wm::request_repaint();
                 }
             }
         }
@@ -4048,203 +3634,25 @@ impl WindowManager {
                     .any(|w| w.window().title == canonical_app_title(icon.app));
 
                 let app_title = canonical_app_title(icon.app);
-                let (icon_bg, icon_acc) = match app_title {
-                    "Terminal" => (ICON_TERM_BG, ICON_TERM_ACC),
-                    "System Monitor" => (ICON_MON_BG, ICON_MON_ACC),
-                    "File Manager" => (0x00_00_0E_20, 0x00_55_DD_FF),
-                    "Text Viewer" => (ICON_TXT_BG, ICON_TXT_ACC),
-                    "Text Editor" => (0x00_04_18_16, 0x00_88_FF_CC),
-                    "Notes" => (0x00_1E_17_02, 0x00_FF_DD_66),
-                    "Trash Bin" => (0x00_10_16_1C, 0x00_99_BB_CC),
-                    "Screenshot" => (0x00_03_16_24, 0x00_77_DD_FF),
-                    "Web Browser" => (0x00_04_1A_17, 0x00_33_CC_99),
-                    "Color Picker" => (ICON_COL_BG, ICON_COL_ACC),
-                    _ => (ICON_TXT_BG, ACCENT),
-                };
+                let icon_kind = desktop_icon_kind(app_title);
+                let icon_acc = desktop_icon_accent(icon_kind);
 
-                // Drop shadow
-                s_fill(
-                    s,
-                    sw,
-                    icon.x + 3,
-                    icon.y + 3,
-                    ICON_SIZE,
-                    ICON_SIZE,
-                    if selected || hot {
-                        0x00_00_22_44
-                    } else {
-                        0x00_00_00_18
-                    },
-                );
                 if selected || hot {
+                    draw_desktop_icon_plate(s, sw, icon.x, icon.y, selected, icon_acc);
+                }
+                draw_desktop_app_icon(s, sw, icon.x + 6, icon.y + 5, icon_kind);
+
+                if app_open {
                     s_fill(
                         s,
                         sw,
-                        icon.x + 6,
-                        icon.y + ICON_SIZE + 2,
-                        ICON_SIZE - 12,
+                        icon.x + 18,
+                        icon.y + ICON_SIZE - 3,
+                        ICON_SIZE - 36,
                         2,
-                        blend_color(icon_acc, 0x00_00_06_12, 90),
+                        blend_color(icon_acc, 0x00_EA_FC_FF, 84),
                     );
-                }
-
-                // Tile background — vertical gradient from lighter top to darker bottom
-                let tile_top = if selected || hot {
-                    blend_color(icon_bg, 0x00_FF_FF_FF, 40)
-                } else {
-                    blend_color(icon_bg, 0x00_FF_FF_FF, 10)
-                };
-                let tile_bot = if selected || hot {
-                    blend_color(icon_bg, BLACK, 60)
-                } else {
-                    blend_color(icon_bg, BLACK, 80)
-                };
-                for gy in 0..ICON_SIZE {
-                    let t = (gy * 255 / ICON_SIZE.max(1)) as u32;
-                    let row_col = blend_color(tile_top, tile_bot, t);
-                    s_fill(s, sw, icon.x, icon.y + gy, ICON_SIZE, 1, row_col);
-                }
-                draw_rect_border(
-                    s,
-                    sw,
-                    icon.x,
-                    icon.y,
-                    ICON_SIZE,
-                    ICON_SIZE,
-                    blend_color(icon_acc, 0x00_DD_FF_FF, if selected { 80 } else { 132 }),
-                );
-                draw_rect_border(
-                    s,
-                    sw,
-                    icon.x + 1,
-                    icon.y + 1,
-                    ICON_SIZE - 2,
-                    ICON_SIZE - 2,
-                    blend_color(tile_top, icon_acc, 100),
-                );
-
-                // Accent top band + bottom edge line
-                s_fill(s, sw, icon.x, icon.y, ICON_SIZE, 4, icon_acc);
-                s_fill(
-                    s,
-                    sw,
-                    icon.x + 6,
-                    icon.y + ICON_SIZE - 5,
-                    ICON_SIZE - 12,
-                    2,
-                    blend_color(icon_acc, tile_bot, 80),
-                );
-
-                // ── Per-app pixel-art icon ────────────────────────────────────────
-                match app_title {
-                    "Terminal" => {
-                        // Terminal — ">" prompt + underscore cursor
-                        let bx = icon.x + 8;
-                        let by = icon.y + 14;
-                        s_fill(s, sw, bx, by, 6, 3, icon_acc);
-                        s_fill(s, sw, bx + 6, by + 3, 6, 3, icon_acc);
-                        s_fill(s, sw, bx + 12, by + 6, 6, 3, icon_acc);
-                        s_fill(s, sw, bx + 6, by + 9, 6, 3, icon_acc);
-                        s_fill(s, sw, bx, by + 12, 6, 3, icon_acc);
-                        s_fill(s, sw, icon.x + 8, icon.y + 38, 22, 2, icon_acc);
-                    }
-                    "System Monitor" => {
-                        // Monitor — bar chart
-                        let base_y = icon.y + 44;
-                        let bar_w = 8i32;
-                        s_fill(s, sw, icon.x + 6, base_y - 10, bar_w, 10, icon_acc);
-                        s_fill(s, sw, icon.x + 18, base_y - 26, bar_w, 26, icon_acc);
-                        s_fill(s, sw, icon.x + 30, base_y - 18, bar_w, 18, icon_acc);
-                        s_fill(s, sw, icon.x + 4, base_y, 36, 2, icon_acc);
-                    }
-                    "File Manager" => {
-                        // Files — folder with content lines
-                        s_fill(s, sw, icon.x + 4, icon.y + 10, 36, 30, icon_acc);
-                        s_fill(s, sw, icon.x + 2, icon.y + 18, 40, 24, icon_acc);
-                        s_fill(s, sw, icon.x + 2, icon.y + 10, 14, 8, icon_acc);
-                        s_fill(s, sw, icon.x + 8, icon.y + 26, 28, 2, 0x00_00_0B_20);
-                        s_fill(s, sw, icon.x + 8, icon.y + 32, 28, 2, 0x00_00_0B_20);
-                    }
-                    "Text Viewer" => {
-                        // Viewer — document page with text lines
-                        draw_rect_border(s, sw, icon.x + 8, icon.y + 6, 36, 40, icon_acc);
-                        s_fill(s, sw, icon.x + 11, icon.y + 10, 28, 2, icon_acc);
-                        s_fill(s, sw, icon.x + 11, icon.y + 16, 22, 2, icon_acc);
-                        s_fill(s, sw, icon.x + 11, icon.y + 22, 28, 2, icon_acc);
-                        s_fill(s, sw, icon.x + 11, icon.y + 28, 16, 2, icon_acc);
-                        s_fill(s, sw, icon.x + 11, icon.y + 34, 22, 2, icon_acc);
-                    }
-                    "Text Editor" => {
-                        // Editor — document page with active caret
-                        draw_rect_border(s, sw, icon.x + 8, icon.y + 6, 34, 40, icon_acc);
-                        s_fill(s, sw, icon.x + 12, icon.y + 12, 22, 2, icon_acc);
-                        s_fill(s, sw, icon.x + 12, icon.y + 18, 18, 2, icon_acc);
-                        s_fill(s, sw, icon.x + 12, icon.y + 24, 24, 2, icon_acc);
-                        s_fill(s, sw, icon.x + 12, icon.y + 32, 2, 8, icon_acc);
-                    }
-                    "Notes" => {
-                        // Notes — sticky note with ruled lines
-                        s_fill(s, sw, icon.x + 8, icon.y + 8, 36, 36, icon_acc);
-                        s_fill(s, sw, icon.x + 11, icon.y + 14, 28, 2, 0x00_22_18_04);
-                        s_fill(s, sw, icon.x + 11, icon.y + 22, 28, 2, 0x00_22_18_04);
-                        s_fill(s, sw, icon.x + 11, icon.y + 30, 20, 2, 0x00_22_18_04);
-                        s_fill(s, sw, icon.x + 34, icon.y + 34, 10, 10, 0x00_BB_99_44);
-                    }
-                    "Trash Bin" => {
-                        // Trash — bin can with lid
-                        s_fill(s, sw, icon.x + 12, icon.y + 13, 28, 4, icon_acc);
-                        s_fill(s, sw, icon.x + 18, icon.y + 8, 16, 4, icon_acc);
-                        draw_rect_border(s, sw, icon.x + 14, icon.y + 18, 24, 26, icon_acc);
-                        s_fill(s, sw, icon.x + 20, icon.y + 23, 2, 16, icon_acc);
-                        s_fill(s, sw, icon.x + 26, icon.y + 23, 2, 16, icon_acc);
-                        s_fill(s, sw, icon.x + 32, icon.y + 23, 2, 16, icon_acc);
-                    }
-                    "Screenshot" => {
-                        // Screenshot — focus brackets and aperture
-                        draw_rect_border(s, sw, icon.x + 9, icon.y + 10, 34, 28, icon_acc);
-                        s_fill(s, sw, icon.x + 6, icon.y + 7, 12, 3, icon_acc);
-                        s_fill(s, sw, icon.x + 6, icon.y + 7, 3, 12, icon_acc);
-                        s_fill(s, sw, icon.x + 35, icon.y + 7, 12, 3, icon_acc);
-                        s_fill(s, sw, icon.x + 44, icon.y + 7, 3, 12, icon_acc);
-                        draw_circle_outline(s, sw, icon.x + 26, icon.y + 24, 8, icon_acc);
-                        s_fill(s, sw, icon.x + 25, icon.y + 23, 3, 3, icon_acc);
-                    }
-                    "Web Browser" => {
-                        // Browser — page frame with network globe
-                        draw_rect_border(s, sw, icon.x + 7, icon.y + 9, 38, 32, icon_acc);
-                        s_fill(s, sw, icon.x + 8, icon.y + 10, 36, 5, icon_acc);
-                        draw_circle_outline(s, sw, icon.x + 27, icon.y + 28, 11, icon_acc);
-                        s_fill(s, sw, icon.x + 17, icon.y + 27, 20, 2, icon_acc);
-                        s_fill(s, sw, icon.x + 26, icon.y + 18, 2, 21, icon_acc);
-                        s_fill(s, sw, icon.x + 18, icon.y + 21, 18, 2, icon_acc);
-                        s_fill(s, sw, icon.x + 18, icon.y + 34, 18, 2, icon_acc);
-                    }
-                    "Color Picker" => {
-                        // Colors — four colour quadrants
-                        s_fill(s, sw, icon.x + 6, icon.y + 8, 16, 16, 0x00_FF_50_50);
-                        s_fill(s, sw, icon.x + 26, icon.y + 8, 16, 16, 0x00_50_FF_50);
-                        s_fill(s, sw, icon.x + 6, icon.y + 28, 16, 16, 0x00_50_50_FF);
-                        s_fill(s, sw, icon.x + 26, icon.y + 28, 16, 16, 0x00_FF_FF_50);
-                        s_fill(s, sw, icon.x + 20, icon.y + 20, 10, 10, icon_acc);
-                    }
-                    _ => {}
-                }
-
-                // Selection / hover ring
-                if selected || hot {
-                    let ring = if selected { ACCENT } else { 0x00_00_44_88 };
-                    s_fill(s, sw, icon.x - 1, icon.y - 1, ICON_SIZE + 2, 1, ring);
-                    s_fill(
-                        s,
-                        sw,
-                        icon.x - 1,
-                        icon.y + ICON_SIZE,
-                        ICON_SIZE + 2,
-                        1,
-                        ring,
-                    );
-                    s_fill(s, sw, icon.x - 1, icon.y, 1, ICON_SIZE, ring);
-                    s_fill(s, sw, icon.x + ICON_SIZE, icon.y, 1, ICON_SIZE, ring);
+                    s_fill(s, sw, icon.x + 24, icon.y + ICON_SIZE, 4, 1, icon_acc);
                 }
 
                 // Label below icon — plain centred text, no box
@@ -4252,22 +3660,21 @@ impl WindowManager {
                 let label_w = icon.label.len() as i32 * 8;
                 let label_x = (icon.x + (ICON_SIZE - label_w) / 2).max(1);
                 let label_fg = if selected {
-                    0x00_EE_FF_FF
+                    0x00_E7_EF_F6
                 } else if app_open {
-                    blend_color(icon_acc, 0x00_DD_FF_FF, 90)
+                    blend_color(icon_acc, 0x00_DD_FF_FF, 118)
                 } else if hot {
-                    0x00_AA_DD_FF
+                    0x00_D4_E2_EB
                 } else {
-                    0x00_77_BB_EE
+                    0x00_A4_B4_C2
                 };
-                s_draw_str_small(
+                draw_desktop_label(
                     s,
                     sw,
                     label_x,
                     label_y,
                     icon.label,
                     label_fg,
-                    0, // transparent bg — draws over wallpaper
                     label_x + label_w + 4,
                 );
             }
@@ -4303,515 +3710,101 @@ impl WindowManager {
                 }
             }
 
-            // ── Taskbar — frosted glass panel ────────────────────────────────────
-            // Step 1: Darken + strong blue-tint the wallpaper underneath to fake frosted glass.
+            // ── Taskbar — glass panel ────────────────────────────────────────────
             {
                 let t0 = taskbar_y as usize;
                 let t1 = (t0 + TASKBAR_H as usize).min(s.len() / sw);
                 for row in t0..t1 {
                     for col in 0..sw {
                         let p = s[row * sw + col];
-                        // Crush red/green heavily, preserve and boost blue
-                        let r = ((p >> 16) & 0xFF) * 10 / 100;
-                        let g = ((p >> 8) & 0xFF) * 12 / 100;
-                        let b = ((p & 0xFF) * 35 / 100).saturating_add(28).min(255);
+                        let r = (((p >> 16) & 0xFF) * 18 / 100).saturating_add(15).min(255);
+                        let g = (((p >> 8) & 0xFF) * 18 / 100).saturating_add(19).min(255);
+                        let b = ((p & 0xFF) * 20 / 100).saturating_add(25).min(255);
                         s[row * sw + col] = (r << 16) | (g << 8) | b;
                     }
                 }
             }
-            // Step 2: Bright 2-px top accent border — phosphor blue glow line.
-            s_fill(s, sw, 0, taskbar_y, sw as i32, 2, 0x00_00_BB_EE);
-            s_fill(s, sw, 0, taskbar_y + 2, sw as i32, 1, 0x00_00_55_88);
+            s_fill(s, sw, 0, taskbar_y, sw as i32, 1, ACCENT);
+            s_fill(s, sw, 0, taskbar_y + 1, sw as i32, 1, 0x00_2C_3F_50);
 
-            // ── Start button — square launcher icon control ─────────────────────
+            // ── Start button — minimal Start control ────────────────────────────
             let start_hot = mx_i >= 0
                 && mx_i < START_BTN_W
                 && my_i >= taskbar_y
                 && my_i < taskbar_y + TASKBAR_H;
             let start_pressed = left && start_hot;
-            let start_active = self.start_menu_open || start_pressed;
 
-            let btn_x = 10i32;
-            let btn_y = taskbar_y + 6;
-            let btn_w = TASKBAR_H - 12;
-            let btn_h = TASKBAR_H - 12;
-            let start_bg = if start_active {
-                Some(0x00_00_1A_36)
-            } else if start_hot {
-                Some(0x00_00_12_28)
-            } else {
-                None
-            };
-            // Outer shadow/glow when active
-            if start_active {
+            let start_cell_x = 0i32;
+            let start_cell_w = START_BTN_W;
+            let underline_y = taskbar_y + TASKBAR_H - 3;
+            let active_underline_x = start_cell_x + 5;
+            let active_underline_w = start_cell_w - 10;
+            if self.start_menu_open {
                 s_fill(
                     s,
                     sw,
-                    btn_x - 2,
-                    btn_y - 2,
-                    btn_w + 4,
-                    btn_h + 4,
-                    blend_color(ACCENT, BLACK, 160),
+                    active_underline_x,
+                    underline_y,
+                    active_underline_w,
+                    2,
+                    ACCENT_HOV,
+                );
+            } else if start_pressed {
+                s_fill(
+                    s,
+                    sw,
+                    start_cell_x + 13,
+                    underline_y + 1,
+                    start_cell_w - 26,
+                    1,
+                    blend_color(ACCENT, BLACK, 96),
+                );
+            } else if start_hot {
+                s_fill(
+                    s,
+                    sw,
+                    active_underline_x,
+                    underline_y,
+                    active_underline_w,
+                    2,
+                    ACCENT_HOV,
                 );
             }
-            if let Some(bg) = start_bg {
-                s_fill(s, sw, btn_x, btn_y, btn_w, btn_h, bg);
-            }
 
-            let tile_x = btn_x + (btn_w - 18) / 2;
-            let tile_y = btn_y + (btn_h - 18) / 2;
-            let icon_primary = if start_active { WHITE } else { ACCENT_HOV };
-            let icon_secondary = if start_active {
-                blend_color(WHITE, ACCENT_HOV, 84)
+            let tile_x = start_cell_x + (start_cell_w - 18) / 2;
+            let tile_y = taskbar_y + (TASKBAR_H - 18) / 2;
+            let icon_primary = if self.start_menu_open {
+                WHITE
+            } else if start_pressed {
+                blend_color(ACCENT_HOV, BLACK, 104)
+            } else if start_hot {
+                blend_color(ACCENT_HOV, WHITE, 52)
             } else {
-                blend_color(ACCENT_HOV, WHITE, 72)
+                ACCENT_HOV
+            };
+            let icon_secondary = if self.start_menu_open {
+                blend_color(WHITE, ACCENT_HOV, 70)
+            } else if start_pressed {
+                blend_color(ACCENT_HOV, WHITE, 30)
+            } else if start_hot {
+                blend_color(ACCENT_HOV, WHITE, 130)
+            } else {
+                blend_color(ACCENT_HOV, WHITE, 104)
             };
             // coolOS snowflake mark.
             draw_snowflake_logo(s, sw, tile_x, tile_y, 1, icon_primary, icon_secondary);
 
-            // ── Start menu — shell hub with pinned and quick-launch areas ─────────
+            // ── Start menu — Windows 7-style two-column search surface ─────────
             if self.start_menu_open {
-                let prefs = crate::app_lifecycle::start_menu_prefs();
-                let menu_w = prefs.width.clamp(460, sw as i32 - 8);
-                let menu_h = prefs.height.clamp(320, taskbar_y - 4);
-                let left_w = (if prefs.compact { 230i32 } else { 280i32 }).min(menu_w - 220);
-                let right_w = menu_w - left_w;
-                let bottom_h = 36i32;
-                let left_hdr_h = 66i32;
-                let menu_x = 0i32;
-                let menu_y = taskbar_y - menu_h;
-                let bar_y = menu_y + menu_h - bottom_h;
-                let rc_x = menu_x + left_w + 1;
-                let rc_w = right_w - 2;
-                let (banner_time, banner_date) = start_menu_banner_clock(uptime_ticks);
-
-                s_fill(s, sw, menu_x, menu_y + 4, menu_w + 4, menu_h, 0x00_00_00_18);
-                s_fill(s, sw, menu_x, menu_y, left_w, menu_h, 0x00_00_07_18);
-                s_fill(
+                draw_win7_start_menu(
                     s,
                     sw,
-                    menu_x + left_w,
-                    menu_y,
-                    right_w,
-                    menu_h,
-                    0x00_00_05_12,
+                    taskbar_y,
+                    mx_i,
+                    my_i,
+                    self.start_power_menu_open,
+                    &self.start_search,
                 );
-                s_fill(s, sw, menu_x, menu_y, menu_w, 2, ACCENT);
-                s_fill(
-                    s,
-                    sw,
-                    menu_x,
-                    menu_y + 2,
-                    menu_w,
-                    2,
-                    blend_color(ACCENT, 0x00_00_07_18, 160),
-                );
-                draw_rect_border(s, sw, menu_x, menu_y, menu_w, menu_h, 0x00_00_66_BB);
-                draw_rect_border(
-                    s,
-                    sw,
-                    menu_x + 1,
-                    menu_y + 1,
-                    menu_w - 2,
-                    menu_h - 2,
-                    0x00_00_22_44,
-                );
-                s_fill(
-                    s,
-                    sw,
-                    menu_x + left_w,
-                    menu_y + 4,
-                    1,
-                    menu_h - bottom_h - 4,
-                    0x00_00_22_44,
-                );
-                s_fill(s, sw, menu_x + 1, bar_y, menu_w - 2, 1, 0x00_00_22_44);
-                let bar_bg = 0x00_00_04_10;
-                s_fill(
-                    s,
-                    sw,
-                    menu_x + 1,
-                    bar_y + 1,
-                    menu_w - 2,
-                    bottom_h - 2,
-                    bar_bg,
-                );
-
-                let left_hdr_y = menu_y + 4;
-                let left_hdr_bg = 0x00_00_0D_24;
-                s_fill(
-                    s,
-                    sw,
-                    menu_x + 1,
-                    left_hdr_y,
-                    left_w - 1,
-                    left_hdr_h,
-                    left_hdr_bg,
-                );
-                s_fill(
-                    s,
-                    sw,
-                    menu_x + 1,
-                    left_hdr_y + left_hdr_h - 1,
-                    left_w - 1,
-                    1,
-                    0x00_00_22_44,
-                );
-                s_draw_str_small(
-                    s,
-                    sw,
-                    menu_x + 10,
-                    left_hdr_y + 7,
-                    "START",
-                    0x00_00_EE_FF,
-                    left_hdr_bg,
-                    menu_x + left_w - 12,
-                );
-                let pinned_count = self.start_menu_pinned.len();
-                let recent_count = crate::app_lifecycle::recent_apps().len()
-                    + crate::app_lifecycle::recent_files().len()
-                    + crate::app_lifecycle::recent_commands().len();
-                let mut menu_summary = String::new();
-                push_decimal(&mut menu_summary, pinned_count as u64);
-                menu_summary.push_str(" pinned  ");
-                push_decimal(&mut menu_summary, recent_count as u64);
-                menu_summary.push_str(" recent");
-                s_draw_str_small(
-                    s,
-                    sw,
-                    menu_x + 60,
-                    left_hdr_y + 7,
-                    &menu_summary,
-                    0x00_33_66_88,
-                    left_hdr_bg,
-                    menu_x + left_w - 12,
-                );
-
-                let srch_x = menu_x + 8;
-                let srch_y = menu_y + 38;
-                let srch_w = left_w - 16;
-                let srch_h = 22i32;
-                let srch_bg = 0x00_00_03_0C;
-                s_fill(s, sw, srch_x, srch_y, srch_w, srch_h, srch_bg);
-                draw_rect_border(s, sw, srch_x, srch_y, srch_w, srch_h, 0x00_00_44_88);
-                let sg_x = srch_x + 5;
-                let sg_y = srch_y + 6;
-                let sg_col = 0x00_00_44_77;
-                s_fill(s, sw, sg_x + 1, sg_y, 3, 1, sg_col);
-                s_fill(s, sw, sg_x, sg_y + 1, 1, 3, sg_col);
-                s_fill(s, sw, sg_x + 4, sg_y + 1, 1, 3, sg_col);
-                s_fill(s, sw, sg_x + 1, sg_y + 4, 3, 1, sg_col);
-                s_fill(s, sw, sg_x + 4, sg_y + 4, 1, 1, sg_col);
-                s_fill(s, sw, sg_x + 5, sg_y + 5, 1, 1, sg_col);
-                s_fill(s, sw, sg_x + 6, sg_y + 6, 1, 1, sg_col);
-                s_draw_str_small(
-                    s,
-                    sw,
-                    sg_x + 10,
-                    srch_y + 6,
-                    "Search apps, files, commands",
-                    sg_col,
-                    srch_bg,
-                    srch_x + srch_w - 4,
-                );
-
-                let sd_w = 96i32;
-                let sd_x = menu_x + left_w + (right_w - sd_w) / 2;
-                let sd_y = bar_y + 8;
-                let sd_h = 20i32;
-                let sd_hot =
-                    mx_i >= sd_x && mx_i < sd_x + sd_w && my_i >= sd_y && my_i < sd_y + sd_h;
-                let sd_active = sd_hot || self.start_power_menu_open;
-                let sd_bg = if sd_active {
-                    0x00_00_22_44
-                } else {
-                    0x00_00_10_28
-                };
-                s_fill(s, sw, sd_x, sd_y, sd_w, sd_h, sd_bg);
-                draw_rect_border(s, sw, sd_x, sd_y, sd_w, sd_h, 0x00_00_44_88);
-                let pw_x = sd_x + 7;
-                let pw_y = sd_y + 5;
-                let pw_c = 0x00_00_66_99;
-                s_fill(s, sw, pw_x + 3, pw_y, 2, 4, pw_c);
-                s_fill(s, sw, pw_x + 1, pw_y + 3, 1, 1, pw_c);
-                s_fill(s, sw, pw_x + 6, pw_y + 3, 1, 1, pw_c);
-                s_fill(s, sw, pw_x, pw_y + 4, 1, 3, pw_c);
-                s_fill(s, sw, pw_x + 7, pw_y + 4, 1, 3, pw_c);
-                s_fill(s, sw, pw_x + 1, pw_y + 7, 6, 1, pw_c);
-                s_draw_str_small(
-                    s,
-                    sw,
-                    pw_x + 12,
-                    sd_y + 6,
-                    "Power",
-                    if sd_active { WHITE } else { 0x00_88_CC_FF },
-                    sd_bg,
-                    sd_x + sd_w - 16,
-                );
-                let caret = if sd_active { WHITE } else { 0x00_88_CC_FF };
-                s_fill(s, sw, sd_x + sd_w - 12, sd_y + 7, 5, 1, caret);
-                s_fill(s, sw, sd_x + sd_w - 11, sd_y + 6, 3, 1, caret);
-                s_fill(s, sw, sd_x + sd_w - 10, sd_y + 5, 1, 1, caret);
-
-                let item_h = if prefs.compact { 32i32 } else { 40i32 };
-                let items_y = menu_y + left_hdr_h + 8;
-                let pinned_apps = &self.start_menu_pinned;
-                let pinned_limit = pinned_apps.len().min(start_menu_pinned_limit(
-                    menu_h, bottom_h, left_hdr_h, item_h,
-                ));
-                let mut left_hov: Option<usize> = None;
-                if mx_i > menu_x
-                    && mx_i < menu_x + left_w
-                    && my_i >= items_y
-                    && my_i < items_y + item_h * pinned_limit as i32
-                {
-                    left_hov = Some(((my_i - items_y) / item_h) as usize);
-                }
-
-                for (i, name) in pinned_apps.iter().take(pinned_limit).enumerate() {
-                    let iy = items_y + i as i32 * item_h;
-                    let is_hov = left_hov == Some(i);
-                    let row_bg = if is_hov { 0x00_00_14_30 } else { 0x00_00_07_18 };
-                    let kind = start_item_kind(name);
-                    let acc = launcher_kind_accent(&kind);
-                    let glyph = launcher_kind_glyph(&kind);
-                    if is_hov {
-                        s_fill(s, sw, menu_x + 1, iy, left_w - 1, item_h - 1, row_bg);
-                        s_fill(s, sw, menu_x + 1, iy + 8, 3, item_h - 17, ACCENT);
-                    }
-
-                    let icon_x = menu_x + 10;
-                    let icon_y = iy + (item_h - 24) / 2;
-                    let icon_bg = blend_color(0x00_00_0B_20, acc, 55);
-                    s_fill(s, sw, icon_x, icon_y, 24, 24, icon_bg);
-                    s_fill(s, sw, icon_x, icon_y, 24, 3, acc);
-                    s_draw_str_small(
-                        s,
-                        sw,
-                        icon_x + 5,
-                        icon_y + 9,
-                        glyph,
-                        acc,
-                        icon_bg,
-                        icon_x + 22,
-                    );
-                    let text_left = menu_x + 40;
-                    let text_right = menu_x + left_w - 24;
-                    let display_name = start_item_label(name);
-                    s_draw_str_small(
-                        s,
-                        sw,
-                        text_left,
-                        iy + if prefs.compact { 7 } else { 9 },
-                        &display_name,
-                        if is_hov { WHITE } else { 0x00_AA_DD_FF },
-                        row_bg,
-                        text_right,
-                    );
-                    let detail = start_item_detail(name);
-                    s_draw_str_small(
-                        s,
-                        sw,
-                        text_left,
-                        iy + if prefs.compact { 18 } else { 22 },
-                        &detail,
-                        if is_hov { 0x00_66_AA_DD } else { 0x00_44_77_99 },
-                        row_bg,
-                        text_right,
-                    );
-                    if i + 1 < pinned_limit {
-                        s_fill(
-                            s,
-                            sw,
-                            menu_x + 8,
-                            iy + item_h - 1,
-                            left_w - 16,
-                            1,
-                            if is_hov { 0x00_00_10_24 } else { 0x00_00_1A_36 },
-                        );
-                    }
-                }
-
-                let all_y = bar_y - item_h;
-                let all_hot = mx_i > menu_x
-                    && mx_i < menu_x + left_w
-                    && my_i >= all_y
-                    && my_i < all_y + item_h;
-                s_fill(s, sw, menu_x + 8, all_y, left_w - 16, 1, 0x00_00_22_44);
-                if all_hot {
-                    s_fill(
-                        s,
-                        sw,
-                        menu_x + 1,
-                        all_y,
-                        left_w - 1,
-                        item_h - 1,
-                        0x00_00_14_30,
-                    );
-                }
-                let all_bg = if all_hot {
-                    0x00_00_14_30
-                } else {
-                    0x00_00_07_18
-                };
-                s_draw_str_small(
-                    s,
-                    sw,
-                    menu_x + 10,
-                    all_y + 16,
-                    "All Programs",
-                    if all_hot { WHITE } else { 0x00_88_CC_FF },
-                    all_bg,
-                    menu_x + left_w - 20,
-                );
-                let chv_x = menu_x + left_w - 14;
-                let chv_mid = all_y + item_h / 2;
-                let chv_col = if all_hot { ACCENT } else { 0x00_00_33_55 };
-                s_fill(s, sw, chv_x, chv_mid - 3, 1, 4, chv_col);
-                s_fill(s, sw, chv_x + 1, chv_mid - 1, 1, 2, chv_col);
-
-                let banner_x = rc_x + 6;
-                let banner_y = menu_y + 10;
-                let banner_w = rc_w - 12;
-                let banner_h = 112i32;
-                let banner_bg = 0x00_00_0A_20;
-                let session_user = crate::security::current_user();
-                s_fill(s, sw, banner_x, banner_y, banner_w, banner_h, banner_bg);
-                draw_rect_border(s, sw, banner_x, banner_y, banner_w, banner_h, 0x00_00_33_66);
-                let av_x = banner_x + 8;
-                let av_y = banner_y + 10;
-                s_fill(s, sw, av_x, av_y, 40, 40, 0x00_00_10_28);
-                draw_rect_border(s, sw, av_x, av_y, 40, 40, ACCENT);
-                s_fill(s, sw, av_x + 14, av_y + 6, 12, 10, 0x00_00_55_88);
-                s_fill(s, sw, av_x + 9, av_y + 20, 22, 14, 0x00_00_44_77);
-                let clock_right = banner_x + banner_w - 10;
-                let time_x = clock_right - banner_time.chars().count() as i32 * 8;
-                let date_x = av_x + 48;
-                let date_y = av_y + 16;
-                s_draw_str_small(
-                    s,
-                    sw,
-                    av_x + 48,
-                    av_y + 4,
-                    &session_user.name,
-                    0x00_CC_EE_FF,
-                    banner_bg,
-                    banner_x + banner_w - 10,
-                );
-                s_draw_str_small(
-                    s,
-                    sw,
-                    time_x,
-                    av_y + 4,
-                    &banner_time,
-                    0x00_CC_EE_FF,
-                    banner_bg,
-                    clock_right,
-                );
-                s_draw_str_small(
-                    s,
-                    sw,
-                    date_x,
-                    date_y,
-                    &banner_date,
-                    0x00_44_88_BB,
-                    banner_bg,
-                    clock_right,
-                );
-                s_draw_str_small(
-                    s,
-                    sw,
-                    date_x,
-                    date_y + 12,
-                    &session_user.role,
-                    0x00_66_AA_DD,
-                    banner_bg,
-                    clock_right,
-                );
-
-                draw_start_menu_quick_actions(
-                    s,
-                    sw,
-                    banner_x,
-                    banner_y,
-                    banner_w,
-                    mx_i - banner_x,
-                    my_i - banner_y,
-                );
-
-                let link_h = 22i32;
-                let links_y = banner_y + banner_h + 8;
-                let entries = &self.start_menu_entries;
-                let mut last_section = "";
-                let mut row_y = links_y;
-                for entry in entries.iter() {
-                    if entry.section != last_section {
-                        if row_y + START_MENU_SECTION_H > bar_y - 8 {
-                            break;
-                        }
-                        s_draw_str_small(
-                            s,
-                            sw,
-                            rc_x + 10,
-                            row_y + 2,
-                            entry.section,
-                            0x00_44_77_99,
-                            0x00_00_05_12,
-                            rc_x + rc_w - 4,
-                        );
-                        row_y += START_MENU_SECTION_H;
-                        last_section = entry.section;
-                    }
-                    let ly = row_y;
-                    if ly + link_h > bar_y - 8 {
-                        break;
-                    }
-                    let is_hov =
-                        mx_i >= rc_x && mx_i < rc_x + rc_w && my_i >= ly && my_i < ly + link_h;
-                    let link_bg = if is_hov { 0x00_00_14_30 } else { 0x00_00_05_12 };
-                    if is_hov {
-                        s_fill(s, sw, rc_x, ly, rc_w, link_h - 1, link_bg);
-                        s_fill(s, sw, rc_x, ly + 6, 2, link_h - 13, ACCENT);
-                    }
-                    let glyph = launcher_kind_glyph(&entry.kind);
-                    s_draw_str_small(
-                        s,
-                        sw,
-                        rc_x + 10,
-                        ly + 7,
-                        glyph,
-                        launcher_kind_accent(&entry.kind),
-                        link_bg,
-                        rc_x + 28,
-                    );
-                    s_draw_str_small(
-                        s,
-                        sw,
-                        rc_x + 34,
-                        ly + 7,
-                        &entry.label,
-                        if is_hov { WHITE } else { 0x00_88_CC_FF },
-                        link_bg,
-                        rc_x + rc_w - 72,
-                    );
-                    s_draw_str_small(
-                        s,
-                        sw,
-                        rc_x + rc_w - 68,
-                        ly + 7,
-                        &entry.detail,
-                        0x00_44_77_99,
-                        link_bg,
-                        rc_x + rc_w - 4,
-                    );
-                    row_y += link_h;
-                }
-
-                if self.start_power_menu_open {
-                    let (power_x, power_y, power_w, power_h) =
-                        start_power_menu_rect(sd_x, sd_y, sd_w, menu_x, menu_y, menu_w);
-                    draw_start_power_menu(s, sw, power_x, power_y, power_w, power_h, mx_i, my_i);
-                }
             }
 
             // ── Taskbar window tabs — icon-first strip ───────────────────────────
@@ -4840,14 +3833,13 @@ impl WindowManager {
                 let hovered = hovered_taskbar_window == Some(i);
                 let title = self.windows[i].window().title;
                 let accent = window_accent(title);
-                let glyph = window_glyph(title);
 
                 let bh = TASKBAR_H - 4;
                 let by = taskbar_y + 2;
                 let bg = if focused {
-                    0x00_00_28_55
+                    0x00_1F_32_42
                 } else if hovered {
-                    0x00_00_16_32
+                    0x00_18_25_32
                 } else {
                     0x00_00_00_00
                 };
@@ -4866,7 +3858,7 @@ impl WindowManager {
                         taskbar_y + 2,
                         BUTTON_W,
                         1,
-                        blend_color(accent, BLACK, 170),
+                        blend_color(accent, BLACK, 190),
                     );
                 } else if hovered {
                     s_fill(
@@ -4876,7 +3868,7 @@ impl WindowManager {
                         taskbar_y + TASKBAR_H - 2,
                         BUTTON_W,
                         1,
-                        0x00_00_55_99,
+                        0x00_3B_4C_5E,
                     );
                 }
                 if minimized {
@@ -4887,37 +3879,13 @@ impl WindowManager {
                         taskbar_y + TASKBAR_H - 4,
                         8,
                         2,
-                        0x00_00_66_AA,
+                        0x00_69_86_9C,
                     );
                 }
 
                 let icon_x = bx + 10;
                 let icon_y = by + (bh - 16) / 2;
-                let icon_bg = if focused || hovered {
-                    blend_color(bg, accent, 70)
-                } else {
-                    blend_color(0x00_00_0B_20, accent, 65)
-                };
-                s_fill(s, sw, icon_x, icon_y, 16, 16, icon_bg);
-                draw_rect_border(
-                    s,
-                    sw,
-                    icon_x,
-                    icon_y,
-                    16,
-                    16,
-                    blend_color(accent, WHITE, 80),
-                );
-                s_draw_str_small(
-                    s,
-                    sw,
-                    icon_x + 3,
-                    icon_y + 4,
-                    glyph,
-                    accent,
-                    icon_bg,
-                    icon_x + 14,
-                );
+                draw_shell_app_icon(s, sw, icon_x, icon_y, 16, desktop_icon_kind(title));
 
                 let trunc = if title.len() > 14 {
                     &title[..14]
@@ -4933,11 +3901,11 @@ impl WindowManager {
                     by + (bh - 8) / 2,
                     trunc,
                     if focused {
-                        0x00_CC_EE_FF
+                        0x00_E7_EF_F6
                     } else if hovered {
-                        0x00_66_BB_EE
+                        0x00_B5_C7_D4
                     } else {
-                        0x00_44_88_BB
+                        0x00_7B_8D_9D
                     },
                     bg,
                     (text_x + text_w).min(bx + BUTTON_W - 8),
@@ -4965,202 +3933,8 @@ impl WindowManager {
                 }
             }
 
-            // ── Clock / system tray — refined phosphor readout ────────────────────
-            let clock_sep_x = sw as i32 - TASKBAR_CLOCK_W - 4;
-            // Thin left separator
-            s_fill(
-                s,
-                sw,
-                clock_sep_x,
-                taskbar_y + 4,
-                1,
-                TASKBAR_H - 8,
-                0x00_00_44_88,
-            );
-
-            let clk_x = clock_sep_x + 4;
-            let clk_w = TASKBAR_CLOCK_W - 4;
-            let tray_icon_gap = 20i32;
-            let clock_box_x = clk_x + TASKBAR_TRAY_W;
-            let clock_box_w = clk_w - TASKBAR_TRAY_W;
-            let usb_lines = crate::usb::status_lines();
-            let (usb_keyboard, usb_mouse) = crate::usb::input_presence();
-            let usb_present = !usb_lines.is_empty();
-            let usb_active = usb_lines
-                .iter()
-                .any(|line| line.contains("active init ready"));
-            let pulse_step = (crate::interrupts::TIMER_HZ / 8).max(1) as u64;
-            let pulse = ((uptime_ticks / pulse_step) % 28) as u32;
-            let usb_col = if usb_active {
-                blend_color(0x00_00_EE_FF, ACCENT_HOV, pulse * 4)
-            } else if usb_present {
-                0x00_55_AA_DD
-            } else {
-                0x00_22_44_66
-            };
-            let kbd_col = if usb_keyboard {
-                0x00_00_FF_88
-            } else {
-                0x00_33_55_44
-            };
-            let mouse_col = if usb_mouse {
-                0x00_FF_DD_55
-            } else {
-                0x00_55_55_44
-            };
-
-            // Center three icons horizontally in tray zone, vertically in taskbar.
-            let icon_span = tray_icon_gap * 2 + 13;
-            let tray_x = clk_x + (TASKBAR_TRAY_W - icon_span) / 2;
-            let tray_y = taskbar_y + (TASKBAR_H - 12) / 2;
-            let usb_hot = mx_i >= tray_x
-                && mx_i < tray_x + 12
-                && my_i >= taskbar_y + 2
-                && my_i < taskbar_y + TASKBAR_H;
-            let kbd_hot = mx_i >= tray_x + tray_icon_gap
-                && mx_i < tray_x + tray_icon_gap + 14
-                && my_i >= taskbar_y + 2
-                && my_i < taskbar_y + TASKBAR_H;
-            let mse_hot = mx_i >= tray_x + tray_icon_gap * 2
-                && mx_i < tray_x + tray_icon_gap * 2 + 14
-                && my_i >= taskbar_y + 2
-                && my_i < taskbar_y + TASKBAR_H;
-            if usb_hot {
-                s_fill(
-                    s,
-                    sw,
-                    tray_x - 3,
-                    taskbar_y + 3,
-                    17,
-                    TASKBAR_H - 6,
-                    0x00_00_18_38,
-                );
-            }
-            if kbd_hot {
-                s_fill(
-                    s,
-                    sw,
-                    tray_x + tray_icon_gap - 3,
-                    taskbar_y + 3,
-                    20,
-                    TASKBAR_H - 6,
-                    0x00_00_18_38,
-                );
-            }
-            if mse_hot {
-                s_fill(
-                    s,
-                    sw,
-                    tray_x + tray_icon_gap * 2 - 3,
-                    taskbar_y + 3,
-                    17,
-                    TASKBAR_H - 6,
-                    0x00_00_18_38,
-                );
-            }
-
-            let clk_bg = 0x00_00_00_00;
-
-            // Small tray icons: controller, keyboard, mouse.
-            draw_usb_tray_icon(s, sw, tray_x, tray_y, usb_col);
-            draw_keyboard_tray_icon(s, sw, tray_x + tray_icon_gap, tray_y, kbd_col);
-            draw_mouse_tray_icon(s, sw, tray_x + tray_icon_gap * 2, tray_y, mouse_col);
-
-            // Separator between icons and clock.
-            s_fill(
-                s,
-                sw,
-                clock_box_x - 5,
-                taskbar_y + 7,
-                1,
-                TASKBAR_H - 14,
-                0x00_00_33_66,
-            );
-
-            // Two-line clock: uptime HH:MM on top, brand below.
-            {
-                let secs = uptime_ticks / crate::interrupts::TIMER_HZ as u64;
-                let h = (secs / 3600) % 24;
-                let m = (secs / 60) % 60;
-                let buf = [
-                    b'0' + (h / 10) as u8,
-                    b'0' + (h % 10) as u8,
-                    b':',
-                    b'0' + (m / 10) as u8,
-                    b'0' + (m % 10) as u8,
-                ];
-                if let Ok(time_str) = core::str::from_utf8(&buf) {
-                    let time_w = 5 * 8;
-                    let time_x = clock_box_x + (clock_box_w - time_w) / 2;
-                    // Phosphor glow — dim halo 1px around digits
-                    s_draw_str_small(
-                        s,
-                        sw,
-                        time_x - 1,
-                        taskbar_y + 7,
-                        time_str,
-                        0x00_00_44_77, // dim glow behind
-                        clk_bg,
-                        clock_box_x + clock_box_w,
-                    );
-                    s_draw_str_small(
-                        s,
-                        sw,
-                        time_x,
-                        taskbar_y + 8,
-                        time_str,
-                        0x00_00_FF_FF, // bright cyan phosphor clock digits
-                        clk_bg,
-                        clock_box_x + clock_box_w,
-                    );
-                }
-            }
-            {
-                let workspace = workspace_label(current_workspace);
-                s_draw_str_small(
-                    s,
-                    sw,
-                    clock_box_x + 8,
-                    taskbar_y + 22,
-                    workspace,
-                    ACCENT_HOV,
-                    clk_bg,
-                    clock_box_x + clock_box_w,
-                );
-                let brand_w = 6 * 8;
-                let brand_x = clock_box_x + clock_box_w - brand_w - 8;
-                s_draw_str_small(
-                    s,
-                    sw,
-                    brand_x,
-                    taskbar_y + 22,
-                    "coolOS",
-                    0x00_00_88_BB,
-                    clk_bg,
-                    clock_box_x + clock_box_w,
-                );
-            }
-            let unread = crate::notifications::unread_count();
-            if unread > 0 {
-                let badge_x = clock_box_x + clock_box_w - 22;
-                let badge_y = taskbar_y + 5;
-                s_fill(s, sw, badge_x, badge_y, 16, 10, 0x00_BB_22_22);
-                draw_rect_border(s, sw, badge_x, badge_y, 16, 10, 0x00_FF_88_88);
-                let count_char = if unread > 9 {
-                    '+'
-                } else {
-                    (b'0' + unread as u8) as char
-                };
-                s_draw_char_small(
-                    s,
-                    sw,
-                    badge_x + 4,
-                    badge_y + 1,
-                    count_char,
-                    WHITE,
-                    0x00_BB_22_22,
-                );
-            }
+            // ── Clock / system tray ──────────────────────────────────────────────
+            draw_taskbar_tray(s, sw, taskbar_y, uptime_ticks, mx_i, my_i);
 
             // ── Context menu ──────────────────────────────────────────────────────
             if let Some(ref cm) = self.context_menu {
@@ -5183,13 +3957,9 @@ impl WindowManager {
             }
 
             if self.notification_center_open {
-                draw_notification_center(s, sw, taskbar_y);
+                draw_notification_center(s, sw, taskbar_y, mx_i, my_i);
             } else {
                 draw_notification_toasts(s, sw, taskbar_y, uptime_ticks);
-            }
-
-            if let Some(ref launcher) = self.launcher {
-                draw_launcher_overlay(s, sw, taskbar_y, launcher);
             }
 
             if self.task_switcher_until_tick > uptime_ticks {
@@ -5687,11 +4457,10 @@ impl WindowManager {
         cursor_y: i32,
     ) {
         // ── Drop shadow ───────────────────────────────────────────────────────
-        // Six-sided soft shadow with smooth cubic falloff
-        const SHADOW_R: i32 = 8;
+        const SHADOW_R: i32 = 10;
         for d in 1..=SHADOW_R {
             let t = (SHADOW_R - d + 1) as u32;
-            let alpha = (t * t * 3 / SHADOW_R as u32).min(48); // cubic falloff
+            let alpha = (t * t * 2 / SHADOW_R as u32).min(38);
             let shadow_col = alpha << 24;
             let sx = w.x + w.width + d - 1;
             let sy = w.y + w.height + d - 1;
@@ -5702,20 +4471,16 @@ impl WindowManager {
         }
 
         if focused {
-            // Outer dim glow ring (3px out)
-            let outer_glow = blend_color(ACCENT, BLACK, 190);
+            let outer_glow = blend_color(ACCENT, BLACK, 176);
             draw_rect_border(
                 s,
                 sw,
-                w.x - 3,
-                w.y - 3,
-                w.width + 6,
-                w.height + 6,
+                w.x - 2,
+                w.y - 2,
+                w.width + 4,
+                w.height + 4,
                 outer_glow,
             );
-            // Inner bright 2px border
-            let glow = blend_color(ACCENT, BLACK, 100);
-            draw_rect_border(s, sw, w.x - 2, w.y - 2, w.width + 4, w.height + 4, glow);
             draw_rect_border(
                 s,
                 sw,
@@ -5727,19 +4492,14 @@ impl WindowManager {
             );
         }
 
-        // ── Title bar — CRT phosphor chrome ──────────────────────────────────
+        // ── Title bar ────────────────────────────────────────────────────────
         let title_bg = if focused { WIN_BAR_F } else { WIN_BAR_U };
-        // 3-stop gradient: highlight → mid navy → base
         let title_top = if focused {
-            blend_color(ACCENT, WIN_BAR_F, 180) // bright phosphor highlight
+            blend_color(WIN_BAR_F, WHITE, 12)
         } else {
-            blend_color(WIN_BAR_F, WIN_BAR_U, 80)
+            blend_color(WIN_BAR_U, WHITE, 6)
         };
-        let title_mid = if focused {
-            blend_color(ACCENT, WIN_BAR_F, 230)
-        } else {
-            WIN_BAR_U
-        };
+        let title_mid = if focused { WIN_BAR_F } else { WIN_BAR_U };
         for row in 0..TITLE_H {
             let t = (row * 255 / TITLE_H.max(1)) as u32;
             let shade = if t < 128 {
@@ -5753,9 +4513,9 @@ impl WindowManager {
         // ── Window border ─────────────────────────────────────────────────────
         let bord = if focused { WIN_BDR_F } else { WIN_BDR_U };
         let bord_inner = if focused {
-            blend_color(ACCENT, WIN_BAR_F, 210)
+            blend_color(WIN_BDR_F, WHITE, 42)
         } else {
-            blend_color(WIN_BDR_U, BLACK, 160)
+            blend_color(WIN_BDR_U, WHITE, 18)
         };
         s_fill(s, sw, w.x - 1, w.y - 1, w.width + 2, 1, bord); // top outer
         s_fill(s, sw, w.x, w.y, w.width, 1, bord_inner); // top inner shine
@@ -5764,41 +4524,17 @@ impl WindowManager {
         s_fill(s, sw, w.x + w.width, w.y, 1, w.height, bord); // right
 
         // ── Title icon + text ─────────────────────────────────────────────────
-        let accent = window_accent(w.title);
-        let glyph = window_glyph(w.title);
         let title_content_y = w.y + 3;
         let title_content_h = TITLE_H - 3;
         let icon_x = w.x + 8;
         let icon_y = title_content_y + (title_content_h - 18) / 2;
-        let icon_bg = blend_color(title_bg, accent, if focused { 120 } else { 75 });
-        // Slightly taller icon badge to fill the taller title bar
-        s_fill(s, sw, icon_x, icon_y, 18, 18, icon_bg);
-        s_fill(s, sw, icon_x, icon_y, 18, 3, accent); // accent top stripe on badge
-        draw_rect_border(
-            s,
-            sw,
-            icon_x,
-            icon_y,
-            18,
-            18,
-            blend_color(accent, WHITE, 80),
-        );
-        s_draw_str_small(
-            s,
-            sw,
-            icon_x + 4,
-            icon_y + 5,
-            glyph,
-            accent,
-            icon_bg,
-            icon_x + 16,
-        );
+        draw_shell_app_icon(s, sw, icon_x, icon_y, 18, desktop_icon_kind(w.title));
 
         let max_title_x = w.x + w.width - WIN_BTN_W * 3 - 10;
         let title_fg = if focused {
-            0x00_CC_EE_FF
+            0x00_E7_EF_F6
         } else {
-            0x00_00_55_88
+            0x00_7F_8D_9B
         };
         s_draw_str_small(
             s,
@@ -5811,7 +4547,7 @@ impl WindowManager {
             max_title_x,
         );
 
-        // ── Caption buttons — CRT phosphor style ──────────────────────────────
+        // ── Caption buttons ──────────────────────────────────────────────────
         let btn_y = w.y + 1;
         let btn_h = TITLE_H - 2;
         let cap_glyph_mid_y = btn_y + 3 + (btn_h - 3) / 2;
@@ -5835,7 +4571,7 @@ impl WindowManager {
             btn_h,
             if hover_min { CAP_HOV } else { CAP_NORMAL },
         );
-        let min_glyph = if hover_min { WHITE } else { 0x00_00_99_FF };
+        let min_glyph = if hover_min { WHITE } else { 0x00_90_A4_B8 };
         s_fill(
             s,
             sw,
@@ -5856,7 +4592,7 @@ impl WindowManager {
             btn_h,
             if hover_max { CAP_HOV } else { CAP_NORMAL },
         );
-        let max_glyph = if hover_max { WHITE } else { 0x00_00_99_FF };
+        let max_glyph = if hover_max { WHITE } else { 0x00_90_A4_B8 };
         s_fill(
             s,
             sw,
@@ -5907,7 +4643,7 @@ impl WindowManager {
             btn_h,
             if hover_close { CLOSE_HOV } else { CLOSE_REST },
         );
-        let cls_glyph = if hover_close { WHITE } else { 0x00_FF_44_44 };
+        let cls_glyph = if hover_close { WHITE } else { 0x00_F4_77_77 };
         for i in -3i32..=3 {
             s_put(s, sw, sh_wnd, cx_c + i, cy_c + i, cls_glyph);
             s_put(s, sw, sh_wnd, cx_c + i + 1, cy_c + i, cls_glyph);
@@ -5915,26 +4651,31 @@ impl WindowManager {
             s_put(s, sw, sh_wnd, cx_c + i + 1, cy_c - i, cls_glyph);
         }
 
-        // Accent stripe drawn last so it runs end-to-end over the caption buttons too
+        // Accent rail drawn last so it runs end-to-end over the caption buttons too.
+        let rail = if focused {
+            ACCENT
+        } else {
+            blend_color(ACCENT, WIN_BAR_U, 82)
+        };
+        s_fill(s, sw, w.x, w.y, w.width, if focused { 2 } else { 1 }, rail);
+        s_fill(
+            s,
+            sw,
+            w.x,
+            w.y + if focused { 2 } else { 1 },
+            w.width,
+            1,
+            blend_color(rail, title_bg, 150),
+        );
         if focused {
-            s_fill(s, sw, w.x, w.y, w.width, 3, ACCENT); // 3px bright stripe
             s_fill(
                 s,
                 sw,
                 w.x,
-                w.y + 3,
-                w.width,
-                2,
-                blend_color(ACCENT, WIN_BAR_F, 160),
-            );
-            s_fill(
-                s,
-                sw,
-                w.x,
-                w.y + 5,
+                w.y + TITLE_H - 1,
                 w.width,
                 1,
-                blend_color(ACCENT, WIN_BAR_F, 220),
+                blend_color(WIN_BDR_F, WIN_BAR_F, 112),
             );
         }
 
@@ -5958,9 +4699,8 @@ impl WindowManager {
                 let row_start = src_row * cw + src_x0;
                 let src = &w.buf[row_start..row_start + visible_w];
                 let dst = &mut s[dst_y * sw + dst_x0..dst_y * sw + dst_x1];
-                let dim_scanline = src_row % 3 == 2;
 
-                if !src.contains(&WIN_TRANSPARENT) && !dim_scanline {
+                if !src.contains(&WIN_TRANSPARENT) {
                     dst.copy_from_slice(src);
                     continue;
                 }
@@ -5971,14 +4711,7 @@ impl WindowManager {
                     } else {
                         pixel
                     };
-                    *out = if dim_scanline {
-                        let r = ((base >> 16) & 0xFF) * 220 / 255;
-                        let g = ((base >> 8) & 0xFF) * 220 / 255;
-                        let b = (base & 0xFF) * 220 / 255;
-                        (r << 16) | (g << 8) | b
-                    } else {
-                        base
-                    };
+                    *out = base;
                 }
             }
         }
@@ -5988,24 +4721,19 @@ impl WindowManager {
         if w.scroll.needs_scrollbar(view_h) {
             let sb_x = w.x + w.width - SCROLLBAR_W;
             let track_h = view_h;
-            // Track background
-            s_fill(s, sw, sb_x, content_y, SCROLLBAR_W, track_h, 0x00_00_03_0A);
-            // Left edge separator (2px with gradient)
-            s_fill(s, sw, sb_x, content_y, 1, track_h, 0x00_00_22_44);
-            s_fill(s, sw, sb_x + 1, content_y, 1, track_h, 0x00_00_0C_18);
-            // Thumb
+            s_fill(s, sw, sb_x, content_y, SCROLLBAR_W, track_h, 0x00_0B_11_19);
+            s_fill(s, sw, sb_x, content_y, 1, track_h, 0x00_23_2F_3D);
             let (thumb_y, thumb_h) = w.scroll.thumb_rect(view_h, track_h);
             let thumb_col = if focused {
-                0x00_00_55_AA
+                0x00_38_5A_6E
             } else {
-                0x00_00_28_55
+                0x00_28_35_46
             };
             let thumb_highlight = if focused {
-                0x00_00_88_DD
+                0x00_5C_AE_C3
             } else {
-                0x00_00_44_77
+                0x00_44_55_66
             };
-            // Thumb body
             s_fill(
                 s,
                 sw,
@@ -6015,19 +4743,6 @@ impl WindowManager {
                 thumb_h,
                 thumb_col,
             );
-            // Thumb center highlight stripe
-            if thumb_h >= 4 {
-                s_fill(
-                    s,
-                    sw,
-                    sb_x + SCROLLBAR_W / 2 - 1,
-                    content_y + thumb_y + 2,
-                    2,
-                    thumb_h - 4,
-                    thumb_highlight,
-                );
-            }
-            // Thumb top/bottom edge lines
             s_fill(
                 s,
                 sw,
@@ -6053,16 +4768,15 @@ impl WindowManager {
             let hx = w.x + w.width - RESIZE_HANDLE;
             let hy = w.y + w.height - RESIZE_HANDLE;
             let gc = if focused {
-                0x00_00_77_BB
+                0x00_5C_AE_C3
             } else {
-                0x00_00_2A_55
+                0x00_35_43_54
             };
             let gc_dim = if focused {
-                0x00_00_33_66
+                0x00_2E_5C_70
             } else {
-                0x00_00_14_28
+                0x00_1A_25_32
             };
-            // Four 2×2 dots — stair-stepping toward corner
             s_fill(s, sw, hx + 7, hy + 7, 2, 2, gc);
             s_fill(s, sw, hx + 5, hy + 7, 2, 2, gc_dim);
             s_fill(s, sw, hx + 7, hy + 5, 2, 2, gc_dim);
@@ -6093,2471 +4807,6 @@ fn mouse_event_packet(buttons: u8, lx: i32, ly: i32) -> [u8; EVENT_PACKET_SIZE] 
     packet
 }
 
-fn ctx_submenu_entries(submenu: DesktopContextSubmenu) -> &'static [ContextEntryDef] {
-    match submenu {
-        DesktopContextSubmenu::View => CTX_VIEW_MENU,
-        DesktopContextSubmenu::SortBy => CTX_SORT_MENU,
-        DesktopContextSubmenu::New => CTX_NEW_MENU,
-    }
-}
-
-fn ctx_entry_h(entry: ContextEntryDef) -> i32 {
-    match entry.kind {
-        ContextEntryKind::Separator => CTX_SEP_H,
-        _ => CTX_ITEM_H,
-    }
-}
-
-fn ctx_menu_height(entries: &[ContextEntryDef]) -> i32 {
-    CTX_HEADER_H + CTX_PAD * 2 + entries.iter().map(|entry| ctx_entry_h(*entry)).sum::<i32>()
-}
-
-fn ctx_entry_y(entries: &[ContextEntryDef], menu_y: i32, target_idx: usize) -> i32 {
-    let mut y = menu_y + CTX_HEADER_H + CTX_PAD;
-    for (idx, entry) in entries.iter().enumerate() {
-        if idx == target_idx {
-            return y;
-        }
-        y += ctx_entry_h(*entry);
-    }
-    y
-}
-
-fn ctx_menu_hit_index(
-    entries: &[ContextEntryDef],
-    menu_x: i32,
-    menu_y: i32,
-    menu_w: i32,
-    px: i32,
-    py: i32,
-) -> Option<usize> {
-    if px < menu_x
-        || px >= menu_x + menu_w
-        || py < menu_y
-        || py >= menu_y + ctx_menu_height(entries)
-    {
-        return None;
-    }
-
-    let mut y = menu_y + CTX_HEADER_H + CTX_PAD;
-    for (idx, entry) in entries.iter().enumerate() {
-        let h = ctx_entry_h(*entry);
-        if py >= y && py < y + h {
-            return match entry.kind {
-                ContextEntryKind::Separator => None,
-                _ => Some(idx),
-            };
-        }
-        y += h;
-    }
-    None
-}
-
-fn ctx_submenu_rect(
-    menu_x: i32,
-    menu_y: i32,
-    submenu: DesktopContextSubmenu,
-    sw: i32,
-    taskbar_y: i32,
-) -> (i32, i32, i32, i32) {
-    let parent_idx = DESKTOP_CONTEXT_MENU
-        .iter()
-        .position(|entry| entry.kind == ContextEntryKind::Submenu(submenu))
-        .unwrap_or(0);
-    let entries = ctx_submenu_entries(submenu);
-    let h = ctx_menu_height(entries);
-    let parent_y = ctx_entry_y(DESKTOP_CONTEXT_MENU, menu_y, parent_idx);
-    let mut x = menu_x + CTX_W - 6;
-    if x + CTX_SUB_W > sw {
-        x = (menu_x - CTX_SUB_W + 6).max(0);
-    }
-    let mut y = (parent_y - 4).max(0);
-    if y + h > taskbar_y {
-        y = (taskbar_y - h).max(0);
-    }
-    (x, y, CTX_SUB_W, h)
-}
-
-fn create_root_item(
-    prefix: &str,
-    ext: Option<&str>,
-    is_dir: bool,
-) -> Result<String, crate::fat32::FsError> {
-    let entries = crate::vfs::vfs_list_dir("/").unwrap_or_default();
-    for n in 1..10_000usize {
-        let mut name = String::from(prefix);
-        push_decimal(&mut name, n as u64);
-        if let Some(ext) = ext {
-            name.push('.');
-            name.push_str(ext);
-        }
-        if entries
-            .iter()
-            .any(|entry| entry.name.eq_ignore_ascii_case(&name))
-        {
-            continue;
-        }
-        let mut path = String::from("/");
-        path.push_str(&name);
-        if is_dir {
-            crate::vfs::vfs_create_dir(&path)?;
-        } else {
-            crate::vfs::vfs_create_file(&path)?;
-        }
-        return Ok(path);
-    }
-    Err(crate::fat32::FsError::NoSpace)
-}
-
-fn push_decimal(out: &mut String, mut n: u64) {
-    if n == 0 {
-        out.push('0');
-        return;
-    }
-    let mut digits = [0u8; 20];
-    let mut len = 0usize;
-    while n > 0 {
-        digits[len] = b'0' + (n % 10) as u8;
-        n /= 10;
-        len += 1;
-    }
-    for idx in (0..len).rev() {
-        out.push(digits[idx] as char);
-    }
-}
-
-#[derive(Clone, Copy)]
-struct WallpaperPalette {
-    tl: u32,
-    tr: u32,
-    bl: u32,
-    br: u32,
-    bloom: u32,
-    star_tint: u32,
-}
-
-fn wallpaper_palette(preset: WallpaperPreset) -> WallpaperPalette {
-    match preset {
-        WallpaperPreset::Phosphor => WallpaperPalette {
-            tl: DESK_TL,
-            tr: DESK_TR,
-            bl: DESK_BL,
-            br: DESK_BR,
-            bloom: BLOOM_1,
-            star_tint: DESK_TR,
-        },
-        WallpaperPreset::Aurora => WallpaperPalette {
-            tl: 0x00_00_05_0C,
-            tr: 0x00_00_10_12,
-            bl: 0x00_00_03_08,
-            br: 0x00_00_08_10,
-            bloom: 0x00_11_BB_AA,
-            star_tint: 0x00_00_10_12,
-        },
-        WallpaperPreset::Midnight => WallpaperPalette {
-            tl: 0x00_03_01_0C,
-            tr: 0x00_02_02_10,
-            bl: 0x00_01_00_08,
-            br: 0x00_01_01_0A,
-            bloom: 0x00_22_44_AA,
-            star_tint: 0x00_02_02_10,
-        },
-    }
-}
-
-fn build_wallpaper(
-    w: usize,
-    taskbar_y: usize,
-    preset: WallpaperPreset,
-    show_progress: bool,
-) -> Vec<u32> {
-    let palette = wallpaper_palette(preset);
-    if show_progress {
-        crate::boot_splash::show(
-            "allocating desktop buffers",
-            15,
-            crate::boot_splash::BOOT_PROGRESS_TOTAL,
-        );
-    }
-    let mut wallpaper = alloc::vec![0u32; w * crate::framebuffer::height()];
-    if show_progress {
-        crate::boot_splash::show(
-            "painting desktop background",
-            16,
-            crate::boot_splash::BOOT_PROGRESS_TOTAL,
-        );
-    }
-
-    if w > 0 && taskbar_y > 0 {
-        let (fw, fh) = (w as f32, taskbar_y as f32);
-        let glow_mark = taskbar_y / 3;
-        let scanline_mark = taskbar_y * 2 / 3;
-        let mut glow_stage_shown = false;
-        let mut scanline_stage_shown = false;
-        for y in 0..taskbar_y {
-            if show_progress && !glow_stage_shown && y >= glow_mark {
-                crate::boot_splash::show(
-                    "charging phosphor glow",
-                    17,
-                    crate::boot_splash::BOOT_PROGRESS_TOTAL,
-                );
-                glow_stage_shown = true;
-            }
-            if show_progress && !scanline_stage_shown && y >= scanline_mark {
-                crate::boot_splash::show(
-                    "laying scanlines",
-                    18,
-                    crate::boot_splash::BOOT_PROGRESS_TOTAL,
-                );
-                scanline_stage_shown = true;
-            }
-
-            let ty = y as f32 / fh;
-            for x in 0..w {
-                let tx = x as f32 / fw;
-                let r = bilinear_u8(
-                    (palette.tl >> 16) as u8,
-                    (palette.tr >> 16) as u8,
-                    (palette.bl >> 16) as u8,
-                    (palette.br >> 16) as u8,
-                    tx,
-                    ty,
-                );
-                let g = bilinear_u8(
-                    (palette.tl >> 8) as u8,
-                    (palette.tr >> 8) as u8,
-                    (palette.bl >> 8) as u8,
-                    (palette.br >> 8) as u8,
-                    tx,
-                    ty,
-                );
-                let b = bilinear_u8(
-                    palette.tl as u8,
-                    palette.tr as u8,
-                    palette.bl as u8,
-                    palette.br as u8,
-                    tx,
-                    ty,
-                );
-                let dx = tx - 0.50;
-                let dy = ty - 0.45;
-                let dist_sq = dx * dx + dy * dy;
-                let t_b = 1.0f32 - (dist_sq / 0.20f32).min(1.0f32);
-                let bloom = t_b * t_b * t_b * 1.4f32;
-                let br =
-                    (r as f32 + bloom * ((palette.bloom >> 16) as u8 as f32)).min(255.0) as u32;
-                let bg = (g as f32 + bloom * ((palette.bloom >> 8) as u8 as f32)).min(255.0) as u32;
-                let bb = (b as f32 + bloom * (palette.bloom as u8 as f32)).min(255.0) as u32;
-
-                let scan: u32 = match y % 3 {
-                    0 => 255,
-                    1 => 210,
-                    _ => 175,
-                };
-                let dot_boost: u32 = if x % 3 == 2 { 14 } else { 0 };
-                let fr = br * scan / 255;
-                let fg = bg * scan / 255;
-                let fb = (bb * scan / 255).saturating_add(dot_boost).min(255);
-                wallpaper[y * w + x] = (fr << 16) | (fg << 8) | fb;
-            }
-        }
-    }
-
-    if show_progress {
-        crate::boot_splash::show(
-            "finishing wallpaper",
-            19,
-            crate::boot_splash::BOOT_PROGRESS_TOTAL,
-        );
-    }
-
-    if taskbar_y > 0 && w > 0 {
-        if show_progress {
-            crate::boot_splash::show(
-                "placing starfield",
-                20,
-                crate::boot_splash::BOOT_PROGRESS_TOTAL,
-            );
-        }
-        let mut seed: u32 = match preset {
-            WallpaperPreset::Phosphor => 0xC001_D00D,
-            WallpaperPreset::Aurora => 0xA11E_7A1A,
-            WallpaperPreset::Midnight => 0x0B5C_0DED,
-        };
-        let star_count = ((w * taskbar_y) / 12_000).max(48);
-        for _ in 0..star_count {
-            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
-            let sx = (seed as usize) % w;
-            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
-            let sy = (seed as usize) % taskbar_y;
-            let core = if seed & 3 == 0 {
-                0x00_FF_FF_FF
-            } else if seed & 3 == 1 {
-                0x00_EE_FF_FF
-            } else {
-                0x00_88_CC_FF
-            };
-            let glow = blend_color(core, palette.star_tint, 160);
-            let dim_glow = blend_color(core, palette.star_tint, 210);
-            wallpaper[sy * w + sx] = core;
-            if sx + 1 < w {
-                wallpaper[sy * w + sx + 1] = glow;
-            }
-            if sx > 0 {
-                wallpaper[sy * w + sx - 1] = dim_glow;
-            }
-            if sy + 1 < taskbar_y {
-                wallpaper[(sy + 1) * w + sx] = glow;
-            }
-            if sy > 0 {
-                wallpaper[(sy - 1) * w + sx] = dim_glow;
-            }
-        }
-    }
-
-    wallpaper
-}
-
-fn draw_desktop_context_menu(
-    s: &mut [u32],
-    sw: usize,
-    cm: &ContextMenu,
-    mx: i32,
-    my: i32,
-    show_desktop_icons: bool,
-    compact_spacing: bool,
-    desktop_sort: DesktopSortMode,
-    screen_w: i32,
-    taskbar_y: i32,
-) {
-    draw_context_panel(
-        s,
-        sw,
-        cm.x,
-        cm.y,
-        CTX_W,
-        DESKTOP_CONTEXT_MENU,
-        ctx_menu_hit_index(DESKTOP_CONTEXT_MENU, cm.x, cm.y, CTX_W, mx, my),
-        None,
-        show_desktop_icons,
-        compact_spacing,
-        desktop_sort,
-    );
-
-    if let Some(submenu) = cm.submenu {
-        let (sub_x, sub_y, sub_w, _sub_h) =
-            ctx_submenu_rect(cm.x, cm.y, submenu, screen_w, taskbar_y);
-        let entries = ctx_submenu_entries(submenu);
-        draw_context_panel(
-            s,
-            sw,
-            sub_x,
-            sub_y,
-            sub_w,
-            entries,
-            ctx_menu_hit_index(entries, sub_x, sub_y, sub_w, mx, my),
-            Some(submenu),
-            show_desktop_icons,
-            compact_spacing,
-            desktop_sort,
-        );
-    }
-}
-
-fn draw_context_panel(
-    s: &mut [u32],
-    sw: usize,
-    menu_x: i32,
-    menu_y: i32,
-    menu_w: i32,
-    entries: &[ContextEntryDef],
-    hovered: Option<usize>,
-    submenu: Option<DesktopContextSubmenu>,
-    show_desktop_icons: bool,
-    compact_spacing: bool,
-    desktop_sort: DesktopSortMode,
-) {
-    let menu_h = ctx_menu_height(entries);
-    let bg = 0x00_00_09_1E;
-    let bg_inner = 0x00_00_07_18;
-    let border = ACCENT;
-    let inner = 0x00_00_33_55;
-    let top_glow = 0x00_00_14_30;
-    let hover_bg = 0x00_00_12_2C;
-    let hover_border = 0x00_00_66_99;
-    let text = 0x00_88_CC_FF;
-    let text_hot = WHITE;
-    let muted = 0x00_44_77_99;
-    let sep = 0x00_00_1A_33;
-
-    s_fill(s, sw, menu_x + 4, menu_y + 4, menu_w, menu_h, 0x00_00_00_24);
-    s_fill(s, sw, menu_x, menu_y, menu_w, menu_h, bg);
-    draw_rect_border(s, sw, menu_x, menu_y, menu_w, menu_h, border);
-    draw_rect_border(s, sw, menu_x + 1, menu_y + 1, menu_w - 2, menu_h - 2, inner);
-    s_fill(s, sw, menu_x + 1, menu_y + 1, menu_w - 2, 3, top_glow);
-    s_fill(
-        s,
-        sw,
-        menu_x + 1,
-        menu_y + menu_h - 2,
-        menu_w - 2,
-        1,
-        0x00_00_05_10,
-    );
-
-    let mut row_y = menu_y + CTX_HEADER_H + CTX_PAD;
-    for (idx, entry) in entries.iter().enumerate() {
-        match entry.kind {
-            ContextEntryKind::Separator => {
-                s_fill(
-                    s,
-                    sw,
-                    menu_x + 14,
-                    row_y + CTX_SEP_H / 2,
-                    menu_w - 28,
-                    1,
-                    sep,
-                );
-                row_y += CTX_SEP_H;
-            }
-            _ => {
-                let hot = hovered == Some(idx) && entry.enabled;
-                let text_y = row_y + (CTX_ITEM_H - 8) / 2;
-                let mark_y = row_y + (CTX_ITEM_H - 8) / 2 - 1;
-                if hot {
-                    s_fill(s, sw, menu_x + 2, row_y, menu_w - 4, CTX_ITEM_H, hover_bg);
-                    draw_rect_border(
-                        s,
-                        sw,
-                        menu_x + 2,
-                        row_y,
-                        menu_w - 4,
-                        CTX_ITEM_H,
-                        hover_border,
-                    );
-                    s_fill(s, sw, menu_x + 2, row_y + 4, 3, CTX_ITEM_H - 8, ACCENT);
-                }
-
-                if let Some(mark) = ctx_menu_mark(
-                    entry.kind,
-                    submenu,
-                    show_desktop_icons,
-                    compact_spacing,
-                    desktop_sort,
-                ) {
-                    match mark {
-                        MenuMark::Check => draw_menu_check(s, sw, menu_x + 8, mark_y, ACCENT_HOV),
-                        MenuMark::Dot => s_fill(s, sw, menu_x + 11, mark_y + 2, 5, 5, ACCENT_HOV),
-                    }
-                }
-
-                let fg = if !entry.enabled {
-                    muted
-                } else if hot {
-                    text_hot
-                } else {
-                    text
-                };
-                s_draw_str_small(
-                    s,
-                    sw,
-                    menu_x + 24,
-                    text_y,
-                    entry.label,
-                    fg,
-                    if hot { hover_bg } else { bg_inner },
-                    menu_x + menu_w - 18,
-                );
-
-                if let ContextEntryKind::Submenu(_) = entry.kind {
-                    draw_menu_chevron(
-                        s,
-                        sw,
-                        menu_x + menu_w - 16,
-                        text_y,
-                        if !entry.enabled {
-                            muted
-                        } else if hot {
-                            text_hot
-                        } else {
-                            text
-                        },
-                    );
-                }
-
-                row_y += CTX_ITEM_H;
-            }
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-enum MenuMark {
-    Check,
-    Dot,
-}
-
-fn ctx_menu_mark(
-    kind: ContextEntryKind,
-    submenu: Option<DesktopContextSubmenu>,
-    show_desktop_icons: bool,
-    compact_spacing: bool,
-    desktop_sort: DesktopSortMode,
-) -> Option<MenuMark> {
-    match (submenu, kind) {
-        (
-            Some(DesktopContextSubmenu::View),
-            ContextEntryKind::Action(DesktopContextCommand::ToggleDesktopIcons),
-        ) if show_desktop_icons => Some(MenuMark::Check),
-        (
-            Some(DesktopContextSubmenu::View),
-            ContextEntryKind::Action(DesktopContextCommand::ToggleCompactSpacing),
-        ) if compact_spacing => Some(MenuMark::Check),
-        (
-            Some(DesktopContextSubmenu::SortBy),
-            ContextEntryKind::Action(DesktopContextCommand::SortByName),
-        ) if desktop_sort == DesktopSortMode::Name => Some(MenuMark::Dot),
-        (
-            Some(DesktopContextSubmenu::SortBy),
-            ContextEntryKind::Action(DesktopContextCommand::SortByType),
-        ) if desktop_sort == DesktopSortMode::Type => Some(MenuMark::Dot),
-        _ => None,
-    }
-}
-
-fn draw_menu_chevron(s: &mut [u32], sw: usize, x: i32, y: i32, color: u32) {
-    s_fill(s, sw, x, y, 1, 2, color);
-    s_fill(s, sw, x + 1, y + 1, 1, 2, color);
-    s_fill(s, sw, x + 2, y + 2, 1, 2, color);
-    s_fill(s, sw, x + 1, y + 3, 1, 2, color);
-    s_fill(s, sw, x, y + 4, 1, 2, color);
-}
-
-fn draw_menu_check(s: &mut [u32], sw: usize, x: i32, y: i32, color: u32) {
-    s_fill(s, sw, x, y + 3, 2, 2, color);
-    s_fill(s, sw, x + 2, y + 5, 2, 2, color);
-    s_fill(s, sw, x + 4, y + 3, 2, 2, color);
-    s_fill(s, sw, x + 6, y + 1, 2, 2, color);
-}
-
-fn draw_task_switcher_overlay(
-    s: &mut [u32],
-    sw: usize,
-    taskbar_y: i32,
-    windows: &[AppWindow],
-    window_workspaces: &[usize],
-    z_order: &[usize],
-    focused: Option<usize>,
-    current_workspace: usize,
-    query: &str,
-) {
-    let query_lower = query.to_ascii_lowercase();
-    let visible_count = z_order
-        .iter()
-        .rev()
-        .filter(|&&idx| {
-            idx < windows.len()
-                && window_workspaces
-                    .get(idx)
-                    .copied()
-                    .unwrap_or(0)
-                    .min(WORKSPACE_COUNT - 1)
-                    == current_workspace
-                && !windows[idx].window().minimized
-                && (query_lower.is_empty()
-                    || windows[idx]
-                        .window()
-                        .title
-                        .to_ascii_lowercase()
-                        .contains(&query_lower))
-        })
-        .count();
-    if visible_count == 0 {
-        return;
-    }
-
-    let shown = visible_count.min(6);
-    let item_w = 126i32;
-    let item_h = 64i32;
-    let gap = 10i32;
-    let panel_w = 32 + shown as i32 * item_w + (shown.saturating_sub(1)) as i32 * gap;
-    let panel_h = 112i32;
-    let panel_x = ((sw as i32 - panel_w) / 2).max(0);
-    let panel_y = ((taskbar_y - panel_h) / 2).max(0);
-
-    s_fill_alpha(
-        s,
-        sw,
-        panel_x - 6,
-        panel_y - 6,
-        panel_w + 12,
-        panel_h + 12,
-        0x44_00_00_00,
-    );
-    s_fill(s, sw, panel_x, panel_y, panel_w, panel_h, 0x00_00_07_18);
-    s_fill(s, sw, panel_x, panel_y, panel_w, 3, ACCENT);
-    draw_rect_border(s, sw, panel_x, panel_y, panel_w, panel_h, 0x00_00_66_BB);
-    draw_rect_border(
-        s,
-        sw,
-        panel_x + 1,
-        panel_y + 1,
-        panel_w - 2,
-        panel_h - 2,
-        0x00_00_22_44,
-    );
-    s_draw_str_small(
-        s,
-        sw,
-        panel_x + 16,
-        panel_y + 12,
-        "TASK SWITCHER",
-        0x00_CC_EE_FF,
-        0x00_00_07_18,
-        panel_x + panel_w - 16,
-    );
-    s_draw_str_small(
-        s,
-        sw,
-        panel_x + 16,
-        panel_y + 26,
-        "Alt+Tab cycles windows",
-        0x00_55_88_AA,
-        0x00_00_07_18,
-        panel_x + panel_w - 16,
-    );
-    if !query.is_empty() {
-        let mut search = String::from("Search: ");
-        search.push_str(query);
-        s_draw_str_small(
-            s,
-            sw,
-            panel_x + 170,
-            panel_y + 26,
-            &search,
-            ACCENT_HOV,
-            0x00_00_07_18,
-            panel_x + panel_w - 16,
-        );
-    }
-
-    let mut drawn = 0usize;
-    for &win_idx in z_order.iter().rev() {
-        if drawn >= shown {
-            break;
-        }
-        if win_idx >= windows.len()
-            || window_workspaces
-                .get(win_idx)
-                .copied()
-                .unwrap_or(0)
-                .min(WORKSPACE_COUNT - 1)
-                != current_workspace
-            || windows[win_idx].window().minimized
-            || (!query_lower.is_empty()
-                && !windows[win_idx]
-                    .window()
-                    .title
-                    .to_ascii_lowercase()
-                    .contains(&query_lower))
-        {
-            continue;
-        }
-
-        let win = windows[win_idx].window();
-        let x = panel_x + 16 + drawn as i32 * (item_w + gap);
-        let y = panel_y + 42;
-        let selected = focused == Some(win_idx);
-        let accent = window_accent(win.title);
-        let bg = if selected {
-            0x00_00_1E_3C
-        } else {
-            0x00_00_0B_20
-        };
-        let border = if selected { ACCENT_HOV } else { 0x00_00_33_66 };
-
-        s_fill(s, sw, x, y, item_w, item_h, bg);
-        s_fill(s, sw, x, y, item_w, 3, accent);
-        draw_rect_border(s, sw, x, y, item_w, item_h, border);
-        draw_live_window_thumbnail(s, sw, x + 8, y + 10, 38, 28, win);
-
-        let icon_bg = blend_color(bg, accent, 90);
-        s_fill(s, sw, x + 12, y + 42, 22, 14, icon_bg);
-        draw_rect_border(
-            s,
-            sw,
-            x + 12,
-            y + 42,
-            22,
-            14,
-            blend_color(accent, WHITE, 90),
-        );
-        s_draw_str_small(
-            s,
-            sw,
-            x + 15,
-            y + 45,
-            window_glyph(win.title),
-            accent,
-            icon_bg,
-            x + 32,
-        );
-
-        let title = if win.title.len() > 11 {
-            &win.title[..11]
-        } else {
-            win.title
-        };
-        s_draw_str_small(
-            s,
-            sw,
-            x + 48,
-            y + 18,
-            title,
-            if selected { WHITE } else { 0x00_88_CC_FF },
-            bg,
-            x + item_w - 8,
-        );
-        s_draw_str_small(
-            s,
-            sw,
-            x + 48,
-            y + 34,
-            if selected { "active" } else { "window" },
-            if selected { ACCENT_HOV } else { 0x00_44_77_99 },
-            bg,
-            x + item_w - 8,
-        );
-
-        drawn += 1;
-    }
-}
-
-fn draw_file_drag_badge(s: &mut [u32], sw: usize, x: i32, y: i32, count: usize) {
-    let w = 132i32;
-    let h = 34i32;
-    let x = x.min(sw as i32 - w - 4).max(4);
-    let sh = if sw > 0 { s.len() / sw } else { 0 };
-    let y = y.min(sh as i32 - h - 4).max(4);
-    let bg = 0x00_00_08_18;
-    s_fill_alpha(s, sw, x + 4, y + 4, w, h, 0x44_00_00_00);
-    s_fill(s, sw, x, y, w, h, bg);
-    s_fill(s, sw, x, y, 3, h, ACCENT);
-    draw_rect_border(s, sw, x, y, w, h, 0x00_00_66_BB);
-    s_draw_str_small(s, sw, x + 12, y + 7, "DROP FILES", WHITE, bg, x + w - 8);
-    let text = if count == 1 {
-        String::from("1 item")
-    } else {
-        format!("{} items", count)
-    };
-    s_draw_str_small(s, sw, x + 12, y + 19, &text, 0x00_66_AA_DD, bg, x + w - 8);
-}
-
-fn draw_live_window_thumbnail(
-    s: &mut [u32],
-    sw: usize,
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
-    win: &Window,
-) {
-    s_fill(s, sw, x, y, w, h, 0x00_00_04_10);
-    draw_rect_border(s, sw, x, y, w, h, 0x00_00_44_88);
-    let src_w = win.width.max(1) as usize;
-    let src_h = (win.height - TITLE_H).max(1) as usize;
-    if win.buf.is_empty() {
-        return;
-    }
-    for ty in 1..h.saturating_sub(1) {
-        let sy = (ty as usize * src_h / h.max(1) as usize).min(src_h - 1);
-        for tx in 1..w.saturating_sub(1) {
-            let sx = (tx as usize * src_w / w.max(1) as usize).min(src_w - 1);
-            let src = sy * src_w + sx;
-            if src < win.buf.len() {
-                s_put(s, sw, usize::MAX, x + tx, y + ty, win.buf[src]);
-            }
-        }
-    }
-}
-
-fn draw_greeter_overlay(
-    s: &mut [u32],
-    sw: usize,
-    taskbar_y: i32,
-    user: &str,
-    password_len: usize,
-    focus: GreeterFocus,
-    message: &str,
-    error: bool,
-    attempts: u32,
-    mx: i32,
-    my: i32,
-    _uptime_ticks: u64,
-) {
-    let sw_i = sw as i32;
-    let sh_i = if sw > 0 {
-        (s.len() / sw) as i32
-    } else {
-        taskbar_y
-    };
-    let layout = greeter_layout(sw_i, taskbar_y);
-
-    draw_greeter_backdrop(s, sw, sw_i, sh_i);
-
-    s_fill(
-        s,
-        sw,
-        layout.panel_x + 8,
-        layout.panel_y + 8,
-        layout.panel_w,
-        layout.panel_h,
-        0x00_00_01_05,
-    );
-    s_fill(
-        s,
-        sw,
-        layout.panel_x,
-        layout.panel_y,
-        layout.panel_w,
-        layout.panel_h,
-        GREETER_PANEL_BG,
-    );
-    s_fill(
-        s,
-        sw,
-        layout.panel_x,
-        layout.panel_y,
-        layout.panel_w,
-        1,
-        GREETER_PANEL_EDGE_DIM,
-    );
-    draw_rect_border(
-        s,
-        sw,
-        layout.panel_x - 2,
-        layout.panel_y - 2,
-        layout.panel_w + 4,
-        layout.panel_h + 4,
-        GREETER_PANEL_EDGE_DIM,
-    );
-    draw_rect_border(
-        s,
-        sw,
-        layout.panel_x,
-        layout.panel_y,
-        layout.panel_w,
-        layout.panel_h,
-        ACCENT,
-    );
-    draw_rect_border(
-        s,
-        sw,
-        layout.panel_x + 1,
-        layout.panel_y + 1,
-        layout.panel_w - 2,
-        layout.panel_h - 2,
-        GREETER_PANEL_EDGE_DIM,
-    );
-
-    let title_w = s_text_width_scaled_with_tracking("coolOS", 4, 0);
-    let logo_size = 18 * 4;
-    let lockup_gap = 28;
-    let lockup_w = logo_size + lockup_gap + title_w;
-    let lockup_x = layout.panel_x + (layout.panel_w - lockup_w) / 2;
-    let logo_y = layout.panel_y + 34;
-    let title_y = logo_y + (logo_size - 8 * 4) / 2;
-    draw_snowflake_logo(s, sw, lockup_x, logo_y, 4, ACCENT, ACCENT_HOV);
-    let text_x = lockup_x + logo_size + lockup_gap;
-    s_draw_str_scaled_with_tracking(s, sw, text_x, title_y, "coolOS", GREETER_TITLE, 4, 0);
-
-    s_draw_str_small(
-        s,
-        sw,
-        layout.user_x,
-        layout.user_y - 17,
-        "User",
-        0x00_88_CC_EE,
-        GREETER_PANEL_BG,
-        layout.user_x + layout.field_w,
-    );
-    draw_greeter_field(
-        s,
-        sw,
-        layout.user_x,
-        layout.user_y,
-        layout.field_w,
-        user,
-        focus == GreeterFocus::User,
-        GREETER_FIELD_BG,
-    );
-
-    let mut masked = String::new();
-    for _ in 0..password_len.min(28) {
-        masked.push('*');
-    }
-    if password_len > 28 {
-        masked.push_str("...");
-    }
-    s_draw_str_small(
-        s,
-        sw,
-        layout.user_x,
-        layout.pass_y - 17,
-        "Password",
-        0x00_88_CC_EE,
-        GREETER_PANEL_BG,
-        layout.user_x + layout.field_w,
-    );
-    draw_greeter_field(
-        s,
-        sw,
-        layout.user_x,
-        layout.pass_y,
-        layout.field_w,
-        &masked,
-        focus == GreeterFocus::Password,
-        GREETER_FIELD_BG,
-    );
-
-    let button_hot = rect_contains(
-        layout.user_x,
-        layout.button_y,
-        layout.field_w,
-        GREETER_FIELD_H,
-        mx,
-        my,
-    );
-    let button_bg = if button_hot {
-        0x00_00_22_40
-    } else {
-        0x00_00_16_2C
-    };
-    s_fill(
-        s,
-        sw,
-        layout.user_x,
-        layout.button_y,
-        layout.field_w,
-        GREETER_FIELD_H,
-        button_bg,
-    );
-    s_fill(
-        s,
-        sw,
-        layout.user_x,
-        layout.button_y,
-        layout.field_w,
-        3,
-        ACCENT,
-    );
-    draw_rect_border(
-        s,
-        sw,
-        layout.user_x,
-        layout.button_y,
-        layout.field_w,
-        GREETER_FIELD_H,
-        if button_hot {
-            ACCENT_HOV
-        } else {
-            0x00_00_77_BB
-        },
-    );
-    let sign_in = "Sign in";
-    let sign_w = sign_in.chars().count() as i32 * 8;
-    s_draw_str_small(
-        s,
-        sw,
-        layout.user_x + (layout.field_w - sign_w) / 2,
-        layout.button_y + 10,
-        sign_in,
-        WHITE,
-        button_bg,
-        layout.user_x + layout.field_w,
-    );
-
-    if !message.is_empty() {
-        let msg_color = if error { 0x00_FF_88_88 } else { 0x00_88_DD_CC };
-        s_draw_str_small(
-            s,
-            sw,
-            layout.user_x,
-            layout.button_y + 39,
-            message,
-            msg_color,
-            GREETER_PANEL_BG,
-            layout.user_x + layout.field_w,
-        );
-    }
-    if attempts > 0 {
-        let attempt_text = format!("attempts {}", attempts);
-        s_draw_str_small(
-            s,
-            sw,
-            layout.user_x + layout.field_w - 112,
-            layout.button_y + 39,
-            &attempt_text,
-            0x00_66_AA_DD,
-            GREETER_PANEL_BG,
-            layout.user_x + layout.field_w,
-        );
-    }
-
-    s_draw_str_small(
-        s,
-        sw,
-        layout.user_x,
-        layout.users_y - 16,
-        "Accounts",
-        0x00_66_AA_DD,
-        GREETER_PANEL_BG,
-        layout.user_x + layout.field_w,
-    );
-    let accounts_bottom = layout.panel_y + layout.panel_h - 50;
-    let mut row = 0i32;
-    for account in crate::security::users()
-        .into_iter()
-        .filter(|account| account.login_enabled)
-    {
-        if row >= 4 {
-            break;
-        }
-        let y = layout.users_y + row * GREETER_USER_ROW_H;
-        if y + GREETER_USER_ROW_H > accounts_bottom {
-            break;
-        }
-        let selected = account.name.eq_ignore_ascii_case(user);
-        let hot = rect_contains(
-            layout.user_x,
-            y,
-            layout.row_w,
-            GREETER_USER_ROW_H - 2,
-            mx,
-            my,
-        );
-        let row_bg = if selected {
-            0x00_00_18_34
-        } else if hot {
-            0x00_00_10_24
-        } else {
-            GREETER_PANEL_BG
-        };
-        s_fill(
-            s,
-            sw,
-            layout.user_x,
-            y,
-            layout.row_w,
-            GREETER_USER_ROW_H - 2,
-            row_bg,
-        );
-        if selected {
-            s_fill(s, sw, layout.user_x, y, 3, GREETER_USER_ROW_H - 2, ACCENT);
-        }
-        let line = format!("{}  uid={}  {}", account.name, account.uid, account.role);
-        s_draw_str_small(
-            s,
-            sw,
-            layout.user_x + 10,
-            y + 6,
-            &line,
-            if selected { WHITE } else { 0x00_CC_EE_FF },
-            row_bg,
-            layout.user_x + layout.row_w - 6,
-        );
-        row += 1;
-    }
-}
-
-fn draw_greeter_backdrop(s: &mut [u32], sw: usize, w: i32, h: i32) {
-    let h = h.max(1);
-    let w = w.max(1);
-    for y in 0..h {
-        let t = (y as u32).saturating_mul(255) / (h - 1).max(1) as u32;
-        let mut row = blend_color(GREETER_BG_TOP, GREETER_BG_BOTTOM, t);
-        if y % 3 == 2 {
-            row = darken_color(row, 26);
-        }
-        s_fill(s, sw, 0, y, w, 1, row);
-    }
-}
-
-fn draw_greeter_field(
-    s: &mut [u32],
-    sw: usize,
-    x: i32,
-    y: i32,
-    w: i32,
-    value: &str,
-    active: bool,
-    bg: u32,
-) {
-    s_fill(s, sw, x, y, w, GREETER_FIELD_H, bg);
-    s_fill(
-        s,
-        sw,
-        x,
-        y + GREETER_FIELD_H - 3,
-        w,
-        2,
-        if active { ACCENT } else { 0x00_00_44_77 },
-    );
-    draw_rect_border(
-        s,
-        sw,
-        x,
-        y,
-        w,
-        GREETER_FIELD_H,
-        if active { ACCENT_HOV } else { 0x00_00_44_77 },
-    );
-    s_draw_str_small(s, sw, x + 10, y + 10, value, WHITE, bg, x + w - 10);
-}
-
-fn draw_shell_dialog(s: &mut [u32], sw: usize, taskbar_y: i32, dialog: &ShellDialog) {
-    let (x, y, w, h) = shell_dialog_rect(sw as i32, taskbar_y, dialog);
-    let bg = 0x00_07_0D_1C;
-    s_fill_alpha(s, sw, 0, 0, sw as i32, taskbar_y, 0x44_00_00_00);
-    s_fill_alpha(s, sw, x + 6, y + 6, w, h, 0x55_00_00_00);
-    s_fill(s, sw, x, y, w, h, bg);
-    s_fill(s, sw, x, y, w, 4, 0x00_FF_66_66);
-    draw_rect_border(s, sw, x, y, w, h, 0x00_FF_88_88);
-    s_draw_str_small(s, sw, x + 18, y + 18, &dialog.title, WHITE, bg, x + w - 18);
-    s_draw_str_small(
-        s,
-        sw,
-        x + 18,
-        y + 44,
-        &dialog.body,
-        0x00_CC_EE_FF,
-        bg,
-        x + w - 18,
-    );
-    s_draw_str_small(
-        s,
-        sw,
-        x + 18,
-        y + if dialog.kind == ShellDialogKind::Crash {
-            h - 56
-        } else {
-            h - 26
-        },
-        if dialog.kind == ShellDialogKind::Crash {
-            "app failure captured"
-        } else {
-            "click anywhere to dismiss"
-        },
-        0x00_66_99_BB,
-        bg,
-        x + w - 18,
-    );
-    if dialog.kind == ShellDialogKind::Crash {
-        let button_y = y + h - 34;
-        draw_dialog_button(s, sw, x + 18, button_y, "View Dump", 0x00_FF_88_88);
-        draw_dialog_button(s, sw, x + 122, button_y, "Restart", 0x00_FF_DD_55);
-        draw_dialog_button(s, sw, x + 226, button_y, "Copy", 0x00_55_FF_BB);
-        draw_dialog_button(s, sw, x + w - 112, button_y, "Dismiss", 0x00_66_AA_DD);
-    }
-}
-
-fn shell_dialog_rect(sw: i32, taskbar_y: i32, dialog: &ShellDialog) -> (i32, i32, i32, i32) {
-    let w = 460i32;
-    let h = if dialog.kind == ShellDialogKind::Crash {
-        168i32
-    } else {
-        132i32
-    };
-    let x = ((sw - w) / 2).max(8);
-    let y = ((taskbar_y - h) / 2).max(8);
-    (x, y, w, h)
-}
-
-fn draw_dialog_button(s: &mut [u32], sw: usize, x: i32, y: i32, label: &str, accent: u32) {
-    let w = 94i32;
-    let h = 22i32;
-    let bg = 0x00_00_0C_20;
-    s_fill(s, sw, x, y, w, h, bg);
-    s_fill(s, sw, x, y, w, 2, accent);
-    draw_rect_border(s, sw, x, y, w, h, blend_color(accent, 0x00_00_08_18, 90));
-    let text_w = label.chars().count() as i32 * 8;
-    s_draw_str_small(
-        s,
-        sw,
-        x + ((w - text_w) / 2).max(4),
-        y + 7,
-        label,
-        0x00_DD_FF_FF,
-        bg,
-        x + w - 4,
-    );
-}
-
-fn draw_taskbar_preview(s: &mut [u32], sw: usize, taskbar_y: i32, button_x: i32, app: &AppWindow) {
-    let win = app.window();
-    let preview_w = 208i32;
-    let preview_h = 74i32;
-    let x = (button_x + BUTTON_W / 2 - preview_w / 2)
-        .max(4)
-        .min(sw as i32 - preview_w - 4);
-    let y = (taskbar_y - preview_h - 8).max(0);
-    let accent = window_accent(win.title);
-    s_fill_alpha(s, sw, x + 5, y + 5, preview_w, preview_h, 0x40_00_00_00);
-    s_fill(s, sw, x, y, preview_w, preview_h, 0x00_00_08_18);
-    s_fill(s, sw, x, y, preview_w, 3, accent);
-    draw_rect_border(s, sw, x, y, preview_w, preview_h, 0x00_00_66_BB);
-    draw_live_window_thumbnail(s, sw, x + 10, y + 16, 92, 40, win);
-    let icon_bg = blend_color(0x00_00_08_18, accent, 90);
-    s_fill(s, sw, x + 116, y + 16, 32, 32, icon_bg);
-    draw_rect_border(
-        s,
-        sw,
-        x + 116,
-        y + 16,
-        32,
-        32,
-        blend_color(accent, WHITE, 88),
-    );
-    s_draw_str_small(
-        s,
-        sw,
-        x + 123,
-        y + 28,
-        window_glyph(win.title),
-        accent,
-        icon_bg,
-        x + 146,
-    );
-    s_draw_str_small(
-        s,
-        sw,
-        x + 10,
-        y + 7,
-        win.title,
-        WHITE,
-        0x00_00_08_18,
-        x + 108,
-    );
-    let state = if win.minimized { "minimized" } else { "open" };
-    s_draw_str_small(
-        s,
-        sw,
-        x + 116,
-        y + 32,
-        state,
-        0x00_66_AA_DD,
-        0x00_00_08_18,
-        x + preview_w - 10,
-    );
-    let bounds = format!("{}x{} @ {},{}", win.width, win.height, win.x, win.y);
-    s_draw_str_small(
-        s,
-        sw,
-        x + 10,
-        y + 60,
-        &bounds,
-        0x00_44_88_BB,
-        0x00_00_08_18,
-        x + preview_w - 10,
-    );
-}
-
-fn draw_taskbar_menu(
-    s: &mut [u32],
-    sw: usize,
-    menu: &TaskbarMenu,
-    windows: &[AppWindow],
-    mx: i32,
-    my: i32,
-) {
-    if menu.window >= windows.len() {
-        return;
-    }
-    let bg = 0x00_00_08_18;
-    s_fill_alpha(
-        s,
-        sw,
-        menu.x + 4,
-        menu.y + 4,
-        TASKBAR_MENU_W,
-        TASKBAR_MENU_H,
-        0x44_00_00_00,
-    );
-    s_fill(s, sw, menu.x, menu.y, TASKBAR_MENU_W, TASKBAR_MENU_H, bg);
-    s_fill(s, sw, menu.x, menu.y, TASKBAR_MENU_W, 3, ACCENT);
-    draw_rect_border(
-        s,
-        sw,
-        menu.x,
-        menu.y,
-        TASKBAR_MENU_W,
-        TASKBAR_MENU_H,
-        0x00_00_66_BB,
-    );
-    let labels = [
-        if windows[menu.window].is_minimized() {
-            "Restore"
-        } else {
-            "Minimize"
-        },
-        "Maximize",
-        "Close",
-    ];
-    for (i, label) in labels.iter().enumerate() {
-        let row_y = menu.y + 5 + i as i32 * TASKBAR_MENU_ROW_H;
-        let hot = mx >= menu.x + 4
-            && mx < menu.x + TASKBAR_MENU_W - 4
-            && my >= row_y
-            && my < row_y + TASKBAR_MENU_ROW_H;
-        let row_bg = if hot { 0x00_00_18_34 } else { bg };
-        if hot {
-            s_fill(
-                s,
-                sw,
-                menu.x + 3,
-                row_y,
-                TASKBAR_MENU_W - 6,
-                TASKBAR_MENU_ROW_H,
-                row_bg,
-            );
-            s_fill(
-                s,
-                sw,
-                menu.x + 4,
-                row_y + 5,
-                2,
-                TASKBAR_MENU_ROW_H - 10,
-                ACCENT,
-            );
-        }
-        s_draw_str_small(
-            s,
-            sw,
-            menu.x + 14,
-            row_y + 8,
-            label,
-            if hot { WHITE } else { 0x00_88_CC_FF },
-            row_bg,
-            menu.x + TASKBAR_MENU_W - 10,
-        );
-    }
-}
-
-fn draw_notification_center(s: &mut [u32], sw: usize, taskbar_y: i32) {
-    let panel_w = 340i32;
-    let panel_h = 260i32;
-    let x = (sw as i32 - panel_w - 12).max(0);
-    let y = (taskbar_y - panel_h - 10).max(0);
-    let bg = 0x00_00_08_18;
-    s_fill_alpha(s, sw, x + 5, y + 5, panel_w, panel_h, 0x50_00_00_00);
-    s_fill(s, sw, x, y, panel_w, panel_h, bg);
-    s_fill(s, sw, x, y, panel_w, 3, ACCENT);
-    draw_rect_border(s, sw, x, y, panel_w, panel_h, 0x00_00_66_BB);
-    s_draw_str_small(
-        s,
-        sw,
-        x + 14,
-        y + 14,
-        "NOTIFICATIONS",
-        WHITE,
-        bg,
-        x + panel_w - 12,
-    );
-    s_draw_str_small(
-        s,
-        sw,
-        x + 14,
-        y + 28,
-        "Ctrl+Alt+M toggles this panel",
-        0x00_55_88_AA,
-        bg,
-        x + panel_w - 12,
-    );
-    let list = crate::notifications::latest(7);
-    if list.is_empty() {
-        s_draw_str_small(
-            s,
-            sw,
-            x + 14,
-            y + 62,
-            "No system events yet.",
-            0x00_66_AA_DD,
-            bg,
-            x + panel_w - 12,
-        );
-        return;
-    }
-    for (i, note) in list.iter().enumerate() {
-        let row_y = y + 54 + i as i32 * 28;
-        let row_bg = if note.unread {
-            0x00_00_18_34
-        } else {
-            0x00_00_0C_20
-        };
-        s_fill(s, sw, x + 10, row_y, panel_w - 20, 24, row_bg);
-        if note.unread {
-            s_fill(s, sw, x + 10, row_y + 5, 2, 14, ACCENT_HOV);
-        }
-        s_draw_str_small(
-            s,
-            sw,
-            x + 18,
-            row_y + 4,
-            &note.title,
-            if note.unread { WHITE } else { 0x00_AA_DD_FF },
-            row_bg,
-            x + panel_w - 18,
-        );
-        s_draw_str_small(
-            s,
-            sw,
-            x + 18,
-            row_y + 15,
-            &note.body,
-            0x00_66_AA_DD,
-            row_bg,
-            x + panel_w - 18,
-        );
-    }
-}
-
-fn draw_notification_toasts(s: &mut [u32], sw: usize, taskbar_y: i32, ticks: u64) {
-    let list = crate::notifications::latest(2);
-    if list.is_empty() {
-        return;
-    }
-    let timeout = crate::interrupts::ticks_for_millis(6500);
-    let toast_w = 294i32;
-    let toast_h = 50i32;
-    let mut drawn = 0i32;
-    for note in list.iter() {
-        if ticks.wrapping_sub(note.tick) > timeout {
-            continue;
-        }
-        let x = (sw as i32 - toast_w - 12).max(0);
-        let y = (taskbar_y - 12 - (drawn + 1) * (toast_h + 8)).max(0);
-        let bg = 0x00_00_08_18;
-        s_fill_alpha(s, sw, x + 4, y + 4, toast_w, toast_h, 0x44_00_00_00);
-        s_fill(s, sw, x, y, toast_w, toast_h, bg);
-        s_fill(s, sw, x, y, 3, toast_h, ACCENT);
-        draw_rect_border(s, sw, x, y, toast_w, toast_h, 0x00_00_66_BB);
-        s_draw_str_small(
-            s,
-            sw,
-            x + 12,
-            y + 10,
-            &note.title,
-            WHITE,
-            bg,
-            x + toast_w - 10,
-        );
-        s_draw_str_small(
-            s,
-            sw,
-            x + 12,
-            y + 26,
-            &note.body,
-            0x00_66_AA_DD,
-            bg,
-            x + toast_w - 10,
-        );
-        drawn += 1;
-    }
-}
-
-fn draw_launcher_overlay(s: &mut [u32], sw: usize, taskbar_y: i32, state: &LauncherState) {
-    let panel_w = 680i32.min(sw as i32 - 24);
-    let panel_h = 340i32;
-    let x = ((sw as i32 - panel_w) / 2).max(0);
-    let y = ((taskbar_y - panel_h) / 4).max(8);
-    let bg = 0x00_00_08_18;
-    s_fill_alpha(s, sw, 0, 0, sw as i32, taskbar_y, 0x28_00_00_00);
-    s_fill_alpha(s, sw, x + 7, y + 7, panel_w, panel_h, 0x55_00_00_00);
-    s_fill(s, sw, x, y, panel_w, panel_h, bg);
-    s_fill(s, sw, x, y, panel_w, 3, ACCENT);
-    draw_rect_border(s, sw, x, y, panel_w, panel_h, 0x00_00_77_CC);
-    s_draw_str_small(
-        s,
-        sw,
-        x + 16,
-        y + 14,
-        "LAUNCHER / COMMAND PALETTE",
-        WHITE,
-        bg,
-        x + panel_w - 16,
-    );
-    s_draw_str_small(
-        s,
-        sw,
-        x + panel_w - 178,
-        y + 14,
-        "Ctrl+Space  > commands",
-        0x00_55_88_AA,
-        bg,
-        x + panel_w - 16,
-    );
-
-    let search_x = x + 16;
-    let search_y = y + 38;
-    let search_h = 30i32;
-    s_fill(
-        s,
-        sw,
-        search_x,
-        search_y,
-        panel_w - 32,
-        search_h,
-        0x00_00_03_0C,
-    );
-    draw_rect_border(
-        s,
-        sw,
-        search_x,
-        search_y,
-        panel_w - 32,
-        search_h,
-        0x00_00_66_BB,
-    );
-    let query = if state.query.is_empty() {
-        "type app, file, command, @category, or > reboot..."
-    } else {
-        &state.query
-    };
-    s_draw_str_small(
-        s,
-        sw,
-        search_x + 12,
-        search_y + 11,
-        query,
-        if state.query.is_empty() {
-            0x00_44_77_99
-        } else {
-            WHITE
-        },
-        0x00_00_03_0C,
-        search_x + panel_w - 44,
-    );
-
-    let matches = launcher_matches(&state.query);
-    if matches.is_empty() {
-        s_draw_str_small(
-            s,
-            sw,
-            x + 18,
-            y + 88,
-            "No matching app, file, or command.",
-            0x00_66_AA_DD,
-            bg,
-            x + panel_w - 18,
-        );
-        return;
-    }
-
-    let max_rows = 8usize.min(matches.len());
-    for i in 0..max_rows {
-        let entry = &matches[i];
-        let row_y = y + 82 + i as i32 * 29;
-        let selected = i == state.selected.min(matches.len() - 1);
-        let row_bg = if selected { 0x00_00_1A_38 } else { bg };
-        if selected {
-            s_fill(s, sw, x + 10, row_y, panel_w - 20, 25, row_bg);
-            s_fill(s, sw, x + 10, row_y + 5, 3, 14, ACCENT);
-        }
-        let glyph = launcher_kind_glyph(&entry.kind);
-        s_draw_str_small(
-            s,
-            sw,
-            x + 22,
-            row_y + 8,
-            glyph,
-            if selected {
-                launcher_kind_accent(&entry.kind)
-            } else {
-                0x00_55_88_AA
-            },
-            row_bg,
-            x + 48,
-        );
-        s_draw_str_small(
-            s,
-            sw,
-            x + 54,
-            row_y + 4,
-            &entry.label,
-            if selected { WHITE } else { 0x00_AA_DD_FF },
-            row_bg,
-            x + panel_w - 210,
-        );
-        s_draw_str_small(
-            s,
-            sw,
-            x + 54,
-            row_y + 15,
-            &entry.detail,
-            0x00_55_88_AA,
-            row_bg,
-            x + panel_w - 210,
-        );
-        if selected {
-            s_draw_str_small(
-                s,
-                sw,
-                x + panel_w - 202,
-                row_y + 8,
-                "Enter open  C-P pin  C-L loc  C-C copy",
-                0x00_44_88_AA,
-                row_bg,
-                x + panel_w - 18,
-            );
-        }
-    }
-}
-
-fn launcher_kind_glyph(kind: &LauncherMatchKind) -> &'static str {
-    match kind {
-        LauncherMatchKind::App(app) => window_glyph(app),
-        LauncherMatchKind::Path(_) => "FS",
-        LauncherMatchKind::Command(_) => "$>",
-        LauncherMatchKind::Inline(action) if action.starts_with("settings:") => "DS",
-        LauncherMatchKind::Inline(action) if action.starts_with("category:") => "AP",
-        LauncherMatchKind::Inline(action) if action == "refresh-index" => "IX",
-        LauncherMatchKind::Inline(action)
-            if action == "shutdown"
-                || action == "reboot"
-                || action == "restart"
-                || action == "sleep" =>
-        {
-            "PW"
-        }
-        LauncherMatchKind::Inline(_) => "!!",
-    }
-}
-
-fn launcher_kind_accent(kind: &LauncherMatchKind) -> u32 {
-    match kind {
-        LauncherMatchKind::App(app) => window_accent(app),
-        LauncherMatchKind::Path(_) => 0x00_55_DD_FF,
-        LauncherMatchKind::Command(_) => 0x00_00_FF_88,
-        LauncherMatchKind::Inline(action) if action.starts_with("settings:") => 0x00_66_CC_FF,
-        LauncherMatchKind::Inline(action)
-            if action == "shutdown"
-                || action == "reboot"
-                || action == "restart"
-                || action == "sleep" =>
-        {
-            0x00_FF_DD_55
-        }
-        LauncherMatchKind::Inline(_) => ACCENT_HOV,
-    }
-}
-
-fn launcher_matches(query: &str) -> Vec<LauncherMatch> {
-    let query = query.trim();
-    if query.starts_with('>') {
-        return command_palette_matches(query);
-    }
-
-    let mut matches = Vec::new();
-    let category_filter = query
-        .strip_prefix('@')
-        .map(str::trim)
-        .filter(|category| !category.is_empty());
-    let search_query = if category_filter.is_some() { "" } else { query };
-
-    for app in crate::app_metadata::APPS {
-        if !crate::packages::is_installed(app.id) {
-            continue;
-        }
-        let category_match = category_filter
-            .map(|category| app.category.label().eq_ignore_ascii_case(category))
-            .unwrap_or(false);
-        let detail = app_launcher_detail(app);
-        let mut score = if category_match { Some(80) } else { None };
-        if let Some(app_score) = launcher_score(app.name, &detail, search_query) {
-            score = Some(score.unwrap_or(0).max(app_score));
-        }
-        for alias in app.aliases {
-            if let Some(alias_score) = launcher_score(alias, &detail, search_query) {
-                score = Some(score.unwrap_or(0).max(alias_score.saturating_sub(1)));
-            }
-        }
-        if let Some(score) = score {
-            let exact_boost = if app.command.eq_ignore_ascii_case(search_query)
-                || app.name.eq_ignore_ascii_case(search_query)
-                || app
-                    .aliases
-                    .iter()
-                    .any(|alias| alias.eq_ignore_ascii_case(search_query))
-            {
-                30
-            } else {
-                0
-            };
-            matches.push(LauncherMatch {
-                label: String::from(app.name),
-                detail,
-                kind: LauncherMatchKind::App(String::from(app.name)),
-                score: score + exact_boost + recent_app_boost(app.name),
-            });
-        }
-    }
-
-    for manifest in crate::app_metadata::installed_app_manifests() {
-        if crate::app_metadata::is_builtin_id(&manifest.id)
-            || !crate::packages::is_installed(&manifest.id)
-        {
-            continue;
-        }
-        let detail = manifest_launcher_detail(&manifest);
-        let category_match = category_filter
-            .map(|category| manifest.category.eq_ignore_ascii_case(category))
-            .unwrap_or(false);
-        let mut score = if category_match { Some(70) } else { None };
-        if let Some(name_score) = launcher_score(&manifest.name, &detail, search_query) {
-            score = Some(score.unwrap_or(0).max(name_score));
-        }
-        for alias in &manifest.aliases {
-            if let Some(alias_score) = launcher_score(alias, &detail, search_query) {
-                score = Some(score.unwrap_or(0).max(alias_score.saturating_sub(1)));
-            }
-        }
-        if let Some(score) = score {
-            let exact_boost = if manifest.command.eq_ignore_ascii_case(search_query)
-                || manifest.name.eq_ignore_ascii_case(search_query)
-                || manifest
-                    .aliases
-                    .iter()
-                    .any(|alias| alias.eq_ignore_ascii_case(search_query))
-            {
-                20
-            } else {
-                0
-            };
-            matches.push(LauncherMatch {
-                label: manifest.name.clone(),
-                detail,
-                kind: LauncherMatchKind::App(manifest.name.clone()),
-                score: score + exact_boost,
-            });
-        }
-    }
-    if category_filter.is_some() {
-        matches.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.label.cmp(&b.label)));
-        matches.truncate(12);
-        return matches;
-    }
-
-    for &entry in crate::app_metadata::LAUNCHER_ENTRIES.iter() {
-        if let crate::app_metadata::LauncherKind::App(app) = entry.kind {
-            if let Some(meta) = crate::app_metadata::app_by_name(app) {
-                if !crate::packages::is_installed(meta.id) {
-                    continue;
-                }
-            }
-        }
-        if let Some(score) = launcher_score(entry.label, entry.detail, search_query) {
-            matches.push(LauncherMatch {
-                label: String::from(entry.label),
-                detail: String::from(entry.detail),
-                kind: match entry.kind {
-                    crate::app_metadata::LauncherKind::App(app) => {
-                        LauncherMatchKind::App(String::from(app))
-                    }
-                    crate::app_metadata::LauncherKind::Path(path) => {
-                        LauncherMatchKind::Path(String::from(path))
-                    }
-                    crate::app_metadata::LauncherKind::Command(command) => {
-                        LauncherMatchKind::Command(String::from(command))
-                    }
-                },
-                score,
-            });
-        }
-    }
-
-    for app in crate::app_lifecycle::recent_apps().iter() {
-        if let Some(score) = launcher_score(app, "recent app", search_query) {
-            matches.push(LauncherMatch {
-                label: app.clone(),
-                detail: String::from("recent app"),
-                kind: LauncherMatchKind::App(app.clone()),
-                score: score + 10,
-            });
-        }
-    }
-    for command in crate::app_lifecycle::recent_commands().iter() {
-        if let Some(score) = launcher_score(command, "recent command", search_query) {
-            matches.push(LauncherMatch {
-                label: command.clone(),
-                detail: String::from("recent command"),
-                kind: LauncherMatchKind::Command(command.clone()),
-                score: score + 4,
-            });
-        }
-    }
-    for file in crate::app_lifecycle::recent_files().iter() {
-        if let Some(score) = launcher_score(file, "recent file", search_query) {
-            matches.push(LauncherMatch {
-                label: file_name(file),
-                detail: String::from("recent file"),
-                kind: LauncherMatchKind::Path(file.clone()),
-                score: score + 3,
-            });
-        }
-    }
-    for search in crate::app_lifecycle::recent_searches().iter() {
-        if let Some(score) = launcher_score(search, "recent search", search_query) {
-            matches.push(LauncherMatch {
-                label: search.clone(),
-                detail: String::from("recent search"),
-                kind: LauncherMatchKind::Inline({
-                    let mut action = String::from("search:");
-                    action.push_str(search);
-                    action
-                }),
-                score: score + 2,
-            });
-        }
-    }
-    for category in crate::app_metadata::APP_CATEGORIES {
-        let label = category.label();
-        if let Some(score) = launcher_score(label, "app category", search_query) {
-            let mut action = String::from("category:");
-            action.push_str(label);
-            matches.push(LauncherMatch {
-                label: {
-                    let mut out = String::from(label);
-                    out.push_str(" apps");
-                    out
-                },
-                detail: String::from("app category"),
-                kind: LauncherMatchKind::Inline(action),
-                score: score + 1,
-            });
-        }
-    }
-    for shortcut in settings_shortcuts() {
-        if let Some(score) = launcher_score(shortcut.0, "settings shortcut", search_query) {
-            matches.push(LauncherMatch {
-                label: String::from(shortcut.0),
-                detail: String::from("settings shortcut"),
-                kind: LauncherMatchKind::Inline({
-                    let mut action = String::from("settings:");
-                    action.push_str(shortcut.1);
-                    action
-                }),
-                score: score + 5,
-            });
-        }
-    }
-    for action in power_actions() {
-        if let Some(score) = launcher_score(action.0, "power/session action", search_query) {
-            matches.push(LauncherMatch {
-                label: String::from(action.0),
-                detail: String::from("power/session"),
-                kind: LauncherMatchKind::Inline(String::from(action.1)),
-                score: score + 4,
-            });
-        }
-    }
-    for entry in crate::search_index::search(search_query, 8).iter() {
-        matches.push(LauncherMatch {
-            label: entry.name.clone(),
-            detail: entry.path.clone(),
-            kind: LauncherMatchKind::Path(entry.path.clone()),
-            score: crate::search_index::fuzzy_score(&entry.name, search_query).unwrap_or(1) + 2,
-        });
-    }
-    if launcher_score("Refresh search index", "inline action", search_query).is_some() {
-        matches.push(LauncherMatch {
-            label: String::from("Refresh search index"),
-            detail: String::from("inline action"),
-            kind: LauncherMatchKind::Inline(String::from("refresh-index")),
-            score: if search_query.is_empty() { 1 } else { 24 },
-        });
-    }
-    if launcher_score(
-        "Test crash dialog",
-        "diagnostics inline action",
-        search_query,
-    )
-    .is_some()
-    {
-        matches.push(LauncherMatch {
-            label: String::from("Test crash dialog"),
-            detail: String::from("diagnostics inline action"),
-            kind: LauncherMatchKind::Inline(String::from("test-crash-dialog")),
-            score: if search_query.is_empty() { 1 } else { 90 },
-        });
-    }
-    matches.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.label.cmp(&b.label)));
-    matches.truncate(12);
-    matches
-}
-
-fn launcher_score(label: &str, detail: &str, query: &str) -> Option<usize> {
-    if query.is_empty() {
-        return Some(1);
-    }
-    let label_score = crate::search_index::fuzzy_score(label, query).unwrap_or(0);
-    let detail_score = crate::search_index::fuzzy_score(detail, query)
-        .unwrap_or(0)
-        .saturating_sub(3);
-    let score = label_score.max(detail_score);
-    if score == 0 {
-        None
-    } else {
-        Some(score)
-    }
-}
-
-fn command_palette_matches(query: &str) -> Vec<LauncherMatch> {
-    let command = query.trim_start_matches('>').trim();
-    if command.is_empty() {
-        return alloc::vec![
-            launcher_inline("Reboot", "power action", "reboot", 40),
-            launcher_inline("Shutdown", "power action", "shutdown", 38),
-            launcher_command("Run fsck", "filesystem check", "fsck", 36),
-            launcher_command(
-                "HTTPS example.com",
-                "TLS browser stack",
-                "https example.com",
-                34
-            ),
-            launcher_path("Open /Documents", "open folder", "/Documents", 32),
-        ];
-    }
-    if let Some(rest) = command.strip_prefix("open ") {
-        return alloc::vec![launcher_path(rest.trim(), "open path", rest.trim(), 70)];
-    }
-    if let Some(rest) = command.strip_prefix("http ") {
-        let mut cmd = String::from("http ");
-        cmd.push_str(rest.trim());
-        return alloc::vec![launcher_command(&cmd, "HTTP client", &cmd, 70)];
-    }
-    if let Some(rest) = command.strip_prefix("https ") {
-        let mut cmd = String::from("https ");
-        cmd.push_str(rest.trim());
-        return alloc::vec![launcher_command(&cmd, "HTTPS client", &cmd, 70)];
-    }
-    if let Some(rest) = command.strip_prefix("browser ") {
-        let url = rest.trim();
-        let mut action = String::from("browser-url:");
-        action.push_str(url);
-        return alloc::vec![launcher_inline("Open in Browser", url, &action, 72)];
-    }
-    if let Some(rest) = command.strip_prefix("dns ") {
-        let mut cmd = String::from("dns ");
-        cmd.push_str(rest.trim());
-        return alloc::vec![launcher_command(&cmd, "DNS resolver", &cmd, 70)];
-    }
-    if let Some(rest) = command.strip_prefix("settings ") {
-        let page = rest.trim();
-        return alloc::vec![launcher_inline(
-            command,
-            "settings page",
-            &settings_action(page),
-            70
-        )];
-    }
-    match command {
-        "reboot" | "restart" => {
-            alloc::vec![launcher_inline("Reboot", "power action", "reboot", 80)]
-        }
-        "shutdown" | "poweroff" => {
-            alloc::vec![launcher_inline("Shutdown", "power action", "shutdown", 80)]
-        }
-        "sleep" => alloc::vec![launcher_inline("Sleep", "power action", "sleep", 80)],
-        "lock" => alloc::vec![launcher_inline("Lock", "session action", "lock", 80)],
-        "logout" => alloc::vec![launcher_inline("Logout", "session action", "logout", 80)],
-        "restore" | "restore session" => alloc::vec![launcher_inline(
-            "Restore session",
-            "session action",
-            "restore-session",
-            80,
-        )],
-        "restart desktop" => alloc::vec![launcher_inline(
-            "Restart desktop",
-            "desktop action",
-            "restart-desktop",
-            80,
-        )],
-        "crash dialog" | "test crash dialog" => alloc::vec![launcher_inline(
-            "Test crash dialog",
-            "diagnostics action",
-            "test-crash-dialog",
-            80,
-        )],
-        _ => alloc::vec![launcher_command(command, "terminal command", command, 50)],
-    }
-}
-
-fn launcher_inline(label: &str, detail: &str, action: &str, score: usize) -> LauncherMatch {
-    LauncherMatch {
-        label: String::from(label),
-        detail: String::from(detail),
-        kind: LauncherMatchKind::Inline(String::from(action)),
-        score,
-    }
-}
-
-fn launcher_command(label: &str, detail: &str, command: &str, score: usize) -> LauncherMatch {
-    LauncherMatch {
-        label: String::from(label),
-        detail: String::from(detail),
-        kind: LauncherMatchKind::Command(String::from(command)),
-        score,
-    }
-}
-
-fn launcher_path(label: &str, detail: &str, path: &str, score: usize) -> LauncherMatch {
-    LauncherMatch {
-        label: String::from(label),
-        detail: String::from(detail),
-        kind: LauncherMatchKind::Path(String::from(path)),
-        score,
-    }
-}
-
-fn app_launcher_detail(app: &crate::app_metadata::AppMetadata) -> String {
-    let mut detail = String::from(app.category.label());
-    detail.push_str(" app, permission ");
-    detail.push_str(app.permission);
-    if !app.associations.is_empty() {
-        detail.push_str(", opens ");
-        for (idx, assoc) in app.associations.iter().enumerate() {
-            if idx > 0 {
-                detail.push(',');
-            }
-            detail.push_str(assoc);
-        }
-    }
-    detail
-}
-
-fn manifest_launcher_detail(manifest: &crate::app_metadata::AppManifest) -> String {
-    let mut detail = String::from("/APPS manifest ");
-    detail.push_str(&manifest.icon);
-    detail.push(' ');
-    detail.push_str(&manifest.category);
-    detail.push_str(", version ");
-    detail.push_str(&manifest.version);
-    detail.push_str(", permission ");
-    detail.push_str(&manifest.permission);
-    detail.push_str(", command ");
-    detail.push_str(&manifest.command);
-    detail.push_str(", exec ");
-    detail.push_str(&manifest.exec_path);
-    detail.push_str(", id ");
-    detail.push_str(&manifest.id);
-    if !manifest.associations.is_empty() {
-        detail.push_str(", opens ");
-        for (idx, assoc) in manifest.associations.iter().enumerate() {
-            if idx > 0 {
-                detail.push(',');
-            }
-            detail.push_str(assoc);
-        }
-    }
-    detail
-}
-
-fn recent_app_boost(app: &str) -> usize {
-    crate::app_lifecycle::recent_apps()
-        .iter()
-        .position(|recent| recent.eq_ignore_ascii_case(app))
-        .map(|idx| 10usize.saturating_sub(idx))
-        .unwrap_or(0)
-}
-
-fn settings_shortcuts() -> &'static [(&'static str, &'static str)] {
-    &[
-        ("Display settings", "desktop"),
-        ("Accessibility settings", "accessibility"),
-        ("Diagnostics settings", "diagnostics"),
-        ("Network settings", "network"),
-        ("Storage settings", "storage"),
-        ("Accounts settings", "accounts"),
-        ("Log viewer settings", "logs"),
-        ("Power settings", "power"),
-        ("Updates", "logs"),
-    ]
-}
-
-fn power_actions() -> &'static [(&'static str, &'static str)] {
-    &[
-        ("Shutdown", "shutdown"),
-        ("Reboot", "reboot"),
-        ("Sleep", "sleep"),
-        ("Lock", "lock"),
-        ("Logout", "logout"),
-        ("Restart desktop", "restart-desktop"),
-        ("Restore session", "restore-session"),
-    ]
-}
-
-fn start_menu_quick_actions() -> &'static [StartMenuQuickAction] {
-    &[
-        StartMenuQuickAction {
-            label: "Terminal",
-            glyph: "TR",
-            action: "app:Terminal",
-            accent: 0x00_00_FF_88,
-        },
-        StartMenuQuickAction {
-            label: "Files",
-            glyph: "FS",
-            action: "path:/",
-            accent: 0x00_55_DD_FF,
-        },
-        StartMenuQuickAction {
-            label: "Settings",
-            glyph: "DS",
-            action: "settings:desktop",
-            accent: 0x00_66_CC_FF,
-        },
-        StartMenuQuickAction {
-            label: "Lock",
-            glyph: "LK",
-            action: "lock",
-            accent: 0x00_FF_DD_55,
-        },
-    ]
-}
-
-fn start_power_actions() -> &'static [StartPowerAction] {
-    &[
-        StartPowerAction {
-            label: "Sleep",
-            glyph: "SL",
-            action: "sleep",
-            accent: 0x00_66_CC_FF,
-        },
-        StartPowerAction {
-            label: "Lock",
-            glyph: "LK",
-            action: "lock",
-            accent: 0x00_FF_DD_55,
-        },
-        StartPowerAction {
-            label: "Shutdown",
-            glyph: "PW",
-            action: "shutdown",
-            accent: 0x00_FF_88_66,
-        },
-        StartPowerAction {
-            label: "Restart",
-            glyph: "RS",
-            action: "restart",
-            accent: 0x00_AA_DD_FF,
-        },
-    ]
-}
-
-fn start_menu_quick_action_rect(index: usize, banner_w: i32) -> (i32, i32, i32, i32) {
-    let gap = 5i32;
-    let cols = 2i32;
-    let tile_w = ((banner_w - 16 - gap) / cols).max(72);
-    let tile_h = 22i32;
-    let col = index as i32 % cols;
-    let row = index as i32 / cols;
-    let x = 8 + col * (tile_w + gap);
-    let y = 58 + row * (tile_h + gap);
-    (x, y, tile_w, tile_h)
-}
-
-fn start_menu_quick_action_at(rel_x: i32, rel_y: i32, banner_w: i32) -> Option<&'static str> {
-    for (idx, action) in start_menu_quick_actions().iter().enumerate() {
-        let (x, y, w, h) = start_menu_quick_action_rect(idx, banner_w);
-        if rel_x >= x && rel_x < x + w && rel_y >= y && rel_y < y + h {
-            return Some(action.action);
-        }
-    }
-    None
-}
-
-fn start_power_menu_height() -> i32 {
-    START_POWER_MENU_PAD * 2 + start_power_actions().len() as i32 * START_POWER_MENU_ROW_H
-}
-
-fn start_power_menu_rect(
-    button_x: i32,
-    button_y: i32,
-    button_w: i32,
-    menu_x: i32,
-    menu_y: i32,
-    menu_w: i32,
-) -> (i32, i32, i32, i32) {
-    let w = START_POWER_MENU_W.min(menu_w - 16).max(112);
-    let h = start_power_menu_height();
-    let x = (button_x + button_w - w)
-        .min(menu_x + menu_w - w - 8)
-        .max(menu_x + 8);
-    let y = (button_y - h - 6).max(menu_y + 8);
-    (x, y, w, h)
-}
-
-fn start_power_action_at(
-    px: i32,
-    py: i32,
-    menu_x: i32,
-    menu_y: i32,
-    menu_w: i32,
-) -> Option<&'static str> {
-    if px < menu_x + 3 || px >= menu_x + menu_w - 3 {
-        return None;
-    }
-    let rel_y = py - menu_y - START_POWER_MENU_PAD;
-    if rel_y < 0 {
-        return None;
-    }
-    let idx = (rel_y / START_POWER_MENU_ROW_H) as usize;
-    if idx >= start_power_actions().len() {
-        return None;
-    }
-    let row_y = menu_y + START_POWER_MENU_PAD + idx as i32 * START_POWER_MENU_ROW_H;
-    if py < row_y || py >= row_y + START_POWER_MENU_ROW_H {
-        return None;
-    }
-    Some(start_power_actions()[idx].action)
-}
-
-fn settings_action(page: &str) -> String {
-    let mut action = String::from("settings:");
-    action.push_str(page);
-    action
-}
-
-fn build_start_menu_entries() -> Vec<StartMenuEntry> {
-    let prefs = crate::app_lifecycle::start_menu_prefs();
-    let mut out = Vec::new();
-    if prefs.show_recent {
-        for app in crate::app_lifecycle::recent_apps().iter().take(3) {
-            out.push(StartMenuEntry {
-                section: "RECENT",
-                label: app.clone(),
-                detail: String::from("app"),
-                kind: LauncherMatchKind::App(app.clone()),
-            });
-        }
-        for file in crate::app_lifecycle::recent_files().iter().take(3) {
-            out.push(StartMenuEntry {
-                section: "RECENT",
-                label: file_name(file),
-                detail: String::from("file"),
-                kind: LauncherMatchKind::Path(file.clone()),
-            });
-        }
-        for command in crate::app_lifecycle::recent_commands().iter().take(2) {
-            out.push(StartMenuEntry {
-                section: "RECENT",
-                label: command.clone(),
-                detail: String::from("cmd"),
-                kind: LauncherMatchKind::Command(command.clone()),
-            });
-        }
-    }
-
-    for &place in FileManagerApp::START_MENU_LINKS.iter().take(4) {
-        out.push(StartMenuEntry {
-            section: "PLACES",
-            label: String::from(place),
-            detail: String::from("folder"),
-            kind: LauncherMatchKind::Path(FileManagerApp::shell_link_path(place)),
-        });
-    }
-
-    for shortcut in settings_shortcuts().iter().take(7) {
-        out.push(StartMenuEntry {
-            section: "SETTINGS",
-            label: String::from(shortcut.0),
-            detail: String::from("page"),
-            kind: LauncherMatchKind::Inline(settings_action(shortcut.1)),
-        });
-    }
-    for category in crate::app_metadata::APP_CATEGORIES.iter().take(6) {
-        let mut action = String::from("category:");
-        action.push_str(category.label());
-        out.push(StartMenuEntry {
-            section: "CATEGORIES",
-            label: {
-                let mut label = String::from(category.label());
-                label.push_str(" apps");
-                label
-            },
-            detail: String::from("apps"),
-            kind: LauncherMatchKind::Inline(action),
-        });
-    }
-    for action in power_actions().iter().take(5) {
-        out.push(StartMenuEntry {
-            section: "POWER",
-            label: String::from(action.0),
-            detail: String::from("session"),
-            kind: LauncherMatchKind::Inline(String::from(action.1)),
-        });
-    }
-    out
-}
-
-fn start_menu_pinned_limit(menu_h: i32, bottom_h: i32, left_hdr_h: i32, item_h: i32) -> usize {
-    ((menu_h - bottom_h - left_hdr_h - item_h - 18).max(0) / item_h.max(1)) as usize
-}
-
-fn start_menu_entry_at(
-    entries: &[StartMenuEntry],
-    rel_y: i32,
-    item_h: i32,
-    max_h: i32,
-) -> Option<usize> {
-    if rel_y < 0 {
-        return None;
-    }
-    let mut y = 0i32;
-    let mut last_section = "";
-    for (idx, entry) in entries.iter().enumerate() {
-        if entry.section != last_section {
-            if y + START_MENU_SECTION_H > max_h {
-                return None;
-            }
-            if rel_y >= y && rel_y < y + START_MENU_SECTION_H {
-                return None;
-            }
-            y += START_MENU_SECTION_H;
-            last_section = entry.section;
-        }
-        if y + item_h > max_h {
-            return None;
-        }
-        if rel_y >= y && rel_y < y + item_h {
-            return Some(idx);
-        }
-        y += item_h;
-    }
-    None
-}
-
-fn start_item_kind(item: &str) -> LauncherMatchKind {
-    if let Some(path) = item.strip_prefix("path:") {
-        LauncherMatchKind::Path(String::from(path.trim()))
-    } else if let Some(command) = item.strip_prefix("cmd:") {
-        LauncherMatchKind::Command(String::from(command.trim()))
-    } else if let Some(action) = item.strip_prefix("setting:") {
-        LauncherMatchKind::Inline(settings_action(action.trim()))
-    } else if let Some(action) = item.strip_prefix("inline:") {
-        LauncherMatchKind::Inline(String::from(action.trim()))
-    } else if item.starts_with('/') {
-        LauncherMatchKind::Path(String::from(item))
-    } else if crate::app_metadata::app_by_id_or_command(item).is_some()
-        || crate::app_metadata::app_by_name(item).is_some()
-    {
-        let app = crate::app_metadata::app_by_id_or_command(item)
-            .or_else(|| crate::app_metadata::app_by_name(item));
-        LauncherMatchKind::App(String::from(app.map(|meta| meta.name).unwrap_or(item)))
-    } else {
-        LauncherMatchKind::App(String::from(item))
-    }
-}
-
-fn start_item_label(item: &str) -> String {
-    if let Some(path) = item.strip_prefix("path:") {
-        file_name(path.trim())
-    } else if let Some(command) = item.strip_prefix("cmd:") {
-        let mut label = String::from("Run ");
-        label.push_str(command.trim());
-        label
-    } else if let Some(page) = item.strip_prefix("setting:") {
-        let mut label = String::from(page.trim());
-        label.push_str(" settings");
-        label
-    } else if let Some(action) = item.strip_prefix("inline:") {
-        String::from(action.trim())
-    } else {
-        String::from(item)
-    }
-}
-
-fn start_item_detail(item: &str) -> String {
-    match start_item_kind(item) {
-        LauncherMatchKind::App(app) => crate::app_metadata::app_by_id_or_command(&app)
-            .or_else(|| crate::app_metadata::app_by_name(&app))
-            .map(|meta| {
-                let mut detail = String::from(meta.category.label());
-                detail.push_str(" app");
-                detail
-            })
-            .unwrap_or_else(|| String::from("app")),
-        LauncherMatchKind::Path(path) => {
-            if path.ends_with('/') || path == "/" {
-                String::from("folder")
-            } else {
-                String::from("file or folder")
-            }
-        }
-        LauncherMatchKind::Command(_) => String::from("terminal command"),
-        LauncherMatchKind::Inline(action) if action.starts_with("settings:") => {
-            String::from("settings page")
-        }
-        LauncherMatchKind::Inline(action)
-            if action == "lock"
-                || action == "logout"
-                || action == "sleep"
-                || action == "shutdown"
-                || action == "reboot"
-                || action == "restart" =>
-        {
-            String::from("session action")
-        }
-        LauncherMatchKind::Inline(_) => String::from("quick action"),
-    }
-}
-
-fn launcher_pin_label(entry: &LauncherMatch) -> String {
-    match &entry.kind {
-        LauncherMatchKind::App(app) => app.clone(),
-        LauncherMatchKind::Path(path) => {
-            let mut item = String::from("path:");
-            item.push_str(path);
-            item
-        }
-        LauncherMatchKind::Command(command) => {
-            let mut item = String::from("cmd:");
-            item.push_str(command);
-            item
-        }
-        LauncherMatchKind::Inline(action) if action.starts_with("settings:") => {
-            let mut item = String::from("setting:");
-            item.push_str(action.trim_start_matches("settings:"));
-            item
-        }
-        LauncherMatchKind::Inline(action) => {
-            let mut item = String::from("inline:");
-            item.push_str(action);
-            item
-        }
-    }
-}
-
-fn launcher_copy_text(entry: &LauncherMatch) -> String {
-    match &entry.kind {
-        LauncherMatchKind::App(app) => app.clone(),
-        LauncherMatchKind::Path(path) => path.clone(),
-        LauncherMatchKind::Command(command) => command.clone(),
-        LauncherMatchKind::Inline(action) => action.clone(),
-    }
-}
-
-fn parent_path(path: &str) -> &str {
-    if path == "/" {
-        return "/";
-    }
-    let trimmed = path.trim_end_matches('/');
-    match trimmed.rsplit_once('/') {
-        Some(("", _)) | None => "/",
-        Some((parent, _)) => parent,
-    }
-}
-
 fn ctrl_number_slot(c: char) -> Option<usize> {
     match c {
         '1' => Some(0),
@@ -8574,6 +4823,530 @@ fn ctrl_number_slot(c: char) -> Option<usize> {
     }
 }
 
+fn draw_win7_start_menu(
+    s: &mut [u32],
+    sw: usize,
+    taskbar_y: i32,
+    mx: i32,
+    my: i32,
+    power_open: bool,
+    start_search: &StartSearchState,
+) {
+    let layout = win7_start_menu_layout(sw as i32, taskbar_y);
+    let bottom_y = layout.menu_y + layout.menu_h - START_MENU_WIN7_BOTTOM_H;
+    let frame = 0x00_2A_3A_4A;
+    let left_bg = 0x00_10_17_22;
+    let left_alt = 0x00_14_20_2C;
+    let right_bg = 0x00_0D_20_30;
+    let row_hot = 0x00_1A_2A_38;
+    let text = 0x00_E7_EF_F6;
+    let muted = 0x00_90_A4_B8;
+
+    s_fill(
+        s,
+        sw,
+        layout.menu_x,
+        layout.menu_y,
+        layout.left_w,
+        layout.menu_h,
+        left_bg,
+    );
+    s_fill(
+        s,
+        sw,
+        layout.right_x,
+        layout.menu_y,
+        layout.right_w,
+        layout.menu_h,
+        right_bg,
+    );
+    s_fill(
+        s,
+        sw,
+        layout.menu_x + 1,
+        bottom_y,
+        layout.menu_w - 2,
+        START_MENU_WIN7_BOTTOM_H - 1,
+        0x00_0A_10_18,
+    );
+    s_fill(
+        s,
+        sw,
+        layout.menu_x + layout.left_w,
+        layout.menu_y + 3,
+        1,
+        layout.menu_h - 4,
+        frame,
+    );
+    s_fill(
+        s,
+        sw,
+        layout.menu_x + 1,
+        bottom_y,
+        layout.menu_w - 2,
+        1,
+        frame,
+    );
+    s_fill(
+        s,
+        sw,
+        layout.menu_x,
+        layout.menu_y,
+        layout.menu_w,
+        2,
+        ACCENT,
+    );
+    s_fill(
+        s,
+        sw,
+        layout.menu_x + 1,
+        layout.menu_y + 2,
+        layout.menu_w - 2,
+        1,
+        blend_color(ACCENT, left_bg, 150),
+    );
+    draw_rect_border(
+        s,
+        sw,
+        layout.menu_x,
+        layout.menu_y,
+        layout.menu_w,
+        layout.menu_h,
+        0x00_3B_4C_5E,
+    );
+    draw_rect_border(
+        s,
+        sw,
+        layout.menu_x + 1,
+        layout.menu_y + 1,
+        layout.menu_w - 2,
+        layout.menu_h - 2,
+        0x00_18_25_32,
+    );
+    s_fill(
+        s,
+        sw,
+        layout.menu_x,
+        layout.menu_y,
+        layout.menu_w,
+        2,
+        ACCENT,
+    );
+    s_fill(
+        s,
+        sw,
+        layout.menu_x + 1,
+        layout.menu_y + 2,
+        layout.menu_w - 2,
+        1,
+        blend_color(ACCENT, left_bg, 150),
+    );
+    draw_glass_panel_outline(
+        s,
+        sw,
+        layout.menu_x,
+        layout.menu_y,
+        layout.menu_w,
+        layout.menu_h,
+        ACCENT,
+    );
+
+    let results = start_menu_results(start_search);
+    let visible_rows = start_menu_visible_rows(layout, results.len());
+    let search_active = start_search.show_all || !start_search.query.trim().is_empty();
+    if results.is_empty() {
+        s_draw_str_small(
+            s,
+            sw,
+            layout.list_x + 12,
+            layout.list_y + 14,
+            "No matching apps or files",
+            muted,
+            left_bg,
+            layout.list_x + layout.list_w - 8,
+        );
+    }
+    for (idx, result) in results.iter().take(visible_rows).enumerate() {
+        let y = layout.list_y + idx as i32 * layout.row_h;
+        let hot = rect_contains(layout.list_x, y, layout.list_w, layout.row_h, mx, my);
+        let selected = search_active && idx == start_search.selected.min(results.len() - 1);
+        let row_bg = if selected {
+            0x00_1B_32_42
+        } else if hot {
+            row_hot
+        } else {
+            left_bg
+        };
+        if hot || selected {
+            s_fill(
+                s,
+                sw,
+                layout.list_x,
+                y,
+                layout.list_w,
+                layout.row_h - 1,
+                row_bg,
+            );
+            s_fill(
+                s,
+                sw,
+                layout.list_x,
+                y + 7,
+                3,
+                layout.row_h - 14,
+                if selected { ACCENT_HOV } else { ACCENT },
+            );
+        } else if idx > 0 {
+            s_fill(
+                s,
+                sw,
+                layout.list_x + 34,
+                y,
+                layout.list_w - 42,
+                1,
+                0x00_1A_25_32,
+            );
+        }
+
+        let icon_x = layout.list_x + 8;
+        let icon_y = y + (layout.row_h - 24) / 2;
+        draw_start_menu_app_icon(s, sw, icon_x, icon_y, start_search_icon_kind(result));
+        s_draw_str_small(
+            s,
+            sw,
+            icon_x + 34,
+            y + 12,
+            &result.label,
+            if hot || selected { WHITE } else { text },
+            row_bg,
+            layout.menu_x + layout.left_w - 12,
+        );
+    }
+
+    let all_hot = rect_contains(
+        layout.all_x,
+        layout.all_y,
+        layout.all_w,
+        layout.all_h,
+        mx,
+        my,
+    );
+    let all_bg = if all_hot { row_hot } else { left_bg };
+    s_fill(
+        s,
+        sw,
+        layout.all_x,
+        layout.all_y - 1,
+        layout.all_w,
+        1,
+        frame,
+    );
+    if all_hot {
+        s_fill(
+            s,
+            sw,
+            layout.all_x,
+            layout.all_y,
+            layout.all_w,
+            layout.all_h,
+            all_bg,
+        );
+    }
+    let chevron_x = layout.all_x + 12;
+    let chevron_y = layout.all_y + layout.all_h / 2;
+    let chevron = if all_hot { WHITE } else { muted };
+    s_fill(s, sw, chevron_x, chevron_y - 5, 1, 10, chevron);
+    s_fill(s, sw, chevron_x + 1, chevron_y - 4, 1, 8, chevron);
+    s_fill(s, sw, chevron_x + 2, chevron_y - 3, 1, 6, chevron);
+    s_draw_str_small(
+        s,
+        sw,
+        layout.all_x + 30,
+        layout.all_y + 12,
+        "All Programs",
+        if all_hot { WHITE } else { text },
+        all_bg,
+        layout.all_x + layout.all_w - 8,
+    );
+
+    let search_hot = rect_contains(
+        layout.search_x,
+        layout.search_y,
+        layout.search_w,
+        layout.search_h,
+        mx,
+        my,
+    );
+    let search_bg = if search_hot {
+        0x00_12_1C_28
+    } else {
+        0x00_06_0B_12
+    };
+    s_fill(
+        s,
+        sw,
+        layout.search_x,
+        layout.search_y,
+        layout.search_w,
+        layout.search_h,
+        search_bg,
+    );
+    draw_rect_border(
+        s,
+        sw,
+        layout.search_x,
+        layout.search_y,
+        layout.search_w,
+        layout.search_h,
+        if start_search.focused || search_hot {
+            ACCENT
+        } else {
+            frame
+        },
+    );
+    let sg_x = layout.search_x + layout.search_w - 20;
+    let sg_y = layout.search_y + 8;
+    let sg_col = if start_search.focused || search_hot {
+        ACCENT
+    } else {
+        muted
+    };
+    s_fill(s, sw, sg_x + 1, sg_y, 5, 1, sg_col);
+    s_fill(s, sw, sg_x, sg_y + 1, 1, 5, sg_col);
+    s_fill(s, sw, sg_x + 6, sg_y + 1, 1, 5, sg_col);
+    s_fill(s, sw, sg_x + 1, sg_y + 6, 5, 1, sg_col);
+    s_fill(s, sw, sg_x + 6, sg_y + 6, 1, 1, sg_col);
+    s_fill(s, sw, sg_x + 7, sg_y + 7, 1, 1, sg_col);
+    s_fill(s, sw, sg_x + 8, sg_y + 8, 1, 1, sg_col);
+    let search_text = if start_search.query.is_empty() {
+        "Search programs and files"
+    } else {
+        &start_search.query
+    };
+    s_draw_str_small(
+        s,
+        sw,
+        layout.search_x + 8,
+        layout.search_y + 9,
+        search_text,
+        if start_search.query.is_empty() {
+            muted
+        } else {
+            WHITE
+        },
+        search_bg,
+        sg_x - 4,
+    );
+    if start_search.focused {
+        let cursor_x = (layout.search_x + 8 + start_search.query.len() as i32 * 8).min(sg_x - 6);
+        s_fill(
+            s,
+            sw,
+            cursor_x,
+            layout.search_y + 8,
+            1,
+            layout.search_h - 15,
+            ACCENT_HOV,
+        );
+        s_fill(
+            s,
+            sw,
+            layout.search_x + 1,
+            layout.search_y + layout.search_h - 2,
+            layout.search_w - 2,
+            1,
+            ACCENT,
+        );
+    }
+
+    s_fill(
+        s,
+        sw,
+        layout.right_x + 1,
+        layout.menu_y + 2,
+        layout.right_w - 2,
+        28,
+        0x00_14_2A_3E,
+    );
+    s_fill(
+        s,
+        sw,
+        layout.avatar_x,
+        layout.avatar_y,
+        layout.avatar_w,
+        layout.avatar_h,
+        left_alt,
+    );
+    draw_glass_panel_outline(
+        s,
+        sw,
+        layout.avatar_x,
+        layout.avatar_y,
+        layout.avatar_w,
+        layout.avatar_h,
+        ACCENT,
+    );
+    draw_rect_border(
+        s,
+        sw,
+        layout.avatar_x + 2,
+        layout.avatar_y + 2,
+        layout.avatar_w - 4,
+        layout.avatar_h - 4,
+        0x00_C8_F7_FF,
+    );
+    draw_snowflake_logo(
+        s,
+        sw,
+        layout.avatar_x + 19,
+        layout.avatar_y + 19,
+        1,
+        WHITE,
+        ACCENT_HOV,
+    );
+
+    let user = crate::security::current_user();
+    for idx in 0..(win7_start_right_links().len() + 1) {
+        let y = layout.links_y + idx as i32 * layout.link_h;
+        if y + layout.link_h > bottom_y - 8 {
+            break;
+        }
+        let hot = rect_contains(layout.links_x, y, layout.links_w, layout.link_h, mx, my);
+        let row_bg = if hot { 0x00_18_2B_3D } else { right_bg };
+        if hot {
+            s_fill(
+                s,
+                sw,
+                layout.links_x,
+                y,
+                layout.links_w,
+                layout.link_h - 1,
+                row_bg,
+            );
+            s_fill(s, sw, layout.links_x, y + 8, 2, layout.link_h - 16, ACCENT);
+        }
+        let label: &str = if idx == 0 {
+            &user.name
+        } else {
+            win7_start_right_links()[idx - 1].label
+        };
+        s_draw_str_small(
+            s,
+            sw,
+            layout.links_x + 6,
+            y + 13,
+            label,
+            if hot { WHITE } else { text },
+            row_bg,
+            layout.links_x + layout.links_w - 2,
+        );
+        if idx == 3 || idx == 4 {
+            s_fill(
+                s,
+                sw,
+                layout.links_x + 4,
+                y + layout.link_h - 1,
+                layout.links_w - 8,
+                1,
+                0x00_2A_3A_4A,
+            );
+        }
+    }
+
+    let shutdown_hot = rect_contains(
+        layout.shutdown_x,
+        layout.shutdown_y,
+        layout.shutdown_w,
+        layout.shutdown_h,
+        mx,
+        my,
+    );
+    let arrow_hot = rect_contains(
+        layout.shutdown_arrow_x,
+        layout.shutdown_y,
+        layout.shutdown_arrow_w,
+        layout.shutdown_h,
+        mx,
+        my,
+    );
+    let shutdown_bg = if power_open || shutdown_hot {
+        0x00_22_32_42
+    } else {
+        0x00_14_20_2C
+    };
+    s_fill(
+        s,
+        sw,
+        layout.shutdown_x,
+        layout.shutdown_y,
+        layout.shutdown_w,
+        layout.shutdown_h,
+        shutdown_bg,
+    );
+    if arrow_hot || power_open {
+        s_fill(
+            s,
+            sw,
+            layout.shutdown_arrow_x,
+            layout.shutdown_y,
+            layout.shutdown_arrow_w,
+            layout.shutdown_h,
+            0x00_2B_44_5A,
+        );
+    }
+    draw_rect_border(
+        s,
+        sw,
+        layout.shutdown_x,
+        layout.shutdown_y,
+        layout.shutdown_w,
+        layout.shutdown_h,
+        frame,
+    );
+    s_fill(
+        s,
+        sw,
+        layout.shutdown_arrow_x,
+        layout.shutdown_y + 1,
+        1,
+        layout.shutdown_h - 2,
+        frame,
+    );
+    s_draw_str_small(
+        s,
+        sw,
+        layout.shutdown_x + 8,
+        layout.shutdown_y + 7,
+        "Shut down",
+        WHITE,
+        shutdown_bg,
+        layout.shutdown_arrow_x - 4,
+    );
+    let caret = if arrow_hot || power_open {
+        WHITE
+    } else {
+        muted
+    };
+    let caret_x = layout.shutdown_arrow_x + 8;
+    let caret_y = layout.shutdown_y + 9;
+    s_fill(s, sw, caret_x, caret_y, 5, 1, caret);
+    s_fill(s, sw, caret_x + 1, caret_y + 1, 3, 1, caret);
+    s_fill(s, sw, caret_x + 2, caret_y + 2, 1, 1, caret);
+
+    if power_open {
+        let (power_x, power_y, power_w, power_h) = start_power_menu_rect(
+            layout.shutdown_x,
+            layout.shutdown_y,
+            layout.shutdown_w,
+            layout.menu_x,
+            layout.menu_y,
+            layout.menu_w,
+        );
+        draw_start_power_menu(s, sw, power_x, power_y, power_w, power_h, mx, my);
+    }
+}
+
+#[allow(dead_code)]
 fn draw_start_menu_quick_actions(
     s: &mut [u32],
     sw: usize,
@@ -8638,11 +5411,9 @@ fn draw_start_power_menu(
     my: i32,
 ) {
     let bg = 0x00_00_07_18;
-    s_fill_alpha(s, sw, x + 4, y + 4, w, h, 0x44_00_00_00);
     s_fill(s, sw, x, y, w, h, bg);
     s_fill(s, sw, x, y, w, 3, 0x00_FF_DD_55);
-    draw_rect_border(s, sw, x, y, w, h, 0x00_00_66_BB);
-    draw_rect_border(s, sw, x + 1, y + 1, w - 2, h - 2, 0x00_00_22_44);
+    draw_glass_panel_outline(s, sw, x, y, w, h, 0x00_FF_DD_55);
 
     for (idx, action) in start_power_actions().iter().enumerate() {
         let row_y = y + START_POWER_MENU_PAD + idx as i32 * START_POWER_MENU_ROW_H;
@@ -8696,16 +5467,6 @@ fn parse_usize_field(value: &str) -> Option<usize> {
     value.parse::<usize>().ok()
 }
 
-fn workspace_label(workspace: usize) -> &'static str {
-    match workspace {
-        0 => "WS1",
-        1 => "WS2",
-        2 => "WS3",
-        3 => "WS4",
-        _ => "WS?",
-    }
-}
-
 fn default_login_user_name() -> String {
     let current = crate::security::current_user();
     if current.login_enabled {
@@ -8717,38 +5478,6 @@ fn default_login_user_name() -> String {
         }
     }
     String::from("root")
-}
-
-fn greeter_layout(sw: i32, taskbar_y: i32) -> GreeterLayout {
-    let panel_w = GREETER_PANEL_W.min((sw - 32).max(360));
-    let panel_h = GREETER_PANEL_H.min((taskbar_y - 28).max(360));
-    let panel_x = ((sw - panel_w) / 2).max(8);
-    let panel_y = ((taskbar_y - panel_h) / 2).max(14);
-    let field_w = (panel_w - 72).min(392).max(260);
-    let user_x = panel_x + (panel_w - field_w) / 2;
-    let user_y = panel_y + 154;
-    let pass_y = user_y + 54;
-    let button_y = pass_y + 46;
-    let min_users_y = button_y + 58;
-    let max_users_y = panel_y + panel_h - GREETER_USER_ROW_H * 2 - 18;
-    let users_y = (button_y + 68).min(max_users_y).max(min_users_y);
-    GreeterLayout {
-        panel_x,
-        panel_y,
-        panel_w,
-        panel_h,
-        user_x,
-        user_y,
-        field_w,
-        pass_y,
-        button_y,
-        users_y,
-        row_w: field_w,
-    }
-}
-
-fn rect_contains(x: i32, y: i32, w: i32, h: i32, px: i32, py: i32) -> bool {
-    px >= x && px < x + w && py >= y && py < y + h
 }
 
 fn push_i32_decimal(out: &mut String, n: i32) {
@@ -8809,237 +5538,3 @@ impl DerefMut for WindowManagerGuard<'_> {
 }
 
 pub static WM: WindowManagerCell = WindowManagerCell::new();
-
-// ── Shadow-buffer helpers ─────────────────────────────────────────────────────
-
-#[inline(always)]
-fn s_put(s: &mut [u32], sw: usize, sh: usize, x: i32, y: i32, color: u32) {
-    if x >= 0 && y >= 0 {
-        let (x, y) = (x as usize, y as usize);
-        if x < sw && (sh == usize::MAX || y < sh) && y * sw + x < s.len() {
-            s[y * sw + x] = color;
-        }
-    }
-}
-
-fn s_fill(s: &mut [u32], sw: usize, x: i32, y: i32, w: i32, h: i32, color: u32) {
-    let sh = if sw > 0 { s.len() / sw } else { 0 };
-    let x0 = (x.max(0) as usize).min(sw);
-    let y0 = y.max(0) as usize;
-    let x1 = ((x + w).max(0) as usize).min(sw);
-    let y1 = ((y + h).max(0) as usize).min(sh);
-    if x0 >= x1 || y0 >= y1 {
-        return;
-    }
-    for row in y0..y1 {
-        let base = row * sw;
-        s[base + x0..base + x1].fill(color);
-    }
-}
-
-/// Additive-alpha fill — darkens existing pixels by a fraction derived from `shadow`'s alpha byte.
-#[inline(always)]
-fn s_fill_alpha(s: &mut [u32], sw: usize, x: i32, y: i32, w: i32, h: i32, shadow: u32) {
-    // Scale darkening by the alpha embedded in bits [31:24] of the colour word.
-    let amount = ((shadow >> 24) & 0xFF) as u32;
-    if amount == 0 {
-        return;
-    }
-    let sh = if sw > 0 { s.len() / sw } else { 0 };
-    let x0 = (x.max(0) as usize).min(sw);
-    let y0 = y.max(0) as usize;
-    let x1 = ((x + w).max(0) as usize).min(sw);
-    let y1 = ((y + h).max(0) as usize).min(sh);
-    if x0 >= x1 || y0 >= y1 {
-        return;
-    }
-    for row in y0..y1 {
-        for col in x0..x1 {
-            let idx = row * sw + col;
-            let p = s[idx];
-            let r = ((p >> 16) & 0xFF).saturating_sub(amount);
-            let g = ((p >> 8) & 0xFF).saturating_sub(amount);
-            let b = (p & 0xFF).saturating_sub(amount);
-            s[idx] = (r << 16) | (g << 8) | b;
-        }
-    }
-}
-
-/// Render text at raw 1× scale (8 × 8 px per glyph) — used for compact labels.
-fn s_draw_char_small(s: &mut [u32], sw: usize, x: i32, y: i32, c: char, fg: u32, bg: u32) {
-    use font8x8::UnicodeFonts;
-    let glyph = font8x8::BASIC_FONTS
-        .get(c)
-        .unwrap_or_else(|| font8x8::BASIC_FONTS.get(' ').unwrap());
-    let sh = if sw > 0 { s.len() / sw } else { 0 };
-    let large_text = crate::accessibility::snapshot().large_text;
-    for (gy, &byte) in glyph.iter().enumerate() {
-        for bit in 0..8usize {
-            let ink = byte & (1 << bit) != 0;
-            let color = if ink { fg } else { bg };
-            let px = x + bit as i32;
-            let py = y + gy as i32;
-            if px >= 0 && py >= 0 {
-                let (px, py) = (px as usize, py as usize);
-                if px < sw && py < sh {
-                    s[py * sw + px] = color;
-                    if large_text && ink && px + 1 < sw {
-                        s[py * sw + px + 1] = fg;
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn s_draw_str_small(
-    s: &mut [u32],
-    sw: usize,
-    x: i32,
-    y: i32,
-    text: &str,
-    fg: u32,
-    bg: u32,
-    max_x: i32,
-) {
-    let mut cx = x;
-    for c in text.chars() {
-        if cx + 8 > max_x {
-            break;
-        }
-        s_draw_char_small(s, sw, cx, y, c, fg, bg);
-        cx += 8;
-    }
-}
-
-fn s_draw_str_scaled_with_tracking(
-    s: &mut [u32],
-    sw: usize,
-    x: i32,
-    y: i32,
-    text: &str,
-    color: u32,
-    scale: usize,
-    tracking: i32,
-) {
-    let mut cx = x;
-    for ch in text.chars() {
-        s_draw_char_scaled(s, sw, cx, y, ch, color, scale);
-        cx += 8 * scale as i32 + tracking;
-    }
-}
-
-fn s_text_width_scaled_with_tracking(text: &str, scale: usize, tracking: i32) -> i32 {
-    let chars = text.chars().count() as i32;
-    if chars == 0 {
-        0
-    } else {
-        chars * (8 * scale as i32) + (chars - 1) * tracking
-    }
-}
-
-fn s_draw_char_scaled(s: &mut [u32], sw: usize, x: i32, y: i32, c: char, color: u32, scale: usize) {
-    use font8x8::UnicodeFonts;
-    let glyph = font8x8::BASIC_FONTS
-        .get(c)
-        .unwrap_or_else(|| font8x8::BASIC_FONTS.get(' ').unwrap());
-    for (gy, &byte) in glyph.iter().enumerate() {
-        for bit in 0..8usize {
-            if byte & (1 << bit) == 0 {
-                continue;
-            }
-            let px = x + (bit * scale) as i32;
-            let py = y + (gy * scale) as i32;
-            s_fill(s, sw, px, py, scale as i32, scale as i32, color);
-        }
-    }
-}
-
-/// Draw a 1-pixel-wide unfilled rectangle border.
-fn draw_rect_border(s: &mut [u32], sw: usize, x: i32, y: i32, w: i32, h: i32, color: u32) {
-    s_fill(s, sw, x, y, w, 1, color); // top
-    s_fill(s, sw, x, y + h - 1, w, 1, color); // bottom
-    s_fill(s, sw, x, y, 1, h, color); // left
-    s_fill(s, sw, x + w - 1, y, 1, h, color); // right
-}
-
-fn draw_circle_outline(s: &mut [u32], sw: usize, cx: i32, cy: i32, r: i32, color: u32) {
-    let mut x = r;
-    let mut y = 0;
-    let mut err = 0;
-    let sh = if sw > 0 { s.len() / sw } else { 0 };
-    while x >= y {
-        s_put(s, sw, sh, cx + x, cy + y, color);
-        s_put(s, sw, sh, cx + y, cy + x, color);
-        s_put(s, sw, sh, cx - y, cy + x, color);
-        s_put(s, sw, sh, cx - x, cy + y, color);
-        s_put(s, sw, sh, cx - x, cy - y, color);
-        s_put(s, sw, sh, cx - y, cy - x, color);
-        s_put(s, sw, sh, cx + y, cy - x, color);
-        s_put(s, sw, sh, cx + x, cy - y, color);
-        y += 1;
-        if err <= 0 {
-            err += 2 * y + 1;
-        } else {
-            x -= 1;
-            err += 2 * (y - x) + 1;
-        }
-    }
-}
-
-fn draw_usb_tray_icon(s: &mut [u32], sw: usize, x: i32, y: i32, color: u32) {
-    s_fill(s, sw, x + 5, y, 2, 4, color);
-    s_fill(s, sw, x + 3, y + 3, 6, 2, color);
-    s_fill(s, sw, x + 2, y + 5, 2, 4, color);
-    s_fill(s, sw, x + 8, y + 5, 2, 4, color);
-    s_fill(s, sw, x + 4, y + 7, 4, 2, color);
-    s_fill(s, sw, x + 5, y + 9, 2, 3, color);
-    s_fill(s, sw, x + 4, y + 11, 4, 1, blend_color(color, WHITE, 110));
-}
-
-fn draw_keyboard_tray_icon(s: &mut [u32], sw: usize, x: i32, y: i32, color: u32) {
-    draw_rect_border(s, sw, x, y + 2, 13, 8, color);
-    s_fill(s, sw, x + 2, y + 4, 9, 1, color);
-    s_fill(s, sw, x + 2, y + 6, 2, 1, color);
-    s_fill(s, sw, x + 5, y + 6, 2, 1, color);
-    s_fill(s, sw, x + 8, y + 6, 2, 1, color);
-    s_fill(s, sw, x + 3, y + 10, 7, 2, color);
-}
-
-fn draw_mouse_tray_icon(s: &mut [u32], sw: usize, x: i32, y: i32, color: u32) {
-    draw_rect_border(s, sw, x + 2, y, 9, 12, color);
-    s_fill(s, sw, x + 6, y + 2, 1, 2, color);
-    s_fill(s, sw, x + 3, y + 4, 7, 1, color);
-}
-
-/// Blend two u32 colours: t=0 → a, t=255 → b.
-#[inline(always)]
-fn blend_color(a: u32, b: u32, t: u32) -> u32 {
-    let lerp = |ca: u32, cb: u32| -> u32 {
-        if cb >= ca {
-            (ca + (cb - ca) * t / 255).min(255)
-        } else {
-            ca - (ca - cb) * t / 255
-        }
-    };
-    let r = lerp((a >> 16) & 0xFF, (b >> 16) & 0xFF);
-    let g = lerp((a >> 8) & 0xFF, (b >> 8) & 0xFF);
-    let bl = lerp(a & 0xFF, b & 0xFF);
-    (r << 16) | (g << 8) | bl
-}
-
-fn darken_color(color: u32, amount: u8) -> u32 {
-    let factor = 255u32.saturating_sub(amount as u32);
-    let r = ((color >> 16) & 0xFF) * factor / 255;
-    let g = ((color >> 8) & 0xFF) * factor / 255;
-    let b = (color & 0xFF) * factor / 255;
-    (r << 16) | (g << 8) | b
-}
-
-/// Bilinear interpolation for a single u8 channel across four corners.
-#[inline(always)]
-fn bilinear_u8(tl: u8, tr: u8, bl: u8, br: u8, tx: f32, ty: f32) -> u8 {
-    let top = tl as f32 * (1.0 - tx) + tr as f32 * tx;
-    let bot = bl as f32 * (1.0 - tx) + br as f32 * tx;
-    (top * (1.0 - ty) + bot * ty) as u8
-}

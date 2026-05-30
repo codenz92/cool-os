@@ -53,7 +53,7 @@ pub enum Association {
 pub enum LauncherKind {
     App(&'static str),
     Path(&'static str),
-    Command(&'static str),
+    Command,
 }
 
 #[derive(Clone, Copy)]
@@ -416,27 +416,27 @@ pub const LAUNCHER_ENTRIES: &[LauncherEntry] = &[
     LauncherEntry {
         label: "Run ps",
         detail: "terminal command",
-        kind: LauncherKind::Command("ps"),
+        kind: LauncherKind::Command,
     },
     LauncherEntry {
         label: "Run devices",
         detail: "terminal command",
-        kind: LauncherKind::Command("devices"),
+        kind: LauncherKind::Command,
     },
     LauncherEntry {
         label: "Run net",
         detail: "terminal command",
-        kind: LauncherKind::Command("net"),
+        kind: LauncherKind::Command,
     },
     LauncherEntry {
         label: "Run fsck",
         detail: "terminal command",
-        kind: LauncherKind::Command("fsck"),
+        kind: LauncherKind::Command,
     },
     LauncherEntry {
         label: "Run log",
         detail: "terminal command",
-        kind: LauncherKind::Command("log"),
+        kind: LauncherKind::Command,
     },
 ];
 

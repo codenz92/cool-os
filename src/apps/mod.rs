@@ -6,6 +6,7 @@ pub mod personalize;
 pub mod sysmon;
 pub mod terminal;
 pub mod textviewer;
+pub mod theme;
 pub mod usergui;
 pub mod utilities;
 

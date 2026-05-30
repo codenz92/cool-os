@@ -169,6 +169,7 @@ def main(argv: list[str]) -> int:
 
     checks = {
         "start-menu": assert_start_menu,
+        "start-search": assert_start_menu,
         "settings": lambda path: assert_window_profile(path, "settings"),
         "diagnostics": lambda path: assert_window_profile(path, "diagnostics"),
         "crash-dialog": assert_crash_dialog,

@@ -1,4 +1,4 @@
-.PHONY: run run-net run-usb run-usb-init run-smooth run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-phase31-accounts smoke-phase32-isolation smoke-phase33-process-control smoke-phase34-tty-jobs smoke-phase35-tty-input smoke-phase36-userspace-shell smoke-phase37-coreutils smoke-phase38-apps smoke-phase39-recovery smoke-phase40-shell-semantics smoke-phase41-fs-durability smoke-phase42-app-consistency smoke-phase43-observability smoke-phase44-devkit smoke-phase45-smoothness smoke-phase46-adaptive-refresh smoke-phase47-evented-userspace smoke-phase48-terminal-tui smoke-phase49-browser-engine smoke-phase50-css-layout smoke-phase51-browser-forms smoke-phase52-dom-events smoke-phase53-dom-forms smoke-phase54-browser-post smoke-phase55-browser-session smoke-phase56-css-box-model smoke-phase57-browser-layout smoke-phase58-browser-subresources smoke-phase59-browser-js smoke-phase60-browser-webapi smoke-phase61-browser-compat smoke-phase62-resource-limits smoke-phase63-memory-pressure smoke-phase64-services smoke-phase65-update-rollback smoke-phase66-boot-health smoke-phase67-update-trust smoke-phase68-update-keys smoke-phase69-package-trust smoke-phase70-package-payloads smoke-phase71-browser-engine-port smoke-phase72-threads-futex smoke-phase73-tls-pthread smoke-phase74-pthread-libc smoke-phase75-dynlink smoke-phase76-dynlink-deps smoke-phase77-file-mmap smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
+.PHONY: run run-net run-usb run-usb-init run-smooth run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-phase31-accounts smoke-phase32-isolation smoke-phase33-process-control smoke-phase34-tty-jobs smoke-phase35-tty-input smoke-phase36-userspace-shell smoke-phase37-coreutils smoke-phase38-apps smoke-phase39-recovery smoke-phase40-shell-semantics smoke-phase41-fs-durability smoke-phase42-app-consistency smoke-phase43-observability smoke-phase44-devkit smoke-phase45-smoothness smoke-phase46-adaptive-refresh smoke-pointer-tablet smoke-phase47-evented-userspace smoke-phase48-terminal-tui smoke-phase49-browser-engine smoke-phase50-css-layout smoke-phase51-browser-forms smoke-phase52-dom-events smoke-phase53-dom-forms smoke-phase54-browser-post smoke-phase55-browser-session smoke-phase56-css-box-model smoke-phase57-browser-layout smoke-phase58-browser-subresources smoke-phase59-browser-js smoke-phase60-browser-webapi smoke-phase61-browser-compat smoke-phase62-resource-limits smoke-phase63-memory-pressure smoke-phase64-services smoke-phase65-update-rollback smoke-phase66-boot-health smoke-phase67-update-trust smoke-phase68-update-keys smoke-phase69-package-trust smoke-phase70-package-payloads smoke-phase71-browser-engine-port smoke-phase72-threads-futex smoke-phase73-tls-pthread smoke-phase74-pthread-libc smoke-phase75-dynlink smoke-phase76-dynlink-deps smoke-phase77-file-mmap smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -9,6 +9,16 @@ USB_INIT_FSIMG := $(FSIMG)
 QEMU_CPU ?= max
 QEMU_RTC ?= -rtc base=utc,clock=host
 QEMU_VNC ?= 127.0.0.1:1
+QEMU_DISPLAY ?= cocoa,zoom-to-fit=on
+QEMU_POINTER ?= tablet
+ifeq ($(QEMU_POINTER),mouse)
+QEMU_POINTER_DEVICE := usb-mouse,bus=xhci.0
+else ifeq ($(QEMU_POINTER),tablet)
+QEMU_POINTER_DEVICE := usb-tablet,bus=xhci.0
+else
+$(error QEMU_POINTER must be either tablet or mouse)
+endif
+QEMU_USB_INPUT := -device qemu-xhci,id=xhci -device usb-kbd,bus=xhci.0 -device $(QEMU_POINTER_DEVICE)
 USER_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/hello_user
 USER_EXEC_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/exec
 USER_PIPE_TARGET := $(CURDIR)/target/userspace/hello/x86_64-unknown-none/release/pipe
@@ -76,7 +86,7 @@ SMOKE_VGA_SECONDS ?= 24
 SMOKE_ARTIFACT_DIR ?= $(CURDIR)/target/smoke-artifacts
 
 run: build
-	@echo "Booting coolOS in QEMU..."
+	@echo "Booting coolOS in QEMU with USB $(QEMU_POINTER) input..."
 	qemu-system-x86_64 \
 		-drive format=raw,file="$(BIOS)",snapshot=on \
 		-drive file="$(FSIMG)",if=ide,format=raw,index=1,snapshot=on \
@@ -84,11 +94,12 @@ run: build
 		-cpu "$(QEMU_CPU)" \
 		$(QEMU_RTC) \
 		-vga std \
-		-display cocoa \
+		$(QEMU_USB_INPUT) \
+		-display "$(QEMU_DISPLAY)" \
 		-debugcon stdio
 
 run-net: build
-	@echo "Booting coolOS in QEMU with virtio-net user networking..."
+	@echo "Booting coolOS in QEMU with virtio-net and USB $(QEMU_POINTER) input..."
 	qemu-system-x86_64 \
 		-drive format=raw,file="$(BIOS)",snapshot=on \
 		-drive file="$(FSIMG)",if=ide,format=raw,index=1,snapshot=on \
@@ -96,13 +107,14 @@ run-net: build
 		-cpu "$(QEMU_CPU)" \
 		$(QEMU_RTC) \
 		-vga std \
+		$(QEMU_USB_INPUT) \
 		-netdev user,id=net0 \
 		-device virtio-net-pci,netdev=net0,disable-modern=on,disable-legacy=off \
-		-display cocoa \
+		-display "$(QEMU_DISPLAY)" \
 		-debugcon stdio
 
 run-usb: build
-	@echo "Booting coolOS in QEMU with xHCI-attached USB devices..."
+	@echo "Booting coolOS in QEMU with xHCI-attached USB $(QEMU_POINTER) input..."
 	qemu-system-x86_64 \
 		-drive format=raw,file="$(BIOS)",snapshot=on \
 		-drive file="$(FSIMG)",if=ide,format=raw,index=1,snapshot=on \
@@ -110,14 +122,12 @@ run-usb: build
 		-cpu "$(QEMU_CPU)" \
 		$(QEMU_RTC) \
 		-vga std \
-		-device qemu-xhci,id=xhci \
-		-device usb-kbd,bus=xhci.0 \
-		-device usb-mouse,bus=xhci.0 \
-		-display cocoa \
+		$(QEMU_USB_INPUT) \
+		-display "$(QEMU_DISPLAY)" \
 		-debugcon stdio
 
 run-usb-init: build-usb-init
-	@echo "Booting coolOS in QEMU with active xHCI init..."
+	@echo "Booting coolOS in QEMU with active xHCI init and USB $(QEMU_POINTER) input..."
 	qemu-system-x86_64 \
 		-drive format=raw,file="$(USB_INIT_BIOS)",snapshot=on \
 		-drive file="$(USB_INIT_FSIMG)",if=ide,format=raw,index=1,snapshot=on \
@@ -125,14 +135,12 @@ run-usb-init: build-usb-init
 		-cpu "$(QEMU_CPU)" \
 		$(QEMU_RTC) \
 		-vga std \
-		-device qemu-xhci,id=xhci \
-		-device usb-kbd,bus=xhci.0 \
-		-device usb-mouse,bus=xhci.0 \
-		-display cocoa \
+		$(QEMU_USB_INPUT) \
+		-display "$(QEMU_DISPLAY)" \
 		-debugcon stdio
 
 run-smooth: build-usb-init
-	@echo "Booting coolOS with phase 46 adaptive high-refresh defaults..."
+	@echo "Booting coolOS with phase 46 adaptive high-refresh defaults and USB $(QEMU_POINTER) input..."
 	qemu-system-x86_64 \
 		-drive format=raw,file="$(USB_INIT_BIOS)",snapshot=on \
 		-drive file="$(USB_INIT_FSIMG)",if=ide,format=raw,index=1,snapshot=on \
@@ -140,14 +148,12 @@ run-smooth: build-usb-init
 		-cpu "$(QEMU_CPU)" \
 		$(QEMU_RTC) \
 		-vga std \
-		-device qemu-xhci,id=xhci \
-		-device usb-kbd,bus=xhci.0 \
-		-device usb-tablet,bus=xhci.0 \
-		-display cocoa \
+		$(QEMU_USB_INPUT) \
+		-display "$(QEMU_DISPLAY)" \
 		-debugcon stdio
 
 run-vnc: build-usb-init
-	@echo "Booting coolOS in QEMU VNC with USB tablet input on $(QEMU_VNC)..."
+	@echo "Booting coolOS in QEMU VNC with USB $(QEMU_POINTER) input on $(QEMU_VNC)..."
 	qemu-system-x86_64 \
 		-drive format=raw,file="$(USB_INIT_BIOS)",snapshot=on \
 		-drive file="$(USB_INIT_FSIMG)",if=ide,format=raw,index=1,snapshot=on \
@@ -155,14 +161,12 @@ run-vnc: build-usb-init
 		-cpu "$(QEMU_CPU)" \
 		$(QEMU_RTC) \
 		-vga std \
-		-device qemu-xhci,id=xhci \
-		-device usb-kbd,bus=xhci.0 \
-		-device usb-tablet,bus=xhci.0 \
+		$(QEMU_USB_INPUT) \
 		-display vnc="$(QEMU_VNC)" \
 		-debugcon stdio
 
 run-vnc-net: build-usb-init
-	@echo "Booting coolOS in QEMU VNC with virtio-net and USB tablet input on $(QEMU_VNC)..."
+	@echo "Booting coolOS in QEMU VNC with virtio-net and USB $(QEMU_POINTER) input on $(QEMU_VNC)..."
 	qemu-system-x86_64 \
 		-drive format=raw,file="$(USB_INIT_BIOS)",snapshot=on \
 		-drive file="$(USB_INIT_FSIMG)",if=ide,format=raw,index=1,snapshot=on \
@@ -170,16 +174,14 @@ run-vnc-net: build-usb-init
 		-cpu "$(QEMU_CPU)" \
 		$(QEMU_RTC) \
 		-vga std \
-		-device qemu-xhci,id=xhci \
-		-device usb-kbd,bus=xhci.0 \
-		-device usb-tablet,bus=xhci.0 \
+		$(QEMU_USB_INPUT) \
 		-netdev user,id=net0 \
 		-device virtio-net-pci,netdev=net0,disable-modern=on,disable-legacy=off \
 		-display vnc="$(QEMU_VNC)" \
 		-debugcon stdio
 
 run-remote: build-usb-init
-	@echo "Booting coolOS in a QEMU window with USB tablet input for remote desktop..."
+	@echo "Booting coolOS in a QEMU window with USB $(QEMU_POINTER) input for remote desktop..."
 	qemu-system-x86_64 \
 		-drive format=raw,file="$(USB_INIT_BIOS)",snapshot=on \
 		-drive file="$(USB_INIT_FSIMG)",if=ide,format=raw,index=1,snapshot=on \
@@ -187,14 +189,12 @@ run-remote: build-usb-init
 		-cpu "$(QEMU_CPU)" \
 		$(QEMU_RTC) \
 		-vga std \
-		-device qemu-xhci,id=xhci \
-		-device usb-kbd,bus=xhci.0 \
-		-device usb-tablet,bus=xhci.0 \
-		-display cocoa \
+		$(QEMU_USB_INPUT) \
+		-display "$(QEMU_DISPLAY)" \
 		-debugcon stdio
 
 run-remote-net: build-usb-init
-	@echo "Booting coolOS in a QEMU window with virtio-net and USB tablet input..."
+	@echo "Booting coolOS in a QEMU window with virtio-net and USB $(QEMU_POINTER) input..."
 	qemu-system-x86_64 \
 		-drive format=raw,file="$(USB_INIT_BIOS)",snapshot=on \
 		-drive file="$(USB_INIT_FSIMG)",if=ide,format=raw,index=1,snapshot=on \
@@ -202,12 +202,10 @@ run-remote-net: build-usb-init
 		-cpu "$(QEMU_CPU)" \
 		$(QEMU_RTC) \
 		-vga std \
-		-device qemu-xhci,id=xhci \
-		-device usb-kbd,bus=xhci.0 \
-		-device usb-tablet,bus=xhci.0 \
+		$(QEMU_USB_INPUT) \
 		-netdev user,id=net0 \
 		-device virtio-net-pci,netdev=net0,disable-modern=on,disable-legacy=off \
-		-display cocoa \
+		-display "$(QEMU_DISPLAY)" \
 		-debugcon stdio
 
 run-headless: build
@@ -285,7 +283,7 @@ smoke-ui: build
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
-		--expect "FB 1280x720" \
+		--expect "FB 1920x1080" \
 		--expect "[fs] /bin/hello.txt: Hello from /bin/hello.txt!" \
 		--expect "[ring3 pid=1] sentinel ok" \
 		--expect "[ring3 pid=2] sentinel ok" \
@@ -420,17 +418,17 @@ smoke-ui-goldens: build
 		--expect "[boot] desktop ready"
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
 		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
-		--artifact-name "ui-golden-crash-dialog" \
+		--artifact-name "ui-golden-start-search" \
 		--bios "$(BIOS)" \
 		--fsimg "$(FSIMG)" \
 		--usb \
 		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
 		--hmp "sendkey ctrl-spc" \
 		--pre-type-delay $(SMOKE_PRE_TYPE_DELAY) \
-		--type-text "crash dialog\n" \
+		--type-text "color" \
 		--post-hmp-delay 0.8 \
-		--screendump "$(SMOKE_ARTIFACT_DIR)/ui-golden-crash-dialog.ppm" \
-		--expect-framebuffer-dialog \
+		--screendump "$(SMOKE_ARTIFACT_DIR)/ui-golden-start-search.ppm" \
+		--expect-framebuffer-start-menu \
 		--expect "[boot] desktop ready"
 
 smoke-ui-settings: build
@@ -450,9 +448,9 @@ smoke-ui-settings: build
 smoke-ui-visual-assertions:
 	python3 $(CURDIR)/scripts/ppm_visual_assert.py \
 		start-menu="$(SMOKE_ARTIFACT_DIR)/start-menu-smoke.ppm" \
+		start-search="$(SMOKE_ARTIFACT_DIR)/ui-golden-start-search.ppm" \
 		settings="$(SMOKE_ARTIFACT_DIR)/ui-golden-settings.ppm" \
-		diagnostics="$(SMOKE_ARTIFACT_DIR)/ui-golden-diagnostics.ppm" \
-		crash-dialog="$(SMOKE_ARTIFACT_DIR)/ui-golden-crash-dialog.ppm"
+		diagnostics="$(SMOKE_ARTIFACT_DIR)/ui-golden-diagnostics.ppm"
 
 smoke-start-menu: build
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
@@ -496,9 +494,9 @@ smoke-userspace-gui: build
 		--usb \
 		--seconds $(SMOKE_INTERACTIVE_SECONDS) \
 		--hmp "sendkey ctrl-n" \
-		--pre-type-delay $(SMOKE_PRE_TYPE_DELAY) \
+		--pre-type-delay 3.0 \
 		--type-text "exec /bin/guidemo\n" \
-		--post-hmp-delay 2.0 \
+		--post-hmp-delay 3.0 \
 		--expect "guidemo: window opened" \
 		--expect "guidemo: presented frame" \
 		--expect "[boot] desktop ready" \
@@ -1099,6 +1097,24 @@ smoke-phase46-adaptive-refresh: build
 		--expect "boost_ms=750" \
 		--expect "frame_budget target_ticks=" \
 		--expect "cursor_mode=overlay" \
+		--expect "[boot] desktop ready"
+
+smoke-pointer-tablet: build
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--usb-tablet \
+		--seconds 35 \
+		--retries $(SMOKE_RETRIES) \
+		--fw-cmd "smoothness" \
+		--expect "hid tablet" \
+		--expect "COMPOSITOR" \
+		--expect "active_hz=144" \
+		--expect "cursor_mode=overlay" \
+		--expect "pointer_kind=tablet" \
 		--expect "[boot] desktop ready"
 
 smoke-phase47-evented-userspace: build

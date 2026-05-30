@@ -4,6 +4,10 @@ use alloc::{format, string::String, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use font8x8::UnicodeFonts;
 
+pub const MODERN_FONT_NAME: &str = "cool-modern-8x8";
+
+include!("font/modern8x8.rs");
+
 static PSF_LOADED: AtomicBool = AtomicBool::new(false);
 static PSF_GLYPHS: AtomicUsize = AtomicUsize::new(0);
 static PSF_WIDTH: AtomicUsize = AtomicUsize::new(8);
@@ -19,14 +23,14 @@ pub struct BitmapFont {
 }
 
 pub const UI_FONT: BitmapFont = BitmapFont {
-    name: "font8x8-scalable",
+    name: MODERN_FONT_NAME,
     cell_w: 8,
     cell_h: 8,
     scale: 1,
 };
 
 pub const LARGE_UI_FONT: BitmapFont = BitmapFont {
-    name: "font8x8-scalable",
+    name: MODERN_FONT_NAME,
     cell_w: 8,
     cell_h: 8,
     scale: 2,
@@ -62,6 +66,10 @@ pub fn text_width(text: &str, font: BitmapFont) -> usize {
     text.chars().count() * font.cell_w * font.scale
 }
 
+pub fn glyph_rows(ch: char, _font: BitmapFont) -> [u8; 8] {
+    clean_modern_ascii_glyph(ch).unwrap_or_else(|| fallback_glyph_rows(ch))
+}
+
 pub fn draw_char(
     buf: &mut [u32],
     stride: usize,
@@ -72,12 +80,7 @@ pub fn draw_char(
     bg: Option<u32>,
     font: BitmapFont,
 ) {
-    let Some(glyph) = font8x8::BASIC_FONTS
-        .get(ch)
-        .or_else(|| font8x8::BASIC_FONTS.get(' '))
-    else {
-        return;
-    };
+    let glyph = glyph_rows(ch, font);
     let scale = font.scale.max(1);
     let height = if stride > 0 { buf.len() / stride } else { 0 };
     for (gy, &byte) in glyph.iter().enumerate().take(font.cell_h) {
@@ -142,8 +145,16 @@ pub fn lines() -> Vec<String> {
             PSF_HEIGHT.load(Ordering::Relaxed),
             DPI_SCALE.load(Ordering::Relaxed)
         ),
-        String::from("fallback: font8x8 Unicode BASIC_FONTS for missing glyphs"),
+        format!("sample: {}", "The quick brown fox 0123456789 AaGgQq"),
+        String::from("fallback: font8x8 Unicode BASIC_FONTS for missing Unicode glyphs"),
     ]
+}
+
+fn fallback_glyph_rows(ch: char) -> [u8; 8] {
+    font8x8::BASIC_FONTS
+        .get(ch)
+        .or_else(|| font8x8::BASIC_FONTS.get(' '))
+        .unwrap_or([0; 8])
 }
 
 fn parse_psf1(bytes: &[u8]) -> bool {
