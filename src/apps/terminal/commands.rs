@@ -392,7 +392,7 @@ impl TerminalApp {
 
             Some("setup") => self.cmd_setup(words.next(), words.next()),
 
-            Some("install") => self.cmd_install(words.next()),
+            Some("install") => self.cmd_install(words.collect()),
 
             Some("account") => self.cmd_account(words.collect()),
 
@@ -783,7 +783,10 @@ impl TerminalApp {
             ("logout", "return to guest session"),
             ("passwd <old> <new>", "change current password"),
             ("setup <user> <pass>", "complete first-run admin setup"),
-            ("install [status|reset|repair]", "first-boot installer state"),
+            (
+                "install [status|reset|repair|disks|disk <dev>|verify <dev>]",
+                "first-boot and disk installer state",
+            ),
             ("account <op>", "admin user management"),
             ("umask [mode]", "view/set file creation mask"),
             ("users", "user/security status"),
@@ -1319,6 +1322,21 @@ impl TerminalApp {
                 self.set_fg(FG_ERROR);
                 self.print_str("usage: recovery firstboot [status|reset|repair]\n");
             }
+            ["install", "disks"] => self.cmd_lines("RECOVERY INSTALL", crate::installer::disks_lines()),
+            ["install", "disk", target] => self.cmd_lines(
+                "RECOVERY INSTALL",
+                crate::installer::install_to_device_name(target),
+            ),
+            ["install", "verify", target] => self.cmd_lines(
+                "RECOVERY INSTALL",
+                crate::installer::verify_device_name(target),
+            ),
+            ["install", ..] => {
+                self.set_fg(FG_ERROR);
+                self.print_str(
+                    "usage: recovery install [disks|disk <ide-device>|verify <ide-device>]\n",
+                );
+            }
             ["rollback"] => {
                 if !self.require_admin("recovery") {
                     return;
@@ -1693,9 +1711,38 @@ impl TerminalApp {
         }
     }
 
-    fn cmd_install(&mut self, op: Option<&str>) {
-        match op.unwrap_or("status") {
+    fn cmd_install(&mut self, args: Vec<&str>) {
+        match args.first().copied().unwrap_or("status") {
             "status" => self.cmd_lines("INSTALL", crate::security::first_boot_status_lines()),
+            "disks" => self.cmd_lines("INSTALL DISKS", crate::installer::disks_lines()),
+            "disk" => {
+                let Some(target) = args.get(1).copied() else {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("usage: install disk <ide-device>\n");
+                    return;
+                };
+                if !self.require_install_mutation("install") {
+                    return;
+                }
+                self.cmd_lines(
+                    "INSTALL DISK",
+                    crate::installer::install_to_device_name(target),
+                );
+            }
+            "verify" => {
+                let Some(target) = args.get(1).copied() else {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("usage: install verify <ide-device>\n");
+                    return;
+                };
+                if !self.require_install_mutation("install") {
+                    return;
+                }
+                self.cmd_lines(
+                    "INSTALL VERIFY",
+                    crate::installer::verify_device_name(target),
+                );
+            }
             "reset" => {
                 if !self.require_admin("install") {
                     return;
@@ -1716,7 +1763,7 @@ impl TerminalApp {
             }
             _ => {
                 self.set_fg(FG_ERROR);
-                self.print_str("usage: install [status|reset|repair]\n");
+                self.print_str("usage: install [status|reset|repair|disks|disk <device>|verify <device>]\n");
             }
         }
     }
@@ -2602,6 +2649,13 @@ impl TerminalApp {
                 false
             }
         }
+    }
+
+    fn require_install_mutation(&mut self, prefix: &str) -> bool {
+        if crate::fw_cfg::installer_mode() {
+            return true;
+        }
+        self.require_admin(prefix)
     }
 
     fn cmd_power(&mut self, op: Option<&str>) {

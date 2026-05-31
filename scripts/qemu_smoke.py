@@ -15,6 +15,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run coolOS under headless QEMU for a short smoke test.")
     parser.add_argument("--bios", required=True, help="Path to bios.img")
     parser.add_argument("--fsimg", required=True, help="Path to fs.img")
+    parser.add_argument("--target-disk", help="Optional installer target disk image")
+    parser.add_argument(
+        "--target-writable",
+        action="store_true",
+        help="Attach --target-disk without QEMU snapshot mode so installer writes persist",
+    )
     parser.add_argument(
         "--fs-writable",
         action="store_true",
@@ -72,6 +78,11 @@ def parse_args() -> argparse.Namespace:
         "--expect-framebuffer-login",
         action="store_true",
         help="Assert the screendump contains the coolOS login greeter",
+    )
+    parser.add_argument(
+        "--expect-framebuffer-installer",
+        action="store_true",
+        help="Assert the screendump contains the coolOS installer card",
     )
     parser.add_argument(
         "--expect-framebuffer-start-menu",
@@ -140,6 +151,11 @@ def parse_args() -> argparse.Namespace:
         help="Do not mark the guest as a smoke run, so the first-boot wizard is shown when required",
     )
     parser.add_argument(
+        "--installer",
+        action="store_true",
+        help="Expose opt/coolos/installer=1 through QEMU fw_cfg",
+    )
+    parser.add_argument(
         "--interact-after",
         default="[boot] desktop ready",
         help="Output substring to wait for before HMP/input/screendump actions; empty disables the pre-interaction wait",
@@ -189,6 +205,14 @@ def build_command(args: argparse.Namespace, monitor_socket: str | None = None) -
         "-debugcon",
         "stdio",
     ]
+    if args.target_disk:
+        target_snapshot = "" if args.target_writable else ",snapshot=on"
+        cmd.extend(
+            [
+                "-drive",
+                f"file={args.target_disk},if=ide,format=raw,index=2{target_snapshot}",
+            ]
+        )
     if monitor_socket:
         cmd.extend(["-monitor", f"unix:{monitor_socket},server,nowait"])
     if args.usb:
@@ -218,6 +242,8 @@ def build_command(args: argparse.Namespace, monitor_socket: str | None = None) -
         )
     if args.fw_cmd:
         cmd.extend(["-fw_cfg", f"name=opt/coolos/smoke,string={args.fw_cmd}"])
+    if args.installer:
+        cmd.extend(["-fw_cfg", "name=opt/coolos/installer,string=1"])
     if not args.first_boot:
         cmd.extend(["-fw_cfg", "name=opt/coolos/smoke-mode,string=1"])
     return cmd
@@ -362,6 +388,28 @@ def assert_login_framebuffer(path: str) -> None:
     scan_area = max(1, (x1 - x0) * max(1, y1 - y0))
     if dark_panel_pixels < scan_area // 5:
         raise AssertionError("login greeter dark panel not found")
+
+
+def assert_installer_framebuffer(path: str) -> None:
+    width, height, pixels = read_ppm(path)
+    x0 = width // 4
+    x1 = width - x0
+    y0 = height // 5
+    y1 = min(height - 80, height * 4 // 5)
+    cyan_pixels = 0
+    dark_panel_pixels = 0
+    for y in range(y0, y1):
+        row = y * width * 3
+        for x in range(x0, x1):
+            r, g, b = pixels[row + x * 3 : row + x * 3 + 3]
+            if r < 80 and g > 100 and b > 150:
+                cyan_pixels += 1
+            if r < 25 and g < 45 and b < 80:
+                dark_panel_pixels += 1
+    if cyan_pixels < max(180, width // 6):
+        raise AssertionError("installer card cyan outline not found")
+    if dark_panel_pixels < max(5000, (x1 - x0) * max(1, y1 - y0) // 6):
+        raise AssertionError("installer card dark panel not found")
 
 
 def assert_start_menu_framebuffer(path: str) -> None:
@@ -550,7 +598,12 @@ def stop_qemu(proc: subprocess.Popen[bytes], reader_thread: threading.Thread) ->
 def run_once(args: argparse.Namespace, attempt: int) -> int:
     monitor_socket = None
     needs_interaction = bool(args.hmp or args.type_text or args.post_type_hmp or args.screendump)
-    auto_login = needs_interaction and not args.no_auto_login and not args.expect_framebuffer_login
+    auto_login = (
+        needs_interaction
+        and not args.no_auto_login
+        and not args.expect_framebuffer_login
+        and not args.expect_framebuffer_installer
+    )
     if auto_login and not args.usb:
         args.usb = True
     if args.artifact_dir:
@@ -662,6 +715,13 @@ def run_once(args: argparse.Namespace, attempt: int) -> int:
             except AssertionError as exc:
                 print(f"login framebuffer assertion failed: {exc}", file=sys.stderr)
                 write_artifacts(args, cmd, output, "login-framebuffer-failed")
+                return 1
+        if args.expect_framebuffer_installer:
+            try:
+                assert_installer_framebuffer(args.screendump)
+            except AssertionError as exc:
+                print(f"installer framebuffer assertion failed: {exc}", file=sys.stderr)
+                write_artifacts(args, cmd, output, "installer-framebuffer-failed")
                 return 1
         if args.expect_framebuffer_start_menu:
             try:

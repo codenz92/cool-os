@@ -760,7 +760,7 @@ impl WindowManager {
             notification_center_open: false,
             taskbar_menu: None,
             dialog: None,
-            session_locked: true,
+            session_locked: !crate::fw_cfg::installer_mode(),
             greeter_user: default_login_user_name(),
             greeter_password: String::new(),
             greeter_focus: GreeterFocus::Password,
@@ -4355,6 +4355,9 @@ impl WindowManager {
                     my_i,
                     uptime_ticks,
                 );
+            }
+            if crate::fw_cfg::installer_mode() {
+                draw_installer_overlay(s, sw, taskbar_y);
             }
         } // end shadow borrow — rendering done
 

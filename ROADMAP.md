@@ -93,7 +93,10 @@ read-only ET_DYN segment mapping, `/bin/mmapdemo`, and
 `make smoke-phase77-file-mmap`. Phase 80 adds the graphical first-boot owner
 setup flow, `/CONFIG/FIRSTBOOT.CFG`, and smoke coverage for wizard completion
 and persistence. Phase 81 hardens that lifecycle with admin/recovery reset and
-repair commands plus boot-time first-boot state reconciliation. Phases 45-81
+repair commands plus boot-time first-boot state reconciliation. Phase 82 adds
+QEMU installer mode, named IDE disk discovery, sector-copy installation to a
+blank target disk, install verification, and installed-target first-boot smoke
+coverage. Phases 45-82
 focus on responsiveness,
 interactive terminal behavior, and
 desktop-browser compatibility:
@@ -2472,6 +2475,32 @@ repairs stale setup state before it can trap the user at a broken greeter.
 
 ---
 
+## ✅ Phase 82 — QEMU Disk Installer v1
+
+**Goal:** Boot into installer mode, install the live CoolFS image onto a blank
+QEMU target disk, verify it, and then boot that target into the normal
+first-boot owner setup flow.
+
+- [x] Generalize ATA access to named IDE devices:
+      `ide0-master`, `ide0-slave`, `ide1-master`, and `ide1-slave`.
+- [x] Add IDE identify/size reporting plus read, write, and flush helpers per
+      device while protecting boot/root disks from installer targets.
+- [x] Add `opt/coolos/installer=1` mode with a centered graphical installer
+      card that bypasses first-boot setup during the live installer boot.
+- [x] Add `install disks`, `install disk <device>`, and
+      `install verify <device>` while preserving Phase 80/81
+      `install status|reset|repair`.
+- [x] Add `make run-installer`, `scripts/qemu_smoke.py` target-disk/installer
+      options, and `make smoke-phase82-installer`.
+
+**Current status:** complete. coolOS can now run as a QEMU live installer,
+copy the current root image to `ide1-master`, flush and verify the target, then
+boot that installed target with the existing `bios.img` into the first-boot
+owner wizard. Installing the BIOS bootloader into the target itself remains
+Phase 83.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -2571,4 +2600,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.40 | Phase 76 complete: dynamic linker dependencies and ELF TLS |
 | v7.41 | Phase 77 complete: file-backed mmap and POSIX file runtime |
 | v7.42 | Phase 80 complete: installer and first boot |
-| v7.43 | Current — Phase 81 complete: first-boot recovery and reset |
+| v7.43 | Phase 81 complete: first-boot recovery and reset |
+| v7.44 | Current — Phase 82 complete: QEMU disk installer v1 |

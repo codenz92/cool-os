@@ -17,7 +17,7 @@ tables.
 
 ---
 
-# Current state — v7.43
+# Current state — v7.44
 
 The kernel boots into a graphical desktop at **1920×1080, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -56,8 +56,10 @@ state without switching back to an admin session. Phase 31 adds a first-run
 admin handoff, account create/disable/role/password/delete flows, login
 throttling, and persistence smoke coverage for those account records; Phase 80
 adds the graphical first-boot installer flow on top of that existing security
-model, and Phase 81 adds recovery/reset hardening so interrupted or inconsistent
-first-boot state can be inspected, reset, or repaired. Phase 32
+model, Phase 81 adds recovery/reset hardening so interrupted or inconsistent
+first-boot state can be inspected, reset, or repaired, and Phase 82 adds a QEMU
+disk installer path that copies the live CoolFS image to a blank target disk
+before the normal owner setup flow. Phase 32
 keeps copied kernel mappings supervisor-only for ring-3 tasks, removes broad
 lazy lower-half page allocation, and turns denied user pointers into task
 faults instead of kernel crashes. Phase 33 exposes process control through ABI
@@ -309,7 +311,7 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `hash <path>` | Print file length and byte-sum for storage checks |
 | `whoami` | Print current user and task capabilities |
 | `setup <user> <pass>` | Complete first-run admin setup and replace the default `root` handoff if needed |
-| `install [status\|reset\|repair]` | Report, reset, or repair first-boot installer state; mutating operations require an admin session |
+| `install [status\|reset\|repair\|disks\|disk <device>\|verify <device>]` | Report, reset, or repair first-boot state, list IDE disks, install to a target disk, or verify an installed target; mutating operations require admin, recovery, or installer context |
 | `account <op>` | Admin account management: `list`, `add`, `enable`, `disable`, `role`, `pass`, and `delete` |
 | `perm <path>` | Print owner, group, mode, type, and size |
 | `chmod <mode> <path>` | Change a CoolFS inode mode |
@@ -405,6 +407,13 @@ For virtio networking in QEMU:
 
 ```bash
 make run-net
+```
+
+To boot the Phase 82 QEMU disk installer with a blank writable target attached
+as `ide1-master`:
+
+```bash
+make run-installer
 ```
 
 The build process compiles the kernel ELF, compiles the userspace ELF binaries
@@ -719,6 +728,14 @@ that as `recovery firstboot status|reset|repair`, so a broken owner-account
 state can be recovered without hand-editing the disk image. Normal boots also
 repair stale completed/required state before the greeter is built.
 
+**QEMU disk installer (Phase 82).** Installer mode is triggered with
+`opt/coolos/installer=1` and opens a graphical installer card instead of the
+first-boot wizard. `install disks` reports `ide0-master`, `ide0-slave`,
+`ide1-master`, and `ide1-slave`; `install disk ide1-master` copies the live
+CoolFS root image sector-by-sector to a blank secondary IDE target, flushes it,
+and verifies the copy. The installed target still boots with the existing
+`bios.img` and then enters the normal first-boot owner setup flow.
+
 **User/kernel isolation hardening (Phase 32).** Process address spaces still
 copy the kernel's upper-half PML4 entries so syscall and interrupt entry can run
 without rebuilding mappings, but those copied entries stay supervisor-only for
@@ -936,7 +953,9 @@ adds the graphical first-boot installer, `/CONFIG/FIRSTBOOT.CFG`,
 `install status`, and `make smoke-phase80-firstboot` for wizard, completion,
 and persistence coverage. Phase 81 adds `install reset|repair`, recovery
 first-boot reset/repair commands, boot-time state reconciliation, and
-`make smoke-phase81-firstboot-recovery`.
+`make smoke-phase81-firstboot-recovery`. Phase 82 adds QEMU installer mode,
+named IDE disk discovery, sector-copy install/verify commands, `make
+run-installer`, and `make smoke-phase82-installer`.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
@@ -1035,5 +1054,6 @@ while kernel faults still panic.
 | 77 | File-backed mmap and POSIX file runtime — ABI v14 `mmap_file`, `open_flags`, read-only ET_DYN file maps, `/bin/mmapdemo`, and docs | **Done** |
 | 80 | Installer and first boot — graphical owner-account setup, `/CONFIG/FIRSTBOOT.CFG`, setup persistence, and Phase 80 smoke coverage | **Done** |
 | 81 | First-boot recovery and reset — admin/recovery reset, state repair, boot hardening, and Phase 81 smoke coverage | **Done** |
+| 82 | QEMU disk installer v1 — installer mode, IDE disk discovery, sector-copy install/verify, and installed-target first-boot smoke coverage | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

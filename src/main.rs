@@ -38,6 +38,7 @@ mod fs_hardening;
 mod futex;
 mod fw_cfg;
 mod gdt;
+mod installer;
 mod interrupts;
 mod jobs;
 mod keyboard;
@@ -181,7 +182,8 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     event_bus::emit("boot", "heap", "kernel heap online");
     security::init();
     let smoke_mode = fw_cfg::smoke_mode();
-    if !smoke_mode {
+    let installer_mode = fw_cfg::installer_mode();
+    if !smoke_mode && !installer_mode {
         for line in security::ensure_first_boot_boot_consistency() {
             println!("[install] {}", line);
         }
@@ -277,8 +279,10 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         "[ui] ready pinned={}",
         app_lifecycle::pinned_order_summary()
     );
-    let first_boot_required = security::first_run_required() && !smoke_mode;
-    if first_boot_required {
+    let first_boot_required = security::first_run_required() && !smoke_mode && !installer_mode;
+    if installer_mode {
+        println!("[boot] installer ready");
+    } else if first_boot_required {
         let _ = security::mark_first_boot_in_progress();
         println!("[boot] first boot ready");
     } else {

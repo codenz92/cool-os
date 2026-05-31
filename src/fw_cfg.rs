@@ -10,8 +10,10 @@ const FW_CFG_SIGNATURE: u16 = 0x0000;
 const FW_CFG_FILE_DIR: u16 = 0x0019;
 const SMOKE_COMMAND_FILE: &[u8] = b"opt/coolos/smoke";
 const SMOKE_MODE_FILE: &[u8] = b"opt/coolos/smoke-mode";
+const INSTALLER_MODE_FILE: &[u8] = b"opt/coolos/installer";
 const MAX_SMOKE_COMMAND: usize = 256;
 static SMOKE_MODE_CACHE: AtomicU8 = AtomicU8::new(0);
+static INSTALLER_MODE_CACHE: AtomicU8 = AtomicU8::new(0);
 
 pub fn smoke_command() -> Option<String> {
     if !has_qemu_signature() {
@@ -60,6 +62,24 @@ pub fn smoke_mode() -> bool {
             })
             .unwrap_or(false);
     SMOKE_MODE_CACHE.store(if active { 2 } else { 1 }, Ordering::Relaxed);
+    active
+}
+
+pub fn installer_mode() -> bool {
+    match INSTALLER_MODE_CACHE.load(Ordering::Relaxed) {
+        1 => return false,
+        2 => return true,
+        _ => {}
+    }
+    let active = has_qemu_signature()
+        && read_named_file(INSTALLER_MODE_FILE)
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .map(|value| {
+                let value = value.trim_matches(char::from(0)).trim();
+                value == "1" || value.eq_ignore_ascii_case("true")
+            })
+            .unwrap_or(false);
+    INSTALLER_MODE_CACHE.store(if active { 2 } else { 1 }, Ordering::Relaxed);
     active
 }
 

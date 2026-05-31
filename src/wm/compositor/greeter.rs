@@ -3,7 +3,7 @@ extern crate alloc;
 use super::icons::*;
 use super::primitives::*;
 use super::*;
-use alloc::string::String;
+use alloc::{format, string::String};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum GreeterFocus {
@@ -503,6 +503,133 @@ pub(super) fn draw_first_boot_overlay(
         layout.message_y,
         msg,
         if error { 0x00_FF_88_88 } else { 0x00_88_DD_CC },
+        layout.field_x + layout.field_w,
+    );
+}
+
+pub(super) fn draw_installer_overlay(s: &mut [u32], sw: usize, taskbar_y: i32) {
+    let sw_i = sw as i32;
+    let sh_i = if sw > 0 {
+        (s.len() / sw) as i32
+    } else {
+        taskbar_y
+    };
+    let layout = first_boot_layout(sw_i, taskbar_y);
+
+    draw_greeter_backdrop(s, sw, sw_i, sh_i);
+    fill_vertical_gradient(
+        s,
+        sw,
+        layout.panel_x,
+        layout.panel_y,
+        layout.panel_w,
+        layout.panel_h,
+        GREETER_PANEL_BG,
+        GREETER_PANEL_BG_2,
+    );
+    s_fill(
+        s,
+        sw,
+        layout.panel_x + 2,
+        layout.panel_y + 2,
+        layout.panel_w - 4,
+        1,
+        0x00_1A_2A_38,
+    );
+    draw_glass_panel_outline(
+        s,
+        sw,
+        layout.panel_x,
+        layout.panel_y,
+        layout.panel_w,
+        layout.panel_h,
+        ACCENT,
+    );
+
+    draw_greeter_avatar(s, sw, layout.avatar_x, layout.avatar_y, layout.avatar_size);
+    let title = "Install coolOS";
+    let title_w = s_text_width_scaled_with_tracking(title, 2, 0);
+    s_draw_str_scaled_with_tracking(
+        s,
+        sw,
+        layout.panel_x + (layout.panel_w - title_w) / 2,
+        layout.title_y,
+        title,
+        GREETER_TITLE,
+        2,
+        0,
+    );
+    s_draw_str_small_transparent(
+        s,
+        sw,
+        layout.field_x,
+        layout.title_y + 34,
+        "Copy live image to blank QEMU disk.",
+        0x00_9A_C9_D8,
+        layout.field_x + layout.field_w,
+    );
+
+    let source = crate::installer::source_device().name();
+    let source_line = format!("Source: {} (live root)", source);
+    let target_line = "Target: ide1-master (64 MiB+ writable)";
+    s_draw_str_small_transparent(
+        s,
+        sw,
+        layout.field_x,
+        layout.owner_y,
+        &source_line,
+        0x00_C8_D8_E8,
+        layout.field_x + layout.field_w,
+    );
+    s_draw_str_small_transparent(
+        s,
+        sw,
+        layout.field_x,
+        layout.owner_y + 24,
+        target_line,
+        0x00_88_DD_CC,
+        layout.field_x + layout.field_w,
+    );
+
+    let button_y = layout.owner_y + 70;
+    fill_vertical_gradient(
+        s,
+        sw,
+        layout.field_x,
+        button_y,
+        layout.field_w,
+        GREETER_FIELD_H,
+        0x00_0D_17_24,
+        0x00_03_09_14,
+    );
+    s_fill(s, sw, layout.field_x, button_y, layout.field_w, 2, ACCENT);
+    draw_rect_border(
+        s,
+        sw,
+        layout.field_x,
+        button_y,
+        layout.field_w,
+        GREETER_FIELD_H,
+        0x00_2A_5F_78,
+    );
+    let command = "install disk ide1-master";
+    let command_w = command.chars().count() as i32 * 8;
+    s_draw_str_small_transparent(
+        s,
+        sw,
+        layout.field_x + (layout.field_w - command_w) / 2,
+        button_y + 11,
+        command,
+        WHITE,
+        layout.field_x + layout.field_w,
+    );
+    s_draw_str_small_transparent(
+        s,
+        sw,
+        layout.field_x,
+        button_y + GREETER_FIELD_H + 14,
+        "Copies root now; Phase 83 makes target boot.",
+        0x00_88_DD_CC,
         layout.field_x + layout.field_w,
     );
 }

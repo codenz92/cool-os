@@ -1,31 +1,71 @@
-/// ATA PIO driver (Phase 11).
+/// ATA PIO driver.
 ///
-/// Targets the primary ATA bus (I/O ports 0x1F0–0x1F7), slave device (drive 1).
-/// The filesystem disk image is attached to QEMU as `-drive if=ide,index=1`
-/// which maps to primary-bus slave.
+/// The normal coolOS QEMU layout is:
+/// - ide0-master: BIOS boot image
+/// - ide0-slave: CoolFS root image
+/// - ide1-master: optional installer target image
 ///
-/// Only LBA28 PIO transfers are implemented — the OS disk image is 64 MiB, well
-/// within the 128 GiB addressing limit.
+/// Only LBA28 PIO transfers are implemented, which is enough for the current
+/// 64 MiB QEMU disk images and the Phase 82 installer path.
 use x86_64::instructions::port::Port;
 
-// ── Primary ATA bus I/O ports ─────────────────────────────────────────────────
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum IdeDevice {
+    Ide0Master,
+    Ide0Slave,
+    Ide1Master,
+    Ide1Slave,
+}
 
-const DATA: u16 = 0x1F0;
-const FEATURES: u16 = 0x1F1; // write: features, read: error
-const SECCOUNT: u16 = 0x1F2;
-const LBA_LO: u16 = 0x1F3;
-const LBA_MID: u16 = 0x1F4;
-const LBA_HI: u16 = 0x1F5;
-const DRIVE_HDR: u16 = 0x1F6;
-const STATUS_CMD: u16 = 0x1F7; // write: command, read: status
-const DEV_CTRL: u16 = 0x3F6; // Device Control Register: nIEN (bit 1) disables IRQs
+#[derive(Clone, Copy)]
+pub struct AtaDeviceInfo {
+    pub device: IdeDevice,
+    pub present: bool,
+    pub sectors: u32,
+}
 
-// ── Drive / status constants ──────────────────────────────────────────────────
+#[derive(Clone, Copy)]
+struct AtaBus {
+    data: u16,
+    features: u16,
+    seccount: u16,
+    lba_lo: u16,
+    lba_mid: u16,
+    lba_hi: u16,
+    drive_hdr: u16,
+    status_cmd: u16,
+    dev_ctrl: u16,
+}
 
-const DRIVE_SLAVE: u8 = 0xF0; // bits 7/5 set, LBA mode (bit 6), drive 1 (bit 4)
-const CMD_READ: u8 = 0x20; // READ SECTORS (LBA28, PIO)
-const CMD_WRITE: u8 = 0x30; // WRITE SECTORS (LBA28, PIO)
-const CMD_CACHE_FLUSH: u8 = 0xE7; // FLUSH CACHE
+const PRIMARY_BUS: AtaBus = AtaBus {
+    data: 0x1F0,
+    features: 0x1F1,
+    seccount: 0x1F2,
+    lba_lo: 0x1F3,
+    lba_mid: 0x1F4,
+    lba_hi: 0x1F5,
+    drive_hdr: 0x1F6,
+    status_cmd: 0x1F7,
+    dev_ctrl: 0x3F6,
+};
+
+const SECONDARY_BUS: AtaBus = AtaBus {
+    data: 0x170,
+    features: 0x171,
+    seccount: 0x172,
+    lba_lo: 0x173,
+    lba_mid: 0x174,
+    lba_hi: 0x175,
+    drive_hdr: 0x176,
+    status_cmd: 0x177,
+    dev_ctrl: 0x376,
+};
+
+const ROOT_DEVICE: IdeDevice = IdeDevice::Ide0Slave;
+const CMD_IDENTIFY: u8 = 0xEC;
+const CMD_READ: u8 = 0x20;
+const CMD_WRITE: u8 = 0x30;
+const CMD_CACHE_FLUSH: u8 = 0xE7;
 const STATUS_BSY: u8 = 0x80;
 const STATUS_DF: u8 = 0x20;
 const STATUS_DRQ: u8 = 0x08;
@@ -33,39 +73,80 @@ const STATUS_ERR: u8 = 0x01;
 const ATA_TIMEOUT_ITERS: u32 = 250_000;
 const ATA_RETRIES: usize = 3;
 
-// ── Public API ────────────────────────────────────────────────────────────────
+impl IdeDevice {
+    pub const fn name(self) -> &'static str {
+        match self {
+            IdeDevice::Ide0Master => "ide0-master",
+            IdeDevice::Ide0Slave => "ide0-slave",
+            IdeDevice::Ide1Master => "ide1-master",
+            IdeDevice::Ide1Slave => "ide1-slave",
+        }
+    }
 
-/// Read one 512-byte sector at `lba` from the slave device into `buf`.
-/// Returns `true` on success, `false` on device error.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "ide0-master" => Some(IdeDevice::Ide0Master),
+            "ide0-slave" => Some(IdeDevice::Ide0Slave),
+            "ide1-master" => Some(IdeDevice::Ide1Master),
+            "ide1-slave" => Some(IdeDevice::Ide1Slave),
+            _ => None,
+        }
+    }
+
+    const fn bus(self) -> AtaBus {
+        match self {
+            IdeDevice::Ide0Master | IdeDevice::Ide0Slave => PRIMARY_BUS,
+            IdeDevice::Ide1Master | IdeDevice::Ide1Slave => SECONDARY_BUS,
+        }
+    }
+
+    const fn drive_select(self, lba: u32) -> u8 {
+        let base = match self {
+            IdeDevice::Ide0Master | IdeDevice::Ide1Master => 0xE0,
+            IdeDevice::Ide0Slave | IdeDevice::Ide1Slave => 0xF0,
+        };
+        base | ((lba >> 24) as u8 & 0x0F)
+    }
+}
+
+pub fn all_devices() -> [IdeDevice; 4] {
+    [
+        IdeDevice::Ide0Master,
+        IdeDevice::Ide0Slave,
+        IdeDevice::Ide1Master,
+        IdeDevice::Ide1Slave,
+    ]
+}
+
+pub fn device_info(device: IdeDevice) -> AtaDeviceInfo {
+    let sectors = identify_sectors(device).unwrap_or(0);
+    AtaDeviceInfo {
+        device,
+        present: sectors > 0,
+        sectors,
+    }
+}
+
 pub fn read_sector(lba: u32, buf: &mut [u8; 512]) -> bool {
-    // Disable interrupts for the duration of the PIO transfer to prevent the
-    // timer ISR from preempting in the middle of a multi-step I/O transaction.
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        for attempt in 0..ATA_RETRIES {
-            if attempt > 0 {
-                unsafe {
-                    soft_reset(lba, "read retry");
-                }
-            }
-            if read_sector_inner(lba, buf) {
-                return true;
-            }
-        }
-        false
-    })
+    read_sector_from(ROOT_DEVICE, lba, buf)
 }
 
-/// Write one 512-byte sector at `lba` to the slave device from `buf`.
-/// Returns `true` on success, `false` on device error.
 pub fn write_sector(lba: u32, buf: &[u8; 512]) -> bool {
+    if !write_sector_to(ROOT_DEVICE, lba, buf) {
+        return false;
+    }
+    flush_device(ROOT_DEVICE)
+}
+
+pub fn read_sector_from(device: IdeDevice, lba: u32, buf: &mut [u8; 512]) -> bool {
     x86_64::instructions::interrupts::without_interrupts(|| {
         for attempt in 0..ATA_RETRIES {
             if attempt > 0 {
                 unsafe {
-                    soft_reset(lba, "write retry");
+                    soft_reset(device, lba, "read retry");
                 }
             }
-            if write_sector_inner(lba, buf) {
+            if read_sector_inner(device, lba, buf) {
                 return true;
             }
         }
@@ -73,196 +154,155 @@ pub fn write_sector(lba: u32, buf: &[u8; 512]) -> bool {
     })
 }
 
-fn read_sector_inner(lba: u32, buf: &mut [u8; 512]) -> bool {
-    unsafe {
-        let mut status = Port::<u8>::new(STATUS_CMD);
-
-        // Disable device interrupts (nIEN=1) so the drive never asserts IRQ14.
-        // We poll for completion, so interrupts are not needed.
-        Port::<u8>::new(DEV_CTRL).write(0x02);
-
-        if !wait_idle(&mut status, lba, "before read") {
-            return false;
-        }
-
-        // Select slave device, embed LBA bits 24–27.
-        Port::<u8>::new(DRIVE_HDR).write(DRIVE_SLAVE | ((lba >> 24) as u8 & 0x0F));
-
-        // 400 ns delay: read status register 4 times (ATA spec §7.2.3).
-        ata_delay(&mut status);
-        if !wait_idle(&mut status, lba, "after drive select") {
-            return false;
-        }
-
-        // Write LBA address and sector count.
-        Port::<u8>::new(FEATURES).write(0);
-        Port::<u8>::new(SECCOUNT).write(1);
-        Port::<u8>::new(LBA_LO).write(lba as u8);
-        Port::<u8>::new(LBA_MID).write((lba >> 8) as u8);
-        Port::<u8>::new(LBA_HI).write((lba >> 16) as u8);
-
-        // Issue READ SECTORS command.
-        Port::<u8>::new(STATUS_CMD).write(CMD_READ);
-
-        // Wait for DRQ (data ready) or ERR (with timeout).
-        let mut drq_iters: u32 = 0;
-        loop {
-            let s = status.read();
-            if s & STATUS_ERR != 0 || s & STATUS_DF != 0 {
-                let err = Port::<u8>::new(FEATURES).read();
-                crate::println!(
-                    "[ata] read error lba={} status={:#x} err={:#x}",
-                    lba,
-                    s,
-                    err
-                );
-                return false;
+pub fn write_sector_to(device: IdeDevice, lba: u32, buf: &[u8; 512]) -> bool {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        for attempt in 0..ATA_RETRIES {
+            if attempt > 0 {
+                unsafe {
+                    soft_reset(device, lba, "write retry");
+                }
             }
-            if s & STATUS_BSY == 0 && s & STATUS_DRQ != 0 {
-                break;
-            }
-            drq_iters += 1;
-            if drq_iters > ATA_TIMEOUT_ITERS {
-                crate::println!("[ata] DRQ timeout lba={}", lba);
-                return false;
+            if write_sector_inner(device, lba, buf) {
+                return true;
             }
         }
-
-        // Read 256 16-bit words = 512 bytes.
-        let mut data = Port::<u16>::new(DATA);
-        let words = core::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u16, 256);
-        for w in words.iter_mut() {
-            *w = data.read();
-        }
-
-        let mut settle_iters: u32 = 0;
-        loop {
-            let s = status.read();
-            if s & STATUS_ERR != 0 || s & STATUS_DF != 0 {
-                let err = Port::<u8>::new(FEATURES).read();
-                crate::println!(
-                    "[ata] read settle error lba={} status={:#x} err={:#x}",
-                    lba,
-                    s,
-                    err
-                );
-                return false;
-            }
-            if s & STATUS_BSY == 0 && s & STATUS_DRQ == 0 {
-                break;
-            }
-            settle_iters += 1;
-            if settle_iters > ATA_TIMEOUT_ITERS {
-                crate::println!("[ata] read settle timeout lba={}", lba);
-                return false;
-            }
-        }
-    }
-    true
+        false
+    })
 }
 
-fn write_sector_inner(lba: u32, buf: &[u8; 512]) -> bool {
+pub fn flush_device(device: IdeDevice) -> bool {
+    x86_64::instructions::interrupts::without_interrupts(|| unsafe { flush_device_inner(device) })
+}
+
+fn identify_sectors(device: IdeDevice) -> Option<u32> {
+    x86_64::instructions::interrupts::without_interrupts(|| unsafe {
+        let bus = device.bus();
+        let mut status = Port::<u8>::new(bus.status_cmd);
+        Port::<u8>::new(bus.dev_ctrl).write(0x02);
+        if !select_device(device, 0, &mut status, "identify select") {
+            return None;
+        }
+
+        Port::<u8>::new(bus.seccount).write(0);
+        Port::<u8>::new(bus.lba_lo).write(0);
+        Port::<u8>::new(bus.lba_mid).write(0);
+        Port::<u8>::new(bus.lba_hi).write(0);
+        Port::<u8>::new(bus.status_cmd).write(CMD_IDENTIFY);
+        ata_delay(&mut status);
+
+        let initial = status.read();
+        if initial == 0 || initial == 0xFF {
+            return None;
+        }
+        if !wait_not_busy(&mut status, device, 0, "identify") {
+            return None;
+        }
+        let mid = Port::<u8>::new(bus.lba_mid).read();
+        let hi = Port::<u8>::new(bus.lba_hi).read();
+        if mid != 0 || hi != 0 {
+            return None;
+        }
+        if !wait_drq(&mut status, device, 0, "identify") {
+            return None;
+        }
+
+        let mut words = [0u16; 256];
+        let mut data = Port::<u16>::new(bus.data);
+        for word in words.iter_mut() {
+            *word = data.read();
+        }
+        let sectors = words[60] as u32 | ((words[61] as u32) << 16);
+        if sectors == 0 {
+            None
+        } else {
+            Some(sectors)
+        }
+    })
+}
+
+fn read_sector_inner(device: IdeDevice, lba: u32, buf: &mut [u8; 512]) -> bool {
     unsafe {
-        let mut status = Port::<u8>::new(STATUS_CMD);
+        let bus = device.bus();
+        let mut status = Port::<u8>::new(bus.status_cmd);
+        Port::<u8>::new(bus.dev_ctrl).write(0x02);
 
-        Port::<u8>::new(DEV_CTRL).write(0x02);
-
-        if !wait_idle(&mut status, lba, "before write") {
+        if !select_device(device, lba, &mut status, "before read") {
             return false;
         }
 
-        Port::<u8>::new(DRIVE_HDR).write(DRIVE_SLAVE | ((lba >> 24) as u8 & 0x0F));
-        ata_delay(&mut status);
-        if !wait_idle(&mut status, lba, "after drive select before write") {
+        Port::<u8>::new(bus.features).write(0);
+        Port::<u8>::new(bus.seccount).write(1);
+        Port::<u8>::new(bus.lba_lo).write(lba as u8);
+        Port::<u8>::new(bus.lba_mid).write((lba >> 8) as u8);
+        Port::<u8>::new(bus.lba_hi).write((lba >> 16) as u8);
+        Port::<u8>::new(bus.status_cmd).write(CMD_READ);
+
+        if !wait_drq(&mut status, device, lba, "read") {
             return false;
         }
 
-        Port::<u8>::new(FEATURES).write(0);
-        Port::<u8>::new(SECCOUNT).write(1);
-        Port::<u8>::new(LBA_LO).write(lba as u8);
-        Port::<u8>::new(LBA_MID).write((lba >> 8) as u8);
-        Port::<u8>::new(LBA_HI).write((lba >> 16) as u8);
-        Port::<u8>::new(STATUS_CMD).write(CMD_WRITE);
-
-        let mut drq_iters: u32 = 0;
-        loop {
-            let s = status.read();
-            if s & STATUS_ERR != 0 || s & STATUS_DF != 0 {
-                let err = Port::<u8>::new(FEATURES).read();
-                crate::println!(
-                    "[ata] write error lba={} status={:#x} err={:#x}",
-                    lba,
-                    s,
-                    err
-                );
-                return false;
-            }
-            if s & STATUS_BSY == 0 && s & STATUS_DRQ != 0 {
-                break;
-            }
-            drq_iters += 1;
-            if drq_iters > ATA_TIMEOUT_ITERS {
-                crate::println!("[ata] DRQ timeout before write lba={}", lba);
-                return false;
-            }
+        let mut data = Port::<u16>::new(bus.data);
+        for chunk in buf.chunks_exact_mut(2) {
+            let word = data.read();
+            chunk[0] = word as u8;
+            chunk[1] = (word >> 8) as u8;
         }
 
-        let mut data = Port::<u16>::new(DATA);
-        let words = core::slice::from_raw_parts(buf.as_ptr() as *const u16, 256);
-        for &w in words {
-            data.write(w);
-        }
-
-        let mut settle_iters: u32 = 0;
-        loop {
-            let s = status.read();
-            if s & STATUS_ERR != 0 || s & STATUS_DF != 0 {
-                let err = Port::<u8>::new(FEATURES).read();
-                crate::println!(
-                    "[ata] write settle error lba={} status={:#x} err={:#x}",
-                    lba,
-                    s,
-                    err
-                );
-                return false;
-            }
-            if s & STATUS_BSY == 0 && s & STATUS_DRQ == 0 {
-                break;
-            }
-            settle_iters += 1;
-            if settle_iters > ATA_TIMEOUT_ITERS {
-                crate::println!("[ata] write settle timeout lba={}", lba);
-                return false;
-            }
-        }
-
-        Port::<u8>::new(STATUS_CMD).write(CMD_CACHE_FLUSH);
-        ata_delay(&mut status);
-
-        let mut flush_iters: u32 = 0;
-        loop {
-            let s = status.read();
-            if s & STATUS_ERR != 0 || s & STATUS_DF != 0 {
-                let err = Port::<u8>::new(FEATURES).read();
-                crate::println!(
-                    "[ata] flush error lba={} status={:#x} err={:#x}",
-                    lba,
-                    s,
-                    err
-                );
-                return false;
-            }
-            if s & STATUS_BSY == 0 && s & STATUS_DRQ == 0 {
-                break;
-            }
-            flush_iters += 1;
-            if flush_iters > ATA_TIMEOUT_ITERS {
-                crate::println!("[ata] flush timeout lba={}", lba);
-                return false;
-            }
-        }
+        wait_settle(&mut status, device, lba, "read settle")
     }
-    true
+}
+
+fn write_sector_inner(device: IdeDevice, lba: u32, buf: &[u8; 512]) -> bool {
+    unsafe {
+        let bus = device.bus();
+        let mut status = Port::<u8>::new(bus.status_cmd);
+        Port::<u8>::new(bus.dev_ctrl).write(0x02);
+
+        if !select_device(device, lba, &mut status, "before write") {
+            return false;
+        }
+
+        Port::<u8>::new(bus.features).write(0);
+        Port::<u8>::new(bus.seccount).write(1);
+        Port::<u8>::new(bus.lba_lo).write(lba as u8);
+        Port::<u8>::new(bus.lba_mid).write((lba >> 8) as u8);
+        Port::<u8>::new(bus.lba_hi).write((lba >> 16) as u8);
+        Port::<u8>::new(bus.status_cmd).write(CMD_WRITE);
+
+        if !wait_drq(&mut status, device, lba, "write") {
+            return false;
+        }
+
+        let mut data = Port::<u16>::new(bus.data);
+        for chunk in buf.chunks_exact(2) {
+            let word = chunk[0] as u16 | ((chunk[1] as u16) << 8);
+            data.write(word);
+        }
+
+        wait_settle(&mut status, device, lba, "write settle")
+    }
+}
+
+unsafe fn flush_device_inner(device: IdeDevice) -> bool {
+    let bus = device.bus();
+    let mut status = Port::<u8>::new(bus.status_cmd);
+    Port::<u8>::new(bus.dev_ctrl).write(0x02);
+    if !select_device(device, 0, &mut status, "before flush") {
+        return false;
+    }
+    Port::<u8>::new(bus.status_cmd).write(CMD_CACHE_FLUSH);
+    ata_delay(&mut status);
+    wait_settle(&mut status, device, 0, "flush")
+}
+
+unsafe fn select_device(device: IdeDevice, lba: u32, status: &mut Port<u8>, phase: &str) -> bool {
+    if !wait_idle(status, device, lba, phase) {
+        return false;
+    }
+    let bus = device.bus();
+    Port::<u8>::new(bus.drive_hdr).write(device.drive_select(lba));
+    ata_delay(status);
+    wait_idle(status, device, lba, "after drive select")
 }
 
 unsafe fn ata_delay(status: &mut Port<u8>) {
@@ -271,27 +311,143 @@ unsafe fn ata_delay(status: &mut Port<u8>) {
     }
 }
 
-unsafe fn wait_idle(status: &mut Port<u8>, lba: u32, phase: &str) -> bool {
+unsafe fn wait_idle(status: &mut Port<u8>, device: IdeDevice, lba: u32, phase: &str) -> bool {
     let mut iters: u32 = 0;
     loop {
         let s = status.read();
+        if s == 0xFF {
+            return false;
+        }
         if s & STATUS_BSY == 0 && s & STATUS_DRQ == 0 {
             return true;
         }
         iters += 1;
         if iters > ATA_TIMEOUT_ITERS {
-            crate::println!("[ata] idle timeout {} lba={} status={:#x}", phase, lba, s);
+            crate::println!(
+                "[ata] idle timeout device={} phase={} lba={} status={:#x}",
+                device.name(),
+                phase,
+                lba,
+                s
+            );
             return false;
         }
     }
 }
 
-unsafe fn soft_reset(lba: u32, phase: &str) {
-    crate::println!("[ata] software reset {} lba={}", phase, lba);
-    let mut status = Port::<u8>::new(STATUS_CMD);
-    Port::<u8>::new(DEV_CTRL).write(0x06);
+unsafe fn wait_not_busy(status: &mut Port<u8>, device: IdeDevice, lba: u32, phase: &str) -> bool {
+    let mut iters: u32 = 0;
+    loop {
+        let s = status.read();
+        if s == 0xFF {
+            return false;
+        }
+        if s & STATUS_ERR != 0 || s & STATUS_DF != 0 {
+            return false;
+        }
+        if s & STATUS_BSY == 0 {
+            return true;
+        }
+        iters += 1;
+        if iters > ATA_TIMEOUT_ITERS {
+            crate::println!(
+                "[ata] busy timeout device={} phase={} lba={} status={:#x}",
+                device.name(),
+                phase,
+                lba,
+                s
+            );
+            return false;
+        }
+    }
+}
+
+unsafe fn wait_drq(status: &mut Port<u8>, device: IdeDevice, lba: u32, phase: &str) -> bool {
+    let bus = device.bus();
+    let mut iters: u32 = 0;
+    loop {
+        let s = status.read();
+        if s == 0xFF {
+            return false;
+        }
+        if s & STATUS_ERR != 0 || s & STATUS_DF != 0 {
+            let err = Port::<u8>::new(bus.features).read();
+            crate::println!(
+                "[ata] error device={} phase={} lba={} status={:#x} err={:#x}",
+                device.name(),
+                phase,
+                lba,
+                s,
+                err
+            );
+            return false;
+        }
+        if s & STATUS_BSY == 0 && s & STATUS_DRQ != 0 {
+            return true;
+        }
+        iters += 1;
+        if iters > ATA_TIMEOUT_ITERS {
+            crate::println!(
+                "[ata] DRQ timeout device={} phase={} lba={} status={:#x}",
+                device.name(),
+                phase,
+                lba,
+                s
+            );
+            return false;
+        }
+    }
+}
+
+unsafe fn wait_settle(status: &mut Port<u8>, device: IdeDevice, lba: u32, phase: &str) -> bool {
+    let bus = device.bus();
+    let mut iters: u32 = 0;
+    loop {
+        let s = status.read();
+        if s == 0xFF {
+            return false;
+        }
+        if s & STATUS_ERR != 0 || s & STATUS_DF != 0 {
+            let err = Port::<u8>::new(bus.features).read();
+            crate::println!(
+                "[ata] settle error device={} phase={} lba={} status={:#x} err={:#x}",
+                device.name(),
+                phase,
+                lba,
+                s,
+                err
+            );
+            return false;
+        }
+        if s & STATUS_BSY == 0 && s & STATUS_DRQ == 0 {
+            return true;
+        }
+        iters += 1;
+        if iters > ATA_TIMEOUT_ITERS {
+            crate::println!(
+                "[ata] settle timeout device={} phase={} lba={} status={:#x}",
+                device.name(),
+                phase,
+                lba,
+                s
+            );
+            return false;
+        }
+    }
+}
+
+unsafe fn soft_reset(device: IdeDevice, lba: u32, phase: &str) {
+    crate::println!(
+        "[ata] software reset device={} phase={} lba={}",
+        device.name(),
+        phase,
+        lba
+    );
+    let bus = device.bus();
+    let mut status = Port::<u8>::new(bus.status_cmd);
+    Port::<u8>::new(bus.dev_ctrl).write(0x06);
     ata_delay(&mut status);
-    Port::<u8>::new(DEV_CTRL).write(0x02);
+    Port::<u8>::new(bus.dev_ctrl).write(0x02);
     ata_delay(&mut status);
-    let _ = wait_idle(&mut status, lba, "after software reset");
+    let _ = wait_idle(&mut status, device, lba, "after software reset");
 }

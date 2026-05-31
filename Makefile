@@ -1,4 +1,4 @@
-.PHONY: run run-net run-usb run-usb-init run-smooth run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-phase31-accounts smoke-phase32-isolation smoke-phase33-process-control smoke-phase34-tty-jobs smoke-phase35-tty-input smoke-phase36-userspace-shell smoke-phase37-coreutils smoke-phase38-apps smoke-phase39-recovery smoke-phase40-shell-semantics smoke-phase41-fs-durability smoke-phase42-app-consistency smoke-phase43-observability smoke-phase44-devkit smoke-phase45-smoothness smoke-phase46-adaptive-refresh smoke-pointer-tablet smoke-phase47-evented-userspace smoke-phase48-terminal-tui smoke-phase49-browser-engine smoke-phase50-css-layout smoke-phase51-browser-forms smoke-phase52-dom-events smoke-phase53-dom-forms smoke-phase54-browser-post smoke-phase55-browser-session smoke-phase56-css-box-model smoke-phase57-browser-layout smoke-phase58-browser-subresources smoke-phase59-browser-js smoke-phase60-browser-webapi smoke-phase61-browser-compat smoke-phase62-resource-limits smoke-phase63-memory-pressure smoke-phase64-services smoke-phase65-update-rollback smoke-phase66-boot-health smoke-phase67-update-trust smoke-phase68-update-keys smoke-phase69-package-trust smoke-phase70-package-payloads smoke-phase71-browser-engine-port smoke-phase72-threads-futex smoke-phase73-tls-pthread smoke-phase74-pthread-libc smoke-phase75-dynlink smoke-phase76-dynlink-deps smoke-phase77-file-mmap smoke-phase80-firstboot reset-firstboot-smoke-image smoke-phase81-firstboot-recovery smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
+.PHONY: run run-installer run-net run-usb run-usb-init run-smooth run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-phase31-accounts smoke-phase32-isolation smoke-phase33-process-control smoke-phase34-tty-jobs smoke-phase35-tty-input smoke-phase36-userspace-shell smoke-phase37-coreutils smoke-phase38-apps smoke-phase39-recovery smoke-phase40-shell-semantics smoke-phase41-fs-durability smoke-phase42-app-consistency smoke-phase43-observability smoke-phase44-devkit smoke-phase45-smoothness smoke-phase46-adaptive-refresh smoke-pointer-tablet smoke-phase47-evented-userspace smoke-phase48-terminal-tui smoke-phase49-browser-engine smoke-phase50-css-layout smoke-phase51-browser-forms smoke-phase52-dom-events smoke-phase53-dom-forms smoke-phase54-browser-post smoke-phase55-browser-session smoke-phase56-css-box-model smoke-phase57-browser-layout smoke-phase58-browser-subresources smoke-phase59-browser-js smoke-phase60-browser-webapi smoke-phase61-browser-compat smoke-phase62-resource-limits smoke-phase63-memory-pressure smoke-phase64-services smoke-phase65-update-rollback smoke-phase66-boot-health smoke-phase67-update-trust smoke-phase68-update-keys smoke-phase69-package-trust smoke-phase70-package-payloads smoke-phase71-browser-engine-port smoke-phase72-threads-futex smoke-phase73-tls-pthread smoke-phase74-pthread-libc smoke-phase75-dynlink smoke-phase76-dynlink-deps smoke-phase77-file-mmap smoke-phase80-firstboot reset-firstboot-smoke-image smoke-phase81-firstboot-recovery smoke-phase82-installer smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -86,6 +86,7 @@ SMOKE_VGA_SECONDS ?= 24
 SMOKE_ARTIFACT_DIR ?= $(CURDIR)/target/smoke-artifacts
 FIRSTBOOT_RESET_IMG ?= $(SMOKE_ARTIFACT_DIR)/phase81-firstboot.img
 FIRSTBOOT_RESET_LOGIN ?= ownerpass81\n
+INSTALL_TARGET_IMG ?= $(SMOKE_ARTIFACT_DIR)/phase82-install-target.img
 
 run: build
 	@echo "Booting coolOS in QEMU with USB $(QEMU_POINTER) input..."
@@ -97,6 +98,24 @@ run: build
 		$(QEMU_RTC) \
 		-vga std \
 		$(QEMU_USB_INPUT) \
+		-display "$(QEMU_DISPLAY)" \
+		-debugcon stdio
+
+run-installer: build
+	@echo "Booting coolOS Phase 82 installer with writable target $(INSTALL_TARGET_IMG)..."
+	mkdir -p "$(SMOKE_ARTIFACT_DIR)"
+	rm -f "$(INSTALL_TARGET_IMG)"
+	truncate -s 64M "$(INSTALL_TARGET_IMG)"
+	qemu-system-x86_64 \
+		-drive format=raw,file="$(BIOS)",snapshot=on \
+		-drive file="$(FSIMG)",if=ide,format=raw,index=1,snapshot=on \
+		-drive file="$(INSTALL_TARGET_IMG)",if=ide,format=raw,index=2 \
+		-m 512M \
+		-cpu "$(QEMU_CPU)" \
+		$(QEMU_RTC) \
+		-vga std \
+		$(QEMU_USB_INPUT) \
+		-fw_cfg name=opt/coolos/installer,string=1 \
 		-display "$(QEMU_DISPLAY)" \
 		-debugcon stdio
 
@@ -910,6 +929,77 @@ smoke-phase81-firstboot-recovery: build
 		--screendump "$(SMOKE_ARTIFACT_DIR)/phase81-firstboot-post-reset.ppm" \
 		--expect-framebuffer-login \
 		--expect "[boot] first boot ready" \
+		--expect "[boot] desktop ready"
+
+smoke-phase82-installer: build
+	mkdir -p "$(SMOKE_ARTIFACT_DIR)"
+	rm -f "$(INSTALL_TARGET_IMG)"
+	truncate -s 64M "$(INSTALL_TARGET_IMG)"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-card" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--target-disk "$(INSTALL_TARGET_IMG)" \
+		--target-writable \
+		--installer \
+		--usb \
+		--seconds 45 \
+		--no-auto-login \
+		--screendump "$(SMOKE_ARTIFACT_DIR)/phase82-installer-card.ppm" \
+		--expect-framebuffer-installer \
+		--expect "[boot] installer ready" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-install" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--target-disk "$(INSTALL_TARGET_IMG)" \
+		--target-writable \
+		--installer \
+		--usb \
+		--seconds 300 \
+		--fw-cmd "install disks;;install disk ide1-master;;install verify ide1-master;;flush" \
+		--expect "installer mode=active" \
+		--expect "ide0-slave present=yes" \
+		--expect "role=root protected=yes installable=no" \
+		--expect "ide1-master present=yes" \
+		--expect "install complete target=ide1-master" \
+		--expect "verify=ok" \
+		--expect "flush: ok" \
+		--expect "[boot] installer ready" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-target-firstboot" \
+		--bios "$(BIOS)" \
+		--fsimg "$(INSTALL_TARGET_IMG)" \
+		--fs-writable \
+		--first-boot \
+		--usb \
+		--seconds 45 \
+		--no-auto-login \
+		--screendump "$(SMOKE_ARTIFACT_DIR)/phase82-target-firstboot.ppm" \
+		--expect-framebuffer-login \
+		--expect "[boot] first boot ready" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-target-owner" \
+		--bios "$(BIOS)" \
+		--fsimg "$(INSTALL_TARGET_IMG)" \
+		--fs-writable \
+		--first-boot \
+		--usb \
+		--seconds 60 \
+		--no-auto-login \
+		--interact-after "[boot] first boot ready" \
+		--type-text "owner82\nownerpass82\nownerpass82\ncoolOS 82\n" \
+		--screendump "$(SMOKE_ARTIFACT_DIR)/phase82-target-owner.ppm" \
+		--expect-framebuffer-desktop \
+		--expect "[install] first boot complete user=owner82" \
+		--expect "[session] login owner82 uid=" \
 		--expect "[boot] desktop ready"
 
 smoke-phase32-isolation: build
