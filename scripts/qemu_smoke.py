@@ -13,8 +13,17 @@ from typing import Callable
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run coolOS under headless QEMU for a short smoke test.")
-    parser.add_argument("--bios", required=True, help="Path to bios.img")
-    parser.add_argument("--fsimg", required=True, help="Path to fs.img")
+    parser.add_argument("--bios", help="Path to bios.img")
+    parser.add_argument("--fsimg", help="Path to fs.img")
+    parser.add_argument(
+        "--boot-disk",
+        help="Standalone self-booting raw disk image; replaces --bios/--fsimg",
+    )
+    parser.add_argument(
+        "--boot-disk-writable",
+        action="store_true",
+        help="Attach --boot-disk without QEMU snapshot mode so guest writes persist",
+    )
     parser.add_argument("--target-disk", help="Optional installer target disk image")
     parser.add_argument(
         "--target-writable",
@@ -179,32 +188,55 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Assert the screendump contains an open shell dialog",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.boot_disk:
+        if args.bios or args.fsimg:
+            parser.error("--boot-disk cannot be combined with --bios or --fsimg")
+    elif not args.bios or not args.fsimg:
+        parser.error("--bios and --fsimg are required unless --boot-disk is used")
+    if args.boot_disk_writable and not args.boot_disk:
+        parser.error("--boot-disk-writable requires --boot-disk")
+    return args
 
 
 def build_command(args: argparse.Namespace, monitor_socket: str | None = None) -> list[str]:
-    fs_snapshot = "" if args.fs_writable else ",snapshot=on"
-    cmd = [
-        "qemu-system-x86_64",
-        f"-drive",
-        f"format=raw,file={args.bios},snapshot=on",
-        f"-drive",
-        f"file={args.fsimg},if=ide,format=raw,index=1{fs_snapshot}",
-        "-m",
-        args.memory,
-        "-cpu",
-        args.cpu,
-        "-rtc",
-        "base=utc,clock=host",
-        "-smp",
-        args.smp,
-        "-vga",
-        args.vga,
-        "-display",
-        "none",
-        "-debugcon",
-        "stdio",
-    ]
+    cmd = ["qemu-system-x86_64"]
+    if args.boot_disk:
+        boot_snapshot = "" if args.boot_disk_writable else ",snapshot=on"
+        cmd.extend(
+            [
+                "-drive",
+                f"file={args.boot_disk},if=ide,format=raw,index=0{boot_snapshot}",
+            ]
+        )
+    else:
+        fs_snapshot = "" if args.fs_writable else ",snapshot=on"
+        cmd.extend(
+            [
+                "-drive",
+                f"format=raw,file={args.bios},snapshot=on",
+                "-drive",
+                f"file={args.fsimg},if=ide,format=raw,index=1{fs_snapshot}",
+            ]
+        )
+    cmd.extend(
+        [
+            "-m",
+            args.memory,
+            "-cpu",
+            args.cpu,
+            "-rtc",
+            "base=utc,clock=host",
+            "-smp",
+            args.smp,
+            "-vga",
+            args.vga,
+            "-display",
+            "none",
+            "-debugcon",
+            "stdio",
+        ]
+    )
     if args.target_disk:
         target_snapshot = "" if args.target_writable else ",snapshot=on"
         cmd.extend(

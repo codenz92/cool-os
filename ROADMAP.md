@@ -96,7 +96,8 @@ and persistence. Phase 81 hardens that lifecycle with admin/recovery reset and
 repair commands plus boot-time first-boot state reconciliation. Phase 82 adds
 QEMU installer mode, named IDE disk discovery, sector-copy installation to a
 blank target disk, install verification, and installed-target first-boot smoke
-coverage. Phases 45-82
+coverage. Phase 83 makes that installed QEMU disk self-booting with a BIOS/MBR
+layout and CoolFS root partition discovery. Phases 45-83
 focus on responsiveness,
 interactive terminal behavior, and
 desktop-browser compatibility:
@@ -2495,9 +2496,30 @@ first-boot owner setup flow.
 
 **Current status:** complete. coolOS can now run as a QEMU live installer,
 copy the current root image to `ide1-master`, flush and verify the target, then
-boot that installed target with the existing `bios.img` into the first-boot
-owner wizard. Installing the BIOS bootloader into the target itself remains
-Phase 83.
+boot that installed target into the first-boot owner wizard. Phase 83 extends
+this path so the target is self-booting instead of relying on the separate
+`bios.img` drive.
+
+---
+
+## ✅ Phase 83 — Self-Booting QEMU Installed Disk
+
+**Goal:** Make the Phase 82 installer produce a standalone BIOS/MBR target disk
+that boots by itself and then enters the normal first-boot owner setup flow.
+
+- [x] Add a private `0xc0` CoolFS MBR partition type for installed targets.
+- [x] Teach root storage discovery to support both legacy raw CoolFS at LBA 0
+      and MBR-partitioned CoolFS roots on self-booting disks.
+- [x] Update `install disk <device>` to copy the bootloader/stage/FAT boot
+      area, patch the target MBR, copy the live root image into the CoolFS
+      partition, flush, and verify boot plus root contents.
+- [x] Add standalone `scripts/qemu_smoke.py --boot-disk <raw.img>` support,
+      `make run-installed`, and `make smoke-phase83-self-booting-installer`.
+
+**Current status:** complete. An installed target can now boot alone as the
+QEMU BIOS disk, reports the 1920x1080 framebuffer, reaches first boot, creates
+the owner account, and reboots to the normal login flow without the separate
+`bios.img` drive. UEFI/GPT and physical disk installation remain future work.
 
 ---
 
@@ -2601,4 +2623,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.41 | Phase 77 complete: file-backed mmap and POSIX file runtime |
 | v7.42 | Phase 80 complete: installer and first boot |
 | v7.43 | Phase 81 complete: first-boot recovery and reset |
-| v7.44 | Current — Phase 82 complete: QEMU disk installer v1 |
+| v7.44 | Phase 82 complete: QEMU disk installer v1 |
+| v7.45 | Current — Phase 83 complete: self-booting QEMU installed disk |

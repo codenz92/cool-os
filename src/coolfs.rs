@@ -1,8 +1,9 @@
 /// CoolFS: the native coolOS root filesystem.
 ///
-/// CoolFS owns the first region of the attached OS disk directly. The legacy
-/// FAT32 area, when present, is an import/compatibility mount at `/FAT`; it is
-/// no longer required to mount `/`.
+/// CoolFS owns the resolved root region of the attached OS disk. Legacy live
+/// images keep that region at LBA 0; installed disks can expose it through an
+/// MBR partition. The legacy FAT32 area, when present, is an
+/// import/compatibility mount at `/FAT`; it is no longer required to mount `/`.
 extern crate alloc;
 
 use alloc::{format, string::String, vec::Vec};
@@ -12,7 +13,6 @@ use spin::Mutex;
 use crate::fat32::{DirEntryInfo, FsError};
 
 pub const MOUNT_PATH: &str = "/";
-const DEVICE_LABEL: &str = "ata:primary-slave:lba0";
 
 const MAGIC: [u8; 8] = *b"COOLFS1\0";
 const VERSION: u32 = 1;
@@ -288,7 +288,10 @@ pub fn lines() -> Vec<String> {
             ),
             format!(
                 "device={} blocks used={} free={} bytes/block={}",
-                DEVICE_LABEL, stats.used_blocks, stats.free_blocks, stats.block_size
+                device_label(),
+                stats.used_blocks,
+                stats.free_blocks,
+                stats.block_size
             ),
             format!(
                 "cache slots={} cached={} dirty={}",
@@ -1282,6 +1285,18 @@ fn write_disk_block(block: u32, data: &[u8; BLOCK_SIZE]) -> Result<(), FsError> 
         }
     }
     Ok(())
+}
+
+fn device_label() -> String {
+    if let Some(root) = crate::ata::root_disk() {
+        return format!(
+            "ata:{}:lba{}{}",
+            root.device.name(),
+            root.base_lba,
+            if root.partitioned { ":mbr-coolfs" } else { "" }
+        );
+    }
+    String::from("ata:unresolved")
 }
 
 fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {

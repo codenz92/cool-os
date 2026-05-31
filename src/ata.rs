@@ -1,12 +1,13 @@
 /// ATA PIO driver.
 ///
 /// The normal coolOS QEMU layout is:
-/// - ide0-master: BIOS boot image
-/// - ide0-slave: CoolFS root image
+/// - ide0-master: BIOS boot image, or the self-booting installed disk
+/// - ide0-slave: legacy live CoolFS root image
 /// - ide1-master: optional installer target image
 ///
 /// Only LBA28 PIO transfers are implemented, which is enough for the current
-/// 64 MiB QEMU disk images and the Phase 82 installer path.
+/// QEMU disk images and the installer path.
+use spin::Mutex;
 use x86_64::instructions::port::Port;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -22,6 +23,14 @@ pub struct AtaDeviceInfo {
     pub device: IdeDevice,
     pub present: bool,
     pub sectors: u32,
+}
+
+#[derive(Clone, Copy)]
+pub struct RootDisk {
+    pub device: IdeDevice,
+    pub base_lba: u32,
+    pub sectors: u32,
+    pub partitioned: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -61,7 +70,7 @@ const SECONDARY_BUS: AtaBus = AtaBus {
     dev_ctrl: 0x376,
 };
 
-const ROOT_DEVICE: IdeDevice = IdeDevice::Ide0Slave;
+const LEGACY_ROOT_DEVICE: IdeDevice = IdeDevice::Ide0Slave;
 const CMD_IDENTIFY: u8 = 0xEC;
 const CMD_READ: u8 = 0x20;
 const CMD_WRITE: u8 = 0x30;
@@ -72,6 +81,8 @@ const STATUS_DRQ: u8 = 0x08;
 const STATUS_ERR: u8 = 0x01;
 const ATA_TIMEOUT_ITERS: u32 = 250_000;
 const ATA_RETRIES: usize = 3;
+
+static ROOT_DISK: Mutex<Option<RootDisk>> = Mutex::new(None);
 
 impl IdeDevice {
     pub const fn name(self) -> &'static str {
@@ -127,15 +138,43 @@ pub fn device_info(device: IdeDevice) -> AtaDeviceInfo {
     }
 }
 
+pub fn root_disk() -> Option<RootDisk> {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut slot = ROOT_DISK.lock();
+        if slot.is_none() {
+            *slot = detect_root_disk();
+        }
+        *slot
+    })
+}
+
 pub fn read_sector(lba: u32, buf: &mut [u8; 512]) -> bool {
-    read_sector_from(ROOT_DEVICE, lba, buf)
+    if let Some(root) = root_disk() {
+        if lba >= root.sectors {
+            return false;
+        }
+        if let Some(abs_lba) = root.base_lba.checked_add(lba) {
+            return read_sector_from(root.device, abs_lba, buf);
+        }
+        return false;
+    }
+    read_sector_from(LEGACY_ROOT_DEVICE, lba, buf)
 }
 
 pub fn write_sector(lba: u32, buf: &[u8; 512]) -> bool {
-    if !write_sector_to(ROOT_DEVICE, lba, buf) {
+    let Some(root) = root_disk() else {
+        return false;
+    };
+    if lba >= root.sectors {
         return false;
     }
-    flush_device(ROOT_DEVICE)
+    let Some(abs_lba) = root.base_lba.checked_add(lba) else {
+        return false;
+    };
+    if !write_sector_to(root.device, abs_lba, buf) {
+        return false;
+    }
+    flush_device(root.device)
 }
 
 pub fn read_sector_from(device: IdeDevice, lba: u32, buf: &mut [u8; 512]) -> bool {
@@ -172,6 +211,73 @@ pub fn write_sector_to(device: IdeDevice, lba: u32, buf: &[u8; 512]) -> bool {
 
 pub fn flush_device(device: IdeDevice) -> bool {
     x86_64::instructions::interrupts::without_interrupts(|| unsafe { flush_device_inner(device) })
+}
+
+fn detect_root_disk() -> Option<RootDisk> {
+    for device in [
+        IdeDevice::Ide0Slave,
+        IdeDevice::Ide0Master,
+        IdeDevice::Ide1Master,
+        IdeDevice::Ide1Slave,
+    ] {
+        let info = device_info(device);
+        if !info.present {
+            continue;
+        }
+        let mut first = [0u8; crate::disk_layout::SECTOR_SIZE];
+        if read_sector_from(device, 0, &mut first) && crate::disk_layout::has_coolfs_magic(&first) {
+            return Some(RootDisk {
+                device,
+                base_lba: 0,
+                sectors: info.sectors,
+                partitioned: false,
+            });
+        }
+    }
+
+    for device in [
+        IdeDevice::Ide0Master,
+        IdeDevice::Ide0Slave,
+        IdeDevice::Ide1Master,
+        IdeDevice::Ide1Slave,
+    ] {
+        let info = device_info(device);
+        if !info.present {
+            continue;
+        }
+        let mut mbr = [0u8; crate::disk_layout::SECTOR_SIZE];
+        if !read_sector_from(device, 0, &mut mbr) {
+            continue;
+        }
+        let Some(partitions) = crate::disk_layout::parse_mbr(&mbr) else {
+            continue;
+        };
+        let Some(partition) = crate::disk_layout::find_partition(
+            &partitions,
+            crate::disk_layout::COOLFS_PARTITION_TYPE,
+        ) else {
+            continue;
+        };
+        let Some(end_lba) = partition.end_lba() else {
+            continue;
+        };
+        if partition.starting_lba >= info.sectors || end_lba > info.sectors {
+            continue;
+        }
+        let mut first = [0u8; crate::disk_layout::SECTOR_SIZE];
+        if read_sector_from(device, partition.starting_lba, &mut first)
+            && crate::disk_layout::has_coolfs_magic(&first)
+        {
+            return Some(RootDisk {
+                device,
+                base_lba: partition.starting_lba,
+                sectors: partition.sectors,
+                partitioned: true,
+            });
+        }
+    }
+
+    None
 }
 
 fn identify_sectors(device: IdeDevice) -> Option<u32> {

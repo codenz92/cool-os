@@ -7,16 +7,17 @@ const README_PATH: &str = "/RECOVERY/README.TXT";
 const BOOT_CFG_PATH: &str = "/RECOVERY/BOOT.CFG";
 const LAST_REPAIR_PATH: &str = "/RECOVERY/LAST-REPAIR.TXT";
 
-const README: &[u8] = b"coolOS recovery\n\nCommands:\n  recovery\n  recovery repair\n  recovery rollback\n  recovery firstboot status\n  recovery firstboot reset\n  recovery firstboot repair\n  recovery install disks\n  recovery install disk <ide-device>\n  recovery install verify <ide-device>\n  recovery fsck-on-boot on\n  recovery fsck-on-boot off\n\nThe normal boot path is BIOS VBE framebuffer + IDE CoolFS root. Keep this directory on the root filesystem so recovery instructions survive package, update, and user changes.\n";
+const README: &[u8] = b"coolOS recovery\n\nCommands:\n  recovery\n  recovery repair\n  recovery rollback\n  recovery firstboot status\n  recovery firstboot reset\n  recovery firstboot repair\n  recovery install disks\n  recovery install disk <ide-device>\n  recovery install verify <ide-device>\n  recovery fsck-on-boot on\n  recovery fsck-on-boot off\n\nThe normal boot path is BIOS VBE framebuffer + auto-detected IDE CoolFS root. Keep this directory on the root filesystem so recovery instructions survive package, update, and user changes.\n";
 
-const BOOT_CFG: &[u8] = b"boot=normal\nroot=/\nrootfs=coolfs\nvideo=bios-vbe\nstorage=ide0-slave\nrecovery_command=recovery repair\n";
+const BOOT_CFG: &[u8] = b"boot=normal\nroot=/\nrootfs=coolfs\nvideo=bios-vbe\nstorage=auto\nrecovery_command=recovery repair\n";
 
 pub fn status_lines() -> Vec<String> {
     ensure_layout();
     let settings = crate::settings_state::snapshot();
+    let storage = root_storage_label();
     let mut lines = alloc::vec![
         String::from("mode=normal recovery=available"),
-        String::from("boot=BIOS/VBE root=/ type=coolfs storage=ide0-slave"),
+        format!("boot=BIOS/VBE root=/ type=coolfs storage={}", storage),
         format!("manifest={}", BOOT_CFG_PATH),
         format!("fsck_on_boot={}", settings.storage_fsck_on_boot),
     ];
@@ -140,4 +141,16 @@ fn write_file(path: &str, data: &[u8]) -> Result<(), crate::fat32::FsError> {
         Err(err) => return Err(err),
     }
     crate::vfs::vfs_kernel_write_file(path, data)
+}
+
+fn root_storage_label() -> String {
+    if let Some(root) = crate::ata::root_disk() {
+        return format!(
+            "{}:lba{}{}",
+            root.device.name(),
+            root.base_lba,
+            if root.partitioned { ":mbr-coolfs" } else { "" }
+        );
+    }
+    String::from("unresolved")
 }

@@ -571,7 +571,7 @@ pub(super) fn draw_installer_overlay(s: &mut [u32], sw: usize, taskbar_y: i32) {
 
     let source = crate::installer::source_device().name();
     let source_line = format!("Source: {} (live root)", source);
-    let target_line = "Target: ide1-master (64 MiB+ writable)";
+    let target_line = "Target: ide1-master (96 MiB+ writable)";
     s_draw_str_small_transparent(
         s,
         sw,
@@ -628,7 +628,7 @@ pub(super) fn draw_installer_overlay(s: &mut [u32], sw: usize, taskbar_y: i32) {
         sw,
         layout.field_x,
         button_y + GREETER_FIELD_H + 14,
-        "Copies root now; Phase 83 makes target boot.",
+        "Writes a self-booting BIOS target disk.",
         0x00_88_DD_CC,
         layout.field_x + layout.field_w,
     );

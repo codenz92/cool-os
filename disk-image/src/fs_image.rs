@@ -138,9 +138,9 @@ fn main() {
     coolfs.create_file("/CONFIG/USERS.DB", users_db.as_bytes());
     coolfs.create_file("/CONFIG/BROWSER-ENGINE.CFG", BROWSER_ENGINE_CONFIG);
     coolfs.create_file("/LOGS/BROWSER-ENGINE.TXT", BROWSER_ENGINE_LOG);
-    let recovery_readme = b"coolOS recovery\n\nBoot target: BIOS VBE framebuffer, IDE disk index 1, CoolFS root at /.\nRun `recovery` for status and `recovery repair` to recreate standard system directories and write /RECOVERY/LAST-REPAIR.TXT.\n";
+    let recovery_readme = b"coolOS recovery\n\nBoot target: BIOS VBE framebuffer, auto-detected IDE CoolFS root at /.\nRun `recovery` for status and `recovery repair` to recreate standard system directories and write /RECOVERY/LAST-REPAIR.TXT.\n";
     coolfs.create_file("/RECOVERY/README.TXT", recovery_readme);
-    let recovery_boot_cfg = b"boot=normal\nroot=/\nrootfs=coolfs\nvideo=bios-vbe\nstorage=ide1\n";
+    let recovery_boot_cfg = b"boot=normal\nroot=/\nrootfs=coolfs\nvideo=bios-vbe\nstorage=auto\n";
     coolfs.create_file("/RECOVERY/BOOT.CFG", recovery_boot_cfg);
 
     let sdk = root.open_dir("SDK").expect("failed to open /SDK");

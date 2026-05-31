@@ -26,6 +26,7 @@ mod crashdump;
 mod deferred;
 mod desktop_settings;
 mod device_registry;
+mod disk_layout;
 mod drivers;
 mod elf;
 mod entropy;
