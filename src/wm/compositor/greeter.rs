@@ -580,7 +580,7 @@ pub(super) fn draw_installer_overlay(
         InstallerScreen::Select => {
             draw_installer_source_summary(s, sw, &layout);
             let row_h = 34;
-            for (idx, device) in crate::ata::all_devices().iter().copied().enumerate() {
+            for (idx, device) in crate::storage::all_devices().iter().copied().enumerate() {
                 let y = layout.owner_y + idx as i32 * row_h;
                 let plan = crate::installer::install_plan(device);
                 let selected = state.selected_target == device;
@@ -667,7 +667,11 @@ pub(super) fn draw_installer_overlay(
                 sw,
                 layout.field_x,
                 layout.device_y,
-                "Reboot and run make run-installed.",
+                if state.selected_target.sata_port().is_some() {
+                    "Reboot and run make run-uefi-ahci-installed."
+                } else {
+                    "Reboot and run make run-installed."
+                },
                 0x00_88_DD_CC,
                 layout.field_x + layout.field_w,
             );

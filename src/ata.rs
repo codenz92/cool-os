@@ -7,7 +7,6 @@
 ///
 /// Only LBA28 PIO transfers are implemented, which is enough for the current
 /// QEMU disk images and the installer path.
-use spin::Mutex;
 use x86_64::instructions::port::Port;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -23,31 +22,6 @@ pub struct AtaDeviceInfo {
     pub device: IdeDevice,
     pub present: bool,
     pub sectors: u32,
-}
-
-#[derive(Clone, Copy)]
-pub struct RootDisk {
-    pub device: IdeDevice,
-    pub base_lba: u32,
-    pub sectors: u32,
-    pub layout: RootDiskLayout,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum RootDiskLayout {
-    RawCoolFs,
-    MbrCoolFs,
-    GptCoolFs,
-}
-
-impl RootDiskLayout {
-    pub const fn suffix(self) -> &'static str {
-        match self {
-            RootDiskLayout::RawCoolFs => "",
-            RootDiskLayout::MbrCoolFs => ":mbr-coolfs",
-            RootDiskLayout::GptCoolFs => ":gpt-coolfs",
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -87,7 +61,6 @@ const SECONDARY_BUS: AtaBus = AtaBus {
     dev_ctrl: 0x376,
 };
 
-const LEGACY_ROOT_DEVICE: IdeDevice = IdeDevice::Ide0Slave;
 const CMD_IDENTIFY: u8 = 0xEC;
 const CMD_READ: u8 = 0x20;
 const CMD_WRITE: u8 = 0x30;
@@ -98,8 +71,6 @@ const STATUS_DRQ: u8 = 0x08;
 const STATUS_ERR: u8 = 0x01;
 const ATA_TIMEOUT_ITERS: u32 = 250_000;
 const ATA_RETRIES: usize = 3;
-
-static ROOT_DISK: Mutex<Option<RootDisk>> = Mutex::new(None);
 
 impl IdeDevice {
     pub const fn name(self) -> &'static str {
@@ -137,15 +108,6 @@ impl IdeDevice {
     }
 }
 
-pub fn all_devices() -> [IdeDevice; 4] {
-    [
-        IdeDevice::Ide0Master,
-        IdeDevice::Ide0Slave,
-        IdeDevice::Ide1Master,
-        IdeDevice::Ide1Slave,
-    ]
-}
-
 pub fn device_info(device: IdeDevice) -> AtaDeviceInfo {
     let sectors = identify_sectors(device).unwrap_or(0);
     AtaDeviceInfo {
@@ -153,45 +115,6 @@ pub fn device_info(device: IdeDevice) -> AtaDeviceInfo {
         present: sectors > 0,
         sectors,
     }
-}
-
-pub fn root_disk() -> Option<RootDisk> {
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        let mut slot = ROOT_DISK.lock();
-        if slot.is_none() {
-            *slot = detect_root_disk();
-        }
-        *slot
-    })
-}
-
-pub fn read_sector(lba: u32, buf: &mut [u8; 512]) -> bool {
-    if let Some(root) = root_disk() {
-        if lba >= root.sectors {
-            return false;
-        }
-        if let Some(abs_lba) = root.base_lba.checked_add(lba) {
-            return read_sector_from(root.device, abs_lba, buf);
-        }
-        return false;
-    }
-    read_sector_from(LEGACY_ROOT_DEVICE, lba, buf)
-}
-
-pub fn write_sector(lba: u32, buf: &[u8; 512]) -> bool {
-    let Some(root) = root_disk() else {
-        return false;
-    };
-    if lba >= root.sectors {
-        return false;
-    }
-    let Some(abs_lba) = root.base_lba.checked_add(lba) else {
-        return false;
-    };
-    if !write_sector_to(root.device, abs_lba, buf) {
-        return false;
-    }
-    flush_device(root.device)
 }
 
 pub fn read_sector_from(device: IdeDevice, lba: u32, buf: &mut [u8; 512]) -> bool {
@@ -228,154 +151,6 @@ pub fn write_sector_to(device: IdeDevice, lba: u32, buf: &[u8; 512]) -> bool {
 
 pub fn flush_device(device: IdeDevice) -> bool {
     x86_64::instructions::interrupts::without_interrupts(|| unsafe { flush_device_inner(device) })
-}
-
-fn detect_root_disk() -> Option<RootDisk> {
-    for device in [
-        IdeDevice::Ide0Slave,
-        IdeDevice::Ide0Master,
-        IdeDevice::Ide1Master,
-        IdeDevice::Ide1Slave,
-    ] {
-        let info = device_info(device);
-        if !info.present {
-            continue;
-        }
-        let mut first = [0u8; crate::disk_layout::SECTOR_SIZE];
-        if read_sector_from(device, 0, &mut first) && crate::disk_layout::has_coolfs_magic(&first) {
-            return Some(RootDisk {
-                device,
-                base_lba: 0,
-                sectors: info.sectors,
-                layout: RootDiskLayout::RawCoolFs,
-            });
-        }
-    }
-
-    for device in [
-        IdeDevice::Ide0Master,
-        IdeDevice::Ide0Slave,
-        IdeDevice::Ide1Master,
-        IdeDevice::Ide1Slave,
-    ] {
-        let info = device_info(device);
-        if !info.present {
-            continue;
-        }
-        let mut mbr = [0u8; crate::disk_layout::SECTOR_SIZE];
-        if !read_sector_from(device, 0, &mut mbr) {
-            continue;
-        }
-        let Some(partitions) = crate::disk_layout::parse_mbr(&mbr) else {
-            continue;
-        };
-        let Some(partition) = crate::disk_layout::find_partition(
-            &partitions,
-            crate::disk_layout::COOLFS_PARTITION_TYPE,
-        ) else {
-            continue;
-        };
-        let Some(end_lba) = partition.end_lba() else {
-            continue;
-        };
-        if partition.starting_lba >= info.sectors || end_lba > info.sectors {
-            continue;
-        }
-        let mut first = [0u8; crate::disk_layout::SECTOR_SIZE];
-        if read_sector_from(device, partition.starting_lba, &mut first)
-            && crate::disk_layout::has_coolfs_magic(&first)
-        {
-            return Some(RootDisk {
-                device,
-                base_lba: partition.starting_lba,
-                sectors: partition.sectors,
-                layout: RootDiskLayout::MbrCoolFs,
-            });
-        }
-    }
-
-    for device in [
-        IdeDevice::Ide0Master,
-        IdeDevice::Ide0Slave,
-        IdeDevice::Ide1Master,
-        IdeDevice::Ide1Slave,
-    ] {
-        let info = device_info(device);
-        if !info.present {
-            continue;
-        }
-        let Some(partition) = find_gpt_partition(
-            device,
-            info.sectors,
-            crate::disk_layout::COOLFS_GPT_PARTITION_GUID,
-        ) else {
-            continue;
-        };
-        let Some(partition_sectors) = partition.sectors() else {
-            continue;
-        };
-        let Some(end_lba) = partition.end_lba() else {
-            continue;
-        };
-        if partition.starting_lba >= info.sectors || end_lba > info.sectors {
-            continue;
-        }
-        let mut first = [0u8; crate::disk_layout::SECTOR_SIZE];
-        if read_sector_from(device, partition.starting_lba, &mut first)
-            && crate::disk_layout::has_coolfs_magic(&first)
-        {
-            return Some(RootDisk {
-                device,
-                base_lba: partition.starting_lba,
-                sectors: partition_sectors,
-                layout: RootDiskLayout::GptCoolFs,
-            });
-        }
-    }
-
-    None
-}
-
-pub fn find_gpt_partition(
-    device: IdeDevice,
-    disk_sectors: u32,
-    type_guid: crate::disk_layout::GptGuid,
-) -> Option<crate::disk_layout::GptPartition> {
-    let mut mbr = [0u8; crate::disk_layout::SECTOR_SIZE];
-    if !read_sector_from(device, 0, &mut mbr) || !crate::disk_layout::has_protective_mbr(&mbr) {
-        return None;
-    }
-    let mut header_sector = [0u8; crate::disk_layout::SECTOR_SIZE];
-    if !read_sector_from(
-        device,
-        crate::disk_layout::GPT_PRIMARY_HEADER_LBA,
-        &mut header_sector,
-    ) {
-        return None;
-    }
-    let header = crate::disk_layout::parse_gpt_header(&header_sector, disk_sectors)?;
-    let max_entries = header
-        .entry_count
-        .min(crate::disk_layout::GPT_ENTRY_COUNT as u32);
-    let entries_per_sector = (crate::disk_layout::SECTOR_SIZE as u32 / header.entry_size).max(1);
-    let mut sector = [0u8; crate::disk_layout::SECTOR_SIZE];
-    for idx in 0..max_entries {
-        let sector_lba = header.entries_lba.checked_add(idx / entries_per_sector)?;
-        let entry_in_sector = idx % entries_per_sector;
-        let offset = (entry_in_sector * header.entry_size) as usize;
-        if !read_sector_from(device, sector_lba, &mut sector) {
-            return None;
-        }
-        let end = offset.checked_add(header.entry_size as usize)?;
-        let Some(partition) = crate::disk_layout::parse_gpt_partition_entry(&sector[offset..end])
-        else {
-            continue;
-        };
-        if partition.type_guid == type_guid {
-            return Some(partition);
-        }
-    }
-    None
 }
 
 fn identify_sectors(device: IdeDevice) -> Option<u32> {

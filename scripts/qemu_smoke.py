@@ -80,6 +80,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--smp", default="1", help="QEMU SMP CPU count")
     parser.add_argument("--vga", default="std", help="QEMU VGA adapter")
+    parser.add_argument("--ahci", action="store_true", help="Attach disks through QEMU AHCI/SATA instead of IDE")
     parser.add_argument("--usb", action="store_true", help="Attach xHCI with USB keyboard and pointer")
     parser.add_argument(
         "--usb-pointer",
@@ -232,24 +233,50 @@ def build_command(args: argparse.Namespace, monitor_socket: str | None = None) -
                 f"if=pflash,format=raw,readonly=on,file={args.uefi_code}",
             ]
         )
+    if args.ahci:
+        cmd.extend(["-device", "ich9-ahci,id=ahci"])
     if args.boot_disk:
         boot_snapshot = "" if args.boot_disk_writable else ",snapshot=on"
-        cmd.extend(
-            [
-                "-drive",
-                f"file={args.boot_disk},if=ide,format=raw,index=0{boot_snapshot}",
-            ]
-        )
+        if args.ahci:
+            cmd.extend(
+                [
+                    "-drive",
+                    f"if=none,id=bootdisk,file={args.boot_disk},format=raw{boot_snapshot}",
+                    "-device",
+                    "ide-hd,drive=bootdisk,bus=ahci.0",
+                ]
+            )
+        else:
+            cmd.extend(
+                [
+                    "-drive",
+                    f"file={args.boot_disk},if=ide,format=raw,index=0{boot_snapshot}",
+                ]
+            )
     else:
         fs_snapshot = "" if args.fs_writable else ",snapshot=on"
-        cmd.extend(
-            [
-                "-drive",
-                f"format=raw,file={args.bios},snapshot=on",
-                "-drive",
-                f"file={args.fsimg},if=ide,format=raw,index=1{fs_snapshot}",
-            ]
-        )
+        if args.ahci:
+            cmd.extend(
+                [
+                    "-drive",
+                    f"if=none,id=bootdisk,format=raw,file={args.bios},snapshot=on",
+                    "-device",
+                    "ide-hd,drive=bootdisk,bus=ahci.0",
+                    "-drive",
+                    f"if=none,id=rootdisk,file={args.fsimg},format=raw{fs_snapshot}",
+                    "-device",
+                    "ide-hd,drive=rootdisk,bus=ahci.1",
+                ]
+            )
+        else:
+            cmd.extend(
+                [
+                    "-drive",
+                    f"format=raw,file={args.bios},snapshot=on",
+                    "-drive",
+                    f"file={args.fsimg},if=ide,format=raw,index=1{fs_snapshot}",
+                ]
+            )
     cmd.extend(
         [
             "-m",
@@ -270,12 +297,22 @@ def build_command(args: argparse.Namespace, monitor_socket: str | None = None) -
     )
     if args.target_disk:
         target_snapshot = "" if args.target_writable else ",snapshot=on"
-        cmd.extend(
-            [
-                "-drive",
-                f"file={args.target_disk},if=ide,format=raw,index=2{target_snapshot}",
-            ]
-        )
+        if args.ahci:
+            cmd.extend(
+                [
+                    "-drive",
+                    f"if=none,id=targetdisk,file={args.target_disk},format=raw{target_snapshot}",
+                    "-device",
+                    "ide-hd,drive=targetdisk,bus=ahci.2",
+                ]
+            )
+        else:
+            cmd.extend(
+                [
+                    "-drive",
+                    f"file={args.target_disk},if=ide,format=raw,index=2{target_snapshot}",
+                ]
+            )
     if monitor_socket:
         cmd.extend(["-monitor", f"unix:{monitor_socket},server,nowait"])
     if args.usb:

@@ -71,7 +71,7 @@ impl Bpb {
 
     fn load_at(base_lba: u32) -> Option<Self> {
         let mut sec = [0u8; SECTOR_SIZE];
-        if !crate::ata::read_sector(base_lba, &mut sec) {
+        if !crate::storage::read_sector(base_lba, &mut sec) {
             crate::println!("[fat32] BPB read_sector failed");
             return None;
         }
@@ -143,7 +143,7 @@ impl Bpb {
 
         let lba = self.fat_start_lba() + sector_index;
         let mut sec = [0u8; SECTOR_SIZE];
-        if !crate::ata::read_sector(lba, &mut sec) {
+        if !crate::storage::read_sector(lba, &mut sec) {
             return None;
         }
         let entry = u32::from_le_bytes([
@@ -545,7 +545,7 @@ pub fn stats() -> Option<FsStats> {
     let entries_per_sector = bpb.bytes_per_sector as usize / 4;
 
     for sector_index in 0..bpb.sectors_per_fat {
-        if !crate::ata::read_sector(bpb.fat_start_lba() + sector_index, &mut sec) {
+        if !crate::storage::read_sector(bpb.fat_start_lba() + sector_index, &mut sec) {
             return None;
         }
         for entry_idx in 0..entries_per_sector {
@@ -591,7 +591,7 @@ pub fn list_dir(path: &str) -> Option<Vec<DirEntryInfo>> {
     let mut entries = Vec::new();
     let mut lfn_fragments: Vec<LfnFragment> = Vec::new();
     for lba in sectors {
-        if !crate::ata::read_sector(lba, &mut buf) {
+        if !crate::storage::read_sector(lba, &mut buf) {
             return None;
         }
         for offset in (0..SECTOR_SIZE).step_by(DIR_ENTRY_SIZE) {
@@ -1070,7 +1070,7 @@ fn find_entry_location(bpb: &Bpb, dir_cluster: u32, name: &[u8]) -> Option<DirEn
     let mut lfn_fragments: Vec<LfnFragment> = Vec::new();
     let mut lfn_locations: Vec<(u32, usize)> = Vec::new();
     for lba in sectors {
-        if !crate::ata::read_sector(lba, &mut buf) {
+        if !crate::storage::read_sector(lba, &mut buf) {
             return None;
         }
         for offset in (0..SECTOR_SIZE).step_by(DIR_ENTRY_SIZE) {
@@ -1130,7 +1130,7 @@ fn short_name_exists_except(
     let sectors = bpb.cluster_chain_sectors(dir_cluster);
     let mut buf = [0u8; SECTOR_SIZE];
     for lba in sectors {
-        if !crate::ata::read_sector(lba, &mut buf) {
+        if !crate::storage::read_sector(lba, &mut buf) {
             return true;
         }
         for offset in (0..SECTOR_SIZE).step_by(DIR_ENTRY_SIZE) {
@@ -1161,7 +1161,7 @@ fn read_clusters(bpb: &Bpb, start: u32, size: u32) -> Option<Vec<u8>> {
     let mut data = Vec::with_capacity(size as usize);
     let mut buf = [0u8; SECTOR_SIZE];
     for lba in sectors {
-        if !crate::ata::read_sector(lba, &mut buf) {
+        if !crate::storage::read_sector(lba, &mut buf) {
             return None;
         }
         data.extend_from_slice(&buf);
@@ -1462,7 +1462,7 @@ fn dotdot_name() -> [u8; 11] {
 }
 
 fn read_sector_exact(lba: u32, buf: &mut [u8; SECTOR_SIZE]) -> Result<(), FsError> {
-    if crate::ata::read_sector(lba, buf) {
+    if crate::storage::read_sector(lba, buf) {
         Ok(())
     } else {
         Err(FsError::Io)
@@ -1470,7 +1470,7 @@ fn read_sector_exact(lba: u32, buf: &mut [u8; SECTOR_SIZE]) -> Result<(), FsErro
 }
 
 fn write_sector_exact(lba: u32, buf: &[u8; SECTOR_SIZE]) -> Result<(), FsError> {
-    if crate::ata::write_sector(lba, buf) {
+    if crate::storage::write_sector(lba, buf) {
         Ok(())
     } else {
         Err(FsError::Io)

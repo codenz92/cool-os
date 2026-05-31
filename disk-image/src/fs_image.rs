@@ -3,7 +3,7 @@
 /// region is still formatted at 8 MiB for the optional `/FAT` import mount.
 ///
 /// Usage: fs-image <output-path> [hello-elf] [exec-elf] [pipe-elf] [read-elf] [piperd-elf] [pipewr-elf] [keyecho-elf] [terminal-elf] [ttyread-elf] [netdemo-elf] [wget-elf] [sdkdemo-elf] [guidemo-elf] [notes-elf] [editor-elf] [trash-elf] [screenshot-elf] [procdemo-elf] [procsleep-elf] [sentinel-elf] [badptr-elf] [badwrite-elf] [badmmap-elf] [badexec-elf] [baduserread-elf] [extra-bin-elf-or-so...]
-/// Output: a 64 MiB raw OS disk image ready to attach as a QEMU IDE drive.
+/// Output: a 64 MiB raw OS disk image ready to attach as a QEMU IDE or AHCI drive.
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
@@ -138,7 +138,7 @@ fn main() {
     coolfs.create_file("/CONFIG/USERS.DB", users_db.as_bytes());
     coolfs.create_file("/CONFIG/BROWSER-ENGINE.CFG", BROWSER_ENGINE_CONFIG);
     coolfs.create_file("/LOGS/BROWSER-ENGINE.TXT", BROWSER_ENGINE_LOG);
-    let recovery_readme = b"coolOS recovery\n\nBoot target: BIOS VBE framebuffer, auto-detected IDE CoolFS root at /.\nRun `recovery` for status and `recovery repair` to recreate standard system directories and write /RECOVERY/LAST-REPAIR.TXT.\n";
+    let recovery_readme = b"coolOS recovery\n\nBoot target: auto-detected CoolFS root at / on IDE or AHCI/SATA storage.\nRun `recovery` for status and `recovery repair` to recreate standard system directories and write /RECOVERY/LAST-REPAIR.TXT.\n";
     coolfs.create_file("/RECOVERY/README.TXT", recovery_readme);
     let recovery_boot_cfg = b"boot=normal\nroot=/\nrootfs=coolfs\nvideo=bios-vbe\nstorage=auto\n";
     coolfs.create_file("/RECOVERY/BOOT.CFG", recovery_boot_cfg);

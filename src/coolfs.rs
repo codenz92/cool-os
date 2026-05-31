@@ -1262,7 +1262,7 @@ fn read_disk_block(block: u32) -> Result<[u8; BLOCK_SIZE], FsError> {
     let base_lba = block.checked_mul(SECTORS_PER_BLOCK).ok_or(FsError::Io)?;
     for sector in 0..SECTORS_PER_BLOCK {
         let mut sec = [0u8; SECTOR_SIZE];
-        if !crate::ata::read_sector(base_lba + sector, &mut sec) {
+        if !crate::storage::read_sector(base_lba + sector, &mut sec) {
             return Err(FsError::Io);
         }
         let start = sector as usize * SECTOR_SIZE;
@@ -1280,7 +1280,7 @@ fn write_disk_block(block: u32, data: &[u8; BLOCK_SIZE]) -> Result<(), FsError> 
         let mut sec = [0u8; SECTOR_SIZE];
         let start = sector as usize * SECTOR_SIZE;
         sec.copy_from_slice(&data[start..start + SECTOR_SIZE]);
-        if !crate::ata::write_sector(base_lba + sector, &sec) {
+        if !crate::storage::write_sector(base_lba + sector, &sec) {
             return Err(FsError::Io);
         }
     }
@@ -1288,9 +1288,9 @@ fn write_disk_block(block: u32, data: &[u8; BLOCK_SIZE]) -> Result<(), FsError> 
 }
 
 fn device_label() -> String {
-    if let Some(root) = crate::ata::root_disk() {
+    if let Some(root) = crate::storage::root_disk() {
         return format!(
-            "ata:{}:lba{}{}",
+            "block:{}:lba{}{}",
             root.device.name(),
             root.base_lba,
             root.layout.suffix()

@@ -3,9 +3,8 @@ extern crate alloc;
 use alloc::{format, string::String, vec::Vec};
 
 use crate::ata::IdeDevice;
+use crate::storage::BlockDevice;
 
-const SOURCE_DEVICE: IdeDevice = IdeDevice::Ide0Slave;
-const BOOT_DEVICE: IdeDevice = IdeDevice::Ide0Master;
 const COOLFS_PARTITION_INDEX: usize = 2;
 const GUI_INSTALL_SECTOR_BUDGET: u32 = 8192;
 const ROOT_METADATA_REFRESH_SECTORS: u32 = 128;
@@ -88,13 +87,13 @@ impl TargetState {
 
 #[derive(Clone, Copy)]
 pub struct InstallPlan {
-    pub target: IdeDevice,
+    pub target: BlockDevice,
     pub target_present: bool,
     pub target_sectors: u32,
-    pub source_boot: IdeDevice,
+    pub source_boot: BlockDevice,
     pub source_boot_present: bool,
     pub source_boot_sectors: u32,
-    pub source_root: IdeDevice,
+    pub source_root: BlockDevice,
     pub source_root_present: bool,
     pub source_root_sectors: u32,
     pub layout: Option<InstallLayout>,
@@ -134,7 +133,7 @@ impl InstallerJobPhase {
 }
 
 pub struct InstallerJob {
-    target: IdeDevice,
+    target: BlockDevice,
     layout: InstallLayout,
     phase: InstallerJobPhase,
     cursor: u32,
@@ -145,16 +144,55 @@ pub struct InstallerJob {
     message: String,
 }
 
-pub fn source_device() -> IdeDevice {
-    SOURCE_DEVICE
+pub fn source_device() -> BlockDevice {
+    crate::storage::root_disk()
+        .map(|root| root.device)
+        .unwrap_or(BlockDevice::Ide(IdeDevice::Ide0Slave))
 }
 
-pub fn boot_device() -> IdeDevice {
-    BOOT_DEVICE
+pub fn boot_device() -> BlockDevice {
+    let source = source_device();
+    for device in crate::storage::all_devices() {
+        if device == source {
+            continue;
+        }
+        let info = crate::storage::device_info(device);
+        if !info.present {
+            continue;
+        }
+        if crate::storage::find_gpt_partition(
+            device,
+            info.sectors,
+            crate::disk_layout::EFI_SYSTEM_PARTITION_GUID,
+        )
+        .is_some()
+        {
+            return device;
+        }
+    }
+
+    let legacy_boot = BlockDevice::Ide(IdeDevice::Ide0Master);
+    if crate::storage::device_info(legacy_boot).present {
+        return legacy_boot;
+    }
+    crate::storage::all_devices()
+        .into_iter()
+        .find(|device| *device != source && crate::storage::device_info(*device).present)
+        .unwrap_or(legacy_boot)
 }
 
-pub fn default_target_device() -> IdeDevice {
-    IdeDevice::Ide1Master
+pub fn default_target_device() -> BlockDevice {
+    for candidate in [
+        BlockDevice::Sata2,
+        BlockDevice::Sata3,
+        BlockDevice::Ide(IdeDevice::Ide1Master),
+        BlockDevice::Ide(IdeDevice::Ide1Slave),
+    ] {
+        if crate::storage::device_info(candidate).present {
+            return candidate;
+        }
+    }
+    BlockDevice::Ide(IdeDevice::Ide1Master)
 }
 
 pub fn disks_lines() -> Vec<String> {
@@ -167,7 +205,7 @@ pub fn disks_lines() -> Vec<String> {
             "inactive"
         }
     ));
-    for device in crate::ata::all_devices() {
+    for device in crate::storage::all_devices() {
         let plan = install_plan(device);
         lines.push(format_device_line(&plan));
     }
@@ -175,49 +213,53 @@ pub fn disks_lines() -> Vec<String> {
 }
 
 pub fn plan_device_name(name: &str) -> Vec<String> {
-    let Some(target) = IdeDevice::parse(name) else {
+    let Some(target) = BlockDevice::parse(name) else {
         return alloc::vec![format!("install plan: unknown disk {}", name)];
     };
     plan_device(target)
 }
 
-pub fn plan_device(target: IdeDevice) -> Vec<String> {
+pub fn plan_device(target: BlockDevice) -> Vec<String> {
     let plan = install_plan(target);
     plan_lines(&plan)
 }
 
 pub fn install_to_device_name(name: &str) -> Vec<String> {
-    let Some(target) = IdeDevice::parse(name) else {
+    let Some(target) = BlockDevice::parse(name) else {
         return alloc::vec![format!("install: unknown disk {}", name)];
     };
     install_to_device(target)
 }
 
 pub fn verify_device_name(name: &str) -> Vec<String> {
-    let Some(target) = IdeDevice::parse(name) else {
+    let Some(target) = BlockDevice::parse(name) else {
         return alloc::vec![format!("install: unknown disk {}", name)];
     };
     verify_device(target)
 }
 
-pub fn install_plan(target: IdeDevice) -> InstallPlan {
-    let boot_info = crate::ata::device_info(BOOT_DEVICE);
-    let source_info = crate::ata::device_info(SOURCE_DEVICE);
-    let target_info = crate::ata::device_info(target);
-    let protected = target == BOOT_DEVICE || target == SOURCE_DEVICE;
+pub fn install_plan(target: BlockDevice) -> InstallPlan {
+    let boot_info = crate::storage::device_info(boot_device());
+    let source_info = crate::storage::device_info(source_device());
+    let target_info = crate::storage::device_info(target);
+    let protected = target == boot_device() || target == source_device();
     let state = target_state(target, target_info.present);
 
     let mut layout = None;
     let mut reason = "ready";
     let mut installable = true;
 
-    if target == BOOT_DEVICE {
+    if target == boot_device() {
         reason = "refusing to overwrite boot disk";
         installable = false;
-    } else if target == SOURCE_DEVICE {
+    } else if target == source_device() {
         reason = "refusing to overwrite mounted root disk";
         installable = false;
-    } else if !matches!(target, IdeDevice::Ide1Master | IdeDevice::Ide1Slave) {
+    } else if matches!(
+        target,
+        BlockDevice::Ide(device)
+            if !matches!(device, IdeDevice::Ide1Master | IdeDevice::Ide1Slave)
+    ) {
         reason = "target must be on secondary IDE bus";
         installable = false;
     } else if !target_info.present {
@@ -259,7 +301,7 @@ pub fn install_plan(target: IdeDevice) -> InstallPlan {
     }
 }
 
-pub fn install_to_device(target: IdeDevice) -> Vec<String> {
+pub fn install_to_device(target: BlockDevice) -> Vec<String> {
     let mut lines = Vec::new();
     lines.push(format!("install target={}", target.name()));
     let plan = install_plan(target);
@@ -310,11 +352,11 @@ pub fn install_to_device(target: IdeDevice) -> Vec<String> {
             lines.push(format!("install: target boot LBA overflow offset={}", lba));
             return lines;
         };
-        if !crate::ata::read_sector_from(BOOT_DEVICE, source_lba, &mut sector) {
+        if !crate::storage::read_sector_from(boot_device(), source_lba, &mut sector) {
             lines.push(format!("install: boot read failed lba={}", source_lba));
             return lines;
         }
-        if !crate::ata::write_sector_to(target, target_lba, &sector) {
+        if !crate::storage::write_sector_to(target, target_lba, &sector) {
             lines.push(format!(
                 "install: target boot write failed lba={}",
                 target_lba
@@ -333,7 +375,7 @@ pub fn install_to_device(target: IdeDevice) -> Vec<String> {
 
     lines.push(format!("copy root started sectors={}", layout.root_sectors));
     for lba in 0..layout.root_sectors {
-        if !crate::ata::read_sector_from(SOURCE_DEVICE, lba, &mut sector) {
+        if !crate::storage::read_sector_from(source_device(), lba, &mut sector) {
             lines.push(format!("install: source read failed lba={}", lba));
             return lines;
         }
@@ -341,7 +383,7 @@ pub fn install_to_device(target: IdeDevice) -> Vec<String> {
             lines.push(format!("install: target LBA overflow lba={}", lba));
             return lines;
         };
-        if !crate::ata::write_sector_to(target, target_lba, &sector) {
+        if !crate::storage::write_sector_to(target, target_lba, &sector) {
             lines.push(format!(
                 "install: target root write failed lba={}",
                 target_lba
@@ -357,7 +399,7 @@ pub fn install_to_device(target: IdeDevice) -> Vec<String> {
     if !refresh_target_root_prefix(target, layout, &mut lines) {
         return lines;
     }
-    if crate::ata::flush_device(target) {
+    if crate::storage::flush_device(target) {
         lines.push(String::from("flush=ok"));
     } else {
         lines.push(String::from("install: target flush failed"));
@@ -367,12 +409,12 @@ pub fn install_to_device(target: IdeDevice) -> Vec<String> {
     let verified = verify_self_boot_device(target, layout, &mut lines);
     if verified {
         lines.push(format!("install complete target={}", target.name()));
-        lines.push(String::from("reboot_with_target_as_boot_disk=ide0-master"));
+        lines.push(format!("reboot_with_target_as_boot_disk={}", target.name()));
     }
     lines
 }
 
-pub fn verify_device(target: IdeDevice) -> Vec<String> {
+pub fn verify_device(target: BlockDevice) -> Vec<String> {
     let mut lines = Vec::new();
     lines.push(format!("verify target={}", target.name()));
     let plan = install_plan(target);
@@ -395,7 +437,7 @@ pub fn verify_device(target: IdeDevice) -> Vec<String> {
     lines
 }
 
-pub fn start_gui_install(target: IdeDevice) -> Result<InstallerJob, Vec<String>> {
+pub fn start_gui_install(target: BlockDevice) -> Result<InstallerJob, Vec<String>> {
     let plan = install_plan(target);
     if !plan.installable {
         return Err(plan_lines(&plan));
@@ -413,7 +455,7 @@ pub fn start_gui_install(target: IdeDevice) -> Result<InstallerJob, Vec<String>>
 }
 
 fn verify_self_boot_device(
-    target: IdeDevice,
+    target: BlockDevice,
     layout: InstallLayout,
     lines: &mut Vec<String>,
 ) -> bool {
@@ -437,11 +479,11 @@ fn verify_self_boot_device(
             lines.push(format!("verify: target boot LBA overflow offset={}", lba));
             return false;
         };
-        if !crate::ata::read_sector_from(BOOT_DEVICE, source_lba, &mut source) {
+        if !crate::storage::read_sector_from(boot_device(), source_lba, &mut source) {
             lines.push(format!("verify: boot read failed lba={}", source_lba));
             return false;
         }
-        if !crate::ata::read_sector_from(target, target_lba, &mut dest) {
+        if !crate::storage::read_sector_from(target, target_lba, &mut dest) {
             lines.push(format!(
                 "verify: target boot read failed lba={}",
                 target_lba
@@ -456,7 +498,7 @@ fn verify_self_boot_device(
     let mut source = [0u8; 512];
     let mut dest = [0u8; 512];
     for lba in 0..layout.root_sectors {
-        if !crate::ata::read_sector_from(SOURCE_DEVICE, lba, &mut source) {
+        if !crate::storage::read_sector_from(source_device(), lba, &mut source) {
             lines.push(format!("verify: source read failed lba={}", lba));
             return false;
         }
@@ -464,7 +506,7 @@ fn verify_self_boot_device(
             lines.push(format!("verify: target LBA overflow lba={}", lba));
             return false;
         };
-        if !crate::ata::read_sector_from(target, target_lba, &mut dest) {
+        if !crate::storage::read_sector_from(target, target_lba, &mut dest) {
             lines.push(format!(
                 "verify: target root read failed lba={}",
                 target_lba
@@ -486,7 +528,7 @@ fn verify_self_boot_device(
 }
 
 impl InstallerJob {
-    fn new(target: IdeDevice, layout: InstallLayout) -> Self {
+    fn new(target: BlockDevice, layout: InstallLayout) -> Self {
         let total_units = layout
             .boot_copy_sectors
             .saturating_add(layout.root_sectors)
@@ -582,12 +624,12 @@ impl InstallerJob {
                         self.fail(format!("target boot LBA overflow offset={}", lba));
                         return true;
                     };
-                    if !crate::ata::read_sector_from(BOOT_DEVICE, source_lba, &mut source) {
+                    if !crate::storage::read_sector_from(boot_device(), source_lba, &mut source) {
                         self.fail(format!("boot read failed lba={}", source_lba));
                         return true;
                     }
                     self.boot_checksums.push(sector_checksum(&source));
-                    if !crate::ata::write_sector_to(self.target, target_lba, &source) {
+                    if !crate::storage::write_sector_to(self.target, target_lba, &source) {
                         self.fail(format!("target boot write failed lba={}", target_lba));
                         return true;
                     }
@@ -628,7 +670,7 @@ impl InstallerJob {
                         continue;
                     }
                     let lba = self.cursor;
-                    if !crate::ata::read_sector_from(SOURCE_DEVICE, lba, &mut source) {
+                    if !crate::storage::read_sector_from(source_device(), lba, &mut source) {
                         self.fail(format!("source read failed lba={}", lba));
                         return true;
                     }
@@ -637,7 +679,7 @@ impl InstallerJob {
                         self.fail(format!("target LBA overflow lba={}", lba));
                         return true;
                     };
-                    if !crate::ata::write_sector_to(self.target, target_lba, &source) {
+                    if !crate::storage::write_sector_to(self.target, target_lba, &source) {
                         self.fail(format!("target root write failed lba={}", target_lba));
                         return true;
                     }
@@ -651,7 +693,7 @@ impl InstallerJob {
                     changed = true;
                 }
                 InstallerJobPhase::Flush => {
-                    if crate::ata::flush_device(self.target) {
+                    if crate::storage::flush_device(self.target) {
                         self.completed_units = self.completed_units.saturating_add(1);
                         self.phase = InstallerJobPhase::VerifyLayout;
                         self.cursor = 0;
@@ -691,7 +733,7 @@ impl InstallerJob {
                         self.fail(format!("target boot verify LBA overflow offset={}", lba));
                         return true;
                     };
-                    if !crate::ata::read_sector_from(self.target, target_lba, &mut dest) {
+                    if !crate::storage::read_sector_from(self.target, target_lba, &mut dest) {
                         self.fail(format!("target boot verify read failed lba={}", target_lba));
                         return true;
                     }
@@ -729,7 +771,7 @@ impl InstallerJob {
                         self.fail(format!("target verify LBA overflow lba={}", lba));
                         return true;
                     };
-                    if !crate::ata::read_sector_from(self.target, target_lba, &mut dest) {
+                    if !crate::storage::read_sector_from(self.target, target_lba, &mut dest) {
                         self.fail(format!("target root verify read failed lba={}", target_lba));
                         return true;
                     }
@@ -762,13 +804,13 @@ impl InstallerJob {
         let limit = self.layout.root_sectors.min(ROOT_METADATA_REFRESH_SECTORS);
         let mut sector = [0u8; 512];
         for lba in 0..limit {
-            if !crate::ata::read_sector_from(SOURCE_DEVICE, lba, &mut sector) {
+            if !crate::storage::read_sector_from(source_device(), lba, &mut sector) {
                 return Err(format!("source refresh read failed lba={}", lba));
             }
             let Some(target_lba) = self.layout.root_start_lba.checked_add(lba) else {
                 return Err(format!("target refresh LBA overflow lba={}", lba));
             };
-            if !crate::ata::write_sector_to(self.target, target_lba, &sector) {
+            if !crate::storage::write_sector_to(self.target, target_lba, &sector) {
                 return Err(format!("target refresh write failed lba={}", target_lba));
             }
             if let Some(slot) = self.root_checksums.get_mut(lba as usize) {
@@ -804,7 +846,7 @@ fn compute_bios_install_layout(
     target_sectors: u32,
 ) -> Result<InstallLayout, &'static str> {
     let mut boot_mbr = [0u8; 512];
-    if !crate::ata::read_sector_from(BOOT_DEVICE, 0, &mut boot_mbr) {
+    if !crate::storage::read_sector_from(boot_device(), 0, &mut boot_mbr) {
         return Err("boot MBR read failed");
     }
     let Some(partitions) = crate::disk_layout::parse_mbr(&boot_mbr) else {
@@ -879,23 +921,23 @@ fn compute_uefi_install_layout(
 }
 
 fn source_esp_partition() -> Option<crate::disk_layout::GptPartition> {
-    let boot_info = crate::ata::device_info(BOOT_DEVICE);
+    let boot_info = crate::storage::device_info(boot_device());
     if !boot_info.present {
         return None;
     }
-    crate::ata::find_gpt_partition(
-        BOOT_DEVICE,
+    crate::storage::find_gpt_partition(
+        boot_device(),
         boot_info.sectors,
         crate::disk_layout::EFI_SYSTEM_PARTITION_GUID,
     )
 }
 
 fn installed_layout_from_target(
-    target: IdeDevice,
+    target: BlockDevice,
     expected_root_sectors: u32,
     lines: &mut Vec<String>,
 ) -> Option<InstallLayout> {
-    let target_info = crate::ata::device_info(target);
+    let target_info = crate::storage::device_info(target);
     if target_info.present {
         if let Some(layout) = installed_gpt_layout_from_target(
             target,
@@ -908,7 +950,7 @@ fn installed_layout_from_target(
     }
 
     let mut target_mbr = [0u8; 512];
-    if !crate::ata::read_sector_from(target, 0, &mut target_mbr) {
+    if !crate::storage::read_sector_from(target, 0, &mut target_mbr) {
         lines.push(String::from("verify: target MBR read failed"));
         return None;
     }
@@ -952,17 +994,17 @@ fn installed_layout_from_target(
 }
 
 fn installed_gpt_layout_from_target(
-    target: IdeDevice,
+    target: BlockDevice,
     target_sectors: u32,
     expected_root_sectors: u32,
     lines: &mut Vec<String>,
 ) -> Option<InstallLayout> {
-    let esp = crate::ata::find_gpt_partition(
+    let esp = crate::storage::find_gpt_partition(
         target,
         target_sectors,
         crate::disk_layout::EFI_SYSTEM_PARTITION_GUID,
     )?;
-    let root = crate::ata::find_gpt_partition(
+    let root = crate::storage::find_gpt_partition(
         target,
         target_sectors,
         crate::disk_layout::COOLFS_GPT_PARTITION_GUID,
@@ -1000,23 +1042,31 @@ fn installed_gpt_layout_from_target(
     })
 }
 
-fn write_target_layout(target: IdeDevice, layout: InstallLayout, lines: &mut Vec<String>) -> bool {
+fn write_target_layout(
+    target: BlockDevice,
+    layout: InstallLayout,
+    lines: &mut Vec<String>,
+) -> bool {
     match layout.kind {
         InstallLayoutKind::BiosMbr => write_target_mbr(target, layout, lines),
         InstallLayoutKind::UefiGpt => write_target_gpt(target, layout, lines),
     }
 }
 
-fn verify_target_layout(target: IdeDevice, layout: InstallLayout, lines: &mut Vec<String>) -> bool {
+fn verify_target_layout(
+    target: BlockDevice,
+    layout: InstallLayout,
+    lines: &mut Vec<String>,
+) -> bool {
     match layout.kind {
         InstallLayoutKind::BiosMbr => verify_target_mbr(target, layout, lines),
         InstallLayoutKind::UefiGpt => verify_target_gpt(target, layout, lines),
     }
 }
 
-fn write_target_mbr(target: IdeDevice, layout: InstallLayout, lines: &mut Vec<String>) -> bool {
+fn write_target_mbr(target: BlockDevice, layout: InstallLayout, lines: &mut Vec<String>) -> bool {
     let mut mbr = [0u8; 512];
-    if !crate::ata::read_sector_from(BOOT_DEVICE, 0, &mut mbr) {
+    if !crate::storage::read_sector_from(boot_device(), 0, &mut mbr) {
         lines.push(String::from("install: boot MBR read failed"));
         return false;
     }
@@ -1033,7 +1083,7 @@ fn write_target_mbr(target: IdeDevice, layout: InstallLayout, lines: &mut Vec<St
         lines.push(String::from("install: MBR partition patch failed"));
         return false;
     }
-    if !crate::ata::write_sector_to(target, 0, &mbr) {
+    if !crate::storage::write_sector_to(target, 0, &mbr) {
         lines.push(String::from("install: target MBR write failed"));
         return false;
     }
@@ -1047,7 +1097,7 @@ fn write_target_mbr(target: IdeDevice, layout: InstallLayout, lines: &mut Vec<St
     true
 }
 
-fn write_target_gpt(target: IdeDevice, layout: InstallLayout, lines: &mut Vec<String>) -> bool {
+fn write_target_gpt(target: BlockDevice, layout: InstallLayout, lines: &mut Vec<String>) -> bool {
     let Some(root_end) = layout.root_start_lba.checked_add(layout.root_sectors) else {
         lines.push(String::from("install: GPT root partition overflow"));
         return false;
@@ -1099,7 +1149,7 @@ fn write_target_gpt(target: IdeDevice, layout: InstallLayout, lines: &mut Vec<St
 
     let mut sector = [0u8; 512];
     crate::disk_layout::write_protective_mbr(&mut sector, layout.target_sectors);
-    if !crate::ata::write_sector_to(target, 0, &sector) {
+    if !crate::storage::write_sector_to(target, 0, &sector) {
         lines.push(String::from("install: protective MBR write failed"));
         return false;
     }
@@ -1129,7 +1179,8 @@ fn write_target_gpt(target: IdeDevice, layout: InstallLayout, lines: &mut Vec<St
         lines.push(String::from("install: primary GPT header build failed"));
         return false;
     }
-    if !crate::ata::write_sector_to(target, crate::disk_layout::GPT_PRIMARY_HEADER_LBA, &sector) {
+    if !crate::storage::write_sector_to(target, crate::disk_layout::GPT_PRIMARY_HEADER_LBA, &sector)
+    {
         lines.push(String::from("install: primary GPT header write failed"));
         return false;
     }
@@ -1153,7 +1204,7 @@ fn write_target_gpt(target: IdeDevice, layout: InstallLayout, lines: &mut Vec<St
         lines.push(String::from("install: backup GPT header build failed"));
         return false;
     }
-    if !crate::ata::write_sector_to(target, backup_header_lba, &sector) {
+    if !crate::storage::write_sector_to(target, backup_header_lba, &sector) {
         lines.push(String::from("install: backup GPT header write failed"));
         return false;
     }
@@ -1169,7 +1220,7 @@ fn write_target_gpt(target: IdeDevice, layout: InstallLayout, lines: &mut Vec<St
 }
 
 fn write_entry_array(
-    target: IdeDevice,
+    target: BlockDevice,
     start_lba: u32,
     entries: &[u8],
     lines: &mut Vec<String>,
@@ -1182,7 +1233,7 @@ fn write_entry_array(
         };
         let mut sector = [0u8; 512];
         sector[..chunk.len()].copy_from_slice(chunk);
-        if !crate::ata::write_sector_to(target, lba, &sector) {
+        if !crate::storage::write_sector_to(target, lba, &sector) {
             lines.push(format!("install: {} GPT entries write failed", label));
             return false;
         }
@@ -1190,14 +1241,14 @@ fn write_entry_array(
     true
 }
 
-fn verify_target_mbr(target: IdeDevice, layout: InstallLayout, lines: &mut Vec<String>) -> bool {
+fn verify_target_mbr(target: BlockDevice, layout: InstallLayout, lines: &mut Vec<String>) -> bool {
     let mut source_mbr = [0u8; 512];
     let mut target_mbr = [0u8; 512];
-    if !crate::ata::read_sector_from(BOOT_DEVICE, 0, &mut source_mbr) {
+    if !crate::storage::read_sector_from(boot_device(), 0, &mut source_mbr) {
         lines.push(String::from("verify: boot MBR read failed"));
         return false;
     }
-    if !crate::ata::read_sector_from(target, 0, &mut target_mbr) {
+    if !crate::storage::read_sector_from(target, 0, &mut target_mbr) {
         lines.push(String::from("verify: target MBR read failed"));
         return false;
     }
@@ -1228,9 +1279,9 @@ fn verify_target_mbr(target: IdeDevice, layout: InstallLayout, lines: &mut Vec<S
     true
 }
 
-fn verify_target_gpt(target: IdeDevice, layout: InstallLayout, lines: &mut Vec<String>) -> bool {
-    let target_info = crate::ata::device_info(target);
-    let Some(esp) = crate::ata::find_gpt_partition(
+fn verify_target_gpt(target: BlockDevice, layout: InstallLayout, lines: &mut Vec<String>) -> bool {
+    let target_info = crate::storage::device_info(target);
+    let Some(esp) = crate::storage::find_gpt_partition(
         target,
         target_info.sectors,
         crate::disk_layout::EFI_SYSTEM_PARTITION_GUID,
@@ -1238,7 +1289,7 @@ fn verify_target_gpt(target: IdeDevice, layout: InstallLayout, lines: &mut Vec<S
         lines.push(String::from("verify: target missing EFI system partition"));
         return false;
     };
-    let Some(root) = crate::ata::find_gpt_partition(
+    let Some(root) = crate::storage::find_gpt_partition(
         target,
         target_info.sectors,
         crate::disk_layout::COOLFS_GPT_PARTITION_GUID,
@@ -1274,7 +1325,7 @@ fn stabilize_source_for_install() -> Result<(), &'static str> {
 }
 
 fn refresh_target_root_prefix(
-    target: IdeDevice,
+    target: BlockDevice,
     layout: InstallLayout,
     lines: &mut Vec<String>,
 ) -> bool {
@@ -1285,7 +1336,7 @@ fn refresh_target_root_prefix(
     let limit = layout.root_sectors.min(ROOT_METADATA_REFRESH_SECTORS);
     let mut sector = [0u8; 512];
     for lba in 0..limit {
-        if !crate::ata::read_sector_from(SOURCE_DEVICE, lba, &mut sector) {
+        if !crate::storage::read_sector_from(source_device(), lba, &mut sector) {
             lines.push(format!("install: source refresh read failed lba={}", lba));
             return false;
         }
@@ -1293,7 +1344,7 @@ fn refresh_target_root_prefix(
             lines.push(format!("install: target refresh LBA overflow lba={}", lba));
             return false;
         };
-        if !crate::ata::write_sector_to(target, target_lba, &sector) {
+        if !crate::storage::write_sector_to(target, target_lba, &sector) {
             lines.push(format!(
                 "install: target refresh write failed lba={}",
                 target_lba
@@ -1323,9 +1374,9 @@ fn validate_install_target(plan: &InstallPlan) -> Result<(), &'static str> {
 }
 
 fn format_device_line(plan: &InstallPlan) -> String {
-    let role = if plan.target == BOOT_DEVICE {
+    let role = if plan.target == boot_device() {
         "boot"
-    } else if plan.target == SOURCE_DEVICE {
+    } else if plan.target == source_device() {
         "root"
     } else {
         "target"
@@ -1423,12 +1474,12 @@ fn format_layout_line_with_mib(layout: InstallLayout) -> String {
     )
 }
 
-fn target_state(device: IdeDevice, present: bool) -> TargetState {
+fn target_state(device: BlockDevice, present: bool) -> TargetState {
     if !present {
         return TargetState::Missing;
     }
     let mut sector = [0u8; 512];
-    if !crate::ata::read_sector_from(device, 0, &mut sector) {
+    if !crate::storage::read_sector_from(device, 0, &mut sector) {
         return TargetState::Unknown;
     }
     if sector.iter().all(|&byte| byte == 0) {
@@ -1446,19 +1497,19 @@ fn target_state(device: IdeDevice, present: bool) -> TargetState {
         return TargetState::SelfBoot;
     }
     let mut gpt_header = [0u8; 512];
-    if crate::ata::read_sector_from(
+    if crate::storage::read_sector_from(
         device,
         crate::disk_layout::GPT_PRIMARY_HEADER_LBA,
         &mut gpt_header,
     ) && crate::disk_layout::parse_gpt_header(
         &gpt_header,
-        crate::ata::device_info(device).sectors,
+        crate::storage::device_info(device).sectors,
     )
     .is_some()
     {
-        if crate::ata::find_gpt_partition(
+        if crate::storage::find_gpt_partition(
             device,
-            crate::ata::device_info(device).sectors,
+            crate::storage::device_info(device).sectors,
             crate::disk_layout::COOLFS_GPT_PARTITION_GUID,
         )
         .is_some()

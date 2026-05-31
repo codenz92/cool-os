@@ -1,10 +1,12 @@
-.PHONY: run run-uefi run-installer run-uefi-installer run-installed run-uefi-installed run-net run-usb run-usb-init run-smooth run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-phase31-accounts smoke-phase32-isolation smoke-phase33-process-control smoke-phase34-tty-jobs smoke-phase35-tty-input smoke-phase36-userspace-shell smoke-phase37-coreutils smoke-phase38-apps smoke-phase39-recovery smoke-phase40-shell-semantics smoke-phase41-fs-durability smoke-phase42-app-consistency smoke-phase43-observability smoke-phase44-devkit smoke-phase45-smoothness smoke-phase46-adaptive-refresh smoke-pointer-tablet smoke-phase47-evented-userspace smoke-phase48-terminal-tui smoke-phase49-browser-engine smoke-phase50-css-layout smoke-phase51-browser-forms smoke-phase52-dom-events smoke-phase53-dom-forms smoke-phase54-browser-post smoke-phase55-browser-session smoke-phase56-css-box-model smoke-phase57-browser-layout smoke-phase58-browser-subresources smoke-phase59-browser-js smoke-phase60-browser-webapi smoke-phase61-browser-compat smoke-phase62-resource-limits smoke-phase63-memory-pressure smoke-phase64-services smoke-phase65-update-rollback smoke-phase66-boot-health smoke-phase67-update-trust smoke-phase68-update-keys smoke-phase69-package-trust smoke-phase70-package-payloads smoke-phase71-browser-engine-port smoke-phase72-threads-futex smoke-phase73-tls-pthread smoke-phase74-pthread-libc smoke-phase75-dynlink smoke-phase76-dynlink-deps smoke-phase77-file-mmap smoke-phase80-firstboot reset-firstboot-smoke-image smoke-phase81-firstboot-recovery smoke-phase82-installer smoke-phase83-self-booting-installer smoke-phase84-installer-v2 smoke-phase85-uefi-gpt smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-uefi build-usb-init clean
+.PHONY: run run-uefi run-uefi-ahci run-installer run-uefi-installer run-uefi-ahci-installer run-installed run-uefi-installed run-uefi-ahci-installed run-net run-usb run-usb-init run-smooth run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-phase31-accounts smoke-phase32-isolation smoke-phase33-process-control smoke-phase34-tty-jobs smoke-phase35-tty-input smoke-phase36-userspace-shell smoke-phase37-coreutils smoke-phase38-apps smoke-phase39-recovery smoke-phase40-shell-semantics smoke-phase41-fs-durability smoke-phase42-app-consistency smoke-phase43-observability smoke-phase44-devkit smoke-phase45-smoothness smoke-phase46-adaptive-refresh smoke-pointer-tablet smoke-phase47-evented-userspace smoke-phase48-terminal-tui smoke-phase49-browser-engine smoke-phase50-css-layout smoke-phase51-browser-forms smoke-phase52-dom-events smoke-phase53-dom-forms smoke-phase54-browser-post smoke-phase55-browser-session smoke-phase56-css-box-model smoke-phase57-browser-layout smoke-phase58-browser-subresources smoke-phase59-browser-js smoke-phase60-browser-webapi smoke-phase61-browser-compat smoke-phase62-resource-limits smoke-phase63-memory-pressure smoke-phase64-services smoke-phase65-update-rollback smoke-phase66-boot-health smoke-phase67-update-trust smoke-phase68-update-keys smoke-phase69-package-trust smoke-phase70-package-payloads smoke-phase71-browser-engine-port smoke-phase72-threads-futex smoke-phase73-tls-pthread smoke-phase74-pthread-libc smoke-phase75-dynlink smoke-phase76-dynlink-deps smoke-phase77-file-mmap smoke-phase80-firstboot reset-firstboot-smoke-image smoke-phase81-firstboot-recovery smoke-phase82-installer smoke-phase83-self-booting-installer smoke-phase84-installer-v2 smoke-phase85-uefi-gpt smoke-phase86-ahci-storage smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-uefi build-usb-image build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
 BIOS    := $(CURDIR)/target/x86_64-unknown-none/release/bios.img
 UEFI    := $(CURDIR)/target/x86_64-unknown-none/release/uefi.img
 FSIMG   := $(CURDIR)/target/x86_64-unknown-none/release/fs.img
+USB_IMAGE := $(CURDIR)/target/x86_64-unknown-none/release/coolos-usb.img
+USB_IMAGE_SIZE_MIB ?= 96
 USB_INIT_BIOS := $(BIOS)
 USB_INIT_FSIMG := $(FSIMG)
 QEMU_CPU ?= max
@@ -121,6 +123,23 @@ run-uefi: build-uefi
 		-display "$(QEMU_DISPLAY)" \
 		-debugcon stdio
 
+run-uefi-ahci: build-uefi
+	@echo "Booting coolOS in QEMU UEFI mode through AHCI/SATA..."
+	qemu-system-x86_64 \
+		$(QEMU_UEFI) \
+		-device ich9-ahci,id=ahci \
+		-drive if=none,id=bootdisk,format=raw,file="$(UEFI)",snapshot=on \
+		-device ide-hd,drive=bootdisk,bus=ahci.0 \
+		-drive if=none,id=rootdisk,file="$(FSIMG)",format=raw,snapshot=on \
+		-device ide-hd,drive=rootdisk,bus=ahci.1 \
+		-m 512M \
+		-cpu "$(QEMU_CPU)" \
+		$(QEMU_RTC) \
+		-vga std \
+		$(QEMU_USB_INPUT) \
+		-display "$(QEMU_DISPLAY)" \
+		-debugcon stdio
+
 run-installer: build
 	@echo "Booting coolOS installer with writable self-boot target $(INSTALL_TARGET_IMG)..."
 	mkdir -p "$(SMOKE_ARTIFACT_DIR)"
@@ -158,6 +177,29 @@ run-uefi-installer: build-uefi
 		-display "$(QEMU_DISPLAY)" \
 		-debugcon stdio
 
+run-uefi-ahci-installer: build-uefi
+	@echo "Booting coolOS UEFI installer with AHCI/SATA target $(INSTALL_TARGET_IMG)..."
+	mkdir -p "$(SMOKE_ARTIFACT_DIR)"
+	rm -f "$(INSTALL_TARGET_IMG)"
+	truncate -s "$(INSTALL_TARGET_SIZE)" "$(INSTALL_TARGET_IMG)"
+	qemu-system-x86_64 \
+		$(QEMU_UEFI) \
+		-device ich9-ahci,id=ahci \
+		-drive if=none,id=bootdisk,format=raw,file="$(UEFI)",snapshot=on \
+		-device ide-hd,drive=bootdisk,bus=ahci.0 \
+		-drive if=none,id=rootdisk,file="$(FSIMG)",format=raw,snapshot=on \
+		-device ide-hd,drive=rootdisk,bus=ahci.1 \
+		-drive if=none,id=targetdisk,file="$(INSTALL_TARGET_IMG)",format=raw \
+		-device ide-hd,drive=targetdisk,bus=ahci.2 \
+		-m 512M \
+		-cpu "$(QEMU_CPU)" \
+		$(QEMU_RTC) \
+		-vga std \
+		$(QEMU_USB_INPUT) \
+		-fw_cfg name=opt/coolos/installer,string=1 \
+		-display "$(QEMU_DISPLAY)" \
+		-debugcon stdio
+
 run-installed: build
 	@test -f "$(INSTALL_TARGET_IMG)" || (echo "Missing $(INSTALL_TARGET_IMG). Run make run-installer and install first." && exit 1)
 	@echo "Booting installed coolOS target $(INSTALL_TARGET_IMG) as a standalone disk..."
@@ -177,6 +219,22 @@ run-uefi-installed: build-uefi
 	qemu-system-x86_64 \
 		$(QEMU_UEFI) \
 		-drive file="$(INSTALL_TARGET_IMG)",if=ide,format=raw,index=0 \
+		-m 512M \
+		-cpu "$(QEMU_CPU)" \
+		$(QEMU_RTC) \
+		-vga std \
+		$(QEMU_USB_INPUT) \
+		-display "$(QEMU_DISPLAY)" \
+		-debugcon stdio
+
+run-uefi-ahci-installed: build-uefi
+	@test -f "$(INSTALL_TARGET_IMG)" || (echo "Missing $(INSTALL_TARGET_IMG). Run make run-uefi-ahci-installer and install first." && exit 1)
+	@echo "Booting installed coolOS GPT target $(INSTALL_TARGET_IMG) under UEFI/AHCI..."
+	qemu-system-x86_64 \
+		$(QEMU_UEFI) \
+		-device ich9-ahci,id=ahci \
+		-drive if=none,id=bootdisk,file="$(INSTALL_TARGET_IMG)",format=raw \
+		-device ide-hd,drive=bootdisk,bus=ahci.0 \
 		-m 512M \
 		-cpu "$(QEMU_CPU)" \
 		$(QEMU_RTC) \
@@ -1318,6 +1376,88 @@ smoke-phase85-uefi-gpt: build-uefi
 		--screendump "$(SMOKE_ARTIFACT_DIR)/phase85-target-firstboot.ppm" \
 		--expect-framebuffer-login \
 		--expect "FB 1920x1080" \
+		--expect "[boot] first boot ready" \
+		--expect "[boot] desktop ready"
+
+smoke-phase86-ahci-storage: build-uefi build-usb-image
+	mkdir -p "$(SMOKE_ARTIFACT_DIR)"
+	rm -f "$(INSTALL_TARGET_IMG)"
+	truncate -s "$(INSTALL_TARGET_SIZE)" "$(INSTALL_TARGET_IMG)"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-live" \
+		--uefi \
+		--ahci \
+		--uefi-code "$(QEMU_EFI_CODE)" \
+		--bios "$(UEFI)" \
+		--fsimg "$(FSIMG)" \
+		--usb \
+		--seconds 75 \
+		--expect "FB 1920x1080" \
+		--expect "AHCI: sata0 present" \
+		--expect "AHCI: sata1 present" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-install" \
+		--uefi \
+		--ahci \
+		--uefi-code "$(QEMU_EFI_CODE)" \
+		--bios "$(UEFI)" \
+		--fsimg "$(FSIMG)" \
+		--target-disk "$(INSTALL_TARGET_IMG)" \
+		--target-writable \
+		--installer \
+		--usb \
+		--seconds 300 \
+		--fw-cmd "install disks;;install plan sata2;;install plan sata0;;install plan sata1;;install disk sata2;;install verify sata2;;flush" \
+		--expect "installer mode=active" \
+		--expect "sata0 present=yes" \
+		--expect "sata1 present=yes" \
+		--expect "sata2 present=yes" \
+		--expect "plan target=sata2" \
+		--expect "installable=yes reason=ready" \
+		--expect "plan target=sata0" \
+		--expect "installable=no reason=refusing to overwrite boot disk" \
+		--expect "plan target=sata1" \
+		--expect "installable=no reason=refusing to overwrite mounted root disk" \
+		--expect "layout=uefi-gpt" \
+		--expect "install complete target=sata2" \
+		--expect "verify=ok layout=uefi-gpt" \
+		--expect "flush: ok" \
+		--expect "[boot] installer ready" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-target-firstboot" \
+		--uefi \
+		--ahci \
+		--uefi-code "$(QEMU_EFI_CODE)" \
+		--boot-disk "$(INSTALL_TARGET_IMG)" \
+		--boot-disk-writable \
+		--first-boot \
+		--usb \
+		--seconds 75 \
+		--no-auto-login \
+		--expect-framebuffer-login \
+		--expect "FB 1920x1080" \
+		--expect "AHCI: sata0 present" \
+		--expect "[boot] first boot ready" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-usb-image" \
+		--uefi \
+		--ahci \
+		--uefi-code "$(QEMU_EFI_CODE)" \
+		--boot-disk "$(USB_IMAGE)" \
+		--first-boot \
+		--usb \
+		--seconds 75 \
+		--no-auto-login \
+		--expect-framebuffer-login \
+		--expect "FB 1920x1080" \
+		--expect "AHCI: sata0 present" \
 		--expect "[boot] first boot ready" \
 		--expect "[boot] desktop ready"
 
@@ -2868,6 +3008,9 @@ build:
 
 build-uefi: build
 	(cd disk-image && cargo run --features uefi --bin disk-image -- "$(KERNEL)")
+
+build-usb-image: build-uefi
+	(cd disk-image && cargo run --bin usb_image -- "$(UEFI)" "$(FSIMG)" "$(USB_IMAGE)" "$(USB_IMAGE_SIZE_MIB)")
 
 build-usb-init: build
 

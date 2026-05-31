@@ -7,6 +7,7 @@ extern crate alloc;
 mod abi;
 mod accessibility;
 mod acpi;
+mod ahci;
 mod allocator;
 mod app_lifecycle;
 mod app_metadata;
@@ -65,6 +66,7 @@ mod services;
 mod settings_state;
 mod shortcuts;
 mod slab;
+mod storage;
 mod syscall;
 mod sysreport;
 mod task_snapshot;
@@ -221,6 +223,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     // frame supply.  From here on, all page-table work goes through vmm::.
     vmm::init(phys_mem_offset, vmm_frame_allocator);
     vmm::harden_boot_mappings();
+    storage::init();
     font::load_from_disk();
     boot_splash::show(
         "mapping virtual memory",

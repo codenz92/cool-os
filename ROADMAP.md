@@ -4,8 +4,8 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–81 are complete. The current milestone gives coolOS a much more
-normal command-line and platform layer: cwd-aware userspace syscalls, shell
+Phases 1–86 are complete. Recent milestones give coolOS a much more
+normal command-line, installer, and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
 in-image `/SDK` with devkit templates, ABI v9 evented readiness waits, and ABI
@@ -32,7 +32,9 @@ critical. Phase 64 makes service supervision durable with persisted desired
 state under `/CONFIG`, restart history under `/LOGS`, dependency metadata,
 restart backoff, admin-gated controls, and degraded-service diagnostics in
 Terminal, recovery, sysreport, Diagnostics, and System Monitor.
-Phase 65 adds a service-aware staged update and rollback path: update manifests
+Phase 80 through Phase 86 add first-boot owner setup, recovery/reset hardening,
+self-booting BIOS/MBR and UEFI/GPT installers, AHCI/SATA storage, and a raw
+USB-flashable UEFI/GPT image. Phase 65 adds a service-aware staged update and rollback path: update manifests
 live under `/UPDATES/STAGED`, pre-apply file snapshots live under
 `/UPDATES/SNAPSHOTS/LAST`, `/LOGS/UPDATE.TXT` records stage/apply/rollback
 events, and `update rollback` plus `recovery rollback` can restore the previous
@@ -100,7 +102,8 @@ coverage. Phase 83 makes that installed QEMU disk self-booting with a BIOS/MBR
 layout and CoolFS root partition discovery. Phase 84 adds installer planning,
 explicit target confirmation, and graphical progress, while Phase 85 adds a
 parallel QEMU OVMF UEFI/GPT boot and install path with GPT CoolFS root
-discovery. Phases 45-85
+discovery. Phase 86 adds QEMU AHCI/SATA storage plus a USB-flashable raw
+UEFI/GPT image. Phases 45-86
 focus on responsiveness,
 interactive terminal behavior, and
 desktop-browser compatibility:
@@ -2577,8 +2580,38 @@ existing BIOS/MBR/IDE developer and installer path.
 **Current status:** complete. coolOS boots live under OVMF, reports
 `FB 1920x1080`, installs to a GPT target on `ide1-master`, verifies ESP and
 CoolFS partitions, and boots that target alone under OVMF into first boot.
-BIOS/MBR remains supported. AHCI, NVMe, USB boot media, Secure Boot, and
-physical-machine installs remain Phase 86+ work.
+BIOS/MBR remains supported. AHCI/SATA is covered by Phase 86; NVMe, runtime
+USB mass-storage boot, Secure Boot, and physical-machine installs remain later
+work.
+
+---
+
+## ✅ Phase 86 — AHCI/SATA Storage And USB-Flashable Image Foundation
+
+**Goal:** Add a QEMU-testable AHCI/SATA storage path and produce a raw
+UEFI/GPT image suitable for USB flashing while preserving BIOS/MBR/IDE flows.
+
+- [x] Add a generic storage layer with stable block-device names for existing
+      IDE devices and QEMU AHCI/SATA devices (`sata0`, `sata1`, `sata2`, ...).
+- [x] Implement QEMU-focused AHCI v1 identify/read/write/flush using a polled
+      command slot, bounded waits, and reset-on-failure recovery.
+- [x] Move CoolFS root discovery and installer planning/install/verify paths to
+      the generic storage layer so raw, MBR CoolFS, and GPT CoolFS roots work
+      on IDE and SATA.
+- [x] Extend installer commands and the graphical installer to accept SATA
+      targets while still refusing protected source boot/root disks.
+- [x] Add `make run-uefi-ahci`, `make run-uefi-ahci-installer`,
+      `make run-uefi-ahci-installed`, `scripts/qemu_smoke.py --ahci`, and
+      `make smoke-phase86-ahci-storage`.
+- [x] Add `make build-usb-image`, producing `coolos-usb.img` as a raw UEFI/GPT
+      image with ESP plus CoolFS root.
+
+**Current status:** complete. coolOS boots live under OVMF through AHCI/SATA,
+enumerates `sata*` disks, installs to a writable SATA target, verifies the
+UEFI/GPT layout, boots the installed SATA target alone into first boot, and
+boots the generated USB-flashable image through AHCI. Runtime USB mass-storage
+root boot, NVMe, Secure Boot, and physical-machine installation remain out of
+scope for this phase.
 
 ---
 
@@ -2685,4 +2718,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.44 | Phase 82 complete: QEMU disk installer v1 |
 | v7.45 | Phase 83 complete: self-booting QEMU installed disk |
 | v7.46 | Phase 84 complete: installer v2 disk selection and progress |
-| v7.47 | Current — Phase 85 complete: UEFI/GPT boot and installer foundation |
+| v7.47 | Phase 85 complete: UEFI/GPT boot and installer foundation |
+| v7.48 | Current — Phase 86 complete: AHCI/SATA storage and USB image foundation |

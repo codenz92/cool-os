@@ -1337,7 +1337,7 @@ impl TerminalApp {
             ["install", ..] => {
                 self.set_fg(FG_ERROR);
                 self.print_str(
-                    "usage: recovery install [disks|plan <ide-device>|disk <ide-device>|verify <ide-device>]\n",
+                    "usage: recovery install [disks|plan <block-device>|disk <block-device>|verify <block-device>]\n",
                 );
             }
             ["rollback"] => {
@@ -1721,7 +1721,7 @@ impl TerminalApp {
             "plan" => {
                 let Some(target) = args.get(1).copied() else {
                     self.set_fg(FG_ERROR);
-                    self.print_str("usage: install plan <ide-device>\n");
+                    self.print_str("usage: install plan <block-device>\n");
                     return;
                 };
                 self.cmd_lines("INSTALL PLAN", crate::installer::plan_device_name(target));
@@ -1729,7 +1729,7 @@ impl TerminalApp {
             "disk" => {
                 let Some(target) = args.get(1).copied() else {
                     self.set_fg(FG_ERROR);
-                    self.print_str("usage: install disk <ide-device>\n");
+                    self.print_str("usage: install disk <block-device>\n");
                     return;
                 };
                 if !self.require_install_mutation("install") {
@@ -1743,7 +1743,7 @@ impl TerminalApp {
             "verify" => {
                 let Some(target) = args.get(1).copied() else {
                     self.set_fg(FG_ERROR);
-                    self.print_str("usage: install verify <ide-device>\n");
+                    self.print_str("usage: install verify <block-device>\n");
                     return;
                 };
                 if !self.require_install_mutation("install") {

@@ -14,10 +14,10 @@ use crate::apps::{
     BrowserApp, ColorPickerApp, DisplaySettingsApp, FileManagerApp, FileManagerOpenRequest,
     PersonalizeApp, SysMonApp, SysMonRequest, TerminalApp, TextViewerApp, UserGuiApp, UtilityApp,
 };
-use crate::ata::IdeDevice;
 use crate::desktop_settings::{self, DesktopSortMode, WallpaperPreset};
 use crate::framebuffer::{BLACK, WHITE};
 use crate::keyboard::{Key, KeyInput};
+use crate::storage::BlockDevice;
 use crate::wm::window::{Window, TITLE_H};
 
 mod desktop;
@@ -637,7 +637,7 @@ enum InstallerScreen {
 
 struct InstallerUiState {
     screen: InstallerScreen,
-    selected_target: IdeDevice,
+    selected_target: BlockDevice,
     confirm_text: String,
     message: String,
     error: bool,
@@ -646,7 +646,7 @@ struct InstallerUiState {
 
 struct InstallerRenderState {
     screen: InstallerScreen,
-    selected_target: IdeDevice,
+    selected_target: BlockDevice,
     confirm_text: String,
     message: String,
     error: bool,
@@ -1372,8 +1372,15 @@ impl WindowManager {
         let changed = job.tick_default_budget();
         if job.is_complete() {
             self.installer.screen = InstallerScreen::Complete;
-            self.installer.message =
-                String::from("Installation complete. Boot the target with make run-installed.");
+            let run_target = if self.installer.selected_target.sata_port().is_some() {
+                "make run-uefi-ahci-installed"
+            } else {
+                "make run-installed"
+            };
+            self.installer.message = format!(
+                "Installation complete. Boot the target with {}.",
+                run_target
+            );
             self.installer.error = false;
             return true;
         }
@@ -1387,7 +1394,12 @@ impl WindowManager {
     }
 
     fn cycle_installer_target(&mut self, step: i32) {
-        let devices = crate::ata::all_devices();
+        let devices = crate::storage::all_devices();
+        if devices.is_empty() {
+            self.installer.message = String::from("No storage devices found.");
+            self.installer.error = true;
+            return;
+        }
         let current = devices
             .iter()
             .position(|&device| device == self.installer.selected_target)
@@ -1457,9 +1469,9 @@ impl WindowManager {
                     self.installer.message = String::from("Installer mode is active.");
                     self.installer.error = false;
                 }
-                Key::Character(c) if ('1'..='4').contains(&c) => {
+                Key::Character(c) if ('1'..='8').contains(&c) => {
                     let idx = c as usize - '1' as usize;
-                    let devices = crate::ata::all_devices();
+                    let devices = crate::storage::all_devices();
                     if let Some(device) = devices.get(idx).copied() {
                         self.installer.selected_target = device;
                         self.cycle_installer_target(0);
@@ -1780,7 +1792,7 @@ impl WindowManager {
         match self.installer.screen {
             InstallerScreen::Select => {
                 let row_h = 34;
-                for (idx, device) in crate::ata::all_devices().iter().copied().enumerate() {
+                for (idx, device) in crate::storage::all_devices().iter().copied().enumerate() {
                     let y = layout.owner_y + idx as i32 * row_h;
                     if rect_contains(layout.field_x, y, layout.field_w, row_h - 4, mx, my) {
                         self.installer.selected_target = device;
