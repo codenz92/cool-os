@@ -31,6 +31,7 @@ const FG_DIR: u32 = theme::ACCENT_HOVER;
 const FG_WARN: u32 = theme::WARNING;
 
 const HISTORY_MAX: usize = 32;
+const SCROLLBACK_MAX_LINES: usize = 2000;
 
 static DEBUG_MIRROR: AtomicBool = AtomicBool::new(false);
 
@@ -52,6 +53,12 @@ enum AnsiState {
     Csi,
 }
 
+#[derive(Clone, Copy)]
+struct TerminalCell {
+    ch: char,
+    fg: u32,
+}
+
 pub struct TerminalApp {
     pub window: Window,
     tty_id: u64,
@@ -63,6 +70,9 @@ pub struct TerminalApp {
     row: usize,
     cols: usize,
     rows: usize,
+    screen: Vec<Vec<TerminalCell>>,
+    scrollback: Vec<Vec<TerminalCell>>,
+    scroll_top: usize,
     fg: u32,
     cwd: String,
     cmd_history: Vec<String>,

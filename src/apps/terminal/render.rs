@@ -87,36 +87,26 @@ impl TerminalApp {
             self.scroll_up();
             self.row = self.rows - 1;
         }
+        self.sync_scroll_state();
     }
 
     fn scroll_up(&mut self) {
-        let stride = self.window.width as usize;
-        let text_x = TERM_PAD_X;
-        let text_y = TERM_PAD_Y;
-        let text_w = self.cols * CHAR_W;
-        let text_h = self.rows * LINE_H;
-
-        if text_w == 0 || text_h <= LINE_H {
+        self.ensure_screen_shape();
+        if self.screen.is_empty() {
             return;
         }
 
-        for y in 0..(text_h - LINE_H) {
-            let dst_row = text_y + y;
-            let src_row = dst_row + LINE_H;
-            let dst = dst_row * stride + text_x;
-            let src = src_row * stride + text_x;
-            self.window.buf.copy_within(src..src + text_w, dst);
+        let follow = self.is_at_bottom();
+        let line = self.screen.remove(0);
+        self.push_scrollback_line(line, follow);
+        self.screen.push(blank_line(self.cols));
+        if follow {
+            self.scroll_top = self.bottom_scroll_top();
+            self.render_visible();
+        } else {
+            self.sync_scroll_state();
+            self.window.mark_dirty_all();
         }
-
-        for y in (text_h - LINE_H)..text_h {
-            let py = text_y + y;
-            let row_start = py * stride + text_x;
-            for x in 0..text_w {
-                self.window.buf[row_start + x] = Self::bg_at(py);
-            }
-        }
-        self.window
-            .mark_dirty(text_x as i32, text_y as i32, text_w as i32, text_h as i32);
     }
 
     fn feed_ansi(&mut self, c: char) {
@@ -312,7 +302,10 @@ impl TerminalApp {
     }
 
     fn reset_terminal(&mut self) {
-        self.fill_background();
+        self.scrollback.clear();
+        self.screen = blank_screen(self.rows, self.cols);
+        self.scroll_top = 0;
+        self.render_visible();
         self.col = 0;
         self.row = 0;
         self.set_fg(FG_OUTPUT);
@@ -343,27 +336,20 @@ impl TerminalApp {
     }
 
     fn draw_char_at(&mut self, col: usize, row: usize, c: char) {
-        let glyph = crate::font::glyph_rows(c, crate::font::UI_FONT);
-        let px0 = TERM_PAD_X + col * CHAR_W;
-        let py0 = TERM_PAD_Y + row * LINE_H + GLYPH_Y_INSET;
-        let stride = self.window.width as usize;
-        let large_text = crate::accessibility::snapshot().large_text;
-        for (gy, &byte) in glyph.iter().take(CHAR_H).enumerate() {
-            for bit in 0..8usize {
-                let px = px0 + bit;
-                let py = py0 + gy;
-                let idx = py * stride + px;
-                if idx < self.window.buf.len() {
-                    let ink = byte & (1 << bit) != 0;
-                    self.window.buf[idx] = if ink { self.fg } else { Self::bg_at(py) };
-                    if large_text && ink && idx + 1 < self.window.buf.len() {
-                        self.window.buf[idx + 1] = self.fg;
-                    }
-                }
+        if row >= self.rows || col >= self.cols {
+            return;
+        }
+        self.ensure_screen_shape();
+        if let Some(line) = self.screen.get_mut(row) {
+            if let Some(cell) = line.get_mut(col) {
+                *cell = TerminalCell { ch: c, fg: self.fg };
             }
         }
-        self.window
-            .mark_dirty(px0 as i32, py0 as i32, CHAR_W as i32 + 1, CHAR_H as i32);
+        let logical_row = self.scrollback.len().saturating_add(row);
+        if let Some(screen_row) = self.visible_screen_row(logical_row) {
+            let cell = self.screen[row][col];
+            self.paint_cell(col, screen_row, cell);
+        }
     }
 
     fn set_fg(&mut self, color: u32) {
@@ -371,6 +357,7 @@ impl TerminalApp {
     }
 
     fn print_prompt(&mut self) {
+        self.scroll_to_bottom();
         self.set_fg(FG_PROMPT);
         self.print_str("cool");
         self.set_fg(FG_ACCENT);
@@ -388,44 +375,226 @@ impl TerminalApp {
         self.window.mark_dirty_all();
     }
 
-    fn paint_exposed_background(&mut self, old_width: usize, old_content_h: usize) {
-        let new_width = self.window.width.max(0) as usize;
-        let new_content_h = (self.window.height - TITLE_H).max(0) as usize;
-        let shared_h = old_content_h.min(new_content_h);
-
-        if new_width > old_width {
-            let fill_w = new_width - old_width;
-            for py in 0..shared_h {
-                let row_start = py * new_width + old_width;
-                let row_end = row_start + fill_w;
-                for idx in row_start..row_end {
-                    self.window.buf[idx] = Self::bg_at(py);
-                }
-            }
-        }
-
-        if new_content_h > old_content_h {
-            for py in old_content_h..new_content_h {
-                let row_start = py * new_width;
-                for idx in row_start..row_start + new_width {
-                    self.window.buf[idx] = Self::bg_at(py);
-                }
-            }
-        }
-        self.window.mark_dirty_all();
-    }
-
     fn refresh_layout(&mut self) {
         let cols = text_cols(self.window.width as usize);
         let rows = text_rows((self.window.height - TITLE_H).max(0) as usize);
-        if cols != self.cols || rows != self.rows {
+        let changed = cols != self.cols || rows != self.rows;
+        if changed {
             let _ = crate::tty::set_size(self.tty_id, cols as u16, rows as u16);
+            let follow = self.is_at_bottom();
+            self.resize_terminal_buffers(rows, cols, follow);
+            self.last_width = self.window.width;
+            self.last_height = self.window.height;
+            self.render_visible();
         }
-        self.cols = cols;
-        self.rows = rows;
         self.col = self.col.min(self.cols.saturating_sub(1));
         self.row = self.row.min(self.rows.saturating_sub(1));
         self.input_start_col = self.input_start_col.min(self.cols.saturating_sub(1));
+        self.sync_scroll_state();
+    }
+
+    fn resize_terminal_buffers(&mut self, rows: usize, cols: usize, follow: bool) {
+        if cols != self.cols {
+            for line in self.scrollback.iter_mut() {
+                resize_line(line, cols);
+            }
+            for line in self.screen.iter_mut() {
+                resize_line(line, cols);
+            }
+        }
+
+        if rows < self.rows {
+            let removed = self.rows - rows;
+            for _ in 0..removed {
+                if self.screen.is_empty() {
+                    break;
+                }
+                let line = self.screen.remove(0);
+                self.push_scrollback_line(line, follow);
+            }
+            self.row = self.row.saturating_sub(removed);
+        } else if rows > self.rows {
+            for _ in self.rows..rows {
+                self.screen.push(blank_line(cols));
+            }
+        }
+
+        self.cols = cols;
+        self.rows = rows;
+        self.ensure_screen_shape();
+        if follow {
+            self.scroll_top = self.bottom_scroll_top();
+        } else {
+            self.clamp_scroll_top();
+        }
+    }
+
+    fn ensure_screen_shape(&mut self) {
+        while self.screen.len() < self.rows {
+            self.screen.push(blank_line(self.cols));
+        }
+        if self.screen.len() > self.rows {
+            self.screen.truncate(self.rows);
+        }
+        for line in self.screen.iter_mut() {
+            resize_line(line, self.cols);
+        }
+    }
+
+    fn push_scrollback_line(&mut self, mut line: Vec<TerminalCell>, follow: bool) {
+        resize_line(&mut line, self.cols);
+        if self.scrollback.len() >= SCROLLBACK_MAX_LINES {
+            self.scrollback.remove(0);
+            if !follow {
+                self.scroll_top = self.scroll_top.saturating_sub(1);
+            }
+        }
+        self.scrollback.push(line);
+    }
+
+    fn total_lines(&self) -> usize {
+        self.scrollback.len().saturating_add(self.rows)
+    }
+
+    fn bottom_scroll_top(&self) -> usize {
+        self.scrollback.len()
+    }
+
+    fn is_at_bottom(&self) -> bool {
+        self.scroll_top >= self.bottom_scroll_top()
+    }
+
+    fn clamp_scroll_top(&mut self) {
+        self.scroll_top = self.scroll_top.min(self.bottom_scroll_top());
+    }
+
+    fn sync_scroll_state(&mut self) {
+        let view_h = (self.rows * LINE_H) as i32;
+        self.window.scroll.content_h = (self.total_lines() * LINE_H) as i32;
+        self.window.scroll.offset = (self.scroll_top * LINE_H) as i32;
+        self.window.scroll.clamp(view_h);
+        self.scroll_top = ((self.window.scroll.offset / LINE_H as i32).max(0) as usize)
+            .min(self.bottom_scroll_top());
+    }
+
+    fn sync_scrollbar_drag(&mut self) {
+        let expected = (self.scroll_top * LINE_H) as i32;
+        if self.window.scroll.offset != expected {
+            let next = ((self.window.scroll.offset / LINE_H as i32).max(0) as usize)
+                .min(self.bottom_scroll_top());
+            if next != self.scroll_top {
+                self.scroll_top = next;
+                self.render_visible();
+                return;
+            }
+        }
+        self.sync_scroll_state();
+    }
+
+    fn scroll_lines(&mut self, delta: i32) {
+        self.refresh_layout();
+        let max = self.bottom_scroll_top() as i32;
+        let next = (self.scroll_top as i32 + delta).clamp(0, max) as usize;
+        if next != self.scroll_top {
+            self.scroll_top = next;
+            self.render_visible();
+        }
+    }
+
+    fn scroll_page(&mut self, direction: i32) {
+        let page = self.rows.saturating_sub(1).max(1) as i32;
+        self.scroll_lines(page.saturating_mul(direction.signum()));
+    }
+
+    fn scroll_to_bottom(&mut self) {
+        let bottom = self.bottom_scroll_top();
+        if self.scroll_top != bottom {
+            self.scroll_top = bottom;
+            self.render_visible();
+        } else {
+            self.sync_scroll_state();
+        }
+    }
+
+    fn visible_screen_row(&self, logical_row: usize) -> Option<usize> {
+        if logical_row < self.scroll_top {
+            return None;
+        }
+        let screen_row = logical_row - self.scroll_top;
+        (screen_row < self.rows).then_some(screen_row)
+    }
+
+    fn display_cell(&self, logical_row: usize, col: usize) -> TerminalCell {
+        if logical_row < self.scrollback.len() {
+            self.scrollback
+                .get(logical_row)
+                .and_then(|line| line.get(col))
+                .copied()
+                .unwrap_or_else(blank_cell)
+        } else {
+            let row = logical_row - self.scrollback.len();
+            self.screen
+                .get(row)
+                .and_then(|line| line.get(col))
+                .copied()
+                .unwrap_or_else(blank_cell)
+        }
+    }
+
+    fn render_visible(&mut self) {
+        self.fill_background();
+        for screen_row in 0..self.rows {
+            let logical_row = self.scroll_top + screen_row;
+            for col in 0..self.cols {
+                let cell = self.display_cell(logical_row, col);
+                if cell.ch != ' ' {
+                    self.paint_cell(col, screen_row, cell);
+                }
+            }
+        }
+        self.sync_scroll_state();
+        self.window.mark_dirty_all();
+    }
+
+    fn paint_cell(&mut self, col: usize, screen_row: usize, cell: TerminalCell) {
+        let px0 = TERM_PAD_X + col * CHAR_W;
+        let py0 = TERM_PAD_Y + screen_row * LINE_H + GLYPH_Y_INSET;
+        let stride = self.window.width.max(0) as usize;
+        if stride == 0 {
+            return;
+        }
+
+        for gy in 0..CHAR_H {
+            let py = py0 + gy;
+            let row_start = py.saturating_mul(stride);
+            for dx in 0..=CHAR_W {
+                let idx = row_start + px0 + dx;
+                if idx < self.window.buf.len() {
+                    self.window.buf[idx] = Self::bg_at(py);
+                }
+            }
+        }
+
+        let glyph = crate::font::glyph_rows(cell.ch, crate::font::UI_FONT);
+        let large_text = crate::accessibility::snapshot().large_text;
+        for (gy, &byte) in glyph.iter().take(CHAR_H).enumerate() {
+            for bit in 0..8usize {
+                if byte & (1 << bit) == 0 {
+                    continue;
+                }
+                let px = px0 + bit;
+                let py = py0 + gy;
+                let idx = py * stride + px;
+                if idx < self.window.buf.len() {
+                    self.window.buf[idx] = cell.fg;
+                    if large_text && idx + 1 < self.window.buf.len() {
+                        self.window.buf[idx + 1] = cell.fg;
+                    }
+                }
+            }
+        }
+        self.window
+            .mark_dirty(px0 as i32, py0 as i32, CHAR_W as i32 + 1, CHAR_H as i32);
     }
 
     fn bg_at(py: usize) -> u32 {
@@ -461,4 +630,27 @@ fn mix_rgb(a: u32, b: u32, pos: usize, span: usize) -> u32 {
     let g = (ag * (span - pos) + bg * pos) / span;
     let blue = (ab * (span - pos) + bb * pos) / span;
     (r << 16) | (g << 8) | blue
+}
+
+fn blank_cell() -> TerminalCell {
+    TerminalCell {
+        ch: ' ',
+        fg: FG_OUTPUT,
+    }
+}
+
+fn blank_line(cols: usize) -> Vec<TerminalCell> {
+    alloc::vec![blank_cell(); cols]
+}
+
+fn blank_screen(rows: usize, cols: usize) -> Vec<Vec<TerminalCell>> {
+    let mut screen = Vec::new();
+    for _ in 0..rows {
+        screen.push(blank_line(cols));
+    }
+    screen
+}
+
+fn resize_line(line: &mut Vec<TerminalCell>, cols: usize) {
+    line.resize(cols, blank_cell());
 }

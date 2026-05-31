@@ -580,6 +580,7 @@ impl AppWindow {
     }
     pub fn handle_scroll(&mut self, delta: i32) {
         match self {
+            AppWindow::Terminal(t) => t.handle_scroll(delta),
             AppWindow::TextViewer(v) => v.handle_scroll(delta),
             AppWindow::FileManager(f) => f.handle_scroll(delta),
             AppWindow::Browser(b) => b.handle_scroll(delta),

@@ -6,9 +6,7 @@ impl TerminalApp {
             Some("help") => self.cmd_help(),
 
             Some("clear") => {
-                self.fill_background();
-                self.col = 0;
-                self.row = 0;
+                self.reset_terminal();
             }
 
             Some("reboot") => crate::interrupts::reboot(),

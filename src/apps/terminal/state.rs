@@ -17,6 +17,9 @@ impl TerminalApp {
             row: 0,
             cols,
             rows,
+            screen: blank_screen(rows, cols),
+            scrollback: Vec::new(),
+            scroll_top: 0,
             fg: FG_OUTPUT,
             cwd: String::from("/"),
             cmd_history: Vec::new(),
@@ -37,11 +40,14 @@ impl TerminalApp {
         t.fill_background();
         t.refresh_layout();
         t.set_fg(FG_ACCENT);
-        t.print_str("coolOS");
+        t.print_str(" ____            _  ___  ____\n");
+        t.print_str("/ ___|___   ___ | |/ _ \\/ ___|\n");
+        t.print_str("| |   / _ \\ / _ \\| | | | \\___ \\\n");
+        t.print_str("| |__| (_) | (_) | | |_| |___) |\n");
+        t.print_str("\\____\\___/ \\___/|_|\\___/|____/\n");
         t.set_fg(FG_DIM);
-        t.print_str(" desktop shell\n");
-        t.set_fg(FG_DIM);
-        t.print_str("type help for commands\n\n");
+        t.print_str("      *  modern desktop shell\n");
+        t.print_str("      type help for commands\n\n");
         t.print_prompt();
         t
     }
@@ -49,16 +55,14 @@ impl TerminalApp {
     pub fn update(&mut self) {
         self.drain_tty_output();
         self.poll_foreground_job();
-        if self.window.width == self.last_width && self.window.height == self.last_height {
-            return;
-        }
-
-        let old_width = self.last_width.max(0) as usize;
-        let old_content_h = (self.last_height - TITLE_H).max(0) as usize;
-        self.last_width = self.window.width;
-        self.last_height = self.window.height;
+        let size_changed = self.window.width != self.last_width || self.window.height != self.last_height;
         self.refresh_layout();
-        self.paint_exposed_background(old_width, old_content_h);
+        if size_changed && (self.window.width != self.last_width || self.window.height != self.last_height) {
+            self.last_width = self.window.width;
+            self.last_height = self.window.height;
+            self.render_visible();
+        }
+        self.sync_scrollbar_drag();
     }
 
     pub fn is_busy(&self) -> bool {
@@ -70,6 +74,7 @@ impl TerminalApp {
             return;
         }
         self.refresh_layout();
+        self.scroll_to_bottom();
         match c {
             // Arrow keys (private-use Unicode set by keyboard drivers)
             '\u{F700}' => self.history_up(),
@@ -123,6 +128,17 @@ impl TerminalApp {
         if self.foreground_job.is_some() {
             self.forward_foreground_input(input);
             return;
+        }
+        match input.key {
+            Key::PageUp => {
+                self.scroll_page(-1);
+                return;
+            }
+            Key::PageDown => {
+                self.scroll_page(1);
+                return;
+            }
+            _ => {}
         }
         if let Some(c) = input.legacy_char() {
             self.handle_key(c);
@@ -247,6 +263,7 @@ impl TerminalApp {
             return;
         }
         self.refresh_layout();
+        self.scroll_to_bottom();
         for c in command.chars() {
             if !c.is_control() {
                 self.print_char(c);
@@ -318,6 +335,10 @@ impl TerminalApp {
                 self.print_prompt();
             }
         }
+    }
+
+    pub fn handle_scroll(&mut self, delta: i32) {
+        self.scroll_lines(delta.signum() * 3);
     }
 
     fn signal_foreground(&mut self, signal: crate::process_model::Signal, marker: &str) -> bool {
