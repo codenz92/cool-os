@@ -2523,6 +2523,32 @@ the owner account, and reboots to the normal login flow without the separate
 
 ---
 
+## ✅ Phase 84 — Installer v2 Disk Selection And Progress
+
+**Goal:** Make the QEMU BIOS installer safer and more usable without changing
+the Phase 83 self-booting disk format.
+
+- [x] Add a non-mutating installer planning layer and `install plan <device>`
+      so Terminal and recovery can report target size, layout, state,
+      protection, and installability before writing.
+- [x] Improve `install disks` to show disk role, protected status, layout
+      state, size, and refusal reason for each named IDE device.
+- [x] Replace the static installer card with a graphical flow for target
+      selection, review, explicit target-name confirmation, progress, complete,
+      and failure states.
+- [x] Add cooperative graphical install progress while preserving the existing
+      blocking `install disk <device>` terminal command.
+- [x] Add `make smoke-phase84-installer-v2` for selection, plan, protected
+      disk refusals, too-small targets, graphical install, and standalone
+      first-boot verification.
+
+**Current status:** complete. Installer mode now guides the user through disk
+selection and confirmation, refuses unsafe targets before writing, shows
+copy/flush/verify progress, and still produces the same self-booting BIOS/MBR
+target disk introduced in Phase 83.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -2624,4 +2650,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.42 | Phase 80 complete: installer and first boot |
 | v7.43 | Phase 81 complete: first-boot recovery and reset |
 | v7.44 | Phase 82 complete: QEMU disk installer v1 |
-| v7.45 | Current — Phase 83 complete: self-booting QEMU installed disk |
+| v7.45 | Phase 83 complete: self-booting QEMU installed disk |
+| v7.46 | Current — Phase 84 complete: installer v2 disk selection and progress |

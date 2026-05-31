@@ -37,7 +37,9 @@ impl TerminalApp {
         t.fill_background();
         t.refresh_layout();
         t.set_fg(FG_ACCENT);
-        t.print_str("coolOS desktop shell\n");
+        t.print_str("coolOS");
+        t.set_fg(FG_DIM);
+        t.print_str(" desktop shell\n");
         t.set_fg(FG_DIM);
         t.print_str("type help for commands\n\n");
         t.print_prompt();

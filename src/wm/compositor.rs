@@ -14,6 +14,7 @@ use crate::apps::{
     BrowserApp, ColorPickerApp, DisplaySettingsApp, FileManagerApp, FileManagerOpenRequest,
     PersonalizeApp, SysMonApp, SysMonRequest, TerminalApp, TextViewerApp, UserGuiApp, UtilityApp,
 };
+use crate::ata::IdeDevice;
 use crate::desktop_settings::{self, DesktopSortMode, WallpaperPreset};
 use crate::framebuffer::{BLACK, WHITE};
 use crate::keyboard::{Key, KeyInput};
@@ -624,6 +625,37 @@ impl AppWindow {
 
 // ── Window manager ────────────────────────────────────────────────────────────
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InstallerScreen {
+    Select,
+    Review,
+    Installing,
+    Complete,
+    Failed,
+}
+
+struct InstallerUiState {
+    screen: InstallerScreen,
+    selected_target: IdeDevice,
+    confirm_text: String,
+    message: String,
+    error: bool,
+    job: Option<crate::installer::InstallerJob>,
+}
+
+struct InstallerRenderState {
+    screen: InstallerScreen,
+    selected_target: IdeDevice,
+    confirm_text: String,
+    message: String,
+    error: bool,
+    phase_label: &'static str,
+    progress_percent: u32,
+    completed_units: u32,
+    total_units: u32,
+    layout: Option<crate::installer::InstallLayout>,
+}
+
 pub struct WindowManager {
     pub windows: Vec<AppWindow>,
     window_workspaces: Vec<usize>,
@@ -670,6 +702,7 @@ pub struct WindowManager {
     first_boot_focus: FirstBootFocus,
     first_boot_message: String,
     first_boot_error: bool,
+    installer: InstallerUiState,
     session_ready: bool,
     session_dirty: bool,
     last_session_save_tick: u64,
@@ -774,6 +807,14 @@ impl WindowManager {
             first_boot_focus: FirstBootFocus::Owner,
             first_boot_message: String::new(),
             first_boot_error: false,
+            installer: InstallerUiState {
+                screen: InstallerScreen::Select,
+                selected_target: crate::installer::default_target_device(),
+                confirm_text: String::new(),
+                message: String::from("Select a writable target disk."),
+                error: false,
+                job: None,
+            },
             session_ready: true,
             session_dirty: false,
             last_session_save_tick: 0,
@@ -1289,6 +1330,193 @@ impl WindowManager {
         crate::wm::request_repaint();
     }
 
+    fn installer_render_state(&self) -> InstallerRenderState {
+        let (phase_label, progress_percent, completed_units, total_units, layout) =
+            if let Some(job) = self.installer.job.as_ref() {
+                (
+                    job.phase_label(),
+                    job.progress_percent(),
+                    job.completed_units(),
+                    job.total_units(),
+                    Some(job.layout()),
+                )
+            } else {
+                let plan = crate::installer::install_plan(self.installer.selected_target);
+                ("Ready", 0, 0, 1, plan.layout)
+            };
+        InstallerRenderState {
+            screen: self.installer.screen,
+            selected_target: self.installer.selected_target,
+            confirm_text: self.installer.confirm_text.clone(),
+            message: self.installer.message.clone(),
+            error: self.installer.error,
+            phase_label,
+            progress_percent,
+            completed_units,
+            total_units,
+            layout,
+        }
+    }
+
+    fn tick_installer_job(&mut self) -> bool {
+        if self.installer.screen != InstallerScreen::Installing {
+            return false;
+        }
+        let Some(job) = self.installer.job.as_mut() else {
+            self.installer.screen = InstallerScreen::Failed;
+            self.installer.message = String::from("Installer job missing");
+            self.installer.error = true;
+            return true;
+        };
+        let changed = job.tick_default_budget();
+        if job.is_complete() {
+            self.installer.screen = InstallerScreen::Complete;
+            self.installer.message =
+                String::from("Installation complete. Boot the target with make run-installed.");
+            self.installer.error = false;
+            return true;
+        }
+        if job.is_failed() {
+            self.installer.screen = InstallerScreen::Failed;
+            self.installer.message = job.message().into();
+            self.installer.error = true;
+            return true;
+        }
+        changed
+    }
+
+    fn cycle_installer_target(&mut self, step: i32) {
+        let devices = crate::ata::all_devices();
+        let current = devices
+            .iter()
+            .position(|&device| device == self.installer.selected_target)
+            .unwrap_or(2);
+        let next = (current as i32 + step).rem_euclid(devices.len() as i32) as usize;
+        self.installer.selected_target = devices[next];
+        let plan = crate::installer::install_plan(self.installer.selected_target);
+        self.installer.message = if plan.installable {
+            format!("{} is ready for installation.", plan.target.name())
+        } else {
+            format!("{}: {}", plan.target.name(), plan.reason)
+        };
+        self.installer.error = !plan.installable;
+    }
+
+    fn installer_review_selected_target(&mut self) {
+        let plan = crate::installer::install_plan(self.installer.selected_target);
+        if plan.installable {
+            self.installer.screen = InstallerScreen::Review;
+            self.installer.confirm_text.clear();
+            self.installer.message = format!("Type {} to confirm erase.", plan.target.name());
+            self.installer.error = false;
+        } else {
+            self.installer.message = format!("{}: {}", plan.target.name(), plan.reason);
+            self.installer.error = true;
+        }
+    }
+
+    fn installer_start_selected_target(&mut self) {
+        let expected = self.installer.selected_target.name();
+        if self.installer.confirm_text.trim() != expected {
+            self.installer.message = format!("Type {} exactly before installing.", expected);
+            self.installer.error = true;
+            return;
+        }
+        match crate::installer::start_gui_install(self.installer.selected_target) {
+            Ok(job) => {
+                crate::println!(
+                    "[install] gui install started target={}",
+                    self.installer.selected_target.name()
+                );
+                self.installer.job = Some(job);
+                self.installer.screen = InstallerScreen::Installing;
+                self.installer.message = String::from("Installing coolOS to target disk.");
+                self.installer.error = false;
+            }
+            Err(lines) => {
+                self.installer.message = lines
+                    .last()
+                    .cloned()
+                    .unwrap_or_else(|| String::from("Target is not installable"));
+                self.installer.error = true;
+            }
+        }
+    }
+
+    fn handle_installer_input(&mut self, input: KeyInput) {
+        if input.has_ctrl() || input.has_alt() {
+            return;
+        }
+        match self.installer.screen {
+            InstallerScreen::Select => match input.key {
+                Key::Tab | Key::ArrowDown => self.cycle_installer_target(1),
+                Key::ArrowUp => self.cycle_installer_target(-1),
+                Key::Enter => self.installer_review_selected_target(),
+                Key::Escape => {
+                    self.installer.message = String::from("Installer mode is active.");
+                    self.installer.error = false;
+                }
+                Key::Character(c) if ('1'..='4').contains(&c) => {
+                    let idx = c as usize - '1' as usize;
+                    let devices = crate::ata::all_devices();
+                    if let Some(device) = devices.get(idx).copied() {
+                        self.installer.selected_target = device;
+                        self.cycle_installer_target(0);
+                    }
+                }
+                _ => {}
+            },
+            InstallerScreen::Review => match input.key {
+                Key::Escape => {
+                    self.installer.screen = InstallerScreen::Select;
+                    self.installer.confirm_text.clear();
+                    self.installer.message = String::from("Select a writable target disk.");
+                    self.installer.error = false;
+                }
+                Key::Enter => self.installer_start_selected_target(),
+                Key::Backspace => {
+                    self.installer.confirm_text.pop();
+                    self.installer.error = false;
+                }
+                Key::Character(c) => self.push_installer_confirm_char(c),
+                Key::Space => self.push_installer_confirm_char(' '),
+                _ => {}
+            },
+            InstallerScreen::Installing => {
+                if input.key == Key::Escape {
+                    self.installer.message =
+                        String::from("Installation is in progress and cannot be cancelled.");
+                    self.installer.error = false;
+                }
+            }
+            InstallerScreen::Complete => {
+                if matches!(input.key, Key::Escape | Key::Enter) {
+                    self.installer.message =
+                        String::from("Reboot with the installed target disk when ready.");
+                    self.installer.error = false;
+                }
+            }
+            InstallerScreen::Failed => {
+                if matches!(input.key, Key::Escape | Key::Enter) {
+                    self.installer.screen = InstallerScreen::Select;
+                    self.installer.job = None;
+                    self.installer.confirm_text.clear();
+                    self.installer.message = String::from("Select a writable target disk.");
+                    self.installer.error = false;
+                }
+            }
+        }
+        crate::wm::request_repaint();
+    }
+
+    fn push_installer_confirm_char(&mut self, c: char) {
+        let c = c.to_ascii_lowercase();
+        if (c.is_ascii_alphanumeric() || c == '-') && self.installer.confirm_text.len() < 16 {
+            self.installer.confirm_text.push(c);
+            self.installer.error = false;
+        }
+    }
+
     fn run_locked_startup_command(&mut self, command: &str) -> bool {
         let mut words = command.split_whitespace();
         match words.next() {
@@ -1543,6 +1771,85 @@ impl WindowManager {
             my,
         ) {
             self.complete_first_boot_setup();
+        }
+    }
+
+    fn handle_installer_click(&mut self, mx: i32, my: i32, sw: i32, taskbar_y: i32) {
+        let layout = first_boot_layout(sw, taskbar_y);
+        match self.installer.screen {
+            InstallerScreen::Select => {
+                let row_h = 34;
+                for (idx, device) in crate::ata::all_devices().iter().copied().enumerate() {
+                    let y = layout.owner_y + idx as i32 * row_h;
+                    if rect_contains(layout.field_x, y, layout.field_w, row_h - 4, mx, my) {
+                        self.installer.selected_target = device;
+                        self.cycle_installer_target(0);
+                        crate::wm::request_repaint();
+                        return;
+                    }
+                }
+                if rect_contains(
+                    layout.field_x,
+                    layout.button_y,
+                    layout.field_w,
+                    GREETER_FIELD_H,
+                    mx,
+                    my,
+                ) {
+                    self.installer_review_selected_target();
+                    crate::wm::request_repaint();
+                }
+            }
+            InstallerScreen::Review => {
+                let confirm_y = layout.device_y;
+                if rect_contains(
+                    layout.field_x,
+                    confirm_y,
+                    layout.field_w,
+                    GREETER_FIELD_H,
+                    mx,
+                    my,
+                ) {
+                    self.installer.error = false;
+                    crate::wm::request_repaint();
+                    return;
+                }
+                let button_gap = 12;
+                let button_w = (layout.field_w - button_gap) / 2;
+                if rect_contains(
+                    layout.field_x,
+                    layout.button_y,
+                    button_w,
+                    GREETER_FIELD_H,
+                    mx,
+                    my,
+                ) {
+                    self.installer.screen = InstallerScreen::Select;
+                    self.installer.confirm_text.clear();
+                    self.installer.message = String::from("Select a writable target disk.");
+                    self.installer.error = false;
+                    crate::wm::request_repaint();
+                } else if rect_contains(
+                    layout.field_x + button_w + button_gap,
+                    layout.button_y,
+                    button_w,
+                    GREETER_FIELD_H,
+                    mx,
+                    my,
+                ) {
+                    self.installer_start_selected_target();
+                    crate::wm::request_repaint();
+                }
+            }
+            InstallerScreen::Failed => {
+                self.installer.screen = InstallerScreen::Select;
+                self.installer.job = None;
+                self.installer.confirm_text.clear();
+                self.installer.message = String::from("Select a writable target disk.");
+                self.installer.error = false;
+                crate::wm::request_repaint();
+            }
+            InstallerScreen::Installing | InstallerScreen::Complete => {}
         }
     }
 
@@ -2901,6 +3208,11 @@ impl WindowManager {
     }
 
     pub fn handle_key_input(&mut self, input: KeyInput) {
+        if crate::fw_cfg::installer_mode() {
+            self.handle_installer_input(input);
+            crate::wm::request_repaint();
+            return;
+        }
         if self.session_locked {
             self.handle_greeter_input(input);
             crate::wm::request_repaint();
@@ -3317,6 +3629,9 @@ impl WindowManager {
                 break;
             }
         }
+        if crate::fw_cfg::installer_mode() && self.tick_installer_job() {
+            crate::wm::request_repaint();
+        }
         if crate::wm::take_session_lock_request() {
             self.lock_session();
         }
@@ -3382,6 +3697,11 @@ impl WindowManager {
 
         let raw_left_pressed = left && !self.prev_left;
         let raw_right_pressed = right && !self.prev_right;
+        let installer_mode = crate::fw_cfg::installer_mode();
+        if installer_mode && raw_left_pressed {
+            self.handle_installer_click(mx_i, my_i, sw as i32, taskbar_y);
+            crate::wm::request_repaint();
+        }
         if self.session_locked {
             if raw_left_pressed {
                 self.handle_greeter_click(mx_i, my_i, sw as i32, taskbar_y);
@@ -3390,9 +3710,9 @@ impl WindowManager {
                 crate::wm::request_repaint();
             }
         }
-        let left_pressed = raw_left_pressed && !self.session_locked;
-        let left_released = !left && self.prev_left && !self.session_locked;
-        let right_pressed = raw_right_pressed && !self.session_locked;
+        let left_pressed = raw_left_pressed && !self.session_locked && !installer_mode;
+        let left_released = !left && self.prev_left && !self.session_locked && !installer_mode;
+        let right_pressed = raw_right_pressed && !self.session_locked && !installer_mode;
         let mut left_press_consumed = false;
 
         // ── Input ─────────────────────────────────────────────────────────────
@@ -3954,6 +4274,11 @@ impl WindowManager {
         } else {
             None
         };
+        let installer_snapshot = if crate::fw_cfg::installer_mode() {
+            Some(self.installer_render_state())
+        } else {
+            None
+        };
         {
             let s: &mut [u32] = self.shadow.as_mut_slice();
 
@@ -4356,8 +4681,8 @@ impl WindowManager {
                     uptime_ticks,
                 );
             }
-            if crate::fw_cfg::installer_mode() {
-                draw_installer_overlay(s, sw, taskbar_y);
+            if let Some(ref installer) = installer_snapshot {
+                draw_installer_overlay(s, sw, taskbar_y, installer, mx_i, my_i);
             }
         } // end shadow borrow — rendering done
 

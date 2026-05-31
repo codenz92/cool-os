@@ -507,7 +507,14 @@ pub(super) fn draw_first_boot_overlay(
     );
 }
 
-pub(super) fn draw_installer_overlay(s: &mut [u32], sw: usize, taskbar_y: i32) {
+pub(super) fn draw_installer_overlay(
+    s: &mut [u32],
+    sw: usize,
+    taskbar_y: i32,
+    state: &InstallerRenderState,
+    mx: i32,
+    my: i32,
+) {
     let sw_i = sw as i32;
     let sh_i = if sw > 0 {
         (s.len() / sw) as i32
@@ -564,62 +571,287 @@ pub(super) fn draw_installer_overlay(s: &mut [u32], sw: usize, taskbar_y: i32) {
         sw,
         layout.field_x,
         layout.title_y + 34,
-        "Copy live image to blank QEMU disk.",
+        "Install the live system onto a target disk.",
         0x00_9A_C9_D8,
         layout.field_x + layout.field_w,
     );
 
-    let source = crate::installer::source_device().name();
-    let source_line = format!("Source: {} (live root)", source);
-    let target_line = "Target: ide1-master (96 MiB+ writable)";
+    match state.screen {
+        InstallerScreen::Select => {
+            draw_installer_source_summary(s, sw, &layout);
+            let row_h = 34;
+            for (idx, device) in crate::ata::all_devices().iter().copied().enumerate() {
+                let y = layout.owner_y + idx as i32 * row_h;
+                let plan = crate::installer::install_plan(device);
+                let selected = state.selected_target == device;
+                let hot = rect_contains(layout.field_x, y, layout.field_w, row_h - 4, mx, my);
+                draw_installer_target_row(
+                    s,
+                    sw,
+                    layout.field_x,
+                    y,
+                    layout.field_w,
+                    &plan,
+                    selected,
+                    hot,
+                );
+            }
+            draw_installer_button(
+                s,
+                sw,
+                layout.field_x,
+                layout.button_y,
+                layout.field_w,
+                "Review target",
+                true,
+                rect_contains(
+                    layout.field_x,
+                    layout.button_y,
+                    layout.field_w,
+                    GREETER_FIELD_H,
+                    mx,
+                    my,
+                ),
+            );
+            draw_installer_message(s, sw, &layout, &state.message, state.error);
+        }
+        InstallerScreen::Review => {
+            let plan = crate::installer::install_plan(state.selected_target);
+            draw_installer_review(s, sw, &layout, &plan, state);
+            let gap = 12;
+            let button_w = (layout.field_w - gap) / 2;
+            draw_installer_button(
+                s,
+                sw,
+                layout.field_x,
+                layout.button_y,
+                button_w,
+                "Back",
+                false,
+                rect_contains(
+                    layout.field_x,
+                    layout.button_y,
+                    button_w,
+                    GREETER_FIELD_H,
+                    mx,
+                    my,
+                ),
+            );
+            draw_installer_button(
+                s,
+                sw,
+                layout.field_x + button_w + gap,
+                layout.button_y,
+                button_w,
+                "Install",
+                state.confirm_text.trim() == state.selected_target.name(),
+                rect_contains(
+                    layout.field_x + button_w + gap,
+                    layout.button_y,
+                    button_w,
+                    GREETER_FIELD_H,
+                    mx,
+                    my,
+                ),
+            );
+            draw_installer_message(s, sw, &layout, &state.message, state.error);
+        }
+        InstallerScreen::Installing => {
+            draw_installer_progress(s, sw, &layout, state, "Installing");
+            draw_installer_message(s, sw, &layout, &state.message, false);
+        }
+        InstallerScreen::Complete => {
+            draw_installer_progress(s, sw, &layout, state, "Complete");
+            s_draw_str_small_transparent(
+                s,
+                sw,
+                layout.field_x,
+                layout.device_y,
+                "Reboot and run make run-installed.",
+                0x00_88_DD_CC,
+                layout.field_x + layout.field_w,
+            );
+            draw_installer_message(s, sw, &layout, &state.message, false);
+        }
+        InstallerScreen::Failed => {
+            draw_installer_progress(s, sw, &layout, state, "Failed");
+            s_draw_str_small_transparent(
+                s,
+                sw,
+                layout.field_x,
+                layout.device_y,
+                "Press Enter or click to choose another target.",
+                0x00_88_DD_CC,
+                layout.field_x + layout.field_w,
+            );
+            draw_installer_message(s, sw, &layout, &state.message, true);
+        }
+    }
+}
+
+fn draw_installer_source_summary(s: &mut [u32], sw: usize, layout: &FirstBootLayout) {
+    let line = format!(
+        "Source: {} boot + {} root",
+        crate::installer::boot_device().name(),
+        crate::installer::source_device().name()
+    );
+    s_draw_str_small_transparent(
+        s,
+        sw,
+        layout.field_x,
+        layout.owner_y - 20,
+        &line,
+        0x00_88_DD_CC,
+        layout.field_x + layout.field_w,
+    );
+}
+
+fn draw_installer_target_row(
+    s: &mut [u32],
+    sw: usize,
+    x: i32,
+    y: i32,
+    w: i32,
+    plan: &crate::installer::InstallPlan,
+    selected: bool,
+    hot: bool,
+) {
+    let bg = if selected {
+        0x00_15_30_42
+    } else if hot {
+        0x00_12_20_2D
+    } else {
+        0x00_0B_14_20
+    };
+    s_fill_alpha(s, sw, x, y, w, 30, 0xCC_00_00_00 | bg);
+    if selected {
+        s_fill(s, sw, x, y, 2, 30, ACCENT);
+    }
+    draw_rect_border(
+        s,
+        sw,
+        x,
+        y,
+        w,
+        30,
+        if selected { ACCENT } else { 0x00_24_35_46 },
+    );
+    let title = format!(
+        "{}  {} MiB",
+        plan.target.name(),
+        ((plan.target_sectors as u64 * crate::disk_layout::SECTOR_SIZE as u64) / (1024 * 1024))
+    );
+    s_draw_str_small_transparent(
+        s,
+        sw,
+        x + 10,
+        y + 5,
+        &title,
+        if plan.installable {
+            WHITE
+        } else {
+            0x00_A8_B5_C2
+        },
+        x + w - 8,
+    );
+    let detail = format!("{} / {}", plan.state.label(), plan.reason);
+    s_draw_str_small_transparent(
+        s,
+        sw,
+        x + 10,
+        y + 18,
+        &detail,
+        if plan.installable {
+            0x00_88_DD_CC
+        } else {
+            0x00_D8_98_98
+        },
+        x + w - 8,
+    );
+}
+
+fn draw_installer_review(
+    s: &mut [u32],
+    sw: usize,
+    layout: &FirstBootLayout,
+    plan: &crate::installer::InstallPlan,
+    state: &InstallerRenderState,
+) {
+    let target = format!("Target: {}", plan.target.name());
     s_draw_str_small_transparent(
         s,
         sw,
         layout.field_x,
         layout.owner_y,
-        &source_line,
-        0x00_C8_D8_E8,
+        &target,
+        WHITE,
         layout.field_x + layout.field_w,
     );
+    if let Some(layout_info) = plan.layout {
+        let layout_line = format!(
+            "MBR + boot FAT + CoolFS @ LBA {}",
+            layout_info.root_start_lba
+        );
+        s_draw_str_small_transparent(
+            s,
+            sw,
+            layout.field_x,
+            layout.owner_y + 20,
+            &layout_line,
+            0x00_88_DD_CC,
+            layout.field_x + layout.field_w,
+        );
+        let size_line = format!(
+            "Required: {} MiB / target: {} MiB",
+            ((layout_info.total_required_sectors as u64 * crate::disk_layout::SECTOR_SIZE as u64)
+                / (1024 * 1024)),
+            ((plan.target_sectors as u64 * crate::disk_layout::SECTOR_SIZE as u64) / (1024 * 1024))
+        );
+        s_draw_str_small_transparent(
+            s,
+            sw,
+            layout.field_x,
+            layout.owner_y + 38,
+            &size_line,
+            0x00_A9_B9_C8,
+            layout.field_x + layout.field_w,
+        );
+    }
     s_draw_str_small_transparent(
         s,
         sw,
         layout.field_x,
-        layout.owner_y + 24,
-        target_line,
-        0x00_88_DD_CC,
+        layout.device_y - 16,
+        "Type target name to confirm erase",
+        0x00_F0_C2_78,
         layout.field_x + layout.field_w,
     );
+    draw_greeter_field(
+        s,
+        sw,
+        layout.field_x,
+        layout.device_y,
+        layout.field_w,
+        &state.confirm_text,
+        true,
+        0x00_0A_12_1D,
+    );
+}
 
-    let button_y = layout.owner_y + 70;
-    fill_vertical_gradient(
-        s,
-        sw,
-        layout.field_x,
-        button_y,
-        layout.field_w,
-        GREETER_FIELD_H,
-        0x00_0D_17_24,
-        0x00_03_09_14,
-    );
-    s_fill(s, sw, layout.field_x, button_y, layout.field_w, 2, ACCENT);
-    draw_rect_border(
-        s,
-        sw,
-        layout.field_x,
-        button_y,
-        layout.field_w,
-        GREETER_FIELD_H,
-        0x00_2A_5F_78,
-    );
-    let command = "install disk ide1-master";
-    let command_w = command.chars().count() as i32 * 8;
+fn draw_installer_progress(
+    s: &mut [u32],
+    sw: usize,
+    layout: &FirstBootLayout,
+    state: &InstallerRenderState,
+    title: &str,
+) {
+    let target = format!("Target: {}", state.selected_target.name());
     s_draw_str_small_transparent(
         s,
         sw,
-        layout.field_x + (layout.field_w - command_w) / 2,
-        button_y + 11,
-        command,
+        layout.field_x,
+        layout.owner_y,
+        title,
         WHITE,
         layout.field_x + layout.field_w,
     );
@@ -627,9 +859,128 @@ pub(super) fn draw_installer_overlay(s: &mut [u32], sw: usize, taskbar_y: i32) {
         s,
         sw,
         layout.field_x,
-        button_y + GREETER_FIELD_H + 14,
-        "Writes a self-booting BIOS target disk.",
+        layout.owner_y + 18,
+        &target,
         0x00_88_DD_CC,
+        layout.field_x + layout.field_w,
+    );
+    if let Some(layout_info) = state.layout {
+        let layout_line = format!(
+            "Root LBA {} sectors {}",
+            layout_info.root_start_lba, layout_info.root_sectors
+        );
+        s_draw_str_small_transparent(
+            s,
+            sw,
+            layout.field_x,
+            layout.owner_y + 36,
+            &layout_line,
+            0x00_A9_B9_C8,
+            layout.field_x + layout.field_w,
+        );
+    }
+    let bar_x = layout.field_x;
+    let bar_y = layout.pass_y + 28;
+    let bar_w = layout.field_w;
+    s_fill(s, sw, bar_x, bar_y, bar_w, 8, 0x00_08_10_1B);
+    draw_rect_border(s, sw, bar_x, bar_y, bar_w, 8, 0x00_24_35_46);
+    let fill_w = (bar_w - 2) * state.progress_percent.min(100) as i32 / 100;
+    if fill_w > 0 {
+        s_fill(s, sw, bar_x + 1, bar_y + 1, fill_w, 6, ACCENT);
+    }
+    let phase = format!(
+        "{}  {}% ({}/{})",
+        state.phase_label, state.progress_percent, state.completed_units, state.total_units
+    );
+    s_draw_str_small_transparent(
+        s,
+        sw,
+        layout.field_x,
+        bar_y + 18,
+        &phase,
+        0x00_C8_D8_E8,
+        layout.field_x + layout.field_w,
+    );
+}
+
+fn draw_installer_button(
+    s: &mut [u32],
+    sw: usize,
+    x: i32,
+    y: i32,
+    w: i32,
+    label: &str,
+    enabled: bool,
+    hot: bool,
+) {
+    let top = if enabled {
+        if hot {
+            0x00_14_35_48
+        } else {
+            0x00_0D_22_32
+        }
+    } else {
+        0x00_0A_12_1D
+    };
+    let bottom = if enabled {
+        0x00_05_0C_16
+    } else {
+        0x00_05_08_0D
+    };
+    fill_vertical_gradient(s, sw, x, y, w, GREETER_FIELD_H, top, bottom);
+    s_fill(
+        s,
+        sw,
+        x,
+        y,
+        w,
+        2,
+        if enabled { ACCENT } else { 0x00_2B_3A_4A },
+    );
+    draw_rect_border(
+        s,
+        sw,
+        x,
+        y,
+        w,
+        GREETER_FIELD_H,
+        if enabled {
+            0x00_2A_5F_78
+        } else {
+            0x00_24_32_42
+        },
+    );
+    let label_w = label.chars().count() as i32 * 8;
+    s_draw_str_small_transparent(
+        s,
+        sw,
+        x + (w - label_w) / 2,
+        y + 11,
+        label,
+        if enabled { WHITE } else { 0x00_6F_7D_8A },
+        x + w - 6,
+    );
+}
+
+fn draw_installer_message(
+    s: &mut [u32],
+    sw: usize,
+    layout: &FirstBootLayout,
+    message: &str,
+    error: bool,
+) {
+    let msg = if message.is_empty() {
+        "Tab selects disks. Enter continues."
+    } else {
+        message
+    };
+    s_draw_str_small_transparent(
+        s,
+        sw,
+        layout.field_x,
+        layout.message_y,
+        msg,
+        if error { 0x00_FF_98_98 } else { 0x00_88_DD_CC },
         layout.field_x + layout.field_w,
     );
 }

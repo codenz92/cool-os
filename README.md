@@ -312,7 +312,7 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `hash <path>` | Print file length and byte-sum for storage checks |
 | `whoami` | Print current user and task capabilities |
 | `setup <user> <pass>` | Complete first-run admin setup and replace the default `root` handoff if needed |
-| `install [status\|reset\|repair\|disks\|disk <device>\|verify <device>]` | Report, reset, or repair first-boot state, list IDE disks, install to a target disk, or verify an installed target; mutating operations require admin, recovery, or installer context |
+| `install [status\|reset\|repair\|disks\|plan <device>\|disk <device>\|verify <device>]` | Report, reset, or repair first-boot state, list IDE disks, preflight an installer target, install to a target disk, or verify an installed target; mutating operations require admin, recovery, or installer context |
 | `account <op>` | Admin account management: `list`, `add`, `enable`, `disable`, `role`, `pass`, and `delete` |
 | `perm <path>` | Print owner, group, mode, type, and size |
 | `chmod <mode> <path>` | Change a CoolFS inode mode |
@@ -752,6 +752,14 @@ live root image into the partition, and verifies both boot and root contents.
 The resulting target boots by itself as `ide0-master` and enters the normal
 first-boot owner setup flow.
 
+**Installer v2 safety flow (Phase 84).** Installer mode now opens an
+interactive target-selection flow instead of a static command card. The
+installer lists all IDE disks with role, protection, layout state, and
+installability reason; `install plan <device>` performs the same non-mutating
+preflight from Terminal or recovery. The graphical flow requires reviewing the
+target and typing the target device name before writing, then shows copy,
+flush, and verify progress before the installed disk is rebooted on its own.
+
 **User/kernel isolation hardening (Phase 32).** Process address spaces still
 copy the kernel's upper-half PML4 entries so syscall and interrupt entry can run
 without rebuilding mappings, but those copied entries stay supervisor-only for
@@ -973,7 +981,9 @@ first-boot reset/repair commands, boot-time state reconciliation, and
 named IDE disk discovery, sector-copy install/verify commands, `make
 run-installer`, and `make smoke-phase82-installer`. Phase 83 makes the
 installed target self-booting, adds standalone `--boot-disk` smoke support,
-`make run-installed`, and `make smoke-phase83-self-booting-installer`.
+`make run-installed`, and `make smoke-phase83-self-booting-installer`. Phase
+84 adds installer target preflight, protected-disk refusal reporting, graphical
+review/confirmation/progress states, and `make smoke-phase84-installer-v2`.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
@@ -1074,5 +1084,6 @@ while kernel faults still panic.
 | 81 | First-boot recovery and reset — admin/recovery reset, state repair, boot hardening, and Phase 81 smoke coverage | **Done** |
 | 82 | QEMU disk installer v1 — installer mode, IDE disk discovery, sector-copy install/verify, and installed-target first-boot smoke coverage | **Done** |
 | 83 | Self-booting QEMU installed disk — BIOS/MBR target layout, CoolFS root partition discovery, standalone target boot smoke | **Done** |
+| 84 | Installer v2 — target preflight, review/confirmation, graphical progress, and safer disk refusal coverage | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

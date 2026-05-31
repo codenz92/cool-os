@@ -429,10 +429,36 @@ impl TerminalApp {
     }
 
     fn bg_at(py: usize) -> u32 {
-        match py % 6 {
-            0 => TERM_BG_C,
-            1 | 2 => TERM_BG_A,
-            _ => TERM_BG_B,
+        const TOP_SPAN: usize = 180;
+        const BOTTOM_SPAN: usize = 300;
+
+        if py < TOP_SPAN {
+            mix_rgb(TERM_BG_TOP, TERM_BG_MID, py, TOP_SPAN)
+        } else {
+            mix_rgb(
+                TERM_BG_MID,
+                TERM_BG_BOTTOM,
+                py.saturating_sub(TOP_SPAN),
+                BOTTOM_SPAN,
+            )
         }
     }
+}
+
+fn mix_rgb(a: u32, b: u32, pos: usize, span: usize) -> u32 {
+    if span == 0 {
+        return b;
+    }
+    let pos = pos.min(span) as u32;
+    let span = span as u32;
+    let ar = (a >> 16) & 0xFF;
+    let ag = (a >> 8) & 0xFF;
+    let ab = a & 0xFF;
+    let br = (b >> 16) & 0xFF;
+    let bg = (b >> 8) & 0xFF;
+    let bb = b & 0xFF;
+    let r = (ar * (span - pos) + br * pos) / span;
+    let g = (ag * (span - pos) + bg * pos) / span;
+    let blue = (ab * (span - pos) + bb * pos) / span;
+    (r << 16) | (g << 8) | blue
 }

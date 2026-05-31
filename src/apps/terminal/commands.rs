@@ -784,7 +784,7 @@ impl TerminalApp {
             ("passwd <old> <new>", "change current password"),
             ("setup <user> <pass>", "complete first-run admin setup"),
             (
-                "install [status|reset|repair|disks|disk <dev>|verify <dev>]",
+                "install [status|reset|repair|disks|plan <dev>|disk <dev>|verify <dev>]",
                 "first-boot and disk installer state",
             ),
             ("account <op>", "admin user management"),
@@ -1322,7 +1322,12 @@ impl TerminalApp {
                 self.set_fg(FG_ERROR);
                 self.print_str("usage: recovery firstboot [status|reset|repair]\n");
             }
-            ["install", "disks"] => self.cmd_lines("RECOVERY INSTALL", crate::installer::disks_lines()),
+            ["install", "disks"] => {
+                self.cmd_lines("RECOVERY INSTALL", crate::installer::disks_lines())
+            }
+            ["install", "plan", target] => {
+                self.cmd_lines("RECOVERY INSTALL", crate::installer::plan_device_name(target))
+            }
             ["install", "disk", target] => self.cmd_lines(
                 "RECOVERY INSTALL",
                 crate::installer::install_to_device_name(target),
@@ -1334,7 +1339,7 @@ impl TerminalApp {
             ["install", ..] => {
                 self.set_fg(FG_ERROR);
                 self.print_str(
-                    "usage: recovery install [disks|disk <ide-device>|verify <ide-device>]\n",
+                    "usage: recovery install [disks|plan <ide-device>|disk <ide-device>|verify <ide-device>]\n",
                 );
             }
             ["rollback"] => {
@@ -1715,6 +1720,14 @@ impl TerminalApp {
         match args.first().copied().unwrap_or("status") {
             "status" => self.cmd_lines("INSTALL", crate::security::first_boot_status_lines()),
             "disks" => self.cmd_lines("INSTALL DISKS", crate::installer::disks_lines()),
+            "plan" => {
+                let Some(target) = args.get(1).copied() else {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("usage: install plan <ide-device>\n");
+                    return;
+                };
+                self.cmd_lines("INSTALL PLAN", crate::installer::plan_device_name(target));
+            }
             "disk" => {
                 let Some(target) = args.get(1).copied() else {
                     self.set_fg(FG_ERROR);
@@ -1763,7 +1776,7 @@ impl TerminalApp {
             }
             _ => {
                 self.set_fg(FG_ERROR);
-                self.print_str("usage: install [status|reset|repair|disks|disk <device>|verify <device>]\n");
+                self.print_str("usage: install [status|reset|repair|disks|plan <device>|disk <device>|verify <device>]\n");
             }
         }
     }
