@@ -23,8 +23,6 @@ const NOTES_PATH: &str = "/Documents/NOTES.TXT";
 const EDITOR_PATH: &str = "/Documents/UNTITLED.TXT";
 const MAX_TEXT_BYTES: usize = 16 * 1024;
 
-const BG_A: u32 = theme::BG_TOP;
-const BG_B: u32 = theme::BG_BOTTOM;
 const PANEL: u32 = theme::CARD_SURFACE;
 const PANEL_ALT: u32 = theme::CONTROL_FILL;
 const PANEL_BORDER: u32 = theme::DIVIDER;
@@ -285,13 +283,15 @@ impl UtilityApp {
             panel_h,
             PANEL,
         );
-        self.draw_rect(
+        theme::draw_glass_panel(
+            &mut self.window.buf,
             stride,
+            content_h,
             PAD_X - 6,
             panel_y - 6,
             width - PAD_X * 2,
             panel_h,
-            PANEL_BORDER,
+            ACCENT,
         );
         self.put_str(stride, PAD_X, panel_y + 8, "Target folder", MUTED);
         self.put_str(stride, PAD_X, panel_y + 22, PICTURES_PATH, TEXT);
@@ -323,21 +323,15 @@ impl UtilityApp {
         self.window.scroll.offset = self.scroll_line as i32 * LINE_H as i32;
         self.window.scroll.clamp((self.rows * LINE_H) as i32);
 
-        self.fill_rect(
+        theme::draw_glass_panel(
+            &mut self.window.buf,
             stride,
+            content_h,
             PAD_X - 8,
             TEXT_Y - 8,
             width.saturating_sub(PAD_X * 2),
             text_h + 12,
-            PANEL,
-        );
-        self.draw_rect(
-            stride,
-            PAD_X - 8,
-            TEXT_Y - 8,
-            width.saturating_sub(PAD_X * 2),
-            text_h + 12,
-            PANEL_BORDER,
+            ACCENT_ALT,
         );
 
         if self.text.is_empty() {
@@ -381,10 +375,7 @@ impl UtilityApp {
         let width = self.window.width.max(1) as usize;
         let content_h = (self.window.height - TITLE_H).max(0) as usize;
         let stride = width;
-        for (idx, pixel) in self.window.buf.iter_mut().enumerate() {
-            let y = idx / stride;
-            *pixel = if y % 10 < 5 { BG_A } else { BG_B };
-        }
+        theme::fill_app_background(&mut self.window.buf, stride, content_h);
         self.fill_rect(stride, 0, 0, width, HEADER_H, PANEL_ALT);
         self.fill_rect(stride, 0, HEADER_H - 1, width, 1, PANEL_BORDER);
         self.fill_rect(
@@ -427,17 +418,18 @@ impl UtilityApp {
 
     fn draw_button(&mut self, x: i32, y: i32, w: i32, h: i32, label: &str, accent: u32) {
         let stride = self.window.width.max(1) as usize;
-        self.fill_rect(
+        let content_h = (self.window.height - TITLE_H).max(0) as usize;
+        theme::draw_control(
+            &mut self.window.buf,
             stride,
+            content_h,
             x as usize,
             y as usize,
             w as usize,
             h as usize,
-            theme::CONTROL_FILL,
+            false,
         );
-        self.draw_rect(
-            stride, x as usize, y as usize, w as usize, h as usize, accent,
-        );
+        self.fill_rect(stride, x as usize, y as usize, w as usize, 1, accent);
         self.put_str(stride, x as usize + 9, y as usize + 7, label, TEXT);
     }
 
@@ -453,16 +445,6 @@ impl UtilityApp {
                 }
             }
         }
-    }
-
-    fn draw_rect(&mut self, stride: usize, x: usize, y: usize, w: usize, h: usize, color: u32) {
-        if w < 2 || h < 2 {
-            return;
-        }
-        self.fill_rect(stride, x, y, w, 1, color);
-        self.fill_rect(stride, x, y + h - 1, w, 1, color);
-        self.fill_rect(stride, x, y, 1, h, color);
-        self.fill_rect(stride, x + w - 1, y, 1, h, color);
     }
 
     fn put_str(&mut self, stride: usize, px: usize, py: usize, s: &str, color: u32) {

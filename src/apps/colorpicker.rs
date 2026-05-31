@@ -17,9 +17,6 @@ const PREVIEW_W: usize = 232;
 const PREVIEW_H: usize = 228;
 const CHAR_W: usize = 8;
 
-const BG_A: u32 = theme::BG_TOP;
-const BG_B: u32 = theme::BG_BOTTOM;
-const PANEL: u32 = theme::CARD_SURFACE;
 const PANEL_ALT: u32 = theme::CONTROL_FILL;
 const BORDER: u32 = theme::BORDER;
 const DIVIDER: u32 = theme::DIVIDER;
@@ -99,15 +96,15 @@ impl ColorPickerApp {
 
         self.fill_rect(stride, 0, 0, stride, 34, PANEL_ALT);
         self.fill_rect(stride, 0, 33, stride, 1, BORDER);
-        self.fill_rect(stride, PREVIEW_X, PREVIEW_Y, PREVIEW_W, PREVIEW_H, PANEL);
-        self.draw_rect_border(stride, PREVIEW_X, PREVIEW_Y, PREVIEW_W, PREVIEW_H, BORDER);
-        self.draw_rect_border(
+        theme::draw_glass_panel(
+            &mut self.window.buf,
             stride,
-            PREVIEW_X + 1,
-            PREVIEW_Y + 1,
-            PREVIEW_W - 2,
-            PREVIEW_H - 2,
-            DIVIDER,
+            content_h,
+            PREVIEW_X,
+            PREVIEW_Y,
+            PREVIEW_W,
+            PREVIEW_H,
+            ACCENT,
         );
 
         self.put_str(stride, 18, 12, "PALETTE LAB", LABEL);
@@ -127,12 +124,26 @@ impl ColorPickerApp {
             let color = COLORS[i].1;
             let selected = self.selected == Some(i);
 
-            self.fill_rect(stride, x, y, SWATCH, SWATCH, blend_color(color, BG_A, 20));
-            self.draw_rect_border(stride, x, y, SWATCH, SWATCH, blend_color(color, WHITE, 60));
+            self.fill_rect(
+                stride,
+                x,
+                y,
+                SWATCH,
+                SWATCH,
+                blend_color(color, theme::BG_DEEP, 28),
+            );
+            self.draw_rect_border(stride, x, y, SWATCH, SWATCH, blend_color(color, WHITE, 70));
             self.fill_rect(stride, x + 4, y + 4, SWATCH - 8, SWATCH - 8, color);
             if selected {
                 self.draw_rect_border(stride, x - 3, y - 3, SWATCH + 6, SWATCH + 6, ACCENT);
-                self.draw_rect_border(stride, x - 2, y - 2, SWATCH + 4, SWATCH + 4, WHITE);
+                self.draw_rect_border(
+                    stride,
+                    x - 2,
+                    y - 2,
+                    SWATCH + 4,
+                    SWATCH + 4,
+                    theme::ACCENT_HOVER,
+                );
             }
         }
 
@@ -176,14 +187,14 @@ impl ColorPickerApp {
             push_number(&mut rgb_line, b);
             self.put_str(stride, PREVIEW_X + 126, PREVIEW_Y + 116, &rgb_line, TEXT);
 
-            self.put_str(stride, PREVIEW_X + 16, PREVIEW_Y + 160, "CHANNELS", LABEL);
-            self.put_str(stride, PREVIEW_X + 16, PREVIEW_Y + 178, "RED", MUTED);
-            self.put_str(stride, PREVIEW_X + 16, PREVIEW_Y + 202, "GREEN", MUTED);
-            self.put_str(stride, PREVIEW_X + 16, PREVIEW_Y + 226, "BLUE", MUTED);
+            self.put_str(stride, PREVIEW_X + 16, PREVIEW_Y + 148, "CHANNELS", LABEL);
+            self.put_str(stride, PREVIEW_X + 16, PREVIEW_Y + 166, "RED", MUTED);
+            self.put_str(stride, PREVIEW_X + 16, PREVIEW_Y + 190, "GREEN", MUTED);
+            self.put_str(stride, PREVIEW_X + 16, PREVIEW_Y + 214, "BLUE", MUTED);
             self.draw_bar(
                 stride,
                 PREVIEW_X + 70,
-                PREVIEW_Y + 178,
+                PREVIEW_Y + 166,
                 140,
                 8,
                 r,
@@ -192,7 +203,7 @@ impl ColorPickerApp {
             self.draw_bar(
                 stride,
                 PREVIEW_X + 70,
-                PREVIEW_Y + 202,
+                PREVIEW_Y + 190,
                 140,
                 8,
                 g,
@@ -201,7 +212,7 @@ impl ColorPickerApp {
             self.draw_bar(
                 stride,
                 PREVIEW_X + 70,
-                PREVIEW_Y + 226,
+                PREVIEW_Y + 214,
                 140,
                 8,
                 b,
@@ -211,7 +222,7 @@ impl ColorPickerApp {
             self.put_str(
                 stride,
                 PREVIEW_X + 16,
-                PREVIEW_Y + 254,
+                PREVIEW_Y + 238,
                 "classic 16-colour ega palette",
                 MUTED,
             );
@@ -229,10 +240,8 @@ impl ColorPickerApp {
     }
 
     fn fill_background(&mut self, stride: usize) {
-        for (idx, pixel) in self.window.buf.iter_mut().enumerate() {
-            let py = idx / stride;
-            *pixel = if py % 10 < 5 { BG_A } else { BG_B };
-        }
+        let content_h = (self.window.height - TITLE_H).max(0) as usize;
+        theme::fill_app_background(&mut self.window.buf, stride, content_h);
     }
 
     fn fill_rect(&mut self, stride: usize, x: usize, y: usize, w: usize, h: usize, color: u32) {

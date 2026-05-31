@@ -1152,11 +1152,17 @@ impl BrowserApp {
             return;
         }
         let stride = width;
-        for pixel in self.window.buf.iter_mut() {
-            *pixel = BG;
-        }
-        self.fill_rect(stride, 0, 0, width, TOOLBAR_H, BAR);
-        self.fill_rect(stride, 0, TOOLBAR_H - 1, width, 1, BORDER);
+        theme::fill_app_background(&mut self.window.buf, stride, content_h);
+        theme::draw_glass_panel(
+            &mut self.window.buf,
+            stride,
+            content_h,
+            0,
+            0,
+            width,
+            TOOLBAR_H,
+            BUTTON_HOT,
+        );
         self.fill_rect(
             stride,
             0,
@@ -1203,19 +1209,17 @@ impl BrowserApp {
         } else {
             ADDRESS_BG
         };
-        self.fill_rect(stride, addr_x, 10, addr_w, 24, address_bg);
-        self.draw_rect(
+        theme::draw_control(
+            &mut self.window.buf,
             stride,
+            content_h,
             addr_x,
             10,
             addr_w,
             24,
-            if self.address_focused {
-                BUTTON_HOT
-            } else {
-                BORDER
-            },
+            self.address_focused,
         );
+        self.fill_rect(stride, addr_x + 1, 11, addr_w.saturating_sub(2), 21, address_bg);
         let mut address = self.address.clone();
         truncate_chars(&mut address, addr_w.saturating_sub(14) / CHAR_W);
         let address_text = if self.address_focused && self.address_selected {
@@ -1377,16 +1381,13 @@ impl BrowserApp {
         label: &str,
         enabled: bool,
     ) {
-        let bg = if enabled { BUTTON } else { BUTTON_DIM };
-        self.fill_rect(stride, x, y, w, h, bg);
-        self.draw_rect(
-            stride,
-            x,
-            y,
-            w,
-            h,
-            if enabled { BUTTON_HOT } else { BORDER },
-        );
+        let content_h = (self.window.height - TITLE_H).max(0) as usize;
+        if enabled {
+            theme::draw_control(&mut self.window.buf, stride, content_h, x, y, w, h, false);
+        } else {
+            self.fill_rect(stride, x, y, w, h, BUTTON_DIM);
+            self.draw_rect(stride, x, y, w, h, BORDER);
+        }
         let label_x = x + 6;
         let label_y = y + 8;
         self.put_str(

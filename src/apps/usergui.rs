@@ -3,6 +3,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::mem;
 
+use crate::apps::theme;
 use crate::wm::window::{Window, TITLE_H};
 
 const EVENT_PACKET_SIZE: usize = 16;
@@ -151,12 +152,9 @@ impl UserGuiApp {
     }
 
     fn clear_placeholder(&mut self) {
-        for (idx, pixel) in self.window.buf.iter_mut().enumerate() {
-            let x = idx % self.window.width.max(1) as usize;
-            let y = idx / self.window.width.max(1) as usize;
-            let stripe = ((x / 12) + (y / 12)) % 2 == 0;
-            *pixel = if stripe { 0x00_04_12_22 } else { 0x00_02_0A_14 };
-        }
+        let stride = self.window.width.max(1) as usize;
+        let height = self.window.buf.len() / stride;
+        theme::fill_app_background(&mut self.window.buf, stride, height);
         self.window.mark_dirty_all();
     }
 }

@@ -32,3 +32,161 @@ pub const STATUS_INFO: u32 = ACCENT_HOVER;
 pub const STATUS_SUCCESS: u32 = SUCCESS;
 pub const STATUS_WARNING: u32 = WARNING;
 pub const STATUS_DANGER: u32 = DANGER;
+
+pub fn mix_color(a: u32, b: u32, t: u32) -> u32 {
+    let t = t.min(255);
+    let inv = 255u32.saturating_sub(t);
+    let ar = (a >> 16) & 0xFF;
+    let ag = (a >> 8) & 0xFF;
+    let ab = a & 0xFF;
+    let br = (b >> 16) & 0xFF;
+    let bg = (b >> 8) & 0xFF;
+    let bb = b & 0xFF;
+    let r = (ar * inv + br * t) / 255;
+    let g = (ag * inv + bg * t) / 255;
+    let blue = (ab * inv + bb * t) / 255;
+    (r << 16) | (g << 8) | blue
+}
+
+pub fn app_background_at(row: usize, height: usize) -> u32 {
+    let height = height.max(1);
+    let top_span = (height / 3).max(1);
+    let mid_span = (height / 3).max(1);
+    if row < top_span {
+        mix_color(
+            BG_DEEP,
+            BG_TOP,
+            (row as u32).saturating_mul(255) / top_span as u32,
+        )
+    } else if row < top_span + mid_span {
+        let pos = row.saturating_sub(top_span);
+        mix_color(
+            BG_TOP,
+            FIELD,
+            (pos as u32).saturating_mul(255) / mid_span as u32,
+        )
+    } else {
+        let pos = row.saturating_sub(top_span + mid_span);
+        let span = height.saturating_sub(top_span + mid_span).max(1);
+        mix_color(
+            FIELD,
+            BG_BOTTOM,
+            (pos as u32).saturating_mul(255) / span as u32,
+        )
+    }
+}
+
+pub fn fill_app_background(buf: &mut [u32], stride: usize, height: usize) {
+    if stride == 0 {
+        return;
+    }
+    for row in 0..height {
+        let color = app_background_at(row, height);
+        let start = row.saturating_mul(stride);
+        if start >= buf.len() {
+            break;
+        }
+        let end = start.saturating_add(stride).min(buf.len());
+        for pixel in &mut buf[start..end] {
+            *pixel = color;
+        }
+    }
+}
+
+pub fn fill_rect(
+    buf: &mut [u32],
+    stride: usize,
+    height: usize,
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
+    color: u32,
+) {
+    if stride == 0 || w == 0 || h == 0 {
+        return;
+    }
+    for row in y..y.saturating_add(h).min(height) {
+        let start = row.saturating_mul(stride).saturating_add(x.min(stride));
+        if start >= buf.len() {
+            break;
+        }
+        let end = row
+            .saturating_mul(stride)
+            .saturating_add(x.saturating_add(w).min(stride))
+            .min(buf.len());
+        for pixel in &mut buf[start..end] {
+            *pixel = color;
+        }
+    }
+}
+
+pub fn draw_rect_border(
+    buf: &mut [u32],
+    stride: usize,
+    height: usize,
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
+    color: u32,
+) {
+    if w == 0 || h == 0 {
+        return;
+    }
+    fill_rect(buf, stride, height, x, y, w, 1, color);
+    fill_rect(buf, stride, height, x, y + h.saturating_sub(1), w, 1, color);
+    fill_rect(buf, stride, height, x, y, 1, h, color);
+    fill_rect(buf, stride, height, x + w.saturating_sub(1), y, 1, h, color);
+}
+
+pub fn draw_glass_panel(
+    buf: &mut [u32],
+    stride: usize,
+    height: usize,
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
+    accent: u32,
+) {
+    if w == 0 || h == 0 {
+        return;
+    }
+    fill_rect(buf, stride, height, x, y, w, h, CARD_SURFACE);
+    if h > 1 {
+        fill_rect(buf, stride, height, x, y, w, 1, accent);
+    }
+    draw_rect_border(buf, stride, height, x, y, w, h, BORDER);
+    if w > 2 && h > 2 {
+        draw_rect_border(buf, stride, height, x + 1, y + 1, w - 2, h - 2, DIVIDER);
+    }
+}
+
+pub fn draw_control(
+    buf: &mut [u32],
+    stride: usize,
+    height: usize,
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
+    active: bool,
+) {
+    let fill = if active { CONTROL_HOVER } else { CONTROL_FILL };
+    let border = if active { INPUT_FOCUS } else { BORDER };
+    fill_rect(buf, stride, height, x, y, w, h, fill);
+    draw_rect_border(buf, stride, height, x, y, w, h, border);
+    if h > 2 {
+        fill_rect(
+            buf,
+            stride,
+            height,
+            x,
+            y,
+            w,
+            1,
+            if active { ACCENT_HOVER } else { ACCENT },
+        );
+    }
+}

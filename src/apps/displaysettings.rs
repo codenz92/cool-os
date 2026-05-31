@@ -11,8 +11,6 @@ use crate::wm::window::{Window, TITLE_H};
 pub const DISPLAY_SETTINGS_W: i32 = 520;
 pub const DISPLAY_SETTINGS_H: i32 = 388;
 
-const BG_A: u32 = theme::BG_TOP;
-const BG_B: u32 = theme::BG_BOTTOM;
 const PANEL: u32 = theme::CARD_SURFACE;
 const PANEL_ALT: u32 = theme::CONTROL_FILL;
 const BORDER: u32 = theme::BORDER;
@@ -654,21 +652,16 @@ impl DisplaySettingsApp {
         for (idx, (page, label)) in SETTINGS_PAGES.iter().enumerate() {
             let x = TAB_X + idx * TAB_STEP;
             let active = *page == self.page;
-            self.fill_rect(
+            let content_h = (self.window.height - TITLE_H).max(0) as usize;
+            theme::draw_control(
+                &mut self.window.buf,
                 stride,
+                content_h,
                 x,
                 TAB_Y,
                 TAB_W,
                 TAB_H,
-                if active { ACCENT } else { PANEL },
-            );
-            self.draw_rect_border(
-                stride,
-                x,
-                TAB_Y,
-                TAB_W,
-                TAB_H,
-                if active { WHITE } else { BORDER },
+                active,
             );
             self.put_str(
                 stride,
@@ -712,13 +705,20 @@ impl DisplaySettingsApp {
         label: &str,
         active: bool,
     ) {
-        self.fill_rect(stride, x, y, w, 22, PANEL);
-        self.draw_rect_border(stride, x, y, w, 22, BORDER);
+        let content_h = (self.window.height - TITLE_H).max(0) as usize;
+        theme::draw_control(&mut self.window.buf, stride, content_h, x, y, w, 22, false);
         self.put_str(stride, x + 12, y + 7, label, WHITE);
         let pill_x = x + w.saturating_sub(62);
         let pill_bg = if active { ACCENT } else { ACCENT_DIM };
         self.fill_rect(stride, pill_x, y + 4, 46, 14, pill_bg);
-        self.draw_rect_border(stride, pill_x, y + 4, 46, 14, WHITE);
+        self.draw_rect_border(
+            stride,
+            pill_x,
+            y + 4,
+            46,
+            14,
+            if active { WHITE } else { DIVIDER },
+        );
         self.put_str(
             stride,
             pill_x + 11,
@@ -729,9 +729,8 @@ impl DisplaySettingsApp {
     }
 
     fn draw_button(&mut self, stride: usize, x: usize, y: usize, w: usize, label: &str) {
-        self.fill_rect(stride, x, y, w, 22, PANEL_ALT);
-        self.draw_rect_border(stride, x, y, w, 22, BORDER);
-        self.fill_rect(stride, x, y, w, 2, ACCENT);
+        let content_h = (self.window.height - TITLE_H).max(0) as usize;
+        theme::draw_control(&mut self.window.buf, stride, content_h, x, y, w, 22, false);
         self.put_str(stride, x + 8, y + 7, label, WHITE);
     }
 
@@ -751,21 +750,16 @@ impl DisplaySettingsApp {
         {
             let bx = x + idx * (button_w + 10);
             let active = *mode == current;
-            self.fill_rect(
+            let content_h = (self.window.height - TITLE_H).max(0) as usize;
+            theme::draw_control(
+                &mut self.window.buf,
                 stride,
+                content_h,
                 bx,
                 y,
                 button_w,
                 20,
-                if active { ACCENT } else { PANEL },
-            );
-            self.draw_rect_border(
-                stride,
-                bx,
-                y,
-                button_w,
-                20,
-                if active { WHITE } else { BORDER },
+                active,
             );
             self.put_str(
                 stride,
@@ -805,21 +799,13 @@ impl DisplaySettingsApp {
     }
 
     fn draw_panel(&mut self, stride: usize, x: usize, y: usize, w: usize, h: usize) {
-        if w == 0 || h == 0 {
-            return;
-        }
-        self.fill_rect(stride, x, y, w, h, PANEL);
-        self.draw_rect_border(stride, x, y, w, h, BORDER);
-        if h > 2 && w > 2 {
-            self.draw_rect_border(stride, x + 1, y + 1, w - 2, h - 2, DIVIDER);
-        }
+        let content_h = (self.window.height - TITLE_H).max(0) as usize;
+        theme::draw_glass_panel(&mut self.window.buf, stride, content_h, x, y, w, h, ACCENT);
     }
 
     fn fill_background(&mut self, stride: usize) {
-        for (idx, pixel) in self.window.buf.iter_mut().enumerate() {
-            let py = idx / stride;
-            *pixel = if py % 10 < 5 { BG_A } else { BG_B };
-        }
+        let content_h = (self.window.height - TITLE_H).max(0) as usize;
+        theme::fill_app_background(&mut self.window.buf, stride, content_h);
     }
 
     fn fill_rect(&mut self, stride: usize, x: usize, y: usize, w: usize, h: usize, color: u32) {

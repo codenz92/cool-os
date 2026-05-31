@@ -52,7 +52,6 @@ const MAX_FORM_CONTROLS: usize = 96;
 const MAX_FORM_OPTIONS: usize = 16;
 const MAX_FORM_VALUE: usize = 192;
 
-const BG: u32 = theme::BG_DEEP;
 const PAGE: u32 = 0x00_F2_F6_F8;
 const TEXT: u32 = 0x00_12_1A_22;
 const LINK: u32 = 0x00_0A_66_BB;
@@ -63,7 +62,6 @@ const CHROME_TEXT: u32 = theme::TEXT;
 const CHROME_MUTED: u32 = theme::TEXT_MUTED;
 const ADDRESS_BG: u32 = theme::FIELD;
 const ADDRESS_SELECTED: u32 = theme::SELECTION_GLOW;
-const BUTTON: u32 = theme::CONTROL_FILL;
 const BUTTON_DIM: u32 = theme::CONTROL_DISABLED;
 const BUTTON_HOT: u32 = theme::INPUT_FOCUS;
 const WHITE: u32 = 0x00_FF_FF_FF;

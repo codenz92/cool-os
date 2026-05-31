@@ -15,8 +15,6 @@ const FOOTER_H: usize = 18;
 const PAD_X: usize = 18;
 const GLYPH_Y_INSET: usize = 1;
 
-const BG_A: u32 = theme::BG_TOP;
-const BG_B: u32 = theme::BG_BOTTOM;
 const PANEL: u32 = theme::CARD_SURFACE;
 const PANEL_ALT: u32 = theme::CONTROL_FILL;
 const PANEL_BORDER: u32 = theme::DIVIDER;
@@ -395,6 +393,16 @@ impl TextViewerApp {
             1,
             PANEL_BORDER,
         );
+        theme::draw_glass_panel(
+            &mut self.window.buf,
+            stride,
+            content_h,
+            PAD_X.saturating_sub(12),
+            text_y0.saturating_sub(6),
+            width.saturating_sub(PAD_X * 2),
+            text_h.saturating_add(8),
+            ACCENT,
+        );
         self.fill_rect(stride, PAD_X - 10, text_y0 - 2, 2, text_h, ACCENT);
 
         let heading = self.heading.clone();
@@ -461,10 +469,8 @@ impl TextViewerApp {
     }
 
     fn fill_background(&mut self, stride: usize) {
-        for (idx, pixel) in self.window.buf.iter_mut().enumerate() {
-            let py = idx / stride;
-            *pixel = if py % 12 < 6 { BG_A } else { BG_B };
-        }
+        let content_h = (self.window.height - TITLE_H).max(0) as usize;
+        theme::fill_app_background(&mut self.window.buf, stride, content_h);
     }
 
     fn fill_rect(&mut self, stride: usize, x: usize, y: usize, w: usize, h: usize, color: u32) {

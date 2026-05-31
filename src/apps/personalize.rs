@@ -6,9 +6,6 @@ use crate::wm::window::{Window, TITLE_H};
 pub const PERSONALIZE_W: i32 = 460;
 pub const PERSONALIZE_H: i32 = 300;
 
-const BG_A: u32 = theme::BG_TOP;
-const BG_B: u32 = theme::BG_BOTTOM;
-const PANEL: u32 = theme::CARD_SURFACE;
 const PANEL_ALT: u32 = theme::CONTROL_FILL;
 const BORDER: u32 = theme::BORDER;
 const DIVIDER: u32 = theme::DIVIDER;
@@ -100,16 +97,8 @@ impl PersonalizeApp {
     ) {
         let border = if selected { ACCENT } else { BORDER };
         let text = if selected { WHITE } else { LABEL };
-        self.fill_rect(stride, x, y, w, h, PANEL);
-        self.draw_rect_border(stride, x, y, w, h, border);
-        self.draw_rect_border(
-            stride,
-            x + 1,
-            y + 1,
-            w.saturating_sub(2),
-            h.saturating_sub(2),
-            DIVIDER,
-        );
+        let content_h = (self.window.height - TITLE_H).max(0) as usize;
+        theme::draw_glass_panel(&mut self.window.buf, stride, content_h, x, y, w, h, border);
 
         let preview_x = x + 12;
         let preview_y = y + 10;
@@ -161,10 +150,8 @@ impl PersonalizeApp {
     }
 
     fn fill_background(&mut self, stride: usize) {
-        for (idx, pixel) in self.window.buf.iter_mut().enumerate() {
-            let py = idx / stride;
-            *pixel = if py % 10 < 5 { BG_A } else { BG_B };
-        }
+        let content_h = (self.window.height - TITLE_H).max(0) as usize;
+        theme::fill_app_background(&mut self.window.buf, stride, content_h);
     }
 
     fn fill_rect(&mut self, stride: usize, x: usize, y: usize, w: usize, h: usize, color: u32) {

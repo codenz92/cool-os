@@ -11,11 +11,8 @@ pub const SYSMON_H: i32 = 340;
 const CHAR_W_SMALL: usize = 8;
 const CHAR_H_SMALL: usize = 8;
 
-const BG: u32 = theme::BG_TOP;
-const BG_ALT: u32 = theme::BG_BOTTOM;
 const PANEL_BG: u32 = theme::CARD_SURFACE;
 const PANEL_ALT: u32 = theme::CONTROL_FILL;
-const PANEL_BORDER: u32 = theme::BORDER;
 const PANEL_INNER: u32 = theme::DIVIDER;
 const LABEL: u32 = theme::TEXT;
 const MUTED: u32 = theme::TEXT_MUTED;
@@ -448,10 +445,12 @@ impl SysMonApp {
     }
 
     fn fill_background(&mut self, stride: usize) {
-        for (idx, pixel) in self.window.buf.iter_mut().enumerate() {
-            let py = idx / stride;
-            *pixel = if py % 12 < 6 { BG } else { BG_ALT };
-        }
+        let height = if stride > 0 {
+            self.window.buf.len() / stride
+        } else {
+            0
+        };
+        theme::fill_app_background(&mut self.window.buf, stride, height);
     }
 
     fn draw_card_frame(
@@ -463,11 +462,15 @@ impl SysMonApp {
         h: usize,
         accent: u32,
     ) {
-        self.fill_rect(stride, x, y, w, h, PANEL_BG);
-        self.fill_rect(stride, x, y, w, 3, accent);
-        self.fill_rect(stride, x + 1, y + 1, w - 2, h - 2, PANEL_ALT);
-        self.draw_rect_border(stride, x, y, w, h, PANEL_BORDER);
-        self.draw_rect_border(stride, x + 1, y + 1, w - 2, h - 2, PANEL_INNER);
+        let height = if stride > 0 {
+            self.window.buf.len() / stride
+        } else {
+            0
+        };
+        theme::draw_glass_panel(&mut self.window.buf, stride, height, x, y, w, h, accent);
+        if w > 4 && h > 4 {
+            self.fill_rect(stride, x + 2, y + 2, w - 4, 1, PANEL_ALT);
+        }
     }
 
     fn draw_bar(
@@ -536,8 +539,12 @@ impl SysMonApp {
         label: &str,
         accent: u32,
     ) {
-        self.fill_rect(stride, x, y, w, h, PANEL_ALT);
-        self.draw_rect_border(stride, x, y, w, h, PANEL_BORDER);
+        let height = if stride > 0 {
+            self.window.buf.len() / stride
+        } else {
+            0
+        };
+        theme::draw_control(&mut self.window.buf, stride, height, x, y, w, h, false);
         self.fill_rect(stride, x, y, w, 1, accent);
         self.put_str_px(stride, x + 6, y + 4, label, TEXT);
     }
