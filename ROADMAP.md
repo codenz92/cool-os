@@ -4,7 +4,7 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–76 are complete. The current milestone gives coolOS a much more
+Phases 1–81 are complete. The current milestone gives coolOS a much more
 normal command-line and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
@@ -90,7 +90,11 @@ arrays, and `/lib/libphase76*.so` smoke coverage. Phase 77 adds ABI v14
 `mmap_file(desc_ptr)`, read-only file-backed mappings, POSIX-shaped
 `open_flags`, VFS read-at mapping support, file-backed VMM diagnostics,
 read-only ET_DYN segment mapping, `/bin/mmapdemo`, and
-`make smoke-phase77-file-mmap`. Phases 45-77 focus on responsiveness,
+`make smoke-phase77-file-mmap`. Phase 80 adds the graphical first-boot owner
+setup flow, `/CONFIG/FIRSTBOOT.CFG`, and smoke coverage for wizard completion
+and persistence. Phase 81 hardens that lifecycle with admin/recovery reset and
+repair commands plus boot-time first-boot state reconciliation. Phases 45-81
+focus on responsiveness,
 interactive terminal behavior, and
 desktop-browser compatibility:
 cursor-only framebuffer updates,
@@ -2430,6 +2434,44 @@ future work.
 
 ---
 
+## ✅ Phase 80 — Installer and First Boot
+
+**Goal:** Make fresh interactive images create a real owner account instead of
+dropping users directly into the default development handoff.
+
+- [x] Gate startup auto-login when first-run setup is required.
+- [x] Add a graphical first-boot setup card for owner name, password,
+      confirmation, and optional device name.
+- [x] Complete setup through the existing `complete_first_run_admin` path.
+- [x] Persist `/CONFIG/FIRSTBOOT.CFG` with required/in-progress/complete state.
+- [x] Add `install status`, first-boot boot diagnostics, docs, and
+      `make smoke-phase80-firstboot`.
+
+**Current status:** complete. Fresh interactive boots now show the first-boot
+wizard, create the owner admin account, disable the default root/cool handoff,
+and continue into the normal desktop/login lifecycle.
+
+---
+
+## ✅ Phase 81 — First-Boot Recovery and Reset
+
+**Goal:** Make the Phase 80 setup lifecycle recoverable when setup is
+interrupted, intentionally reset for testing, or left in an inconsistent state.
+
+- [x] Add admin-only `install reset` and `install repair` commands.
+- [x] Add recovery-context `recovery firstboot status|reset|repair` commands.
+- [x] Restore the default development handoff when reset or when repair finds no
+      enabled admin path.
+- [x] Reconcile stale `/CONFIG/FIRSTBOOT.CFG` state during boot before the
+      greeter/setup UI is built.
+- [x] Add a reset helper target plus `make smoke-phase81-firstboot-recovery`.
+
+**Current status:** complete. First-boot state can now be inspected, reset, and
+repaired from both an admin session and the recovery surface, and normal boot
+repairs stale setup state before it can trap the user at a broken greeter.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable
@@ -2527,4 +2569,6 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.38 | Phase 74 complete: POSIX pthread and libc shim |
 | v7.39 | Phase 75 complete: dynamic loader foundation |
 | v7.40 | Phase 76 complete: dynamic linker dependencies and ELF TLS |
-| v7.41 | Current — Phase 77 complete: file-backed mmap and POSIX file runtime |
+| v7.41 | Phase 77 complete: file-backed mmap and POSIX file runtime |
+| v7.42 | Phase 80 complete: installer and first boot |
+| v7.43 | Current — Phase 81 complete: first-boot recovery and reset |

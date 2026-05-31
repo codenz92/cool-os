@@ -17,7 +17,7 @@ tables.
 
 ---
 
-# Current state — v7.42
+# Current state — v7.43
 
 The kernel boots into a graphical desktop at **1920×1080, 24bpp** via a
 `bootloader 0.11` linear framebuffer (VBE BIOS path). A terminal window opens
@@ -56,7 +56,8 @@ state without switching back to an admin session. Phase 31 adds a first-run
 admin handoff, account create/disable/role/password/delete flows, login
 throttling, and persistence smoke coverage for those account records; Phase 80
 adds the graphical first-boot installer flow on top of that existing security
-model. Phase 32
+model, and Phase 81 adds recovery/reset hardening so interrupted or inconsistent
+first-boot state can be inspected, reset, or repaired. Phase 32
 keeps copied kernel mappings supervisor-only for ring-3 tasks, removes broad
 lazy lower-half page allocation, and turns denied user pointers into task
 faults instead of kernel crashes. Phase 33 exposes process control through ABI
@@ -308,7 +309,7 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `hash <path>` | Print file length and byte-sum for storage checks |
 | `whoami` | Print current user and task capabilities |
 | `setup <user> <pass>` | Complete first-run admin setup and replace the default `root` handoff if needed |
-| `install [status]` | Report first-boot installer state and account setup status |
+| `install [status\|reset\|repair]` | Report, reset, or repair first-boot installer state; mutating operations require an admin session |
 | `account <op>` | Admin account management: `list`, `add`, `enable`, `disable`, `role`, `pass`, and `delete` |
 | `perm <path>` | Print owner, group, mode, type, and size |
 | `chmod <mode> <path>` | Change a CoolFS inode mode |
@@ -355,7 +356,7 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `compositor` | Print FPS, frame pacing, frame budget, damage, and cursor overlay telemetry |
 | `smoothness` | Alias for compositor pacing/latency telemetry |
 | `fsck` | Print CoolFS-root consistency plus optional legacy FAT32 import summary |
-| `recovery [repair\|rollback\|fsck-on-boot on\|fsck-on-boot off]` | Show recovery and boot-health status, write a repair report, roll back the last update, or toggle boot fsck |
+| `recovery [repair\|rollback\|firstboot status\|firstboot reset\|firstboot repair\|fsck-on-boot on\|fsck-on-boot off]` | Show recovery status, repair boot/first-boot state, roll back the last update, or toggle boot fsck |
 | `coolfs` | Print CoolFS root mount and inode/block usage |
 | `df` | Print CoolFS `/` and optional FAT32 `/FAT` used/free/total space |
 | `pkg [list\|keys\|history\|transaction\|info <id\|path>\|verify <id\|path>\|install <id\|path>\|remove <id>\|repair <id>\|run <id> [args...]]` | Inspect package trust keys, verify signed package archives or installed owner/payload records, inspect transaction state, install/remove/repair packages, and launch package apps. |
@@ -710,6 +711,14 @@ existing automated smokes use a QEMU fw_cfg smoke marker to keep legacy
 regression paths deterministic; `make smoke-phase80-firstboot` exercises the
 real wizard and persistence flow.
 
+**First-boot recovery and reset (Phase 81).** Admin sessions can use
+`install reset` to restore the default development handoff and make the next
+boot show the setup wizard again, or `install repair` to reconcile
+`/CONFIG/FIRSTBOOT.CFG` with the user database. The recovery surface mirrors
+that as `recovery firstboot status|reset|repair`, so a broken owner-account
+state can be recovered without hand-editing the disk image. Normal boots also
+repair stale completed/required state before the greeter is built.
+
 **User/kernel isolation hardening (Phase 32).** Process address spaces still
 copy the kernel's upper-half PML4 entries so syscall and interrupt entry can run
 without rebuilding mappings, but those copied entries stay supervisor-only for
@@ -925,7 +934,9 @@ cross-object dynsym resolution, ELF TLS records, `/lib/libphase76*.so`, and
 diagnostics, `/bin/mmapdemo`, and `make smoke-phase77-file-mmap`. Phase 80
 adds the graphical first-boot installer, `/CONFIG/FIRSTBOOT.CFG`,
 `install status`, and `make smoke-phase80-firstboot` for wizard, completion,
-and persistence coverage.
+and persistence coverage. Phase 81 adds `install reset|repair`, recovery
+first-boot reset/repair commands, boot-time state reconciliation, and
+`make smoke-phase81-firstboot-recovery`.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
@@ -1023,5 +1034,6 @@ while kernel faults still panic.
 | 76 | Dynamic linker dependencies and ELF TLS — `DT_NEEDED`, soname lookup, cross-object symbols, TLS records/relocations, dependency init order, and docs | **Done** |
 | 77 | File-backed mmap and POSIX file runtime — ABI v14 `mmap_file`, `open_flags`, read-only ET_DYN file maps, `/bin/mmapdemo`, and docs | **Done** |
 | 80 | Installer and first boot — graphical owner-account setup, `/CONFIG/FIRSTBOOT.CFG`, setup persistence, and Phase 80 smoke coverage | **Done** |
+| 81 | First-boot recovery and reset — admin/recovery reset, state repair, boot hardening, and Phase 81 smoke coverage | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

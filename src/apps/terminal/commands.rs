@@ -751,7 +751,7 @@ impl TerminalApp {
             ("fsck", "filesystem check summary"),
             ("coolfs", "CoolFS mount status"),
             ("fsrepair", "repair standard FS dirs"),
-            ("recovery [op]", "boot recovery status/repair"),
+            ("recovery [op]", "boot and first-boot recovery"),
             ("update <op>", "verify keys/stage/apply trusted updates"),
             ("mounts", "mount/cache/journal status"),
             ("vfs", "mount table and fd tables"),
@@ -783,7 +783,7 @@ impl TerminalApp {
             ("logout", "return to guest session"),
             ("passwd <old> <new>", "change current password"),
             ("setup <user> <pass>", "complete first-run admin setup"),
-            ("install [status]", "first-boot installer state"),
+            ("install [status|reset|repair]", "first-boot installer state"),
             ("account <op>", "admin user management"),
             ("umask [mode]", "view/set file creation mask"),
             ("users", "user/security status"),
@@ -1306,6 +1306,19 @@ impl TerminalApp {
     fn cmd_recovery(&mut self, args: Vec<&str>) {
         match args.as_slice() {
             ["repair"] => self.cmd_lines("RECOVERY REPAIR", crate::recovery::repair_lines()),
+            ["firstboot"] | ["firstboot", "status"] => {
+                self.cmd_lines("RECOVERY FIRSTBOOT", crate::recovery::firstboot_status_lines())
+            }
+            ["firstboot", "reset"] => {
+                self.cmd_lines("RECOVERY FIRSTBOOT", crate::recovery::firstboot_reset_lines())
+            }
+            ["firstboot", "repair"] => {
+                self.cmd_lines("RECOVERY FIRSTBOOT", crate::recovery::firstboot_repair_lines())
+            }
+            ["firstboot", ..] => {
+                self.set_fg(FG_ERROR);
+                self.print_str("usage: recovery firstboot [status|reset|repair]\n");
+            }
             ["rollback"] => {
                 if !self.require_admin("recovery") {
                     return;
@@ -1682,10 +1695,28 @@ impl TerminalApp {
 
     fn cmd_install(&mut self, op: Option<&str>) {
         match op.unwrap_or("status") {
-            "status" => self.cmd_lines("INSTALL", crate::security::lines()),
+            "status" => self.cmd_lines("INSTALL", crate::security::first_boot_status_lines()),
+            "reset" => {
+                if !self.require_admin("install") {
+                    return;
+                }
+                match crate::security::reset_first_boot_admin() {
+                    Ok(lines) => self.cmd_lines("INSTALL RESET", lines),
+                    Err(err) => self.print_account_error("install reset", err),
+                }
+            }
+            "repair" => {
+                if !self.require_admin("install") {
+                    return;
+                }
+                match crate::security::repair_first_boot_admin() {
+                    Ok(lines) => self.cmd_lines("INSTALL REPAIR", lines),
+                    Err(err) => self.print_account_error("install repair", err),
+                }
+            }
             _ => {
                 self.set_fg(FG_ERROR);
-                self.print_str("usage: install [status]\n");
+                self.print_str("usage: install [status|reset|repair]\n");
             }
         }
     }

@@ -243,23 +243,7 @@ pub fn first_boot_state() -> FirstBootState {
     if !first_run_required() {
         return FirstBootState::Complete;
     }
-    let Some(bytes) = crate::vfs::vfs_kernel_read_file(FIRST_BOOT_PATH) else {
-        return FirstBootState::Required;
-    };
-    let Ok(text) = core::str::from_utf8(&bytes) else {
-        return FirstBootState::Required;
-    };
-    for line in text.lines() {
-        let Some(value) = line.trim().strip_prefix("state=") else {
-            continue;
-        };
-        return match value.trim() {
-            "in_progress" => FirstBootState::InProgress,
-            "complete" => FirstBootState::Complete,
-            _ => FirstBootState::Required,
-        };
-    }
-    FirstBootState::Required
+    first_boot_file_state().unwrap_or(FirstBootState::Required)
 }
 
 pub fn mark_first_boot_in_progress() -> Result<(), crate::fat32::FsError> {
@@ -271,6 +255,109 @@ pub fn mark_first_boot_in_progress() -> Result<(), crate::fat32::FsError> {
 
 pub fn mark_first_boot_complete(user: &str, device: &str) -> Result<(), crate::fat32::FsError> {
     write_first_boot_state(FirstBootState::Complete, user, device)
+}
+
+pub fn mark_first_boot_required() -> Result<(), crate::fat32::FsError> {
+    write_first_boot_state(FirstBootState::Required, "", "")
+}
+
+pub fn enabled_admin_available() -> bool {
+    SECURITY
+        .lock()
+        .users
+        .iter()
+        .any(|user| user.login_enabled && is_admin_record(user))
+}
+
+pub fn first_boot_status_lines() -> Vec<String> {
+    let (users_total, enabled_admins, default_handoff) = {
+        let state = SECURITY.lock();
+        (
+            state.users.len(),
+            enabled_admin_count(&state.users),
+            state.users.iter().any(is_default_admin_password),
+        )
+    };
+    let file_state = first_boot_file_state();
+    let file_state_label = file_state.map(FirstBootState::as_str).unwrap_or("missing");
+    let first_run = first_run_required();
+    let repair_needed = enabled_admins == 0
+        || (first_run && matches!(file_state, Some(FirstBootState::Complete)))
+        || (!first_run && !matches!(file_state, Some(FirstBootState::Complete)));
+    alloc::vec![
+        format!(
+            "first-boot state={} file_state={} path={}",
+            first_boot_state().as_str(),
+            file_state_label,
+            FIRST_BOOT_PATH
+        ),
+        format!(
+            "first-run setup={}",
+            if first_run { "required" } else { "complete" }
+        ),
+        format!("users={} enabled_admins={}", users_total, enabled_admins),
+        format!(
+            "default_handoff={}",
+            if default_handoff {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        ),
+        format!(
+            "repair={}",
+            if repair_needed {
+                "needed"
+            } else {
+                "not-needed"
+            }
+        ),
+    ]
+}
+
+pub fn reset_first_boot_admin() -> Result<Vec<String>, AccountError> {
+    require_admin_account()?;
+    reset_first_boot_unchecked("admin")
+}
+
+pub fn repair_first_boot_admin() -> Result<Vec<String>, AccountError> {
+    require_admin_account()?;
+    repair_first_boot_unchecked("admin")
+}
+
+pub fn reset_first_boot_recovery_lines() -> Vec<String> {
+    result_lines(reset_first_boot_unchecked("recovery"), "first-boot reset")
+}
+
+pub fn repair_first_boot_recovery_lines() -> Vec<String> {
+    result_lines(repair_first_boot_unchecked("recovery"), "first-boot repair")
+}
+
+pub fn ensure_first_boot_boot_consistency() -> Vec<String> {
+    if !enabled_admin_available() {
+        return result_lines(
+            repair_first_boot_unchecked("boot"),
+            "first-boot boot-repair",
+        );
+    }
+    if first_run_required() && matches!(first_boot_file_state(), Some(FirstBootState::Complete)) {
+        let mut lines = Vec::new();
+        match mark_first_boot_required() {
+            Ok(()) => lines.push(String::from("first-boot repaired state=required")),
+            Err(err) => lines.push(format!("first-boot repair failed: {}", err.as_str())),
+        }
+        return lines;
+    }
+    if !first_run_required() && !matches!(first_boot_file_state(), Some(FirstBootState::Complete)) {
+        let owner = preferred_admin_name();
+        let mut lines = Vec::new();
+        match mark_first_boot_complete(&owner, "") {
+            Ok(()) => lines.push(format!("first-boot repaired state=complete user={}", owner)),
+            Err(err) => lines.push(format!("first-boot repair failed: {}", err.as_str())),
+        }
+        return lines;
+    }
+    Vec::new()
 }
 
 #[allow(dead_code)]
@@ -937,6 +1024,122 @@ fn require_admin_account() -> Result<(), AccountError> {
     require_admin().map_err(|_| AccountError::PermissionDenied)
 }
 
+fn result_lines(result: Result<Vec<String>, AccountError>, label: &str) -> Vec<String> {
+    match result {
+        Ok(lines) => lines,
+        Err(err) => alloc::vec![format!("{}: {}", label, err.as_str())],
+    }
+}
+
+fn reset_first_boot_unchecked(context: &str) -> Result<Vec<String>, AccountError> {
+    let restored = restore_default_handoff()?;
+    mark_first_boot_required().map_err(|_| AccountError::Io)?;
+    let mut lines = alloc::vec![
+        format!("first-boot reset context={}", context),
+        format!(
+            "default_handoff={}",
+            if restored {
+                "restored"
+            } else {
+                "already-enabled"
+            }
+        ),
+        String::from("state=required"),
+    ];
+    lines.extend(first_boot_status_lines());
+    Ok(lines)
+}
+
+fn repair_first_boot_unchecked(context: &str) -> Result<Vec<String>, AccountError> {
+    let mut lines = alloc::vec![format!("first-boot repair context={}", context)];
+    let first_run = first_run_required();
+    let file_state = first_boot_file_state();
+    let enabled_admins = {
+        let state = SECURITY.lock();
+        enabled_admin_count(&state.users)
+    };
+    let mut changed = false;
+
+    if enabled_admins == 0 {
+        restore_default_handoff()?;
+        mark_first_boot_required().map_err(|_| AccountError::Io)?;
+        lines.push(String::from("repair=restored-default-handoff"));
+        changed = true;
+    } else if first_run && matches!(file_state, Some(FirstBootState::Complete)) {
+        mark_first_boot_required().map_err(|_| AccountError::Io)?;
+        lines.push(String::from("repair=state-complete-to-required"));
+        changed = true;
+    } else if !first_run && !matches!(file_state, Some(FirstBootState::Complete)) {
+        let owner = preferred_admin_name();
+        mark_first_boot_complete(&owner, "").map_err(|_| AccountError::Io)?;
+        lines.push(format!("repair=state-to-complete user={}", owner));
+        changed = true;
+    }
+
+    if !changed {
+        lines.push(String::from("repair=no-changes"));
+    }
+    lines.extend(first_boot_status_lines());
+    Ok(lines)
+}
+
+fn restore_default_handoff() -> Result<bool, AccountError> {
+    let default_root = default_admin_user();
+    let default_guest = default_guest_user();
+    let mut changed = false;
+    {
+        let mut state = SECURITY.lock();
+        let root_idx = state
+            .users
+            .iter()
+            .position(|user| user.uid == USER_UID || user.name.eq_ignore_ascii_case("root"));
+        match root_idx {
+            Some(idx) => {
+                if !same_user_record(&state.users[idx], &default_root) {
+                    state.users[idx] = default_root;
+                    changed = true;
+                }
+            }
+            None => {
+                state.users.push(default_root);
+                changed = true;
+            }
+        }
+        if !state.users.iter().any(|user| user.uid == GUEST_UID) {
+            state.users.push(default_guest);
+            changed = true;
+        }
+        if changed {
+            state.revision = state.revision.wrapping_add(1);
+        }
+    }
+    if changed {
+        persist_users().map_err(|_| AccountError::Io)?;
+        ensure_home_dirs();
+    }
+    Ok(changed)
+}
+
+fn same_user_record(a: &UserRecord, b: &UserRecord) -> bool {
+    a.name == b.name
+        && a.role == b.role
+        && a.uid == b.uid
+        && a.gid == b.gid
+        && a.home == b.home
+        && a.pass_hash == b.pass_hash
+        && a.login_enabled == b.login_enabled
+}
+
+fn preferred_admin_name() -> String {
+    SECURITY
+        .lock()
+        .users
+        .iter()
+        .find(|user| user.login_enabled && is_admin_record(user))
+        .map(|user| user.name.clone())
+        .unwrap_or_else(|| String::from("root"))
+}
+
 fn default_session_user(users: &[UserRecord]) -> UserRecord {
     users
         .iter()
@@ -1270,6 +1473,23 @@ fn write_first_boot_state(
     }
     let _ = crate::vfs::vfs_kernel_create_dir("/CONFIG");
     crate::vfs::vfs_kernel_safe_write_file(FIRST_BOOT_PATH, out.as_bytes())
+}
+
+fn first_boot_file_state() -> Option<FirstBootState> {
+    let bytes = crate::vfs::vfs_kernel_read_file(FIRST_BOOT_PATH)?;
+    let text = core::str::from_utf8(&bytes).ok()?;
+    for line in text.lines() {
+        let Some(value) = line.trim().strip_prefix("state=") else {
+            continue;
+        };
+        return Some(match value.trim() {
+            "in_progress" => FirstBootState::InProgress,
+            "complete" => FirstBootState::Complete,
+            "required" => FirstBootState::Required,
+            _ => FirstBootState::Required,
+        });
+    }
+    None
 }
 
 fn push_safe_config_value(out: &mut String, value: &str) {

@@ -7,7 +7,7 @@ const README_PATH: &str = "/RECOVERY/README.TXT";
 const BOOT_CFG_PATH: &str = "/RECOVERY/BOOT.CFG";
 const LAST_REPAIR_PATH: &str = "/RECOVERY/LAST-REPAIR.TXT";
 
-const README: &[u8] = b"coolOS recovery\n\nCommands:\n  recovery\n  recovery repair\n  recovery rollback\n  recovery fsck-on-boot on\n  recovery fsck-on-boot off\n\nThe normal boot path is BIOS VBE framebuffer + IDE CoolFS root. Keep this directory on the root filesystem so recovery instructions survive package, update, and user changes.\n";
+const README: &[u8] = b"coolOS recovery\n\nCommands:\n  recovery\n  recovery repair\n  recovery rollback\n  recovery firstboot status\n  recovery firstboot reset\n  recovery firstboot repair\n  recovery fsck-on-boot on\n  recovery fsck-on-boot off\n\nThe normal boot path is BIOS VBE framebuffer + IDE CoolFS root. Keep this directory on the root filesystem so recovery instructions survive package, update, and user changes.\n";
 
 const BOOT_CFG: &[u8] = b"boot=normal\nroot=/\nrootfs=coolfs\nvideo=bios-vbe\nstorage=ide1\nrecovery_command=recovery repair\n";
 
@@ -37,6 +37,7 @@ pub fn status_lines() -> Vec<String> {
     lines.extend(crate::updates::recovery_lines());
     lines.extend(crate::packages::recovery_lines());
     lines.extend(crate::browser_engine::recovery_lines());
+    lines.extend(crate::security::first_boot_status_lines());
     lines
 }
 
@@ -48,6 +49,7 @@ pub fn repair_lines() -> Vec<String> {
     let update_recovery = crate::updates::recovery_lines();
     let package_recovery = crate::packages::recovery_lines();
     let browser_engine_recovery = crate::browser_engine::recovery_lines();
+    let firstboot_recovery = crate::security::repair_first_boot_recovery_lines();
     let mut report = String::from("coolOS recovery repair report\n");
     report.push_str("boot=BIOS/VBE root=/ type=coolfs\n");
     for line in &repair {
@@ -74,6 +76,10 @@ pub fn repair_lines() -> Vec<String> {
         report.push_str(line);
         report.push('\n');
     }
+    for line in &firstboot_recovery {
+        report.push_str(line);
+        report.push('\n');
+    }
     let write_result = write_file(LAST_REPAIR_PATH, report.as_bytes());
 
     let mut lines = alloc::vec![
@@ -86,11 +92,24 @@ pub fn repair_lines() -> Vec<String> {
     lines.extend(update_recovery);
     lines.extend(package_recovery);
     lines.extend(browser_engine_recovery);
+    lines.extend(firstboot_recovery);
     match write_result {
         Ok(()) => lines.push(format!("wrote {}", LAST_REPAIR_PATH)),
         Err(err) => lines.push(format!("write {}: {}", LAST_REPAIR_PATH, err.as_str())),
     }
     lines
+}
+
+pub fn firstboot_status_lines() -> Vec<String> {
+    crate::security::first_boot_status_lines()
+}
+
+pub fn firstboot_reset_lines() -> Vec<String> {
+    crate::security::reset_first_boot_recovery_lines()
+}
+
+pub fn firstboot_repair_lines() -> Vec<String> {
+    crate::security::repair_first_boot_recovery_lines()
 }
 
 pub fn set_fsck_on_boot(enabled: bool) -> Vec<String> {

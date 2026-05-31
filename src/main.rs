@@ -180,6 +180,12 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     fs_hardening::init();
     event_bus::emit("boot", "heap", "kernel heap online");
     security::init();
+    let smoke_mode = fw_cfg::smoke_mode();
+    if !smoke_mode {
+        for line in security::ensure_first_boot_boot_consistency() {
+            println!("[install] {}", line);
+        }
+    }
     settings_state::init();
     if settings_state::snapshot().storage_fsck_on_boot {
         for line in fs_hardening::repair() {
@@ -271,7 +277,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         "[ui] ready pinned={}",
         app_lifecycle::pinned_order_summary()
     );
-    let first_boot_required = security::first_run_required() && !fw_cfg::smoke_mode();
+    let first_boot_required = security::first_run_required() && !smoke_mode;
     if first_boot_required {
         let _ = security::mark_first_boot_in_progress();
         println!("[boot] first boot ready");
