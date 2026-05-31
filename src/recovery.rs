@@ -149,7 +149,7 @@ fn root_storage_label() -> String {
             "{}:lba{}{}",
             root.device.name(),
             root.base_lba,
-            if root.partitioned { ":mbr-coolfs" } else { "" }
+            root.layout.suffix()
         );
     }
     String::from("unresolved")

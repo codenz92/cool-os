@@ -10,12 +10,53 @@ const COOLFS_PARTITION_INDEX: usize = 2;
 const GUI_INSTALL_SECTOR_BUDGET: u32 = 8192;
 const ROOT_METADATA_REFRESH_SECTORS: u32 = 128;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum InstallLayoutKind {
+    BiosMbr,
+    UefiGpt,
+}
+
+impl InstallLayoutKind {
+    pub const fn label(self) -> &'static str {
+        match self {
+            InstallLayoutKind::BiosMbr => "self-boot",
+            InstallLayoutKind::UefiGpt => "uefi-gpt",
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct InstallLayout {
+    pub kind: InstallLayoutKind,
+    pub boot_start_lba: u32,
     pub boot_copy_sectors: u32,
     pub root_start_lba: u32,
     pub root_sectors: u32,
     pub total_required_sectors: u32,
+    pub target_sectors: u32,
+}
+
+impl InstallLayout {
+    fn source_boot_lba(self, offset: u32) -> Option<u32> {
+        match self.kind {
+            InstallLayoutKind::BiosMbr => Some(offset),
+            InstallLayoutKind::UefiGpt => self.boot_start_lba.checked_add(offset),
+        }
+    }
+
+    fn target_boot_lba(self, offset: u32) -> Option<u32> {
+        match self.kind {
+            InstallLayoutKind::BiosMbr => Some(offset),
+            InstallLayoutKind::UefiGpt => self.boot_start_lba.checked_add(offset),
+        }
+    }
+
+    fn boot_verify_start(self) -> u32 {
+        match self.kind {
+            InstallLayoutKind::BiosMbr => 1,
+            InstallLayoutKind::UefiGpt => 0,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -25,6 +66,8 @@ pub enum TargetState {
     DirectCoolFs,
     Mbr,
     SelfBoot,
+    Gpt,
+    UefiSelfBoot,
     Unknown,
 }
 
@@ -36,6 +79,8 @@ impl TargetState {
             TargetState::DirectCoolFs => "direct-coolfs",
             TargetState::Mbr => "mbr",
             TargetState::SelfBoot => "self-boot",
+            TargetState::Gpt => "gpt",
+            TargetState::UefiSelfBoot => "uefi-self-boot",
             TargetState::Unknown => "unknown",
         }
     }
@@ -62,10 +107,10 @@ pub struct InstallPlan {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum InstallerJobPhase {
     CopyBoot,
-    PatchMbr,
+    PatchLayout,
     CopyRoot,
     Flush,
-    VerifyMbr,
+    VerifyLayout,
     VerifyBoot,
     VerifyRoot,
     Complete,
@@ -76,10 +121,10 @@ impl InstallerJobPhase {
     pub const fn label(self) -> &'static str {
         match self {
             InstallerJobPhase::CopyBoot => "Copying boot files",
-            InstallerJobPhase::PatchMbr => "Writing installer layout",
+            InstallerJobPhase::PatchLayout => "Writing installer layout",
             InstallerJobPhase::CopyRoot => "Copying coolOS root",
             InstallerJobPhase::Flush => "Flushing target disk",
-            InstallerJobPhase::VerifyMbr => "Verifying boot layout",
+            InstallerJobPhase::VerifyLayout => "Verifying boot layout",
             InstallerJobPhase::VerifyBoot => "Verifying boot files",
             InstallerJobPhase::VerifyRoot => "Verifying coolOS root",
             InstallerJobPhase::Complete => "Installation complete",
@@ -249,14 +294,7 @@ pub fn install_to_device(target: IdeDevice) -> Vec<String> {
         target.name(),
         plan.target_sectors
     ));
-    lines.push(format!(
-        "layout=self-boot mbr_type=0x{:02x} boot_copy_sectors={} root_start_lba={} root_sectors={} required_sectors={}",
-        crate::disk_layout::COOLFS_PARTITION_TYPE,
-        layout.boot_copy_sectors,
-        layout.root_start_lba,
-        layout.root_sectors,
-        layout.total_required_sectors
-    ));
+    lines.push(format_layout_line(layout));
 
     let mut sector = [0u8; 512];
     lines.push(format!(
@@ -264,12 +302,23 @@ pub fn install_to_device(target: IdeDevice) -> Vec<String> {
         layout.boot_copy_sectors
     ));
     for lba in 0..layout.boot_copy_sectors {
-        if !crate::ata::read_sector_from(BOOT_DEVICE, lba, &mut sector) {
-            lines.push(format!("install: boot read failed lba={}", lba));
+        let Some(source_lba) = layout.source_boot_lba(lba) else {
+            lines.push(format!("install: source boot LBA overflow offset={}", lba));
+            return lines;
+        };
+        let Some(target_lba) = layout.target_boot_lba(lba) else {
+            lines.push(format!("install: target boot LBA overflow offset={}", lba));
+            return lines;
+        };
+        if !crate::ata::read_sector_from(BOOT_DEVICE, source_lba, &mut sector) {
+            lines.push(format!("install: boot read failed lba={}", source_lba));
             return lines;
         }
-        if !crate::ata::write_sector_to(target, lba, &sector) {
-            lines.push(format!("install: target boot write failed lba={}", lba));
+        if !crate::ata::write_sector_to(target, target_lba, &sector) {
+            lines.push(format!(
+                "install: target boot write failed lba={}",
+                target_lba
+            ));
             return lines;
         }
     }
@@ -278,7 +327,7 @@ pub fn install_to_device(target: IdeDevice) -> Vec<String> {
         layout.boot_copy_sectors
     ));
 
-    if !write_target_mbr(target, layout, &mut lines) {
+    if !write_target_layout(target, layout, &mut lines) {
         return lines;
     }
 
@@ -369,21 +418,34 @@ fn verify_self_boot_device(
     lines: &mut Vec<String>,
 ) -> bool {
     lines.push(format!(
-        "verify started layout=self-boot boot_sectors={} root_sectors={}",
-        layout.boot_copy_sectors, layout.root_sectors
+        "verify started layout={} boot_sectors={} root_sectors={}",
+        layout.kind.label(),
+        layout.boot_copy_sectors,
+        layout.root_sectors
     ));
-    if !verify_target_mbr(target, layout, lines) {
+    if !verify_target_layout(target, layout, lines) {
         return false;
     }
     let mut source = [0u8; 512];
     let mut dest = [0u8; 512];
-    for lba in 1..layout.boot_copy_sectors {
-        if !crate::ata::read_sector_from(BOOT_DEVICE, lba, &mut source) {
-            lines.push(format!("verify: boot read failed lba={}", lba));
+    for lba in layout.boot_verify_start()..layout.boot_copy_sectors {
+        let Some(source_lba) = layout.source_boot_lba(lba) else {
+            lines.push(format!("verify: source boot LBA overflow offset={}", lba));
+            return false;
+        };
+        let Some(target_lba) = layout.target_boot_lba(lba) else {
+            lines.push(format!("verify: target boot LBA overflow offset={}", lba));
+            return false;
+        };
+        if !crate::ata::read_sector_from(BOOT_DEVICE, source_lba, &mut source) {
+            lines.push(format!("verify: boot read failed lba={}", source_lba));
             return false;
         }
-        if !crate::ata::read_sector_from(target, lba, &mut dest) {
-            lines.push(format!("verify: target boot read failed lba={}", lba));
+        if !crate::ata::read_sector_from(target, target_lba, &mut dest) {
+            lines.push(format!(
+                "verify: target boot read failed lba={}",
+                target_lba
+            ));
             return false;
         }
         if source != dest {
@@ -415,8 +477,10 @@ fn verify_self_boot_device(
         }
     }
     lines.push(format!(
-        "verify=ok layout=self-boot boot_sectors={} root_sectors={}",
-        layout.boot_copy_sectors, layout.root_sectors
+        "verify=ok layout={} boot_sectors={} root_sectors={}",
+        layout.kind.label(),
+        layout.boot_copy_sectors,
+        layout.root_sectors
     ));
     true
 }
@@ -428,7 +492,11 @@ impl InstallerJob {
             .saturating_add(layout.root_sectors)
             .saturating_add(1)
             .saturating_add(1)
-            .saturating_add(layout.boot_copy_sectors.saturating_sub(1))
+            .saturating_add(
+                layout
+                    .boot_copy_sectors
+                    .saturating_sub(layout.boot_verify_start()),
+            )
             .saturating_add(layout.root_sectors)
             .max(1);
         Self {
@@ -499,20 +567,28 @@ impl InstallerJob {
             match self.phase {
                 InstallerJobPhase::CopyBoot => {
                     if self.cursor >= self.layout.boot_copy_sectors {
-                        self.phase = InstallerJobPhase::PatchMbr;
+                        self.phase = InstallerJobPhase::PatchLayout;
                         self.cursor = 0;
                         self.message = String::from("Boot files copied");
                         changed = true;
                         continue;
                     }
                     let lba = self.cursor;
-                    if !crate::ata::read_sector_from(BOOT_DEVICE, lba, &mut source) {
-                        self.fail(format!("boot read failed lba={}", lba));
+                    let Some(source_lba) = self.layout.source_boot_lba(lba) else {
+                        self.fail(format!("source boot LBA overflow offset={}", lba));
+                        return true;
+                    };
+                    let Some(target_lba) = self.layout.target_boot_lba(lba) else {
+                        self.fail(format!("target boot LBA overflow offset={}", lba));
+                        return true;
+                    };
+                    if !crate::ata::read_sector_from(BOOT_DEVICE, source_lba, &mut source) {
+                        self.fail(format!("boot read failed lba={}", source_lba));
                         return true;
                     }
                     self.boot_checksums.push(sector_checksum(&source));
-                    if !crate::ata::write_sector_to(self.target, lba, &source) {
-                        self.fail(format!("target boot write failed lba={}", lba));
+                    if !crate::ata::write_sector_to(self.target, target_lba, &source) {
+                        self.fail(format!("target boot write failed lba={}", target_lba));
                         return true;
                     }
                     self.cursor = self.cursor.saturating_add(1);
@@ -524,13 +600,13 @@ impl InstallerJob {
                     remaining -= 1;
                     changed = true;
                 }
-                InstallerJobPhase::PatchMbr => {
+                InstallerJobPhase::PatchLayout => {
                     let mut lines = Vec::new();
-                    if !write_target_mbr(self.target, self.layout, &mut lines) {
+                    if !write_target_layout(self.target, self.layout, &mut lines) {
                         let message = lines
                             .last()
                             .cloned()
-                            .unwrap_or_else(|| String::from("target MBR write failed"));
+                            .unwrap_or_else(|| String::from("target layout write failed"));
                         self.fail(message);
                         return true;
                     }
@@ -577,7 +653,7 @@ impl InstallerJob {
                 InstallerJobPhase::Flush => {
                     if crate::ata::flush_device(self.target) {
                         self.completed_units = self.completed_units.saturating_add(1);
-                        self.phase = InstallerJobPhase::VerifyMbr;
+                        self.phase = InstallerJobPhase::VerifyLayout;
                         self.cursor = 0;
                         self.message = String::from("Target disk flushed");
                         changed = true;
@@ -586,19 +662,19 @@ impl InstallerJob {
                         return true;
                     }
                 }
-                InstallerJobPhase::VerifyMbr => {
+                InstallerJobPhase::VerifyLayout => {
                     let mut lines = Vec::new();
-                    if !verify_target_mbr(self.target, self.layout, &mut lines) {
+                    if !verify_target_layout(self.target, self.layout, &mut lines) {
                         let message = lines
                             .last()
                             .cloned()
-                            .unwrap_or_else(|| String::from("target MBR verify failed"));
+                            .unwrap_or_else(|| String::from("target layout verify failed"));
                         self.fail(message);
                         return true;
                     }
                     self.completed_units = self.completed_units.saturating_add(1);
                     self.phase = InstallerJobPhase::VerifyBoot;
-                    self.cursor = 1;
+                    self.cursor = self.layout.boot_verify_start();
                     self.message = String::from("Boot layout verified");
                     changed = true;
                 }
@@ -611,8 +687,12 @@ impl InstallerJob {
                         continue;
                     }
                     let lba = self.cursor;
-                    if !crate::ata::read_sector_from(self.target, lba, &mut dest) {
-                        self.fail(format!("target boot verify read failed lba={}", lba));
+                    let Some(target_lba) = self.layout.target_boot_lba(lba) else {
+                        self.fail(format!("target boot verify LBA overflow offset={}", lba));
+                        return true;
+                    };
+                    if !crate::ata::read_sector_from(self.target, target_lba, &mut dest) {
+                        self.fail(format!("target boot verify read failed lba={}", target_lba));
                         return true;
                     }
                     let expected = self
@@ -713,6 +793,16 @@ fn compute_install_layout(
     root_sectors: u32,
     target_sectors: u32,
 ) -> Result<InstallLayout, &'static str> {
+    if let Some(esp) = source_esp_partition() {
+        return compute_uefi_install_layout(esp, root_sectors, target_sectors);
+    }
+    compute_bios_install_layout(root_sectors, target_sectors)
+}
+
+fn compute_bios_install_layout(
+    root_sectors: u32,
+    target_sectors: u32,
+) -> Result<InstallLayout, &'static str> {
     let mut boot_mbr = [0u8; 512];
     if !crate::ata::read_sector_from(BOOT_DEVICE, 0, &mut boot_mbr) {
         return Err("boot MBR read failed");
@@ -735,11 +825,69 @@ fn compute_install_layout(
         return Err("target too small");
     }
     Ok(InstallLayout {
+        kind: InstallLayoutKind::BiosMbr,
+        boot_start_lba: 0,
         boot_copy_sectors: boot_end,
         root_start_lba,
         root_sectors,
         total_required_sectors,
+        target_sectors,
     })
+}
+
+fn compute_uefi_install_layout(
+    esp: crate::disk_layout::GptPartition,
+    root_sectors: u32,
+    target_sectors: u32,
+) -> Result<InstallLayout, &'static str> {
+    let Some(esp_sectors) = esp.sectors() else {
+        return Err("source ESP layout overflow");
+    };
+    let Some(esp_end) = esp.end_lba() else {
+        return Err("source ESP layout overflow");
+    };
+    let minimum_esp_start =
+        crate::disk_layout::GPT_PRIMARY_ENTRIES_LBA + crate::disk_layout::GPT_ENTRY_SECTORS;
+    if esp.starting_lba < minimum_esp_start {
+        return Err("source ESP overlaps GPT metadata");
+    }
+    let Some(root_start_lba) =
+        crate::disk_layout::align_up_lba(esp_end, crate::disk_layout::INSTALL_ALIGNMENT_SECTORS)
+    else {
+        return Err("root partition alignment overflow");
+    };
+    let Some(root_end) = root_start_lba.checked_add(root_sectors) else {
+        return Err("target layout overflow");
+    };
+    let Some(total_required_sectors) =
+        root_end.checked_add(crate::disk_layout::GPT_TRAILING_SECTORS)
+    else {
+        return Err("target layout overflow");
+    };
+    if target_sectors < total_required_sectors {
+        return Err("target too small");
+    }
+    Ok(InstallLayout {
+        kind: InstallLayoutKind::UefiGpt,
+        boot_start_lba: esp.starting_lba,
+        boot_copy_sectors: esp_sectors,
+        root_start_lba,
+        root_sectors,
+        total_required_sectors,
+        target_sectors,
+    })
+}
+
+fn source_esp_partition() -> Option<crate::disk_layout::GptPartition> {
+    let boot_info = crate::ata::device_info(BOOT_DEVICE);
+    if !boot_info.present {
+        return None;
+    }
+    crate::ata::find_gpt_partition(
+        BOOT_DEVICE,
+        boot_info.sectors,
+        crate::disk_layout::EFI_SYSTEM_PARTITION_GUID,
+    )
 }
 
 fn installed_layout_from_target(
@@ -747,6 +895,18 @@ fn installed_layout_from_target(
     expected_root_sectors: u32,
     lines: &mut Vec<String>,
 ) -> Option<InstallLayout> {
+    let target_info = crate::ata::device_info(target);
+    if target_info.present {
+        if let Some(layout) = installed_gpt_layout_from_target(
+            target,
+            target_info.sectors,
+            expected_root_sectors,
+            lines,
+        ) {
+            return Some(layout);
+        }
+    }
+
     let mut target_mbr = [0u8; 512];
     if !crate::ata::read_sector_from(target, 0, &mut target_mbr) {
         lines.push(String::from("verify: target MBR read failed"));
@@ -781,11 +941,77 @@ fn installed_layout_from_target(
         return None;
     };
     Some(InstallLayout {
+        kind: InstallLayoutKind::BiosMbr,
+        boot_start_lba: 0,
         boot_copy_sectors: boot_end,
         root_start_lba: root_partition.starting_lba,
         root_sectors: root_partition.sectors,
         total_required_sectors,
+        target_sectors: target_info.sectors,
     })
+}
+
+fn installed_gpt_layout_from_target(
+    target: IdeDevice,
+    target_sectors: u32,
+    expected_root_sectors: u32,
+    lines: &mut Vec<String>,
+) -> Option<InstallLayout> {
+    let esp = crate::ata::find_gpt_partition(
+        target,
+        target_sectors,
+        crate::disk_layout::EFI_SYSTEM_PARTITION_GUID,
+    )?;
+    let root = crate::ata::find_gpt_partition(
+        target,
+        target_sectors,
+        crate::disk_layout::COOLFS_GPT_PARTITION_GUID,
+    )?;
+    let Some(esp_sectors) = esp.sectors() else {
+        lines.push(String::from("verify: ESP partition overflow"));
+        return None;
+    };
+    let Some(root_sectors) = root.sectors() else {
+        lines.push(String::from("verify: CoolFS GPT partition overflow"));
+        return None;
+    };
+    if root_sectors != expected_root_sectors {
+        lines.push(format!(
+            "verify: root size mismatch expected={} actual={}",
+            expected_root_sectors, root_sectors
+        ));
+        return None;
+    }
+    let Some(total_required_sectors) = root
+        .end_lba()
+        .and_then(|end| end.checked_add(crate::disk_layout::GPT_TRAILING_SECTORS))
+    else {
+        lines.push(String::from("verify: GPT root partition overflow"));
+        return None;
+    };
+    Some(InstallLayout {
+        kind: InstallLayoutKind::UefiGpt,
+        boot_start_lba: esp.starting_lba,
+        boot_copy_sectors: esp_sectors,
+        root_start_lba: root.starting_lba,
+        root_sectors,
+        total_required_sectors,
+        target_sectors,
+    })
+}
+
+fn write_target_layout(target: IdeDevice, layout: InstallLayout, lines: &mut Vec<String>) -> bool {
+    match layout.kind {
+        InstallLayoutKind::BiosMbr => write_target_mbr(target, layout, lines),
+        InstallLayoutKind::UefiGpt => write_target_gpt(target, layout, lines),
+    }
+}
+
+fn verify_target_layout(target: IdeDevice, layout: InstallLayout, lines: &mut Vec<String>) -> bool {
+    match layout.kind {
+        InstallLayoutKind::BiosMbr => verify_target_mbr(target, layout, lines),
+        InstallLayoutKind::UefiGpt => verify_target_gpt(target, layout, lines),
+    }
 }
 
 fn write_target_mbr(target: IdeDevice, layout: InstallLayout, lines: &mut Vec<String>) -> bool {
@@ -818,6 +1044,149 @@ fn write_target_mbr(target: IdeDevice, layout: InstallLayout, lines: &mut Vec<St
         layout.root_start_lba,
         layout.root_sectors
     ));
+    true
+}
+
+fn write_target_gpt(target: IdeDevice, layout: InstallLayout, lines: &mut Vec<String>) -> bool {
+    let Some(root_end) = layout.root_start_lba.checked_add(layout.root_sectors) else {
+        lines.push(String::from("install: GPT root partition overflow"));
+        return false;
+    };
+    if root_end.saturating_add(crate::disk_layout::GPT_TRAILING_SECTORS) > layout.target_sectors {
+        lines.push(String::from("install: GPT target too small"));
+        return false;
+    }
+    let last_usable = layout
+        .target_sectors
+        .saturating_sub(crate::disk_layout::GPT_TRAILING_SECTORS);
+    let backup_header_lba = layout.target_sectors.saturating_sub(1);
+    let backup_entries_lba = layout
+        .target_sectors
+        .saturating_sub(crate::disk_layout::GPT_TRAILING_SECTORS);
+    let mut entries = alloc::vec![
+        0u8;
+        crate::disk_layout::GPT_ENTRY_COUNT * crate::disk_layout::GPT_ENTRY_SIZE
+    ];
+    if crate::disk_layout::write_gpt_partition_entry(
+        &mut entries,
+        0,
+        crate::disk_layout::EFI_SYSTEM_PARTITION_GUID,
+        crate::disk_layout::INSTALL_ESP_UNIQUE_GUID,
+        layout.boot_start_lba,
+        layout.boot_copy_sectors,
+        "coolOS EFI",
+    )
+    .is_none()
+    {
+        lines.push(String::from("install: ESP GPT entry write failed"));
+        return false;
+    }
+    if crate::disk_layout::write_gpt_partition_entry(
+        &mut entries,
+        1,
+        crate::disk_layout::COOLFS_GPT_PARTITION_GUID,
+        crate::disk_layout::INSTALL_ROOT_UNIQUE_GUID,
+        layout.root_start_lba,
+        layout.root_sectors,
+        "coolOS Root",
+    )
+    .is_none()
+    {
+        lines.push(String::from("install: CoolFS GPT entry write failed"));
+        return false;
+    }
+    let entries_crc = crate::disk_layout::crc32(&entries);
+
+    let mut sector = [0u8; 512];
+    crate::disk_layout::write_protective_mbr(&mut sector, layout.target_sectors);
+    if !crate::ata::write_sector_to(target, 0, &sector) {
+        lines.push(String::from("install: protective MBR write failed"));
+        return false;
+    }
+
+    if !write_entry_array(
+        target,
+        crate::disk_layout::GPT_PRIMARY_ENTRIES_LBA,
+        &entries,
+        lines,
+        "primary",
+    ) {
+        return false;
+    }
+    if crate::disk_layout::write_gpt_header(
+        &mut sector,
+        crate::disk_layout::GPT_PRIMARY_HEADER_LBA,
+        backup_header_lba,
+        crate::disk_layout::GPT_PRIMARY_ENTRIES_LBA + crate::disk_layout::GPT_ENTRY_SECTORS,
+        last_usable,
+        crate::disk_layout::GPT_PRIMARY_ENTRIES_LBA,
+        crate::disk_layout::GPT_ENTRY_COUNT as u32,
+        entries_crc,
+        crate::disk_layout::INSTALL_DISK_GUID,
+    )
+    .is_none()
+    {
+        lines.push(String::from("install: primary GPT header build failed"));
+        return false;
+    }
+    if !crate::ata::write_sector_to(target, crate::disk_layout::GPT_PRIMARY_HEADER_LBA, &sector) {
+        lines.push(String::from("install: primary GPT header write failed"));
+        return false;
+    }
+
+    if !write_entry_array(target, backup_entries_lba, &entries, lines, "backup") {
+        return false;
+    }
+    if crate::disk_layout::write_gpt_header(
+        &mut sector,
+        backup_header_lba,
+        crate::disk_layout::GPT_PRIMARY_HEADER_LBA,
+        crate::disk_layout::GPT_PRIMARY_ENTRIES_LBA + crate::disk_layout::GPT_ENTRY_SECTORS,
+        last_usable,
+        backup_entries_lba,
+        crate::disk_layout::GPT_ENTRY_COUNT as u32,
+        entries_crc,
+        crate::disk_layout::INSTALL_DISK_GUID,
+    )
+    .is_none()
+    {
+        lines.push(String::from("install: backup GPT header build failed"));
+        return false;
+    }
+    if !crate::ata::write_sector_to(target, backup_header_lba, &sector) {
+        lines.push(String::from("install: backup GPT header write failed"));
+        return false;
+    }
+    lines.push(format!(
+        "gpt patched esp_start={} esp_sectors={} coolfs_guid={} root_start={} root_sectors={}",
+        layout.boot_start_lba,
+        layout.boot_copy_sectors,
+        crate::disk_layout::COOLFS_GPT_PARTITION_GUID_TEXT,
+        layout.root_start_lba,
+        layout.root_sectors
+    ));
+    true
+}
+
+fn write_entry_array(
+    target: IdeDevice,
+    start_lba: u32,
+    entries: &[u8],
+    lines: &mut Vec<String>,
+    label: &str,
+) -> bool {
+    for (idx, chunk) in entries.chunks(crate::disk_layout::SECTOR_SIZE).enumerate() {
+        let Some(lba) = start_lba.checked_add(idx as u32) else {
+            lines.push(format!("install: {} GPT entry LBA overflow", label));
+            return false;
+        };
+        let mut sector = [0u8; 512];
+        sector[..chunk.len()].copy_from_slice(chunk);
+        if !crate::ata::write_sector_to(target, lba, &sector) {
+            lines.push(format!("install: {} GPT entries write failed", label));
+            return false;
+        }
+    }
     true
 }
 
@@ -856,6 +1225,45 @@ fn verify_target_mbr(target: IdeDevice, layout: InstallLayout, lines: &mut Vec<S
         return false;
     }
     lines.push(String::from("verify boot=ok"));
+    true
+}
+
+fn verify_target_gpt(target: IdeDevice, layout: InstallLayout, lines: &mut Vec<String>) -> bool {
+    let target_info = crate::ata::device_info(target);
+    let Some(esp) = crate::ata::find_gpt_partition(
+        target,
+        target_info.sectors,
+        crate::disk_layout::EFI_SYSTEM_PARTITION_GUID,
+    ) else {
+        lines.push(String::from("verify: target missing EFI system partition"));
+        return false;
+    };
+    let Some(root) = crate::ata::find_gpt_partition(
+        target,
+        target_info.sectors,
+        crate::disk_layout::COOLFS_GPT_PARTITION_GUID,
+    ) else {
+        lines.push(String::from("verify: target missing CoolFS GPT partition"));
+        return false;
+    };
+    if esp.starting_lba != layout.boot_start_lba || esp.sectors() != Some(layout.boot_copy_sectors)
+    {
+        lines.push(format!(
+            "verify: ESP mismatch start={} sectors={}",
+            esp.starting_lba,
+            esp.sectors().unwrap_or(0)
+        ));
+        return false;
+    }
+    if root.starting_lba != layout.root_start_lba || root.sectors() != Some(layout.root_sectors) {
+        lines.push(format!(
+            "verify: CoolFS GPT mismatch start={} sectors={}",
+            root.starting_lba,
+            root.sectors().unwrap_or(0)
+        ));
+        return false;
+    }
+    lines.push(String::from("verify boot=ok layout=uefi-gpt"));
     true
 }
 
@@ -969,26 +1377,10 @@ fn plan_lines(plan: &InstallPlan) -> Vec<String> {
         if plan.protected { "yes" } else { "no" },
     ));
     if let Some(layout) = plan.layout {
-        lines.push(format!(
-            "layout=self-boot mbr_type=0x{:02x} boot_copy_sectors={} root_start_lba={} root_sectors={} required_sectors={} required_mib={}",
-            crate::disk_layout::COOLFS_PARTITION_TYPE,
-            layout.boot_copy_sectors,
-            layout.root_start_lba,
-            layout.root_sectors,
-            layout.total_required_sectors,
-            sectors_to_mib(layout.total_required_sectors),
-        ));
+        lines.push(format_layout_line_with_mib(layout));
     } else if plan.reason == "target too small" {
         if let Ok(layout) = compute_install_layout(plan.source_root_sectors, u32::MAX) {
-            lines.push(format!(
-                "layout=self-boot mbr_type=0x{:02x} boot_copy_sectors={} root_start_lba={} root_sectors={} required_sectors={} required_mib={}",
-                crate::disk_layout::COOLFS_PARTITION_TYPE,
-                layout.boot_copy_sectors,
-                layout.root_start_lba,
-                layout.root_sectors,
-                layout.total_required_sectors,
-                sectors_to_mib(layout.total_required_sectors),
-            ));
+            lines.push(format_layout_line_with_mib(layout));
         }
     }
     lines.push(format!(
@@ -997,6 +1389,38 @@ fn plan_lines(plan: &InstallPlan) -> Vec<String> {
         plan.reason
     ));
     lines
+}
+
+fn format_layout_line(layout: InstallLayout) -> String {
+    match layout.kind {
+        InstallLayoutKind::BiosMbr => format!(
+            "layout={} mbr_type=0x{:02x} boot_copy_sectors={} root_start_lba={} root_sectors={} required_sectors={}",
+            layout.kind.label(),
+            crate::disk_layout::COOLFS_PARTITION_TYPE,
+            layout.boot_copy_sectors,
+            layout.root_start_lba,
+            layout.root_sectors,
+            layout.total_required_sectors,
+        ),
+        InstallLayoutKind::UefiGpt => format!(
+            "layout={} esp_start_lba={} esp_sectors={} coolfs_guid={} root_start_lba={} root_sectors={} required_sectors={}",
+            layout.kind.label(),
+            layout.boot_start_lba,
+            layout.boot_copy_sectors,
+            crate::disk_layout::COOLFS_GPT_PARTITION_GUID_TEXT,
+            layout.root_start_lba,
+            layout.root_sectors,
+            layout.total_required_sectors,
+        ),
+    }
+}
+
+fn format_layout_line_with_mib(layout: InstallLayout) -> String {
+    format!(
+        "{} required_mib={}",
+        format_layout_line(layout),
+        sectors_to_mib(layout.total_required_sectors),
+    )
 }
 
 fn target_state(device: IdeDevice, present: bool) -> TargetState {
@@ -1019,10 +1443,31 @@ fn target_state(device: IdeDevice, present: bool) -> TargetState {
     if crate::disk_layout::find_partition(&partitions, crate::disk_layout::COOLFS_PARTITION_TYPE)
         .is_some()
     {
-        TargetState::SelfBoot
-    } else {
-        TargetState::Mbr
+        return TargetState::SelfBoot;
     }
+    let mut gpt_header = [0u8; 512];
+    if crate::ata::read_sector_from(
+        device,
+        crate::disk_layout::GPT_PRIMARY_HEADER_LBA,
+        &mut gpt_header,
+    ) && crate::disk_layout::parse_gpt_header(
+        &gpt_header,
+        crate::ata::device_info(device).sectors,
+    )
+    .is_some()
+    {
+        if crate::ata::find_gpt_partition(
+            device,
+            crate::ata::device_info(device).sectors,
+            crate::disk_layout::COOLFS_GPT_PARTITION_GUID,
+        )
+        .is_some()
+        {
+            return TargetState::UefiSelfBoot;
+        }
+        return TargetState::Gpt;
+    }
+    TargetState::Mbr
 }
 
 fn sectors_to_mib(sectors: u32) -> u32 {

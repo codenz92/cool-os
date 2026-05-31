@@ -1293,7 +1293,7 @@ fn device_label() -> String {
             "ata:{}:lba{}{}",
             root.device.name(),
             root.base_lba,
-            if root.partitioned { ":mbr-coolfs" } else { "" }
+            root.layout.suffix()
         );
     }
     String::from("ata:unresolved")

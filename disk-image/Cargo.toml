@@ -24,3 +24,7 @@ path = "src/bin/phase76_dsos.rs"
 [dependencies]
 bootloader = { path = "../vendor/bootloader", default-features = false, features = ["bios"] }
 fatfs = "0.3"
+
+[features]
+default = []
+uefi = ["bootloader/uefi"]

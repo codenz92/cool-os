@@ -11,6 +11,20 @@ import time
 from typing import Callable
 
 
+def default_uefi_code() -> str:
+    env_path = os.environ.get("QEMU_EFI_CODE")
+    if env_path:
+        return env_path
+    for path in (
+        "/opt/homebrew/share/qemu/edk2-x86_64-code.fd",
+        "/usr/local/share/qemu/edk2-x86_64-code.fd",
+        "/opt/homebrew/Cellar/qemu/10.2.2/share/qemu/edk2-x86_64-code.fd",
+    ):
+        if os.path.exists(path):
+            return path
+    return "edk2-x86_64-code.fd"
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run coolOS under headless QEMU for a short smoke test.")
     parser.add_argument("--bios", help="Path to bios.img")
@@ -23,6 +37,16 @@ def parse_args() -> argparse.Namespace:
         "--boot-disk-writable",
         action="store_true",
         help="Attach --boot-disk without QEMU snapshot mode so guest writes persist",
+    )
+    parser.add_argument(
+        "--uefi",
+        action="store_true",
+        help="Boot with QEMU OVMF/EDK2 firmware instead of SeaBIOS",
+    )
+    parser.add_argument(
+        "--uefi-code",
+        default=default_uefi_code(),
+        help="Path to OVMF/EDK2 x86_64 code firmware; defaults to QEMU_EFI_CODE or Homebrew QEMU",
     )
     parser.add_argument("--target-disk", help="Optional installer target disk image")
     parser.add_argument(
@@ -201,6 +225,13 @@ def parse_args() -> argparse.Namespace:
 
 def build_command(args: argparse.Namespace, monitor_socket: str | None = None) -> list[str]:
     cmd = ["qemu-system-x86_64"]
+    if args.uefi:
+        cmd.extend(
+            [
+                "-drive",
+                f"if=pflash,format=raw,readonly=on,file={args.uefi_code}",
+            ]
+        )
     if args.boot_disk:
         boot_snapshot = "" if args.boot_disk_writable else ",snapshot=on"
         cmd.extend(

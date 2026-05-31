@@ -30,7 +30,24 @@ pub struct RootDisk {
     pub device: IdeDevice,
     pub base_lba: u32,
     pub sectors: u32,
-    pub partitioned: bool,
+    pub layout: RootDiskLayout,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RootDiskLayout {
+    RawCoolFs,
+    MbrCoolFs,
+    GptCoolFs,
+}
+
+impl RootDiskLayout {
+    pub const fn suffix(self) -> &'static str {
+        match self {
+            RootDiskLayout::RawCoolFs => "",
+            RootDiskLayout::MbrCoolFs => ":mbr-coolfs",
+            RootDiskLayout::GptCoolFs => ":gpt-coolfs",
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -230,7 +247,7 @@ fn detect_root_disk() -> Option<RootDisk> {
                 device,
                 base_lba: 0,
                 sectors: info.sectors,
-                partitioned: false,
+                layout: RootDiskLayout::RawCoolFs,
             });
         }
     }
@@ -272,11 +289,92 @@ fn detect_root_disk() -> Option<RootDisk> {
                 device,
                 base_lba: partition.starting_lba,
                 sectors: partition.sectors,
-                partitioned: true,
+                layout: RootDiskLayout::MbrCoolFs,
             });
         }
     }
 
+    for device in [
+        IdeDevice::Ide0Master,
+        IdeDevice::Ide0Slave,
+        IdeDevice::Ide1Master,
+        IdeDevice::Ide1Slave,
+    ] {
+        let info = device_info(device);
+        if !info.present {
+            continue;
+        }
+        let Some(partition) = find_gpt_partition(
+            device,
+            info.sectors,
+            crate::disk_layout::COOLFS_GPT_PARTITION_GUID,
+        ) else {
+            continue;
+        };
+        let Some(partition_sectors) = partition.sectors() else {
+            continue;
+        };
+        let Some(end_lba) = partition.end_lba() else {
+            continue;
+        };
+        if partition.starting_lba >= info.sectors || end_lba > info.sectors {
+            continue;
+        }
+        let mut first = [0u8; crate::disk_layout::SECTOR_SIZE];
+        if read_sector_from(device, partition.starting_lba, &mut first)
+            && crate::disk_layout::has_coolfs_magic(&first)
+        {
+            return Some(RootDisk {
+                device,
+                base_lba: partition.starting_lba,
+                sectors: partition_sectors,
+                layout: RootDiskLayout::GptCoolFs,
+            });
+        }
+    }
+
+    None
+}
+
+pub fn find_gpt_partition(
+    device: IdeDevice,
+    disk_sectors: u32,
+    type_guid: crate::disk_layout::GptGuid,
+) -> Option<crate::disk_layout::GptPartition> {
+    let mut mbr = [0u8; crate::disk_layout::SECTOR_SIZE];
+    if !read_sector_from(device, 0, &mut mbr) || !crate::disk_layout::has_protective_mbr(&mbr) {
+        return None;
+    }
+    let mut header_sector = [0u8; crate::disk_layout::SECTOR_SIZE];
+    if !read_sector_from(
+        device,
+        crate::disk_layout::GPT_PRIMARY_HEADER_LBA,
+        &mut header_sector,
+    ) {
+        return None;
+    }
+    let header = crate::disk_layout::parse_gpt_header(&header_sector, disk_sectors)?;
+    let max_entries = header
+        .entry_count
+        .min(crate::disk_layout::GPT_ENTRY_COUNT as u32);
+    let entries_per_sector = (crate::disk_layout::SECTOR_SIZE as u32 / header.entry_size).max(1);
+    let mut sector = [0u8; crate::disk_layout::SECTOR_SIZE];
+    for idx in 0..max_entries {
+        let sector_lba = header.entries_lba.checked_add(idx / entries_per_sector)?;
+        let entry_in_sector = idx % entries_per_sector;
+        let offset = (entry_in_sector * header.entry_size) as usize;
+        if !read_sector_from(device, sector_lba, &mut sector) {
+            return None;
+        }
+        let end = offset.checked_add(header.entry_size as usize)?;
+        let Some(partition) = crate::disk_layout::parse_gpt_partition_entry(&sector[offset..end])
+        else {
+            continue;
+        };
+        if partition.type_guid == type_guid {
+            return Some(partition);
+        }
+    }
     None
 }
 

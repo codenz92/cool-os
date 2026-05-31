@@ -97,7 +97,10 @@ repair commands plus boot-time first-boot state reconciliation. Phase 82 adds
 QEMU installer mode, named IDE disk discovery, sector-copy installation to a
 blank target disk, install verification, and installed-target first-boot smoke
 coverage. Phase 83 makes that installed QEMU disk self-booting with a BIOS/MBR
-layout and CoolFS root partition discovery. Phases 45-83
+layout and CoolFS root partition discovery. Phase 84 adds installer planning,
+explicit target confirmation, and graphical progress, while Phase 85 adds a
+parallel QEMU OVMF UEFI/GPT boot and install path with GPT CoolFS root
+discovery. Phases 45-85
 focus on responsiveness,
 interactive terminal behavior, and
 desktop-browser compatibility:
@@ -2519,7 +2522,8 @@ that boots by itself and then enters the normal first-boot owner setup flow.
 **Current status:** complete. An installed target can now boot alone as the
 QEMU BIOS disk, reports the 1920x1080 framebuffer, reaches first boot, creates
 the owner account, and reboots to the normal login flow without the separate
-`bios.img` drive. UEFI/GPT and physical disk installation remain future work.
+`bios.img` drive. The parallel UEFI/GPT installer path is covered by Phase 85;
+physical disk installation remains future work.
 
 ---
 
@@ -2546,6 +2550,35 @@ the Phase 83 self-booting disk format.
 selection and confirmation, refuses unsafe targets before writing, shows
 copy/flush/verify progress, and still produces the same self-booting BIOS/MBR
 target disk introduced in Phase 83.
+
+---
+
+## ✅ Phase 85 — UEFI/GPT Boot And Installer Foundation
+
+**Goal:** Add a parallel QEMU OVMF UEFI/GPT install path while preserving the
+existing BIOS/MBR/IDE developer and installer path.
+
+- [x] Build `uefi.img` alongside `bios.img` using the vendored bootloader's
+      UEFI image builder and the same 1920x1080 framebuffer request.
+- [x] Vendor the UEFI boot stage locally and select the smallest GOP mode that
+      satisfies the requested framebuffer size so OVMF boots at 1920x1080.
+- [x] Add GPT parsing/writing helpers, recognize the EFI System Partition GUID,
+      and add the coolOS CoolFS GPT type GUID
+      `B9C7C6F0-9D2E-4F6A-9A3D-434F4F4C4653`.
+- [x] Extend root discovery to resolve CoolFS from raw LBA 0, BIOS/MBR
+      `0xc0` partitions, or UEFI/GPT CoolFS partitions.
+- [x] Extend installer planning, install, and verify logic so BIOS sources
+      produce BIOS/MBR targets and UEFI sources produce ESP plus CoolFS GPT
+      targets while still refusing protected boot/root disks.
+- [x] Add `make run-uefi`, `make run-uefi-installer`,
+      `make run-uefi-installed`, `scripts/qemu_smoke.py --uefi`, OVMF firmware
+      selection via `QEMU_EFI_CODE`, and `make smoke-phase85-uefi-gpt`.
+
+**Current status:** complete. coolOS boots live under OVMF, reports
+`FB 1920x1080`, installs to a GPT target on `ide1-master`, verifies ESP and
+CoolFS partitions, and boots that target alone under OVMF into first boot.
+BIOS/MBR remains supported. AHCI, NVMe, USB boot media, Secure Boot, and
+physical-machine installs remain Phase 86+ work.
 
 ---
 
@@ -2651,4 +2684,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.43 | Phase 81 complete: first-boot recovery and reset |
 | v7.44 | Phase 82 complete: QEMU disk installer v1 |
 | v7.45 | Phase 83 complete: self-booting QEMU installed disk |
-| v7.46 | Current — Phase 84 complete: installer v2 disk selection and progress |
+| v7.46 | Phase 84 complete: installer v2 disk selection and progress |
+| v7.47 | Current — Phase 85 complete: UEFI/GPT boot and installer foundation |
