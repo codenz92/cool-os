@@ -560,13 +560,14 @@ src/
                    frame-budget telemetry
     window.rs      Window struct — back-buffer, hit tests
   apps/
-    terminal.rs    TerminalApp — keyboard input, shell commands, text render
-    sysmon.rs      SysMonApp   — live CPU/heap/uptime/scheduler/app lifecycle controls
-    displaysettings.rs DisplaySettingsApp — display/personalization/security settings,
+    terminal/      TerminalApp — keyboard input, shell commands, text render
+    file_manager/  FileManagerApp — Explorer-style file browsing and operations
+    system_monitor.rs SysMonApp — live CPU/heap/uptime/scheduler/app lifecycle controls
+    display_settings.rs DisplaySettingsApp — display/personalization/security settings,
                    including the Users/Accounts panel
-    textviewer.rs  TextViewerApp — scrollable static text
-    colorpicker.rs ColorPickerApp — clickable EGA palette swatches
-    usergui.rs     UserGuiApp — compositor-owned window/surface/event queue for ring-3 apps
+    text_viewer.rs TextViewerApp — scrollable static text
+    color_picker.rs ColorPickerApp — clickable EGA palette swatches
+    user_gui.rs    UserGuiApp — compositor-owned window/surface/event queue for ring-3 apps
     utilities.rs   UtilityApp — Trash Bin, Screenshot, Notes, and Text Editor
 userspace/
   libcool/         no_std userspace SDK — entry, argv, syscalls, files, pipes,

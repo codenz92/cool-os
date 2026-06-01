@@ -2,7 +2,7 @@ extern crate alloc;
 
 use alloc::{format, string::String, vec, vec::Vec};
 
-use super::filemanager::FileManagerOpenRequest;
+use super::file_manager::FileManagerOpenRequest;
 use crate::apps::theme;
 use crate::wm::window::{Window, TITLE_H};
 

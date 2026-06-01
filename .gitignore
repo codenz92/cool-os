@@ -12,6 +12,9 @@
 
 # Editor
 .vscode/
+*.bak
+*.orig
+*~
 
 # macOS
 .DS_Store

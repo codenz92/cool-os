@@ -2675,6 +2675,28 @@ work.
 
 ---
 
+## Maintenance — Codebase Navigation Cleanup
+
+**Goal:** Keep the source tree easy to scan while avoiding broad behavior
+refactors during feature work.
+
+- Use Rust-style snake_case module file names for native app surfaces.
+- Keep larger mixed-responsibility features behind facade modules, such as
+      `apps/file_manager/`, `apps/browser/`, `apps/terminal/`, `packages/`,
+      `syscall/`, `net/`, `usb/xhci/`, and `wm/compositor/`.
+- Remove tracked editor/back-up clutter from source folders, and ignore future
+      `.DS_Store`, `.bak`, `.orig`, and editor backup files.
+- Defer broader kernel regrouping into `fs/`, `storage/`, `process/`, or
+      `platform/` folders until those areas are split in focused, mechanical
+      passes with their own smoke coverage.
+
+**Current status:** active maintenance policy. The first cleanup pass renames
+native app modules to snake_case, normalizes File Manager into
+`apps/file_manager/`, removes the stale compositor backup, and refreshes source
+tree documentation without changing app behavior or public app type re-exports.
+
+---
+
 ## Technical notes
 
 ### The ordering is non-negotiable

@@ -3022,9 +3022,9 @@ impl WindowManager {
             }
             DesktopContextCommand::DisplaySettings => {
                 let off = self.windows.len() as i32 * 16;
-                let wx = (10 + off).min(sw - crate::apps::displaysettings::DISPLAY_SETTINGS_W);
+                let wx = (10 + off).min(sw - crate::apps::display_settings::DISPLAY_SETTINGS_W);
                 let wy =
-                    (10 + off).min(taskbar_y - crate::apps::displaysettings::DISPLAY_SETTINGS_H);
+                    (10 + off).min(taskbar_y - crate::apps::display_settings::DISPLAY_SETTINGS_H);
                 self.launch_app("Display Settings", wx, wy);
             }
             DesktopContextCommand::Personalize => {
