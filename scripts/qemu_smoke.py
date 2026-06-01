@@ -91,6 +91,21 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Attach --target-disk through QEMU NVMe instead of IDE/AHCI",
     )
+    parser.add_argument(
+        "--ahci-target-disk",
+        help="Optional additional writable AHCI/SATA target disk image",
+    )
+    parser.add_argument(
+        "--ahci-target-writable",
+        action="store_true",
+        help="Attach --ahci-target-disk without QEMU snapshot mode so installer writes persist",
+    )
+    parser.add_argument(
+        "--ahci-target-port",
+        type=int,
+        default=0,
+        help="AHCI port for --ahci-target-disk; defaults to 0",
+    )
     parser.add_argument("--usb", action="store_true", help="Attach xHCI with USB keyboard and pointer")
     parser.add_argument(
         "--usb-storage",
@@ -249,6 +264,10 @@ def parse_args() -> argparse.Namespace:
         parser.error("--target-nvme requires --target-disk")
     if args.target_nvme and args.ahci:
         parser.error("--target-nvme cannot be combined with --ahci")
+    if args.ahci_target_writable and not args.ahci_target_disk:
+        parser.error("--ahci-target-writable requires --ahci-target-disk")
+    if args.ahci_target_port < 0 or args.ahci_target_port > 7:
+        parser.error("--ahci-target-port must be between 0 and 7")
     return args
 
 
@@ -261,7 +280,7 @@ def build_command(args: argparse.Namespace, monitor_socket: str | None = None) -
                 f"if=pflash,format=raw,readonly=on,file={args.uefi_code}",
             ]
         )
-    if args.ahci:
+    if args.ahci or args.ahci_target_disk:
         cmd.extend(["-device", "ich9-ahci,id=ahci"])
     if args.usb_storage:
         cmd.extend(["-device", "qemu-xhci,id=xhci"])
@@ -370,6 +389,16 @@ def build_command(args: argparse.Namespace, monitor_socket: str | None = None) -
                     f"file={args.target_disk},if=ide,format=raw,index=2{target_snapshot}",
                 ]
             )
+    if args.ahci_target_disk:
+        ahci_target_snapshot = "" if args.ahci_target_writable else ",snapshot=on"
+        cmd.extend(
+            [
+                "-drive",
+                f"if=none,id=ahcitargetdisk,file={args.ahci_target_disk},format=raw{ahci_target_snapshot}",
+                "-device",
+                f"ide-hd,drive=ahcitargetdisk,bus=ahci.{args.ahci_target_port}",
+            ]
+        )
     if monitor_socket:
         cmd.extend(["-monitor", f"unix:{monitor_socket},server,nowait"])
     if args.usb:

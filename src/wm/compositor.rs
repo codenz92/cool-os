@@ -1396,7 +1396,7 @@ impl WindowManager {
     }
 
     fn cycle_installer_target(&mut self, step: i32) {
-        let devices = crate::storage::all_devices();
+        let devices = crate::installer::selectable_target_devices();
         if devices.is_empty() {
             self.installer.message = String::from("No storage devices found.");
             self.installer.error = true;
@@ -1473,7 +1473,7 @@ impl WindowManager {
                 }
                 Key::Character(c) if ('1'..='8').contains(&c) => {
                     let idx = c as usize - '1' as usize;
-                    let devices = crate::storage::all_devices();
+                    let devices = crate::installer::selectable_target_devices();
                     if let Some(device) = devices.get(idx).copied() {
                         self.installer.selected_target = device;
                         self.cycle_installer_target(0);
@@ -1794,7 +1794,11 @@ impl WindowManager {
         match self.installer.screen {
             InstallerScreen::Select => {
                 let row_h = 34;
-                for (idx, device) in crate::storage::all_devices().iter().copied().enumerate() {
+                for (idx, device) in crate::installer::selectable_target_devices()
+                    .iter()
+                    .copied()
+                    .enumerate()
+                {
                     let y = layout.owner_y + idx as i32 * row_h;
                     if rect_contains(layout.field_x, y, layout.field_w, row_h - 4, mx, my) {
                         self.installer.selected_target = device;

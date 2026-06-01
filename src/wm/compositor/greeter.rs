@@ -580,7 +580,11 @@ pub(super) fn draw_installer_overlay(
         InstallerScreen::Select => {
             draw_installer_source_summary(s, sw, &layout);
             let row_h = 34;
-            for (idx, device) in crate::storage::all_devices().iter().copied().enumerate() {
+            for (idx, device) in crate::installer::selectable_target_devices()
+                .iter()
+                .copied()
+                .enumerate()
+            {
                 let y = layout.owner_y + idx as i32 * row_h;
                 let plan = crate::installer::install_plan(device);
                 let selected = state.selected_target == device;
@@ -696,11 +700,19 @@ pub(super) fn draw_installer_overlay(
 }
 
 fn draw_installer_source_summary(s: &mut [u32], sw: usize, layout: &FirstBootLayout) {
-    let line = format!(
-        "Source: {} boot + {} root",
-        crate::installer::boot_device().name(),
-        crate::installer::source_device().name()
-    );
+    let line = if crate::installer::boot_device() == crate::installer::source_device() {
+        format!(
+            "Source: {} {} (boot + root)",
+            crate::installer::source_device().name(),
+            crate::installer::source_mode_label()
+        )
+    } else {
+        format!(
+            "Source: {} boot + {} root",
+            crate::installer::boot_device().name(),
+            crate::installer::source_device().name()
+        )
+    };
     s_draw_str_small_transparent(
         s,
         sw,
@@ -743,9 +755,10 @@ fn draw_installer_target_row(
         if selected { ACCENT } else { 0x00_24_35_46 },
     );
     let title = format!(
-        "{}  {} MiB",
+        "{}  {} MiB  {}",
         plan.target.name(),
-        ((plan.target_sectors as u64 * crate::disk_layout::SECTOR_SIZE as u64) / (1024 * 1024))
+        ((plan.target_sectors as u64 * crate::disk_layout::SECTOR_SIZE as u64) / (1024 * 1024)),
+        plan.target.bus_label()
     );
     s_draw_str_small_transparent(
         s,
@@ -760,7 +773,12 @@ fn draw_installer_target_row(
         },
         x + w - 8,
     );
-    let detail = format!("{} / {}", plan.state.label(), plan.reason);
+    let detail = format!(
+        "{} / {} / {}",
+        crate::installer::device_role(plan.target),
+        plan.state.label(),
+        plan.reason
+    );
     s_draw_str_small_transparent(
         s,
         sw,
@@ -793,16 +811,35 @@ fn draw_installer_review(
         WHITE,
         layout.field_x + layout.field_w,
     );
+    let source = if plan.source_boot == plan.source_root {
+        format!(
+            "Source: {} {}",
+            plan.source_root.name(),
+            crate::installer::source_mode_label()
+        )
+    } else {
+        format!(
+            "Source: {} boot + {} root",
+            plan.source_boot.name(),
+            plan.source_root.name()
+        )
+    };
+    s_draw_str_small_transparent(
+        s,
+        sw,
+        layout.field_x,
+        layout.owner_y + 18,
+        &source,
+        0x00_A9_B9_C8,
+        layout.field_x + layout.field_w,
+    );
     if let Some(layout_info) = plan.layout {
-        let layout_line = format!(
-            "MBR + boot FAT + CoolFS @ LBA {}",
-            layout_info.root_start_lba
-        );
+        let layout_line = crate::installer::review_layout_line(layout_info);
         s_draw_str_small_transparent(
             s,
             sw,
             layout.field_x,
-            layout.owner_y + 20,
+            layout.owner_y + 36,
             &layout_line,
             0x00_88_DD_CC,
             layout.field_x + layout.field_w,
@@ -817,7 +854,7 @@ fn draw_installer_review(
             s,
             sw,
             layout.field_x,
-            layout.owner_y + 38,
+            layout.owner_y + 54,
             &size_line,
             0x00_A9_B9_C8,
             layout.field_x + layout.field_w,

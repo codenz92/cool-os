@@ -95,6 +95,7 @@ pub struct InstallPlan {
     pub source_boot_sectors: u32,
     pub source_root: BlockDevice,
     pub source_root_present: bool,
+    pub source_root_base_lba: u32,
     pub source_root_sectors: u32,
     pub layout: Option<InstallLayout>,
     pub state: TargetState,
@@ -152,6 +153,18 @@ pub fn source_device() -> BlockDevice {
 
 pub fn boot_device() -> BlockDevice {
     let source = source_device();
+    let source_info = crate::storage::device_info(source);
+    if source_info.present
+        && crate::storage::find_gpt_partition(
+            source,
+            source_info.sectors,
+            crate::disk_layout::EFI_SYSTEM_PARTITION_GUID,
+        )
+        .is_some()
+    {
+        return source;
+    }
+
     for device in crate::storage::all_devices() {
         if device == source {
             continue;
@@ -181,36 +194,151 @@ pub fn boot_device() -> BlockDevice {
         .unwrap_or(legacy_boot)
 }
 
+pub fn source_root_base_lba() -> u32 {
+    crate::storage::root_disk()
+        .map(|root| root.base_lba)
+        .unwrap_or(0)
+}
+
+pub fn source_root_sectors() -> u32 {
+    crate::storage::root_disk()
+        .map(|root| root.sectors)
+        .unwrap_or_else(|| crate::storage::device_info(source_device()).sectors)
+}
+
+fn source_root_lba(offset: u32) -> Option<u32> {
+    source_root_base_lba().checked_add(offset)
+}
+
 pub fn default_target_device() -> BlockDevice {
-    for candidate in [
-        BlockDevice::Nvme1n1,
-        BlockDevice::Nvme0n1,
-        BlockDevice::Nvme2n1,
-        BlockDevice::Nvme3n1,
-        BlockDevice::Sata2,
-        BlockDevice::Sata3,
-        BlockDevice::Ide(IdeDevice::Ide1Master),
-        BlockDevice::Ide(IdeDevice::Ide1Slave),
-    ] {
+    for candidate in preferred_target_devices() {
         if crate::storage::device_info(candidate).present && install_plan(candidate).installable {
             return candidate;
         }
     }
-    for candidate in [
-        BlockDevice::Nvme1n1,
-        BlockDevice::Nvme0n1,
-        BlockDevice::Nvme2n1,
-        BlockDevice::Nvme3n1,
-        BlockDevice::Sata2,
-        BlockDevice::Sata3,
-        BlockDevice::Ide(IdeDevice::Ide1Master),
-        BlockDevice::Ide(IdeDevice::Ide1Slave),
-    ] {
+    for candidate in preferred_target_devices() {
         if crate::storage::device_info(candidate).present {
             return candidate;
         }
     }
     BlockDevice::Ide(IdeDevice::Ide1Master)
+}
+
+pub fn selectable_target_devices() -> Vec<BlockDevice> {
+    let mut devices = Vec::new();
+    for candidate in preferred_target_devices() {
+        push_unique_device(&mut devices, candidate);
+    }
+    for device in crate::storage::all_devices() {
+        push_unique_device(&mut devices, device);
+    }
+    devices
+}
+
+pub fn source_mode_label() -> &'static str {
+    let source = source_device();
+    let boot = boot_device();
+    if source == boot && source.usb_index().is_some() {
+        "usb-live"
+    } else if source == boot {
+        "single-disk"
+    } else {
+        "split-disk"
+    }
+}
+
+pub fn device_role(device: BlockDevice) -> &'static str {
+    let source = source_device();
+    let boot = boot_device();
+    if device == source && device == boot {
+        if device.usb_index().is_some() {
+            "usb-installer"
+        } else {
+            "boot-root"
+        }
+    } else if device == source {
+        "root"
+    } else if device == boot {
+        "boot"
+    } else if device.is_physical_install_target() {
+        "physical-target"
+    } else {
+        "target"
+    }
+}
+
+pub fn hardware_summary_lines() -> Vec<String> {
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "installer source_mode={} source_boot={} source_root={} root_base_lba={} root_sectors={}",
+        source_mode_label(),
+        boot_device().name(),
+        source_device().name(),
+        source_root_base_lba(),
+        source_root_sectors()
+    ));
+    for device in crate::storage::all_devices() {
+        let info = crate::storage::device_info(device);
+        if !info.present {
+            continue;
+        }
+        let role = device_role(device);
+        if device.is_physical_install_target() || role != "target" {
+            let plan = install_plan(device);
+            lines.push(format!(
+                "installer candidate={} bus={} role={} protected={} installable={} reason={}",
+                device.name(),
+                device.bus_label(),
+                role,
+                if plan.protected { "yes" } else { "no" },
+                if plan.installable { "yes" } else { "no" },
+                plan.reason
+            ));
+        }
+    }
+    lines
+}
+
+fn preferred_target_devices() -> Vec<BlockDevice> {
+    let mut devices = Vec::new();
+    if source_device().usb_index().is_some() {
+        for candidate in [
+            BlockDevice::Nvme0n1,
+            BlockDevice::Nvme1n1,
+            BlockDevice::Nvme2n1,
+            BlockDevice::Nvme3n1,
+            BlockDevice::Sata0,
+            BlockDevice::Sata1,
+            BlockDevice::Sata2,
+            BlockDevice::Sata3,
+            BlockDevice::Sata4,
+            BlockDevice::Sata5,
+            BlockDevice::Sata6,
+            BlockDevice::Sata7,
+        ] {
+            devices.push(candidate);
+        }
+    } else {
+        for candidate in [
+            BlockDevice::Nvme1n1,
+            BlockDevice::Nvme0n1,
+            BlockDevice::Nvme2n1,
+            BlockDevice::Nvme3n1,
+            BlockDevice::Sata2,
+            BlockDevice::Sata3,
+            BlockDevice::Ide(IdeDevice::Ide1Master),
+            BlockDevice::Ide(IdeDevice::Ide1Slave),
+        ] {
+            devices.push(candidate);
+        }
+    }
+    devices
+}
+
+fn push_unique_device(devices: &mut Vec<BlockDevice>, device: BlockDevice) {
+    if !devices.iter().any(|existing| *existing == device) {
+        devices.push(device);
+    }
 }
 
 pub fn disks_lines() -> Vec<String> {
@@ -249,6 +377,13 @@ pub fn install_to_device_name(name: &str) -> Vec<String> {
     install_to_device(target)
 }
 
+pub fn install_physical_device_name(name: &str) -> Vec<String> {
+    let Some(target) = BlockDevice::parse(name) else {
+        return alloc::vec![format!("install physical: unknown disk {}", name)];
+    };
+    install_physical_to_device(target)
+}
+
 pub fn verify_device_name(name: &str) -> Vec<String> {
     let Some(target) = BlockDevice::parse(name) else {
         return alloc::vec![format!("install: unknown disk {}", name)];
@@ -256,9 +391,62 @@ pub fn verify_device_name(name: &str) -> Vec<String> {
     verify_device(target)
 }
 
+pub fn install_physical_to_device(target: BlockDevice) -> Vec<String> {
+    let mut lines = Vec::new();
+    lines.push(format!("install physical target={}", target.name()));
+    let plan = install_plan(target);
+    if plan.protected {
+        lines.push(format!("install physical: {}", plan.reason));
+        lines.extend(plan_lines(&plan));
+        return lines;
+    }
+    if source_device().usb_index().is_none() || boot_device() != source_device() {
+        lines.push(String::from(
+            "install physical: requires a UEFI USB live source disk",
+        ));
+        lines.extend(plan_lines(&plan));
+        return lines;
+    }
+    if !target.is_physical_install_target() {
+        lines.push(String::from(
+            "install physical: target must be internal sata* or nvme*n1",
+        ));
+        lines.extend(plan_lines(&plan));
+        return lines;
+    }
+    match plan.layout.map(|layout| layout.kind) {
+        Some(InstallLayoutKind::UefiGpt) => {}
+        Some(InstallLayoutKind::BiosMbr) => {
+            lines.push(String::from(
+                "install physical: only UEFI/GPT installs are supported",
+            ));
+            lines.extend(plan_lines(&plan));
+            return lines;
+        }
+        None => {
+            lines.push(format!("install physical: {}", plan.reason));
+            lines.extend(plan_lines(&plan));
+            return lines;
+        }
+    }
+    lines.extend(install_to_device(target));
+    lines
+}
+
+pub fn review_layout_line(layout: InstallLayout) -> String {
+    match layout.kind {
+        InstallLayoutKind::BiosMbr => format!("BIOS/MBR + CoolFS @ LBA {}", layout.root_start_lba),
+        InstallLayoutKind::UefiGpt => {
+            format!("UEFI/GPT ESP + CoolFS @ LBA {}", layout.root_start_lba)
+        }
+    }
+}
+
 pub fn install_plan(target: BlockDevice) -> InstallPlan {
     let boot_info = crate::storage::device_info(boot_device());
     let source_info = crate::storage::device_info(source_device());
+    let root_base_lba = source_root_base_lba();
+    let root_sectors = source_root_sectors();
     let target_info = crate::storage::device_info(target);
     let protected = target == boot_device() || target == source_device();
     let state = target_state(target, target_info.present);
@@ -267,11 +455,11 @@ pub fn install_plan(target: BlockDevice) -> InstallPlan {
     let mut reason = "ready";
     let mut installable = true;
 
-    if target == boot_device() {
-        reason = "refusing to overwrite boot disk";
-        installable = false;
-    } else if target == source_device() {
+    if target == source_device() {
         reason = "refusing to overwrite mounted root disk";
+        installable = false;
+    } else if target == boot_device() {
+        reason = "refusing to overwrite boot disk";
         installable = false;
     } else if matches!(
         target,
@@ -283,6 +471,9 @@ pub fn install_plan(target: BlockDevice) -> InstallPlan {
     } else if !target_info.present {
         reason = "target disk not present";
         installable = false;
+    } else if source_device().usb_index().is_some() && !target.is_physical_install_target() {
+        reason = "physical target must be sata* or nvme*n1";
+        installable = false;
     } else if !source_info.present {
         reason = "source disk not present";
         installable = false;
@@ -290,7 +481,7 @@ pub fn install_plan(target: BlockDevice) -> InstallPlan {
         reason = "boot disk not present";
         installable = false;
     } else {
-        match compute_install_layout(source_info.sectors, target_info.sectors) {
+        match compute_install_layout(root_sectors, target_info.sectors) {
             Ok(computed) => {
                 layout = Some(computed);
             }
@@ -310,7 +501,8 @@ pub fn install_plan(target: BlockDevice) -> InstallPlan {
         source_boot_sectors: boot_info.sectors,
         source_root: source_info.device,
         source_root_present: source_info.present,
-        source_root_sectors: source_info.sectors,
+        source_root_base_lba: root_base_lba,
+        source_root_sectors: root_sectors,
         layout,
         state,
         protected,
@@ -393,8 +585,12 @@ pub fn install_to_device(target: BlockDevice) -> Vec<String> {
 
     lines.push(format!("copy root started sectors={}", layout.root_sectors));
     for lba in 0..layout.root_sectors {
-        if !crate::storage::read_sector_from(source_device(), lba, &mut sector) {
-            lines.push(format!("install: source read failed lba={}", lba));
+        let Some(source_lba) = source_root_lba(lba) else {
+            lines.push(format!("install: source root LBA overflow offset={}", lba));
+            return lines;
+        };
+        if !crate::storage::read_sector_from(source_device(), source_lba, &mut sector) {
+            lines.push(format!("install: source read failed lba={}", source_lba));
             return lines;
         }
         let Some(target_lba) = layout.root_start_lba.checked_add(lba) else {
@@ -516,8 +712,12 @@ fn verify_self_boot_device(
     let mut source = [0u8; 512];
     let mut dest = [0u8; 512];
     for lba in 0..layout.root_sectors {
-        if !crate::storage::read_sector_from(source_device(), lba, &mut source) {
-            lines.push(format!("verify: source read failed lba={}", lba));
+        let Some(source_lba) = source_root_lba(lba) else {
+            lines.push(format!("verify: source root LBA overflow offset={}", lba));
+            return false;
+        };
+        if !crate::storage::read_sector_from(source_device(), source_lba, &mut source) {
+            lines.push(format!("verify: source read failed lba={}", source_lba));
             return false;
         }
         let Some(target_lba) = layout.root_start_lba.checked_add(lba) else {
@@ -688,8 +888,12 @@ impl InstallerJob {
                         continue;
                     }
                     let lba = self.cursor;
-                    if !crate::storage::read_sector_from(source_device(), lba, &mut source) {
-                        self.fail(format!("source read failed lba={}", lba));
+                    let Some(source_lba) = source_root_lba(lba) else {
+                        self.fail(format!("source root LBA overflow offset={}", lba));
+                        return true;
+                    };
+                    if !crate::storage::read_sector_from(source_device(), source_lba, &mut source) {
+                        self.fail(format!("source read failed lba={}", source_lba));
                         return true;
                     }
                     self.root_checksums.push(sector_checksum(&source));
@@ -822,8 +1026,11 @@ impl InstallerJob {
         let limit = self.layout.root_sectors.min(ROOT_METADATA_REFRESH_SECTORS);
         let mut sector = [0u8; 512];
         for lba in 0..limit {
-            if !crate::storage::read_sector_from(source_device(), lba, &mut sector) {
-                return Err(format!("source refresh read failed lba={}", lba));
+            let Some(source_lba) = source_root_lba(lba) else {
+                return Err(format!("source root LBA overflow offset={}", lba));
+            };
+            if !crate::storage::read_sector_from(source_device(), source_lba, &mut sector) {
+                return Err(format!("source refresh read failed lba={}", source_lba));
             }
             let Some(target_lba) = self.layout.root_start_lba.checked_add(lba) else {
                 return Err(format!("target refresh LBA overflow lba={}", lba));
@@ -1354,8 +1561,15 @@ fn refresh_target_root_prefix(
     let limit = layout.root_sectors.min(ROOT_METADATA_REFRESH_SECTORS);
     let mut sector = [0u8; 512];
     for lba in 0..limit {
-        if !crate::storage::read_sector_from(source_device(), lba, &mut sector) {
-            lines.push(format!("install: source refresh read failed lba={}", lba));
+        let Some(source_lba) = source_root_lba(lba) else {
+            lines.push(format!("install: source root LBA overflow offset={}", lba));
+            return false;
+        };
+        if !crate::storage::read_sector_from(source_device(), source_lba, &mut sector) {
+            lines.push(format!(
+                "install: source refresh read failed lba={}",
+                source_lba
+            ));
             return false;
         }
         let Some(target_lba) = layout.root_start_lba.checked_add(lba) else {
@@ -1392,18 +1606,13 @@ fn validate_install_target(plan: &InstallPlan) -> Result<(), &'static str> {
 }
 
 fn format_device_line(plan: &InstallPlan) -> String {
-    let role = if plan.target == boot_device() {
-        "boot"
-    } else if plan.target == source_device() {
-        "root"
-    } else {
-        "target"
-    };
+    let role = device_role(plan.target);
     format!(
-        "{} present={} sectors={} role={} protected={} installable={} size_mib={} state={} reason={}",
+        "{} present={} sectors={} bus={} role={} protected={} installable={} size_mib={} state={} reason={}",
         plan.target.name(),
         if plan.target_present { "yes" } else { "no" },
         plan.target_sectors,
+        plan.target.bus_label(),
         role,
         if plan.protected { "yes" } else { "no" },
         if plan.installable { "yes" } else { "no" },
@@ -1416,6 +1625,7 @@ fn format_device_line(plan: &InstallPlan) -> String {
 fn plan_lines(plan: &InstallPlan) -> Vec<String> {
     let mut lines = Vec::new();
     lines.push(format!("plan target={}", plan.target.name()));
+    lines.push(format!("source_mode={}", source_mode_label()));
     lines.push(format!(
         "source_boot={} present={} sectors={}",
         plan.source_boot.name(),
@@ -1427,20 +1637,23 @@ fn plan_lines(plan: &InstallPlan) -> Vec<String> {
         plan.source_boot_sectors
     ));
     lines.push(format!(
-        "source_root={} present={} sectors={}",
+        "source_root={} present={} sectors={} base_lba={}",
         plan.source_root.name(),
         if plan.source_root_present {
             "yes"
         } else {
             "no"
         },
-        plan.source_root_sectors
+        plan.source_root_sectors,
+        plan.source_root_base_lba
     ));
     lines.push(format!(
-        "target={} present={} sectors={} size_mib={} state={} protected={}",
+        "target={} present={} sectors={} bus={} role={} size_mib={} state={} protected={}",
         plan.target.name(),
         if plan.target_present { "yes" } else { "no" },
         plan.target_sectors,
+        plan.target.bus_label(),
+        device_role(plan.target),
         sectors_to_mib(plan.target_sectors),
         plan.state.label(),
         if plan.protected { "yes" } else { "no" },

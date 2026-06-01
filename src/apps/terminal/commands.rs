@@ -791,7 +791,7 @@ impl TerminalApp {
             ("passwd <old> <new>", "change current password"),
             ("setup <user> <pass>", "complete first-run admin setup"),
             (
-                "install [status|reset|repair|disks|plan <dev>|disk <dev>|verify <dev>]",
+                "install [status|reset|repair|disks|plan <dev>|disk <dev>|physical <dev>|verify <dev>]",
                 "first-boot and disk installer state",
             ),
             ("account <op>", "admin user management"),
@@ -1344,6 +1344,10 @@ impl TerminalApp {
                 "RECOVERY INSTALL",
                 crate::installer::install_to_device_name(target),
             ),
+            ["install", "physical", target] => self.cmd_lines(
+                "RECOVERY INSTALL",
+                crate::installer::install_physical_device_name(target),
+            ),
             ["install", "verify", target] => self.cmd_lines(
                 "RECOVERY INSTALL",
                 crate::installer::verify_device_name(target),
@@ -1351,7 +1355,7 @@ impl TerminalApp {
             ["install", ..] => {
                 self.set_fg(FG_ERROR);
                 self.print_str(
-                    "usage: recovery install [disks|plan <block-device>|disk <block-device>|verify <block-device>]\n",
+                    "usage: recovery install [disks|plan <block-device>|disk <block-device>|physical <block-device>|verify <block-device>]\n",
                 );
             }
             ["rollback"] => {
@@ -1754,6 +1758,20 @@ impl TerminalApp {
                     crate::installer::install_to_device_name(target),
                 );
             }
+            "physical" => {
+                let Some(target) = args.get(1).copied() else {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("usage: install physical <block-device>\n");
+                    return;
+                };
+                if !self.require_install_mutation("install") {
+                    return;
+                }
+                self.cmd_lines(
+                    "INSTALL PHYSICAL",
+                    crate::installer::install_physical_device_name(target),
+                );
+            }
             "verify" => {
                 let Some(target) = args.get(1).copied() else {
                     self.set_fg(FG_ERROR);
@@ -1788,7 +1806,7 @@ impl TerminalApp {
             }
             _ => {
                 self.set_fg(FG_ERROR);
-                self.print_str("usage: install [status|reset|repair|disks|plan <device>|disk <device>|verify <device>]\n");
+                self.print_str("usage: install [status|reset|repair|disks|plan <device>|disk <device>|physical <device>|verify <device>]\n");
             }
         }
     }

@@ -4,7 +4,7 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–89 are complete. Recent milestones give coolOS a much more
+Phases 1–90 are complete. Recent milestones give coolOS a much more
 normal command-line, installer, and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
@@ -32,11 +32,12 @@ critical. Phase 64 makes service supervision durable with persisted desired
 state under `/CONFIG`, restart history under `/LOGS`, dependency metadata,
 restart backoff, admin-gated controls, and degraded-service diagnostics in
 Terminal, recovery, sysreport, Diagnostics, and System Monitor.
-Phase 80 through Phase 89 add first-boot owner setup, recovery/reset hardening,
+Phase 80 through Phase 90 add first-boot owner setup, recovery/reset hardening,
 self-booting BIOS/MBR and UEFI/GPT installers, AHCI/SATA storage, a raw
 USB-flashable UEFI/GPT image, runtime USB mass-storage root boot, and NVMe
 root boot, plus bare-metal USB boot diagnostics and a conservative safe USB
-image fallback. Phase 65 adds a service-aware staged update and rollback path: update manifests
+image fallback, then guarded physical installation from USB to internal
+AHCI/SATA or NVMe disks. Phase 65 adds a service-aware staged update and rollback path: update manifests
 live under `/UPDATES/STAGED`, pre-apply file snapshots live under
 `/UPDATES/SNAPSHOTS/LAST`, `/LOGS/UPDATE.TXT` records stage/apply/rollback
 events, and `update rollback` plus `recovery rollback` can restore the previous
@@ -106,7 +107,8 @@ explicit target confirmation, and graphical progress, while Phase 85 adds a
 parallel QEMU OVMF UEFI/GPT boot and install path with GPT CoolFS root
 discovery. Phase 86 adds QEMU AHCI/SATA storage plus a USB-flashable raw
 UEFI/GPT image, Phase 87 boots that image as a runtime USB mass-storage
-root disk, and Phase 88 boots it from NVMe. Phases 45-88
+root disk, Phase 88 boots it from NVMe, Phase 89 adds bare-metal USB
+diagnostics, and Phase 90 adds guarded physical-install simulation. Phases 45-90
 focus on responsiveness,
 interactive terminal behavior, and
 desktop-browser compatibility:
@@ -2702,9 +2704,40 @@ paths.
 while `coolos-usb-safe.img` provides a lower-resolution safe fallback for
 physical machines. The new `hardware` report shows framebuffer, memory,
 storage-root, AHCI, NVMe, and USB status so physical boot failures can be
-triaged without changing installer or storage behavior. Physical disk
-installation, Secure Boot, UASP, and broader bare-metal driver variance remain
-future work.
+triaged without changing installer or storage behavior. Secure Boot, UASP, and
+broader bare-metal driver variance remain future work; guarded physical
+installation is covered by Phase 90.
+
+---
+
+## ✅ Phase 90 — Physical Disk Installer Guardrails
+
+**Goal:** Let a UEFI USB-booted coolOS image install to an internal AHCI/SATA or
+NVMe disk with conservative target protection, explicit confirmation,
+verification, and diagnostics.
+
+- [x] Treat `usb0` as the live installer source when it contains both ESP and
+      GPT CoolFS root partitions.
+- [x] Copy CoolFS from the resolved root partition base LBA, not from disk LBA 0,
+      so USB-source installs copy only the real root filesystem.
+- [x] Report bus, role, protected state, layout state, target size, and refusal
+      reason in `install disks`, `install plan <device>`, `hardware`,
+      `devices`, and `sysreport`.
+- [x] Add `install physical <device>` as an explicit USB-to-internal
+      UEFI/GPT install alias for `sata*` and `nvme*n1` targets.
+- [x] Keep the graphical installer on the existing review/name-confirmation and
+      progress path, defaulting to the first safe internal target when booted
+      from USB.
+- [x] Add `make run-physical-installer-sim`,
+      `scripts/qemu_smoke.py --ahci-target-disk`, and
+      `make smoke-phase90-physical-installer`.
+
+**Current status:** complete. QEMU can boot `coolos-usb.img` as USB storage,
+protect that live `usb0` source, expose blank AHCI and NVMe disks as physical
+targets, install to an internal NVMe target with `install physical nvme0n1`,
+verify it, and reboot that target alone into first boot. Secure Boot, UASP,
+MBR physical installs, destructive physical-disk partitioning UX beyond this
+guarded UEFI/GPT path, and broad real-hardware variance remain future work.
 
 ---
 
@@ -2837,4 +2870,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.48 | Phase 86 complete: AHCI/SATA storage and USB image foundation |
 | v7.49 | Phase 87 complete: runtime USB mass-storage root boot |
 | v7.50 | Phase 88 complete: NVMe/PCIe storage root boot |
-| v7.51 | Current — Phase 89 complete: bare-metal USB boot readiness |
+| v7.51 | Phase 89 complete: bare-metal USB boot readiness |
+| v7.52 | Current — Phase 90 complete: physical disk installer guardrails |

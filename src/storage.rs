@@ -175,6 +175,36 @@ impl BlockDevice {
             _ => None,
         }
     }
+
+    pub const fn bus_label(self) -> &'static str {
+        match self {
+            BlockDevice::Ide(_) => "ide",
+            BlockDevice::Sata0
+            | BlockDevice::Sata1
+            | BlockDevice::Sata2
+            | BlockDevice::Sata3
+            | BlockDevice::Sata4
+            | BlockDevice::Sata5
+            | BlockDevice::Sata6
+            | BlockDevice::Sata7 => "sata",
+            BlockDevice::Nvme0n1
+            | BlockDevice::Nvme1n1
+            | BlockDevice::Nvme2n1
+            | BlockDevice::Nvme3n1 => "nvme",
+            BlockDevice::Usb0
+            | BlockDevice::Usb1
+            | BlockDevice::Usb2
+            | BlockDevice::Usb3
+            | BlockDevice::Usb4
+            | BlockDevice::Usb5
+            | BlockDevice::Usb6
+            | BlockDevice::Usb7 => "usb",
+        }
+    }
+
+    pub const fn is_physical_install_target(self) -> bool {
+        self.sata_port().is_some() || self.nvme_index().is_some()
+    }
 }
 
 pub fn init() {

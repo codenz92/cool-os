@@ -17,7 +17,7 @@ tables.
 
 ---
 
-# Current state — v7.50
+# Current state — v7.52
 
 The kernel boots into a graphical desktop at **1920×1080, 24bpp** via the
 `bootloader 0.11` linear framebuffer on the default BIOS/VBE path and via the
@@ -66,7 +66,11 @@ a parallel QEMU UEFI/GPT installer path while keeping BIOS/MBR supported,
 Phase 86 adds AHCI/SATA storage plus a USB-flashable raw image artifact, and
 Phase 87 boots that image as runtime USB mass storage, Phase 88 adds QEMU NVMe
 root boot and NVMe installer targets, and Phase 89 adds bare-metal USB boot
-readiness diagnostics plus a conservative safe USB image fallback.
+readiness diagnostics plus a conservative safe USB image fallback. Phase 90
+adds cautious physical-install guardrails for USB-booted systems: the live
+`usb0` source is protected, internal `sata*` and `nvme*n1` disks are reported as
+candidate targets, and installs require explicit target-name confirmation plus
+flush/verify before rebooting the internal disk.
 Phase 32
 keeps copied kernel mappings supervisor-only for ring-3 tasks, removes broad
 lazy lower-half page allocation, and turns denied user pointers into task
@@ -872,8 +876,8 @@ NVMe controllers, exposes namespace 1 as `nvme0n1`, `nvme1n1`, and so on, and
 uses the same raw/MBR/GPT CoolFS discovery path as IDE, AHCI, and USB. `make
 run-uefi-nvme` boots `coolos-usb.img` as a QEMU NVMe disk, and installer
 commands can plan, install, and verify writable NVMe targets. Secure Boot,
-UASP, broad real-hardware USB/NVMe variance, and physical-machine installation
-remain future work.
+UASP and broad real-hardware USB/NVMe variance remain future work; guarded
+physical-machine installation from a USB source is covered by Phase 90.
 
 **Bare-metal USB boot readiness (Phase 89).** The boot path now records a
 compact hardware readiness report covering framebuffer/GOP details, memory-map
@@ -882,8 +886,20 @@ The report appears in boot logs and through Terminal `hardware`, `devices`,
 `diagnostics`, and `sysreport`. `make build-usb-safe-image` produces
 `coolos-usb-safe.img`, a conservative 1024×768 UEFI/GPT USB image that enters
 safe mode for physical machines that cannot handle the normal 1080p path.
-Physical disk installation, Secure Boot, UASP, and wider hardware-driver
-coverage remain future work.
+Secure Boot, UASP, wider hardware-driver coverage, and physical installs beyond
+the guarded Phase 90 UEFI/GPT path remain future work.
+
+**Physical disk installer guardrails (Phase 90).** A system booted from the
+UEFI/GPT USB image can now plan and run a guarded internal install to AHCI/SATA
+or NVMe storage. `install disks` and `install plan <device>` show bus, size,
+layout state, source/root/protected role, and destructive refusal reason;
+`install physical <device>` is an explicit alias for installing from the live
+USB root to an internal UEFI/GPT target. The graphical installer defaults to a
+safe internal disk when available, shows the USB source and GPT layout on the
+review screen, requires typing the exact target device name, copies ESP and
+CoolFS partitions, flushes, and verifies before completion. Secure Boot, UASP,
+MBR physical installs, and physical disk partitioning beyond this UEFI/GPT
+writer remain future work.
 
 **User/kernel isolation hardening (Phase 32).** Process address spaces still
 copy the kernel's upper-half PML4 entries so syscall and interrupt entry can run
@@ -1119,6 +1135,9 @@ Bulk-Only Transport, `usb*` block devices, `make run-uefi-usb-storage`, and
 `make smoke-phase88-nvme-storage`. Phase 89 adds boot hardware diagnostics,
 `hardware [status]`, `make build-usb-safe-image`,
 `make run-uefi-usb-storage-safe`, and `make smoke-phase89-baremetal-readiness`.
+Phase 90 adds guarded physical-install simulation with USB source protection,
+internal AHCI/NVMe candidate reporting, `install physical <device>`, `make
+run-physical-installer-sim`, and `make smoke-phase90-physical-installer`.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
