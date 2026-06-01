@@ -137,6 +137,7 @@ fn upsert_virtual(devices: &mut Vec<DeviceInfo>, name: &str, status: &str) {
 fn pci_class_name(class: u8, subclass: u8, prog_if: u8) -> &'static str {
     match (class, subclass, prog_if) {
         (0x01, 0x01, _) => "storage/ide",
+        (0x01, 0x08, 0x02) => "storage/nvme",
         (0x02, _, _) => "network",
         (0x03, _, _) => "display",
         (0x06, 0x00, _) => "bridge/host",

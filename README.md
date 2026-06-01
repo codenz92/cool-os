@@ -17,12 +17,12 @@ tables.
 
 ---
 
-# Current state — v7.49
+# Current state — v7.50
 
 The kernel boots into a graphical desktop at **1920×1080, 24bpp** via the
 `bootloader 0.11` linear framebuffer on the default BIOS/VBE path and via the
 parallel QEMU OVMF UEFI/GPT path, including AHCI/SATA-attached disks and
-QEMU xHCI USB mass-storage root disks. A terminal window opens on boot.
+QEMU xHCI USB mass-storage or NVMe root disks. A terminal window opens on boot.
 Right-clicking the desktop opens a context menu to launch additional apps, and
 the shell also exposes desktop icons plus a start menu/taskbar flow, global
 keyboard shortcuts, `Ctrl+Space` Start-menu search, a task switcher overlay,
@@ -64,7 +64,8 @@ writing the BIOS bootloader plus a CoolFS root partition to the target disk.
 Phase 84 adds safer target selection and graphical progress, Phase 85 adds
 a parallel QEMU UEFI/GPT installer path while keeping BIOS/MBR supported,
 Phase 86 adds AHCI/SATA storage plus a USB-flashable raw image artifact, and
-Phase 87 boots that image as runtime USB mass storage.
+Phase 87 boots that image as runtime USB mass storage. Phase 88 adds QEMU NVMe
+root boot and NVMe installer targets.
 Phase 32
 keeps copied kernel mappings supervisor-only for ring-3 tasks, removes broad
 lazy lower-half page allocation, and turns denied user pointers into task
@@ -265,7 +266,7 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **Packages** | Ed25519-signed package archives under `/Packages` with detached `<package>.sig` files, public package trust keys under `/CONFIG/PACKAGE-KEYS.TXT`, version/dependency checks, payload tables with SHA-256 and mode metadata, per-install owner records under `/APPS/<command>/OWNER.TXT`, package history under `/LOGS/PACKAGES.TXT`, transaction state under `/LOGS/PACKAGE-TXN.TXT`, verified `pkg install\|run\|repair`, and recovery/sysreport package trust diagnostics. |
 | **Browser engine port** | Phase 71 selects WPE WebKit as the modern-browser target while keeping the native browser as fallback. Phase 77 marks threading/TLS/pthread support ready and moves dynamic linking/JIT execmem/file-mmap from missing to partial with ABI v14 `mmap_file` and W^X `mprotect`, `/lib` shared-object placement, read-only file-backed text, `DT_NEEDED` dependency loading, cross-object dynsym resolution, and ELF TLS records. `src/browser_engine.rs` defines port ABI v1, runtime requirement diagnostics, backend readiness probing through `/SYSTEM/BROWSER-ENGINE/WPE.READY`, Terminal `engine` commands, `browser://engine`, Recovery/Diagnostics/Sysreport lines, futex/TLS/dynamic-link/file-mmap telemetry, and SDK docs for the host contract. |
 | **Applications** | Terminal, System Monitor, Text Viewer, Color Picker, File Manager, Web Browser, ring-3 Notes, Text Editor, Trash Bin, Screenshot, Process Demo, and GUI Demo. Text-file opens route into `/bin/editor <path>` with kernel viewer fallback, while File Manager exposes explicit Open With Editor/Viewer actions. |
-| **Disk image** | `disk-image/src/fs_image.rs` builds `fs.img` as a 64 MiB raw OS disk: native CoolFS starts at LBA 0 with root-owned system paths, `/lib` shared objects including `/lib/libphase75.so`, `/lib/libphase76dep.so`, and `/lib/libphase76main.so`, user-owned writable paths including `/TMP`, executable `/bin` ELFs including `/bin/threaddemo`, `/bin/tlsdemo`, `/bin/pthreaddemo`, `/bin/mmapdemo`, and `/bin/lddemo`, `/RECOVERY` boot/repair docs, `/SDK` devkit docs/templates including `/SDK/BROWSER_ENGINE_PORT.TXT`, `/CONFIG/BROWSER-ENGINE.CFG`, `/SYSTEM/BROWSER-ENGINE`, `/Packages/guidemo.pkg`, `/Packages/guidemo.elf`, and `/Documents/package-demo.p25`; an optional FAT32 `/FAT` import region starts at 8 MiB. The Makefile can attach this live image as IDE, AHCI/SATA, or USB mass storage, the installer can copy it into BIOS/MBR or UEFI/GPT targets, and `build-usb-image` produces a single raw UEFI/GPT image suitable for flashing and QEMU USB-storage boot testing. |
+| **Disk image** | `disk-image/src/fs_image.rs` builds `fs.img` as a 64 MiB raw OS disk: native CoolFS starts at LBA 0 with root-owned system paths, `/lib` shared objects including `/lib/libphase75.so`, `/lib/libphase76dep.so`, and `/lib/libphase76main.so`, user-owned writable paths including `/TMP`, executable `/bin` ELFs including `/bin/threaddemo`, `/bin/tlsdemo`, `/bin/pthreaddemo`, `/bin/mmapdemo`, and `/bin/lddemo`, `/RECOVERY` boot/repair docs, `/SDK` devkit docs/templates including `/SDK/BROWSER_ENGINE_PORT.TXT`, `/CONFIG/BROWSER-ENGINE.CFG`, `/SYSTEM/BROWSER-ENGINE`, `/Packages/guidemo.pkg`, `/Packages/guidemo.elf`, and `/Documents/package-demo.p25`; an optional FAT32 `/FAT` import region starts at 8 MiB. The Makefile can attach this live image as IDE, AHCI/SATA, NVMe, or USB mass storage, the installer can copy it into BIOS/MBR or UEFI/GPT targets, and `build-usb-image` produces a single raw UEFI/GPT image suitable for flashing plus QEMU USB-storage or NVMe boot testing. |
 
 ### Applications
 
@@ -443,6 +444,15 @@ storage:
 make run-uefi-ahci
 make run-uefi-ahci-installer
 make run-uefi-ahci-installed
+```
+
+The NVMe UEFI path boots the same GPT image through QEMU PCIe storage and can
+use a writable NVMe installer target:
+
+```bash
+make run-uefi-nvme
+make run-uefi-nvme-installer
+make run-uefi-nvme-installed
 ```
 
 To build a single USB-flashable raw UEFI/GPT image:
@@ -820,8 +830,14 @@ USB Mass Storage Class devices, configures bulk endpoints, speaks Bulk-Only
 Transport with the SCSI commands needed for block I/O, and exposes USB disks as
 `usb0`, `usb1`, and so on. The generic storage layer can discover the GPT
 CoolFS root on `usb0`, so `make run-uefi-usb-storage` boots `coolos-usb.img`
-through QEMU `usb-storage` without IDE or AHCI root disks. NVMe, Secure Boot,
-UASP, broad real-hardware USB variance, and physical-machine installation
+through QEMU `usb-storage` without IDE or AHCI root disks.
+
+**NVMe/PCIe storage root boot (Phase 88).** The storage layer now detects QEMU
+NVMe controllers, exposes namespace 1 as `nvme0n1`, `nvme1n1`, and so on, and
+uses the same raw/MBR/GPT CoolFS discovery path as IDE, AHCI, and USB. `make
+run-uefi-nvme` boots `coolos-usb.img` as a QEMU NVMe disk, and installer
+commands can plan, install, and verify writable NVMe targets. Secure Boot,
+UASP, broad real-hardware USB/NVMe variance, and physical-machine installation
 remain future work.
 
 **User/kernel isolation hardening (Phase 32).** Process address spaces still
@@ -1053,7 +1069,9 @@ UEFI/GPT install/verify support, and `make smoke-phase85-uefi-gpt`. Phase 86
 adds AHCI/SATA block devices, AHCI installer targets, `make
 smoke-phase86-ahci-storage`, and `make build-usb-image`. Phase 87 adds USB MSC
 Bulk-Only Transport, `usb*` block devices, `make run-uefi-usb-storage`, and
-`make smoke-phase87-usb-storage-root`.
+`make smoke-phase87-usb-storage-root`. Phase 88 adds QEMU NVMe root boot,
+`nvme*n1` block devices, NVMe installer targets, `make run-uefi-nvme`, and
+`make smoke-phase88-nvme-storage`.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half

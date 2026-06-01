@@ -81,6 +81,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--smp", default="1", help="QEMU SMP CPU count")
     parser.add_argument("--vga", default="std", help="QEMU VGA adapter")
     parser.add_argument("--ahci", action="store_true", help="Attach disks through QEMU AHCI/SATA instead of IDE")
+    parser.add_argument(
+        "--nvme",
+        action="store_true",
+        help="Attach --boot-disk through QEMU NVMe instead of IDE/AHCI/USB",
+    )
+    parser.add_argument(
+        "--target-nvme",
+        action="store_true",
+        help="Attach --target-disk through QEMU NVMe instead of IDE/AHCI",
+    )
     parser.add_argument("--usb", action="store_true", help="Attach xHCI with USB keyboard and pointer")
     parser.add_argument(
         "--usb-storage",
@@ -226,6 +236,14 @@ def parse_args() -> argparse.Namespace:
         parser.error("--bios and --fsimg are required unless --boot-disk is used")
     if args.boot_disk_writable and not args.boot_disk:
         parser.error("--boot-disk-writable requires --boot-disk")
+    if args.nvme and not args.boot_disk:
+        parser.error("--nvme requires --boot-disk")
+    if args.nvme and (args.ahci or args.usb_storage):
+        parser.error("--nvme cannot be combined with --ahci or --usb-storage")
+    if args.target_nvme and not args.target_disk:
+        parser.error("--target-nvme requires --target-disk")
+    if args.target_nvme and args.ahci:
+        parser.error("--target-nvme cannot be combined with --ahci")
     return args
 
 
@@ -251,6 +269,15 @@ def build_command(args: argparse.Namespace, monitor_socket: str | None = None) -
                     f"if=none,id=usbstorageboot,file={args.boot_disk},format=raw{boot_snapshot}",
                     "-device",
                     "usb-storage,drive=usbstorageboot,bus=xhci.0",
+                ]
+            )
+        elif args.nvme:
+            cmd.extend(
+                [
+                    "-drive",
+                    f"if=none,id=nvmeboot,file={args.boot_disk},format=raw{boot_snapshot}",
+                    "-device",
+                    "nvme,drive=nvmeboot,serial=coolos-nvme0",
                 ]
             )
         elif args.ahci:
@@ -313,7 +340,16 @@ def build_command(args: argparse.Namespace, monitor_socket: str | None = None) -
     )
     if args.target_disk:
         target_snapshot = "" if args.target_writable else ",snapshot=on"
-        if args.ahci:
+        if args.target_nvme:
+            cmd.extend(
+                [
+                    "-drive",
+                    f"if=none,id=targetdisk,file={args.target_disk},format=raw{target_snapshot}",
+                    "-device",
+                    "nvme,drive=targetdisk,serial=coolos-nvme0",
+                ]
+            )
+        elif args.ahci:
             cmd.extend(
                 [
                     "-drive",

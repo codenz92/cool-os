@@ -667,7 +667,9 @@ pub(super) fn draw_installer_overlay(
                 sw,
                 layout.field_x,
                 layout.device_y,
-                if state.selected_target.sata_port().is_some() {
+                if state.selected_target.nvme_index().is_some() {
+                    "Reboot and run make run-uefi-nvme-installed."
+                } else if state.selected_target.sata_port().is_some() {
                     "Reboot and run make run-uefi-ahci-installed."
                 } else {
                     "Reboot and run make run-installed."

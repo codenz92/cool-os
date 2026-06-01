@@ -50,6 +50,7 @@ mod memory_pressure;
 mod mouse;
 mod net;
 mod notifications;
+mod nvme;
 mod packages;
 mod pci;
 mod png;

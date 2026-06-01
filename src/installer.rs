@@ -183,6 +183,24 @@ pub fn boot_device() -> BlockDevice {
 
 pub fn default_target_device() -> BlockDevice {
     for candidate in [
+        BlockDevice::Nvme1n1,
+        BlockDevice::Nvme0n1,
+        BlockDevice::Nvme2n1,
+        BlockDevice::Nvme3n1,
+        BlockDevice::Sata2,
+        BlockDevice::Sata3,
+        BlockDevice::Ide(IdeDevice::Ide1Master),
+        BlockDevice::Ide(IdeDevice::Ide1Slave),
+    ] {
+        if crate::storage::device_info(candidate).present && install_plan(candidate).installable {
+            return candidate;
+        }
+    }
+    for candidate in [
+        BlockDevice::Nvme1n1,
+        BlockDevice::Nvme0n1,
+        BlockDevice::Nvme2n1,
+        BlockDevice::Nvme3n1,
         BlockDevice::Sata2,
         BlockDevice::Sata3,
         BlockDevice::Ide(IdeDevice::Ide1Master),

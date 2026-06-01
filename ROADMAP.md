@@ -4,7 +4,7 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–87 are complete. Recent milestones give coolOS a much more
+Phases 1–88 are complete. Recent milestones give coolOS a much more
 normal command-line, installer, and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
@@ -32,9 +32,10 @@ critical. Phase 64 makes service supervision durable with persisted desired
 state under `/CONFIG`, restart history under `/LOGS`, dependency metadata,
 restart backoff, admin-gated controls, and degraded-service diagnostics in
 Terminal, recovery, sysreport, Diagnostics, and System Monitor.
-Phase 80 through Phase 87 add first-boot owner setup, recovery/reset hardening,
+Phase 80 through Phase 88 add first-boot owner setup, recovery/reset hardening,
 self-booting BIOS/MBR and UEFI/GPT installers, AHCI/SATA storage, a raw
-USB-flashable UEFI/GPT image, and runtime USB mass-storage root boot. Phase 65 adds a service-aware staged update and rollback path: update manifests
+USB-flashable UEFI/GPT image, runtime USB mass-storage root boot, and NVMe
+root boot. Phase 65 adds a service-aware staged update and rollback path: update manifests
 live under `/UPDATES/STAGED`, pre-apply file snapshots live under
 `/UPDATES/SNAPSHOTS/LAST`, `/LOGS/UPDATE.TXT` records stage/apply/rollback
 events, and `update rollback` plus `recovery rollback` can restore the previous
@@ -103,8 +104,8 @@ layout and CoolFS root partition discovery. Phase 84 adds installer planning,
 explicit target confirmation, and graphical progress, while Phase 85 adds a
 parallel QEMU OVMF UEFI/GPT boot and install path with GPT CoolFS root
 discovery. Phase 86 adds QEMU AHCI/SATA storage plus a USB-flashable raw
-UEFI/GPT image, and Phase 87 boots that image as a runtime USB mass-storage
-root disk. Phases 45-87
+UEFI/GPT image, Phase 87 boots that image as a runtime USB mass-storage
+root disk, and Phase 88 boots it from NVMe. Phases 45-88
 focus on responsiveness,
 interactive terminal behavior, and
 desktop-browser compatibility:
@@ -2582,8 +2583,8 @@ existing BIOS/MBR/IDE developer and installer path.
 `FB 1920x1080`, installs to a GPT target on `ide1-master`, verifies ESP and
 CoolFS partitions, and boots that target alone under OVMF into first boot.
 BIOS/MBR remains supported. AHCI/SATA is covered by Phase 86, runtime USB
-mass-storage root boot is covered by Phase 87, and NVMe, Secure Boot, and
-physical-machine installs remain later work.
+mass-storage root boot is covered by Phase 87, NVMe is covered by Phase 88,
+and Secure Boot plus physical-machine installs remain later work.
 
 ---
 
@@ -2611,8 +2612,8 @@ UEFI/GPT image suitable for USB flashing while preserving BIOS/MBR/IDE flows.
 enumerates `sata*` disks, installs to a writable SATA target, verifies the
 UEFI/GPT layout, boots the installed SATA target alone into first boot, and
 boots the generated USB-flashable image through AHCI. Runtime USB mass-storage
-root boot is covered by Phase 87; NVMe, Secure Boot, and physical-machine
-installation remain out of scope for this phase.
+root boot is covered by Phase 87; NVMe is covered by Phase 88; Secure Boot and
+physical-machine installation remain out of scope for this phase.
 
 ---
 
@@ -2641,9 +2642,36 @@ mass-storage device and discover the GPT CoolFS root on `usb0`.
 **Current status:** complete. QEMU OVMF boots `coolos-usb.img` through
 `qemu-xhci` plus `usb-storage`, xHCI reports `MSC usb0`, the storage layer logs
 `root device=usb0 layout=gpt-coolfs`, and the image reaches the existing
-first-boot flow without IDE or AHCI root disks. UASP, NVMe, Secure Boot,
-broad real-hardware USB variance, and physical-machine installation remain
-future work.
+first-boot flow without IDE or AHCI root disks. UASP, Secure Boot, broad
+real-hardware USB variance, and physical-machine installation remain future
+work.
+
+---
+
+## ✅ Phase 88 — NVMe/PCIe Storage Root Boot
+
+**Goal:** Boot a UEFI/GPT coolOS image through QEMU NVMe and expose NVMe disks
+through the same block-device and installer paths as IDE, AHCI/SATA, and USB.
+
+- [x] Add a QEMU-focused NVMe driver for PCI storage class `01/08/02`, with
+      controller setup, admin/I/O queues, namespace identify, and polled
+      read/write/flush commands.
+- [x] Add stable `nvme0n1` through `nvme3n1` block-device names and route
+      device info, sector I/O, and flush through the generic storage layer.
+- [x] Reuse existing raw CoolFS, BIOS/MBR `0xc0`, and GPT CoolFS discovery for
+      NVMe roots, preferring NVMe before AHCI/SATA after USB root checks.
+- [x] Extend installer planning, install, and verify paths to accept writable
+      NVMe targets while refusing protected source boot/root disks.
+- [x] Add `make run-uefi-nvme`, `make run-uefi-nvme-installer`,
+      `make run-uefi-nvme-installed`, `scripts/qemu_smoke.py --nvme`, and
+      `make smoke-phase88-nvme-storage`.
+
+**Current status:** complete. QEMU OVMF can boot `coolos-usb.img` attached as a
+PCIe NVMe disk, the storage layer reports `nvme0n1`, root discovery logs
+`root device=nvme0n1 layout=gpt-coolfs`, and installer commands can plan,
+write, verify, and boot a writable NVMe target. Secure Boot, UASP, broad
+real-hardware NVMe variance, and physical-machine installation remain future
+work.
 
 ---
 
@@ -2752,4 +2780,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.46 | Phase 84 complete: installer v2 disk selection and progress |
 | v7.47 | Phase 85 complete: UEFI/GPT boot and installer foundation |
 | v7.48 | Phase 86 complete: AHCI/SATA storage and USB image foundation |
-| v7.49 | Current — Phase 87 complete: runtime USB mass-storage root boot |
+| v7.49 | Phase 87 complete: runtime USB mass-storage root boot |
+| v7.50 | Current — Phase 88 complete: NVMe/PCIe storage root boot |

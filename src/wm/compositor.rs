@@ -1372,7 +1372,9 @@ impl WindowManager {
         let changed = job.tick_default_budget();
         if job.is_complete() {
             self.installer.screen = InstallerScreen::Complete;
-            let run_target = if self.installer.selected_target.sata_port().is_some() {
+            let run_target = if self.installer.selected_target.nvme_index().is_some() {
+                "make run-uefi-nvme-installed"
+            } else if self.installer.selected_target.sata_port().is_some() {
                 "make run-uefi-ahci-installed"
             } else {
                 "make run-installed"

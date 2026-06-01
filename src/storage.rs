@@ -14,6 +14,10 @@ pub enum BlockDevice {
     Sata5,
     Sata6,
     Sata7,
+    Nvme0n1,
+    Nvme1n1,
+    Nvme2n1,
+    Nvme3n1,
     Usb0,
     Usb1,
     Usb2,
@@ -70,6 +74,10 @@ impl BlockDevice {
             BlockDevice::Sata5 => "sata5",
             BlockDevice::Sata6 => "sata6",
             BlockDevice::Sata7 => "sata7",
+            BlockDevice::Nvme0n1 => "nvme0n1",
+            BlockDevice::Nvme1n1 => "nvme1n1",
+            BlockDevice::Nvme2n1 => "nvme2n1",
+            BlockDevice::Nvme3n1 => "nvme3n1",
             BlockDevice::Usb0 => "usb0",
             BlockDevice::Usb1 => "usb1",
             BlockDevice::Usb2 => "usb2",
@@ -94,6 +102,10 @@ impl BlockDevice {
             "sata5" => Some(BlockDevice::Sata5),
             "sata6" => Some(BlockDevice::Sata6),
             "sata7" => Some(BlockDevice::Sata7),
+            "nvme0n1" => Some(BlockDevice::Nvme0n1),
+            "nvme1n1" => Some(BlockDevice::Nvme1n1),
+            "nvme2n1" => Some(BlockDevice::Nvme2n1),
+            "nvme3n1" => Some(BlockDevice::Nvme3n1),
             "usb0" => Some(BlockDevice::Usb0),
             "usb1" => Some(BlockDevice::Usb1),
             "usb2" => Some(BlockDevice::Usb2),
@@ -117,6 +129,10 @@ impl BlockDevice {
             BlockDevice::Sata6 => Some(6),
             BlockDevice::Sata7 => Some(7),
             BlockDevice::Ide(_)
+            | BlockDevice::Nvme0n1
+            | BlockDevice::Nvme1n1
+            | BlockDevice::Nvme2n1
+            | BlockDevice::Nvme3n1
             | BlockDevice::Usb0
             | BlockDevice::Usb1
             | BlockDevice::Usb2
@@ -125,6 +141,16 @@ impl BlockDevice {
             | BlockDevice::Usb5
             | BlockDevice::Usb6
             | BlockDevice::Usb7 => None,
+        }
+    }
+
+    pub const fn nvme_index(self) -> Option<u8> {
+        match self {
+            BlockDevice::Nvme0n1 => Some(0),
+            BlockDevice::Nvme1n1 => Some(1),
+            BlockDevice::Nvme2n1 => Some(2),
+            BlockDevice::Nvme3n1 => Some(3),
+            _ => None,
         }
     }
 
@@ -145,6 +171,7 @@ impl BlockDevice {
 
 pub fn init() {
     crate::ahci::init();
+    crate::nvme::init();
     crate::usb::init_storage();
 }
 
@@ -156,6 +183,7 @@ pub fn all_devices() -> Vec<BlockDevice> {
         BlockDevice::Ide(crate::ata::IdeDevice::Ide1Slave),
     ];
     devices.extend(crate::ahci::devices());
+    devices.extend(crate::nvme::devices());
     devices.extend(crate::usb::storage_devices());
     devices
 }
@@ -178,6 +206,10 @@ pub fn device_info(device: BlockDevice) -> BlockDeviceInfo {
         | BlockDevice::Sata5
         | BlockDevice::Sata6
         | BlockDevice::Sata7 => crate::ahci::device_info(device),
+        BlockDevice::Nvme0n1
+        | BlockDevice::Nvme1n1
+        | BlockDevice::Nvme2n1
+        | BlockDevice::Nvme3n1 => crate::nvme::device_info(device),
         _ => crate::usb::storage_device_info(device),
     }
 }
@@ -232,6 +264,10 @@ pub fn read_sector_from(device: BlockDevice, lba: u32, buf: &mut [u8; 512]) -> b
         | BlockDevice::Sata5
         | BlockDevice::Sata6
         | BlockDevice::Sata7 => crate::ahci::read_sector_from(device, lba, buf),
+        BlockDevice::Nvme0n1
+        | BlockDevice::Nvme1n1
+        | BlockDevice::Nvme2n1
+        | BlockDevice::Nvme3n1 => crate::nvme::read_sector_from(device, lba, buf),
         _ => crate::usb::storage_read_sector(device, lba, buf),
     }
 }
@@ -247,6 +283,10 @@ pub fn write_sector_to(device: BlockDevice, lba: u32, buf: &[u8; 512]) -> bool {
         | BlockDevice::Sata5
         | BlockDevice::Sata6
         | BlockDevice::Sata7 => crate::ahci::write_sector_to(device, lba, buf),
+        BlockDevice::Nvme0n1
+        | BlockDevice::Nvme1n1
+        | BlockDevice::Nvme2n1
+        | BlockDevice::Nvme3n1 => crate::nvme::write_sector_to(device, lba, buf),
         _ => crate::usb::storage_write_sector(device, lba, buf),
     }
 }
@@ -262,6 +302,10 @@ pub fn flush_device(device: BlockDevice) -> bool {
         | BlockDevice::Sata5
         | BlockDevice::Sata6
         | BlockDevice::Sata7 => crate::ahci::flush_device(device),
+        BlockDevice::Nvme0n1
+        | BlockDevice::Nvme1n1
+        | BlockDevice::Nvme2n1
+        | BlockDevice::Nvme3n1 => crate::nvme::flush_device(device),
         _ => crate::usb::storage_flush(device),
     }
 }
@@ -425,6 +469,7 @@ fn root_priority_devices() -> Vec<BlockDevice> {
         BlockDevice::Ide(crate::ata::IdeDevice::Ide0Master),
     ];
     devices.extend(crate::usb::storage_devices());
+    devices.extend(crate::nvme::devices());
     devices.extend(crate::ahci::devices());
     devices.push(BlockDevice::Ide(crate::ata::IdeDevice::Ide1Master));
     devices.push(BlockDevice::Ide(crate::ata::IdeDevice::Ide1Slave));
