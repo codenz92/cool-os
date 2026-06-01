@@ -151,6 +151,7 @@ fn diagnostics_lines() -> Vec<String> {
         "boot health",
         crate::boot_health::status_lines(),
     );
+    push_terminal_section(&mut lines, "hardware", crate::hardware::lines());
     push_terminal_section(&mut lines, "services", crate::services::lines());
     push_terminal_section(&mut lines, "updates", crate::updates::status_lines());
     push_terminal_section(&mut lines, "packages", crate::packages::status_lines());

@@ -58,6 +58,14 @@ impl RootDiskLayout {
             RootDiskLayout::GptCoolFs => ":gpt-coolfs",
         }
     }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            RootDiskLayout::RawCoolFs => "raw-coolfs",
+            RootDiskLayout::MbrCoolFs => "mbr-coolfs",
+            RootDiskLayout::GptCoolFs => "gpt-coolfs",
+        }
+    }
 }
 
 static ROOT_DISK: Mutex<Option<RootDisk>> = Mutex::new(None);
@@ -446,6 +454,7 @@ fn detect_root_disk() -> Option<RootDisk> {
         }
     }
 
+    crate::println!("[storage] root scan failed {}", root_scan_summary());
     None
 }
 
@@ -453,14 +462,32 @@ fn log_root_disk(root: RootDisk) {
     crate::println!(
         "[storage] root device={} layout={} base_lba={} sectors={}",
         root.device.name(),
-        match root.layout {
-            RootDiskLayout::RawCoolFs => "raw-coolfs",
-            RootDiskLayout::MbrCoolFs => "mbr-coolfs",
-            RootDiskLayout::GptCoolFs => "gpt-coolfs",
-        },
+        root.layout.name(),
         root.base_lba,
         root.sectors,
     );
+}
+
+fn root_scan_summary() -> alloc::string::String {
+    let mut present = Vec::new();
+    for device in root_priority_devices() {
+        let info = device_info(device);
+        if info.present {
+            present.push(device.name());
+        }
+    }
+    if present.is_empty() {
+        alloc::string::String::from("present=none")
+    } else {
+        let mut out = alloc::string::String::from("present=");
+        for (idx, name) in present.iter().enumerate() {
+            if idx > 0 {
+                out.push(',');
+            }
+            out.push_str(name);
+        }
+        out
+    }
 }
 
 fn root_priority_devices() -> Vec<BlockDevice> {

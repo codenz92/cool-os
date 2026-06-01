@@ -1,6 +1,6 @@
 extern crate alloc;
 
-use alloc::vec::Vec;
+use alloc::{format, string::String, vec::Vec};
 use core::sync::atomic::{fence, Ordering};
 use spin::Mutex;
 use x86_64::PhysAddr;
@@ -75,21 +75,28 @@ struct NvmeCommand {
 }
 
 static STATE: Mutex<Option<NvmeState>> = Mutex::new(None);
+static STATUS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 pub fn init() {
     let controllers = find_controllers();
     if controllers.is_empty() {
+        *STATUS.lock() = alloc::vec![String::from("NVMe: unsupported no controller")];
         *STATE.lock() = None;
         return;
     }
 
     let mut disks = Vec::new();
+    let mut lines = Vec::new();
     for (controller_idx, (loc, hdr, bar0_phys)) in controllers.into_iter().enumerate() {
         if controller_idx > 3 {
             crate::println!(
                 "[nvme] controller {} ignored; max nvme3n1 exposed",
                 controller_idx
             );
+            lines.push(format!(
+                "NVMe: controller{} unsupported max-device-limit",
+                controller_idx
+            ));
             continue;
         }
         pci::enable_bus_master(loc);
@@ -103,6 +110,10 @@ pub fn init() {
                     controller_idx,
                     disk.sectors
                 );
+                lines.push(format!(
+                    "NVMe: nvme{}n1 usable vendor={:#06x} device={:#06x} sectors={}",
+                    controller_idx, hdr.vendor_id, hdr.device_id, disk.sectors
+                ));
                 disks.push(disk);
             }
             Err(err) => {
@@ -112,11 +123,23 @@ pub fn init() {
                     hdr.device_id,
                     err
                 );
+                lines.push(format!(
+                    "NVMe: controller{} failed vendor={:#06x} device={:#06x} reason={}",
+                    controller_idx, hdr.vendor_id, hdr.device_id, err
+                ));
             }
         }
     }
 
+    if lines.is_empty() {
+        lines.push(String::from("NVMe: unsupported no usable namespace"));
+    }
+    *STATUS.lock() = lines;
     *STATE.lock() = Some(NvmeState { disks });
+}
+
+pub fn status_lines() -> Vec<String> {
+    STATUS.lock().clone()
 }
 
 pub fn devices() -> Vec<BlockDevice> {

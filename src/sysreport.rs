@@ -13,6 +13,7 @@ pub fn lines() -> Vec<String> {
         "boot health",
         crate::boot_health::status_lines(),
     );
+    push_section(&mut lines, "hardware", crate::hardware::lines());
     push_section(&mut lines, "services", crate::services::lines());
     push_section(
         &mut lines,

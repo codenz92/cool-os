@@ -64,8 +64,9 @@ writing the BIOS bootloader plus a CoolFS root partition to the target disk.
 Phase 84 adds safer target selection and graphical progress, Phase 85 adds
 a parallel QEMU UEFI/GPT installer path while keeping BIOS/MBR supported,
 Phase 86 adds AHCI/SATA storage plus a USB-flashable raw image artifact, and
-Phase 87 boots that image as runtime USB mass storage. Phase 88 adds QEMU NVMe
-root boot and NVMe installer targets.
+Phase 87 boots that image as runtime USB mass storage, Phase 88 adds QEMU NVMe
+root boot and NVMe installer targets, and Phase 89 adds bare-metal USB boot
+readiness diagnostics plus a conservative safe USB image fallback.
 Phase 32
 keeps copied kernel mappings supervisor-only for ring-3 tasks, removes broad
 lazy lower-half page allocation, and turns denied user pointers into task
@@ -241,7 +242,7 @@ built-in trust roots, and SAN-first hostname validation coverage.
 
 | Subsystem | Details |
 | :-------- | :------ |
-| **Framebuffer** | `bootloader 0.11` linear framebuffer at 1920×1080 on the normal QEMU `-vga std` BIOS/VBE path and the QEMU OVMF UEFI/GPT path, including AHCI-backed and USB-storage-backed UEFI boots. 3bpp and 4bpp both handled. Shadow-buffer compositor with dirty row-span blits, adaptive 36/144 Hz frame pacing, and a hardware cursor overlay fast path that restores/draws only cursor rectangles for mouse-only motion. No tearing. |
+| **Framebuffer** | `bootloader 0.11` linear framebuffer at 1920×1080 on the normal QEMU `-vga std` BIOS/VBE path and the QEMU OVMF UEFI/GPT path, including AHCI-backed, USB-storage-backed, and NVMe-backed UEFI boots. The safe USB image requests 1024×768 as a physical-machine fallback. 3bpp and 4bpp both handled. Shadow-buffer compositor with dirty row-span blits, adaptive 36/144 Hz frame pacing, and a hardware cursor overlay fast path that restores/draws only cursor rectangles for mouse-only motion. No tearing. |
 | **PS/2 mouse** | Full hardware init (CCB, 0xF6/0xF4), 9-bit signed X/Y deltas, IRQ12 packet collection via atomics. |
 | **Window manager** | Z-ordered windows, focus-on-click, title-bar drag, edge snapping, keyboard snapping, task switcher overlay, minimise/maximise/restore, resize grip, close button, taskbar previews/right-click actions, per-window pixel back-buffer. |
 | **Desktop shell** | Wallpaper, desktop icons, right-click context menu, searchable start menu, taskbar window buttons, configurable shortcuts, login/lock greeter, Accounts settings, notification center, File Manager drag/drop/open-with routing, shared clipboard plumbing, userspace app lifecycle tracking with System Monitor controls, persistent settings, session restore, clock, and adaptive compositor smoothness telemetry. |
@@ -256,7 +257,7 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **Syscall table** | `0 exit`, `1 write`, `2 yield`, `3 getpid`, `4 mmap(addr, len, flags)`, `5 open(path, len)`, `6 read(fd, buf, len)`, `7 close(fd)`, `8 exec(path, len)`, `9 pipe(fds_ptr)`, `10 dup(fd)`, `11 shmem_create(len)`, `12 shmem_map(id)`, `13 waitpid(pid, status_ptr)`, `14 spawn(path, len)`, `15 sleep_ms(ms)`, `16 abi_version()`, `17 dns_resolve(host, len)`, `18 http_get(host, len)`, `19 socket(domain, type, proto)`, `20 connect(socket, ipv4, port)`, `21 send(socket, buf, len)`, `22 recv(socket, buf, len)`, `23 gui_open(title, len, dims)`, `24 gui_present(handle, pixels, len)`, `25 gui_poll_event(handle, packet, len)`, `26 gui_close(handle)`, `27 fs_write_file(desc)`, `28 fs_create_dir(path, len)`, `29 fs_delete_tree(path, len)`, `30 fs_list_dir(desc)`, `31 screenshot(path, len, flags)`, `32 signal(pid, signal)`, `33 setpgid(pid, pgid)`, `34 getpgid(pid)`, `35 signal_group(pgid, signal)`, `36 spawn_args(desc)`, `37 chdir(path, len)`, `38 getcwd(buf, len)`, `39 stat(desc)`, `40 rename(desc)`, `41 open_write(path, len)`, `42 spawn_fds_args(desc)`, `43 sync()`, `44 time()`, `45 poll(desc, count, timeout_ms)`, `46 tty_control(op, arg1, arg2)`, `47 thread_spawn(entry, arg, flags)`, `48 futex_wait(addr, expected, timeout_ms)`, `49 futex_wake(addr, count, flags)`, `50 thread_tls_set(base, flags)`, `51 thread_tls_get()`, `52 thread_spawn_tls(desc_ptr)`, `53 mprotect(addr, len, flags)`, and `54 mmap_file(desc_ptr)` where the descriptor is `[fd, addr, len, file_offset, flags]`. `mmap`/`mprotect`/`mmap_file` use bit 0 for writable and bit 1 for executable, reject writable+executable mappings, and keep the dynamic-loader path W^X; Phase 77 `mmap_file` intentionally allows only read-only or executable private file mappings. `sys_read(0)` reads from the current task's controlling TTY when assigned unless fd 0 is mapped; `sys_write` writes stdout/stderr to that TTY, falls back to the compositor ring for orphaned output, or writes pipe/file descriptors through the VFS fd table. |
 | **Userspace** | Ring-3 code can run either as the original isolation stubs or as real ELF64 binaries loaded from `/bin`. The `libcool` SDK crate now provides no_std entry/argv setup plus process, signal/process-group, file/open_flags, pipe, thread/futex/TLS, pthread-style mutex/condvar/once/key helpers, POSIX-shaped `pthread_*`/`errno`/`nanosleep` wrappers, ET_DYN `dynlink` single-object and dependency-graph loading, evented poll, TTY mode/size, mmap/mmap_file/mprotect, shared-memory, event, DNS/HTTP, TCP socket, filesystem utility, screenshot, time, and userspace GUI wrappers. `/bin/sh` reads stdin from the TTY, tracks the kernel cwd, parses quoting and escapes, runs builtins, resolves bare commands under `/bin`, supports `<`/`>` redirection and one-stage `|` pipelines, and can launch argv/fd-capable children with `spawn_args` or `spawn_fds_args`. `/bin/ls`, `/bin/cat`, `/bin/echo`, `/bin/pwd`, `/bin/mkdir`, `/bin/touch`, `/bin/rm`, `/bin/writefile`, `/bin/cp`, `/bin/mv`, `/bin/grep`, `/bin/head`, `/bin/tail`, `/bin/date`, `/bin/uname`, `/bin/clear`, `/bin/stat`, `/bin/sync`, `/bin/devkit`, `/bin/polldemo`, `/bin/tuidemo`, `/bin/threaddemo`, `/bin/tlsdemo`, `/bin/pthreaddemo`, `/bin/mmapdemo`, and `/bin/lddemo` cover practical command-line, evented, terminal-mode, thread/futex, TLS, POSIX pthread, file-backed mapping, and shared-object loading workflows. `sys_exec` replaces the current userspace image in-place by swapping CR3 and rewriting the saved syscall return frame. Shared memory (`sys_shmem_create`/`sys_shmem_map`) maps a region of physical frames into the caller's address space at a fixed VA. |
 | **ELF loader** | Kernel `exec` validates ELF64 headers, maps static `PT_LOAD` segments into a fresh address space, allocates a private user stack, builds an initial `argc/argv/envp` stack frame, and can either spawn a new task or prepare an image for `sys_exec`. Phase 77 userspace `libcool::dynlink` handles ET_DYN objects under `/lib`, with `PT_DYNAMIC`, RELA, dynsym, init-array, W^X `mprotect`, bounded `DT_NEEDED` dependency loading, global cross-object symbol resolution, ELF TLS template/relocation coverage, and read-only file-backed `PT_LOAD` segments through `mmap_file`. |
-| **Storage layer** | Generic block-device ids cover IDE (`ide0-master`, `ide0-slave`, `ide1-master`, `ide1-slave`), QEMU AHCI/SATA (`sata0`, `sata1`, `sata2`, ...), and QEMU xHCI USB mass storage (`usb0`, `usb1`, ...). IDE uses LBA28 PIO with bounded retries; AHCI v1 uses polled command slots for identify/read/write/flush on QEMU; USB MSC uses Bulk-Only Transport with SCSI inquiry/capacity/read/write/flush commands. Root discovery resolves legacy raw CoolFS disks, BIOS/MBR `0xc0` CoolFS partitions, and GPT CoolFS partitions across IDE, SATA, and USB. |
+| **Storage layer** | Generic block-device ids cover IDE (`ide0-master`, `ide0-slave`, `ide1-master`, `ide1-slave`), QEMU AHCI/SATA (`sata0`, `sata1`, `sata2`, ...), QEMU xHCI USB mass storage (`usb0`, `usb1`, ...), and QEMU NVMe (`nvme0n1`, `nvme1n1`, ...). IDE uses LBA28 PIO with bounded retries; AHCI v1 uses polled command slots for identify/read/write/flush on QEMU; USB MSC uses Bulk-Only Transport with SCSI inquiry/capacity/read/write/flush commands; NVMe uses polled admin/I/O queues for namespace-1 read/write/flush. Root discovery resolves legacy raw CoolFS disks, BIOS/MBR `0xc0` CoolFS partitions, and GPT CoolFS partitions across IDE, SATA, USB, and NVMe. |
 | **CoolFS layer** | Native coolOS root filesystem mounted at `/`, stored directly at LBA 0 for live/dev images, inside a private MBR partition on BIOS-installed disks, or inside a coolOS GPT partition on UEFI-installed disks. It has a CoolFS superblock, fixed inode table with durable `uid`/`gid`/mode metadata, block bitmap, 4 KiB blocks, direct plus indirect data blocks, directory records, a 64-slot block cache with dirty 4 KiB writeback, pressure-triggered clean-cache trimming, VFS read/write/create/rename/delete/copy routing, stats, and boot self-tests. |
 | **FAT32 layer** | Optional legacy import mount at `/FAT`, formatted in a separate 8 MiB-offset region relative to the resolved root disk/partition. BPB parsing, FAT chain walking, short-name and long-filename lookup, directory traversal, cluster→sector mapping, mutation helpers, free-space stats, and `fsck` remain available without being required for CoolFS boot. |
 | **VFS** | CoolFS-root path routing, `/FAT` legacy routing, CoolFS read/write/execute permission enforcement, task-local cwd resolution, and task-local fd tables (16 slots, with explicit 0/1/2 mappings for child stdio) backed by shared file/pipe/shmem objects. `vfs_open` reads whole files into heap buffers after access checks and drops them if pressure admission fails; `vfs_open_write` buffers writable file descriptors and commits through safe CoolFS writes on close/exit; `vfs_read_fd_at` gives `mmap_file` stable read-at access to regular read-only fds without advancing offsets; `vfs_pipe` allocates a 512-byte kernel ring buffer only when the heap reserve allows it; `vfs_read_blocking` blocks tasks on empty pipes and wakes them on write/EOF; `ipc` and `spawn_fds_args` selectively inherit pipe/file fds into child processes; `vfs_shmem_create`/`vfs_shmem_map` manage a shared memory region pool indexed by ID. |
@@ -343,6 +344,7 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `term` | Launch a userspace terminal as a ring-3 process with pipe-based input (Ctrl+D to exit) |
 | `info` | CPU vendor and heap usage |
 | `devices` | Print the central PCI/USB/system device registry |
+| `hardware [status]` | Print boot hardware readiness, framebuffer, memory-map, storage, USB, AHCI, and NVMe diagnostics |
 | `net` | Print network adapter/protocol status |
 | `netproto` | Print ARP/IPv4/ICMP/UDP/TCP protocol status |
 | `dns <host>` | Resolve a host through the network DNS API |
@@ -359,7 +361,7 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `services [list\|status <name>\|history\|recovery\|run\|start <name>\|restart <name>\|stop <name>\|fail <name>]` | Inspect and control the durable service supervisor; mutating operations require an admin session |
 | `update [status\|verify\|keys\|history\|sign\|sign-as <key>\|stage <path> <text>\|stage-version <path> <version> <text>\|apply\|rollback]` | Stage or sign a trusted system file update, verify manifest/payload integrity and monotonic version, apply it with a pre-update snapshot, inspect the update journal, or roll back |
 | `memory` | Print heap pressure, reclaim counters, OOM state, and per-task memory estimates |
-| `diagnostics` | Print kernel, profiler, boot-health, service, update, browser-engine, compositor, heap, memory-pressure, resource-limit, filesystem, VFS, and crash diagnostics |
+| `diagnostics` | Print kernel, profiler, boot-health, hardware, service, update, browser-engine, compositor, heap, memory-pressure, resource-limit, filesystem, VFS, and crash diagnostics |
 | `sysreport [write]` | Print the generated system report or write it to `/LOGS/SYSREPORT.TXT` |
 | `devkit` | Print SDK paths, ABI version, and userspace template locations |
 | `compositor` | Print FPS, frame pacing, frame budget, damage, and cursor overlay telemetry |
@@ -459,16 +461,47 @@ To build a single USB-flashable raw UEFI/GPT image:
 
 ```bash
 make build-usb-image
+make build-usb-safe-image
 ```
 
 To boot that image as an actual QEMU xHCI USB mass-storage disk:
 
 ```bash
 make run-uefi-usb-storage
+make run-uefi-usb-storage-safe
 ```
+
+`coolos-usb.img` keeps the normal 1920×1080 framebuffer request. The safe
+variant `coolos-usb-safe.img` requests 1024×768 and enters safe mode, which
+prints `[boot] safe mode`, avoids nonessential boot-time work after the root
+mount, and is intended for physical PCs that fail to display the normal image.
 
 The UEFI helpers use Homebrew QEMU's EDK2 firmware by default and can be
 overridden with `QEMU_EFI_CODE=/path/to/edk2-x86_64-code.fd`.
+
+To try physical USB boot, flash one of the raw images to a USB drive with
+Secure Boot disabled. On macOS, replace `/dev/rdiskN` with the removable disk:
+
+```bash
+diskutil list
+diskutil unmountDisk /dev/diskN
+sudo dd if=target/x86_64-unknown-none/release/coolos-usb.img of=/dev/rdiskN bs=4m status=progress
+diskutil eject /dev/diskN
+```
+
+On Linux, replace `/dev/sdX` with the removable disk:
+
+```bash
+sudo dd if=target/x86_64-unknown-none/release/coolos-usb.img of=/dev/sdX bs=4M status=progress conv=fsync
+sync
+```
+
+If the normal image does not display or reach first boot, flash
+`coolos-usb-safe.img` instead. Expected useful boot lines include `FB ...`,
+`MSC usb0`, `[storage] root device=usb0 layout=gpt-coolfs`, and `[boot] first
+boot ready`. From the Terminal, `hardware`, `devices`, `diagnostics`, and
+`sysreport` show framebuffer, PCI storage/input, USB, root-discovery, and
+probe-failure details for troubleshooting.
 
 The build process compiles the kernel ELF, compiles the userspace ELF binaries
 in `userspace/hello/`, wraps the kernel into BIOS-bootable `bios.img` and
@@ -536,6 +569,7 @@ src/
   app_lifecycle.rs Persistent app recents/settings plus runtime userspace app ownership
   clipboard.rs     Shared text/path clipboard service
   device_registry.rs Central PCI/USB/system device table
+  hardware.rs      Boot hardware readiness report for framebuffer, memory, storage, and USB/PCI probes
   net.rs           Ethernet/ARP/IPv4/ICMP/UDP/DNS/TCP network stack
   entropy.rs       RDRAND-backed kernel entropy source for TLS handshakes
   tls.rs           TLS 1.3 HTTPS client over kernel TCP sockets
@@ -841,6 +875,16 @@ commands can plan, install, and verify writable NVMe targets. Secure Boot,
 UASP, broad real-hardware USB/NVMe variance, and physical-machine installation
 remain future work.
 
+**Bare-metal USB boot readiness (Phase 89).** The boot path now records a
+compact hardware readiness report covering framebuffer/GOP details, memory-map
+summary, storage root layout, block devices, and AHCI/NVMe/USB probe status.
+The report appears in boot logs and through Terminal `hardware`, `devices`,
+`diagnostics`, and `sysreport`. `make build-usb-safe-image` produces
+`coolos-usb-safe.img`, a conservative 1024×768 UEFI/GPT USB image that enters
+safe mode for physical machines that cannot handle the normal 1080p path.
+Physical disk installation, Secure Boot, UASP, and wider hardware-driver
+coverage remain future work.
+
 **User/kernel isolation hardening (Phase 32).** Process address spaces still
 copy the kernel's upper-half PML4 entries so syscall and interrupt entry can run
 without rebuilding mappings, but those copied entries stay supervisor-only for
@@ -1072,7 +1116,9 @@ smoke-phase86-ahci-storage`, and `make build-usb-image`. Phase 87 adds USB MSC
 Bulk-Only Transport, `usb*` block devices, `make run-uefi-usb-storage`, and
 `make smoke-phase87-usb-storage-root`. Phase 88 adds QEMU NVMe root boot,
 `nvme*n1` block devices, NVMe installer targets, `make run-uefi-nvme`, and
-`make smoke-phase88-nvme-storage`.
+`make smoke-phase88-nvme-storage`. Phase 89 adds boot hardware diagnostics,
+`hardware [status]`, `make build-usb-safe-image`,
+`make run-uefi-usb-storage-safe`, and `make smoke-phase89-baremetal-readiness`.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
@@ -1177,5 +1223,7 @@ while kernel faults still panic.
 | 85 | UEFI/GPT installer foundation — `uefi.img`, OVMF run helpers, GPT root discovery, and standalone UEFI installed-target smoke | **Done** |
 | 86 | AHCI/SATA storage and USB image foundation — `sata*` block devices, AHCI installer smoke, and raw UEFI/GPT USB image build | **Done** |
 | 87 | Runtime USB mass-storage root boot — USB MSC BOT, `usb*` block devices, and QEMU USB-storage first-boot smoke | **Done** |
+| 88 | NVMe/PCIe storage root boot — `nvme*n1` block devices, QEMU NVMe root boot, and NVMe installer targets | **Done** |
+| 89 | Bare-metal USB boot readiness — hardware diagnostics, safe USB image fallback, and physical-boot troubleshooting docs | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

@@ -40,6 +40,7 @@ mod fs_hardening;
 mod futex;
 mod fw_cfg;
 mod gdt;
+mod hardware;
 mod installer;
 mod interrupts;
 mod jobs;
@@ -111,6 +112,10 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             bootloader_api::info::PixelFormat::Rgb => framebuffer::PixFmt::Rgb,
             _ => framebuffer::PixFmt::Bgr,
         };
+        let fmt_name = match fmt {
+            framebuffer::PixFmt::Rgb => "rgb",
+            framebuffer::PixFmt::Bgr => "bgr",
+        };
         framebuffer::init(
             base,
             info.width,
@@ -118,6 +123,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             info.stride,
             info.bytes_per_pixel,
             fmt,
+        );
+        hardware::record_framebuffer(
+            info.width,
+            info.height,
+            info.stride,
+            info.bytes_per_pixel,
+            fmt_name,
         );
         crate::vga_buffer::set_framebuffer_output(false);
         boot_splash::show("starting kernel", 0, boot_splash::BOOT_PROGRESS_TOTAL);
@@ -169,6 +181,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     // Convert the bootloader's MemoryRegions to a plain &'static slice.
     let regions: &'static [bootloader_api::info::MemoryRegion] =
         unsafe { core::mem::transmute(boot_info.memory_regions.as_ref()) };
+    hardware::record_memory_map(regions);
     boot_splash::show("reading memory map", 5, boot_splash::BOOT_PROGRESS_TOTAL);
 
     // We need two separate frame allocators: one consumed by heap init, one kept
@@ -190,6 +203,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     vmm::init(phys_mem_offset, vmm_frame_allocator);
     vmm::harden_boot_mappings();
     storage::init();
+    if fw_cfg::safe_mode() {
+        hardware::enable_safe_mode();
+    }
+    let safe_mode = hardware::safe_mode();
+    if safe_mode {
+        println!("[boot] safe mode");
+    }
 
     klog::init();
     profiler::record_boot_stage("allocating heap", 7);
@@ -223,7 +243,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     services::init();
     updates::init();
     boot_health::init();
-    deferred::enqueue(deferred::DeferredWork::RefreshSearchIndex);
+    if !safe_mode {
+        deferred::enqueue(deferred::DeferredWork::RefreshSearchIndex);
+    }
     deferred::enqueue(deferred::DeferredWork::FlushWriteback);
 
     boot_splash::show("preparing page tables", 9, boot_splash::BOOT_PROGRESS_TOTAL);
@@ -260,7 +282,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         let mut sched = scheduler::SCHEDULER.lock();
         sched.add_idle();
     });
-    selftest::run_boot_tests();
+    if safe_mode {
+        println!("[selftest] skipped in safe mode");
+    } else {
+        selftest::run_boot_tests();
+    }
     fs_test_once();
     boot_splash::show(
         "staging filesystem checks",
@@ -271,10 +297,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     // Spawn both boot sentinels before either can run. The ELF loader touches
     // VFS and VMM locks; letting the first sentinel exit while the boot task is
     // still loading the second can deadlock on those locks.
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        userspace::spawn_user_process(1);
-        userspace::spawn_user_process(2);
-    });
+    if !safe_mode {
+        x86_64::instructions::interrupts::without_interrupts(|| {
+            userspace::spawn_user_process(1);
+            userspace::spawn_user_process(2);
+        });
+    } else {
+        println!("[ring3] boot sentinels skipped in safe mode");
+    }
     boot_splash::show("launching userspace", 17, boot_splash::BOOT_PROGRESS_TOTAL);
 
     // ── Desktop ───────────────────────────────────────────────────────────────

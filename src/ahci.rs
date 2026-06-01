@@ -1,6 +1,6 @@
 extern crate alloc;
 
-use alloc::{format, vec::Vec};
+use alloc::{format, string::String, vec::Vec};
 use core::sync::atomic::{fence, Ordering};
 use spin::Mutex;
 use x86_64::PhysAddr;
@@ -71,9 +71,11 @@ struct AhciPort {
 }
 
 static STATE: Mutex<Option<AhciState>> = Mutex::new(None);
+static STATUS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 pub fn init() {
     let Some((loc, hdr, bar5_phys)) = find_controller() else {
+        *STATUS.lock() = alloc::vec![String::from("AHCI: unsupported no controller")];
         *STATE.lock() = None;
         return;
     };
@@ -88,10 +90,25 @@ pub fn init() {
                 state.ports.len(),
                 state.version
             );
+            let mut lines = alloc::vec![format!(
+                "AHCI: usable vendor={:#06x} device={:#06x} ports={} version={:#x}",
+                hdr.vendor_id,
+                hdr.device_id,
+                state.ports.len(),
+                state.version
+            )];
+            for port in state.ports.iter() {
+                lines.push(format!(
+                    "AHCI: sata{} usable sectors={}",
+                    port.port, port.sectors
+                ));
+            }
+            *STATUS.lock() = lines;
             *STATE.lock() = Some(state);
         }
         Err(err) => {
             crate::println!("[ahci] init failed: {}", err);
+            *STATUS.lock() = alloc::vec![format!("AHCI: failed {}", err)];
             *STATE.lock() = Some(AhciState {
                 mmio: bar5,
                 version: 0,
@@ -99,6 +116,10 @@ pub fn init() {
             });
         }
     }
+}
+
+pub fn status_lines() -> Vec<String> {
+    STATUS.lock().clone()
 }
 
 pub fn devices() -> Vec<BlockDevice> {

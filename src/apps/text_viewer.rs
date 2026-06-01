@@ -61,6 +61,7 @@ const ABOUT: &[&str] = &[
     " browser://compat shows Browser compatibility state",
     " browser://engine shows real-engine port readiness",
     " diagnostics  - health and resource-limit report",
+    " hardware     - boot hardware readiness report",
     " memory       - heap pressure and per-task memory",
     " sysreport    - write /LOGS/SYSREPORT.TXT",
     " devkit       - SDK paths and templates",

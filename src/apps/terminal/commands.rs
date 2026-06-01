@@ -141,6 +141,14 @@ impl TerminalApp {
 
             Some("devices") => self.cmd_devices(),
 
+            Some("hardware") => match words.next() {
+                None | Some("status") => self.cmd_hardware(),
+                _ => {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("usage: hardware [status]\n");
+                }
+            },
+
             Some("net") => self.cmd_lines("NETWORK", crate::net::status_lines()),
 
             Some("netproto") => self.cmd_lines("NETWORK PROTOCOLS", crate::net::protocol_lines()),
@@ -712,6 +720,7 @@ impl TerminalApp {
             ("uptime", "time since boot"),
             ("usb", "USB controller status"),
             ("devices", "PCI/USB/device registry"),
+            ("hardware [status]", "boot hardware readiness report"),
             ("drivers", "driver binding + /DEV nodes"),
             ("net", "network stack status"),
             ("netproto", "ARP/IP/UDP/DNS/HTTP status"),
@@ -1207,7 +1216,12 @@ impl TerminalApp {
 
     fn cmd_devices(&mut self) {
         crate::device_registry::refresh_pci();
-        self.cmd_lines("DEVICES", crate::device_registry::lines());
+        self.cmd_lines("DEVICES", crate::hardware::device_lines());
+    }
+
+    fn cmd_hardware(&mut self) {
+        crate::device_registry::refresh_pci();
+        self.cmd_lines("HARDWARE", crate::hardware::lines());
     }
 
     fn cmd_sysreport(&mut self, op: Option<&str>) {

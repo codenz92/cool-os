@@ -205,6 +205,11 @@ def parse_args() -> argparse.Namespace:
         help="Expose opt/coolos/installer=1 through QEMU fw_cfg",
     )
     parser.add_argument(
+        "--safe-mode",
+        action="store_true",
+        help="Expose opt/coolos/safe-mode=1 through QEMU fw_cfg",
+    )
+    parser.add_argument(
         "--interact-after",
         default="[boot] desktop ready",
         help="Output substring to wait for before HMP/input/screendump actions; empty disables the pre-interaction wait",
@@ -389,6 +394,8 @@ def build_command(args: argparse.Namespace, monitor_socket: str | None = None) -
         cmd.extend(["-fw_cfg", f"name=opt/coolos/smoke,string={args.fw_cmd}"])
     if args.installer:
         cmd.extend(["-fw_cfg", "name=opt/coolos/installer,string=1"])
+    if args.safe_mode:
+        cmd.extend(["-fw_cfg", "name=opt/coolos/safe-mode,string=1"])
     if not args.first_boot:
         cmd.extend(["-fw_cfg", "name=opt/coolos/smoke-mode,string=1"])
     return cmd

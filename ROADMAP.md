@@ -4,7 +4,7 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–88 are complete. Recent milestones give coolOS a much more
+Phases 1–89 are complete. Recent milestones give coolOS a much more
 normal command-line, installer, and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
@@ -32,10 +32,11 @@ critical. Phase 64 makes service supervision durable with persisted desired
 state under `/CONFIG`, restart history under `/LOGS`, dependency metadata,
 restart backoff, admin-gated controls, and degraded-service diagnostics in
 Terminal, recovery, sysreport, Diagnostics, and System Monitor.
-Phase 80 through Phase 88 add first-boot owner setup, recovery/reset hardening,
+Phase 80 through Phase 89 add first-boot owner setup, recovery/reset hardening,
 self-booting BIOS/MBR and UEFI/GPT installers, AHCI/SATA storage, a raw
 USB-flashable UEFI/GPT image, runtime USB mass-storage root boot, and NVMe
-root boot. Phase 65 adds a service-aware staged update and rollback path: update manifests
+root boot, plus bare-metal USB boot diagnostics and a conservative safe USB
+image fallback. Phase 65 adds a service-aware staged update and rollback path: update manifests
 live under `/UPDATES/STAGED`, pre-apply file snapshots live under
 `/UPDATES/SNAPSHOTS/LAST`, `/LOGS/UPDATE.TXT` records stage/apply/rollback
 events, and `update rollback` plus `recovery rollback` can restore the previous
@@ -2675,6 +2676,38 @@ work.
 
 ---
 
+## ✅ Phase 89 — Bare-Metal USB Boot Readiness
+
+**Goal:** Make the existing UEFI/GPT USB image practical to boot and diagnose
+on physical PCs while preserving all QEMU BIOS, UEFI, IDE, AHCI, USB, and NVMe
+paths.
+
+- [x] Add a boot hardware diagnostics report covering framebuffer details,
+      memory-map summary, storage root layout, enumerated block devices, and
+      AHCI/NVMe/USB probe status.
+- [x] Surface the report through boot logs, `devices`, `diagnostics`,
+      `sysreport`, and Terminal `hardware [status]`.
+- [x] Add a conservative UEFI USB fallback image,
+      `target/x86_64-unknown-none/release/coolos-usb-safe.img`, with a
+      1024×768 framebuffer request and safe-mode boot behavior.
+- [x] Improve root-discovery failure logging with a compact scan summary and
+      retain storage/input probe reasons without changing existing behavior.
+- [x] Add `make build-usb-safe-image`, `make run-uefi-usb-storage-safe`,
+      `scripts/qemu_smoke.py --safe-mode`, and
+      `make smoke-phase89-baremetal-readiness`.
+- [x] Document macOS/Linux USB flashing, expected boot messages, safe-image
+      fallback, and common diagnostic commands.
+
+**Current status:** complete. The normal USB image remains the 1920×1080 path,
+while `coolos-usb-safe.img` provides a lower-resolution safe fallback for
+physical machines. The new `hardware` report shows framebuffer, memory,
+storage-root, AHCI, NVMe, and USB status so physical boot failures can be
+triaged without changing installer or storage behavior. Physical disk
+installation, Secure Boot, UASP, and broader bare-metal driver variance remain
+future work.
+
+---
+
 ## Maintenance — Codebase Navigation Cleanup
 
 **Goal:** Keep the source tree easy to scan while avoiding broad behavior
@@ -2803,4 +2836,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.47 | Phase 85 complete: UEFI/GPT boot and installer foundation |
 | v7.48 | Phase 86 complete: AHCI/SATA storage and USB image foundation |
 | v7.49 | Phase 87 complete: runtime USB mass-storage root boot |
-| v7.50 | Current — Phase 88 complete: NVMe/PCIe storage root boot |
+| v7.50 | Phase 88 complete: NVMe/PCIe storage root boot |
+| v7.51 | Current — Phase 89 complete: bare-metal USB boot readiness |
