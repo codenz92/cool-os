@@ -113,6 +113,15 @@ def parse_args() -> argparse.Namespace:
         help="Attach --boot-disk through qemu-xhci usb-storage instead of IDE/AHCI",
     )
     parser.add_argument(
+        "--usb-hub",
+        action="store_true",
+        help="Attach an extra USB hub to xHCI for topology diagnostics",
+    )
+    parser.add_argument(
+        "--usb-uas-disk",
+        help="Attach an extra raw disk through QEMU usb-uas for UASP diagnostics",
+    )
+    parser.add_argument(
         "--usb-pointer",
         choices=("mouse", "tablet"),
         default="mouse",
@@ -282,7 +291,8 @@ def build_command(args: argparse.Namespace, monitor_socket: str | None = None) -
         )
     if args.ahci or args.ahci_target_disk:
         cmd.extend(["-device", "ich9-ahci,id=ahci"])
-    if args.usb_storage:
+    needs_xhci = args.usb_storage or args.usb or args.usb_hub or args.usb_uas_disk
+    if needs_xhci:
         cmd.extend(["-device", "qemu-xhci,id=xhci"])
     if args.boot_disk:
         boot_snapshot = "" if args.boot_disk_writable else ",snapshot=on"
@@ -401,14 +411,25 @@ def build_command(args: argparse.Namespace, monitor_socket: str | None = None) -
         )
     if monitor_socket:
         cmd.extend(["-monitor", f"unix:{monitor_socket},server,nowait"])
+    if args.usb_hub:
+        cmd.extend(["-device", "usb-hub,id=usbhub0,bus=xhci.0"])
+    if args.usb_uas_disk:
+        cmd.extend(
+            [
+                "-drive",
+                f"if=none,id=uasdisk,file={args.usb_uas_disk},format=raw,snapshot=on",
+                "-device",
+                "usb-uas,id=uas0,bus=xhci.0",
+                "-device",
+                "scsi-hd,drive=uasdisk,bus=uas0.0",
+            ]
+        )
     if args.usb:
         pointer_device = (
             "usb-tablet,bus=xhci.0"
             if args.usb_pointer == "tablet"
             else "usb-mouse,bus=xhci.0"
         )
-        if not args.usb_storage:
-            cmd.extend(["-device", "qemu-xhci,id=xhci"])
         cmd.extend(["-device", "usb-kbd,bus=xhci.0", "-device", pointer_device])
     if args.net:
         cmd.extend(

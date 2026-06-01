@@ -17,7 +17,7 @@ tables.
 
 ---
 
-# Current state — v7.52
+# Current state — v7.53
 
 The kernel boots into a graphical desktop at **1920×1080, 24bpp** via the
 `bootloader 0.11` linear framebuffer on the default BIOS/VBE path and via the
@@ -70,7 +70,10 @@ readiness diagnostics plus a conservative safe USB image fallback. Phase 90
 adds cautious physical-install guardrails for USB-booted systems: the live
 `usb0` source is protected, internal `sata*` and `nvme*n1` disks are reported as
 candidate targets, and installs require explicit target-name confirmation plus
-flush/verify before rebooting the internal disk.
+flush/verify before rebooting the internal disk. Phase 91 hardens bare-metal
+readiness diagnostics with USB hub/UASP classification, detailed root-scan
+reasons, physical-installer preflight verdicts, and QEMU topology smoke
+coverage while keeping BOT USB storage as the supported USB boot path.
 Phase 32
 keeps copied kernel mappings supervisor-only for ring-3 tasks, removes broad
 lazy lower-half page allocation, and turns denied user pointers into task
@@ -876,7 +879,7 @@ NVMe controllers, exposes namespace 1 as `nvme0n1`, `nvme1n1`, and so on, and
 uses the same raw/MBR/GPT CoolFS discovery path as IDE, AHCI, and USB. `make
 run-uefi-nvme` boots `coolos-usb.img` as a QEMU NVMe disk, and installer
 commands can plan, install, and verify writable NVMe targets. Secure Boot,
-UASP and broad real-hardware USB/NVMe variance remain future work; guarded
+UASP boot support and broad real-hardware USB/NVMe variance remain future work; guarded
 physical-machine installation from a USB source is covered by Phase 90.
 
 **Bare-metal USB boot readiness (Phase 89).** The boot path now records a
@@ -897,9 +900,18 @@ layout state, source/root/protected role, and destructive refusal reason;
 USB root to an internal UEFI/GPT target. The graphical installer defaults to a
 safe internal disk when available, shows the USB source and GPT layout on the
 review screen, requires typing the exact target device name, copies ESP and
-CoolFS partitions, flushes, and verifies before completion. Secure Boot, UASP,
-MBR physical installs, and physical disk partitioning beyond this UEFI/GPT
-writer remain future work.
+CoolFS partitions, flushes, and verifies before completion. Secure Boot, UASP
+boot support, MBR physical installs, and physical disk partitioning beyond this
+UEFI/GPT writer remain future work.
+
+**Bare-metal hardware readiness (Phase 91).** USB diagnostics now classify hub
+and UASP devices instead of hiding them as unknown devices. UASP is reported as
+unsupported with BOT fallback required, while BOT USB mass storage remains the
+supported USB root path. `hardware`, `devices`, and `sysreport` include
+per-device root-scan reasons plus a physical-installer preflight verdict
+covering the live USB source, ESP/root availability, and internal SATA/NVMe
+candidate targets. `make smoke-phase91-hardware-readiness` exercises USB
+topology diagnostics and installer preflight under QEMU.
 
 **User/kernel isolation hardening (Phase 32).** Process address spaces still
 copy the kernel's upper-half PML4 entries so syscall and interrupt entry can run
@@ -1138,6 +1150,8 @@ Bulk-Only Transport, `usb*` block devices, `make run-uefi-usb-storage`, and
 Phase 90 adds guarded physical-install simulation with USB source protection,
 internal AHCI/NVMe candidate reporting, `install physical <device>`, `make
 run-physical-installer-sim`, and `make smoke-phase90-physical-installer`.
+Phase 91 adds USB hub/UASP diagnostics, detailed storage root-scan output,
+installer hardware preflight reporting, and `make smoke-phase91-hardware-readiness`.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
@@ -1244,5 +1258,7 @@ while kernel faults still panic.
 | 87 | Runtime USB mass-storage root boot — USB MSC BOT, `usb*` block devices, and QEMU USB-storage first-boot smoke | **Done** |
 | 88 | NVMe/PCIe storage root boot — `nvme*n1` block devices, QEMU NVMe root boot, and NVMe installer targets | **Done** |
 | 89 | Bare-metal USB boot readiness — hardware diagnostics, safe USB image fallback, and physical-boot troubleshooting docs | **Done** |
+| 90 | Physical disk installer guardrails — USB-source protection, internal SATA/NVMe install targets, and guarded install verification | **Done** |
+| 91 | Bare-metal hardware readiness — USB hub/UASP diagnostics, root-scan reasons, installer preflight, and topology smoke coverage | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

@@ -145,6 +145,15 @@ pub struct InstallerJob {
     message: String,
 }
 
+#[derive(Clone, Copy)]
+struct HardwarePreflight {
+    verdict: &'static str,
+    reason: &'static str,
+    source_usb_live: bool,
+    internal_targets: usize,
+    installable_targets: usize,
+}
+
 pub fn source_device() -> BlockDevice {
     crate::storage::root_disk()
         .map(|root| root.device)
@@ -277,6 +286,7 @@ pub fn hardware_summary_lines() -> Vec<String> {
         source_root_base_lba(),
         source_root_sectors()
     ));
+    lines.extend(hardware_preflight_lines());
     for device in crate::storage::all_devices() {
         let info = crate::storage::device_info(device);
         if !info.present {
@@ -297,6 +307,127 @@ pub fn hardware_summary_lines() -> Vec<String> {
         }
     }
     lines
+}
+
+pub fn hardware_preflight_lines() -> Vec<String> {
+    let preflight = physical_hardware_preflight();
+    alloc::vec![format!(
+        "installer preflight verdict={} reason={} source_usb_live={} internal_targets={} installable_targets={}",
+        preflight.verdict,
+        preflight.reason,
+        if preflight.source_usb_live { "yes" } else { "no" },
+        preflight.internal_targets,
+        preflight.installable_targets,
+    )]
+}
+
+fn physical_hardware_preflight() -> HardwarePreflight {
+    let root = crate::storage::root_disk();
+    let source = source_device();
+    let boot = boot_device();
+    let source_info = crate::storage::device_info(source);
+    let boot_info = crate::storage::device_info(boot);
+    let source_usb_live = root.is_some()
+        && source.usb_index().is_some()
+        && source == boot
+        && source_info.present
+        && boot_info.present;
+
+    let mut internal_targets = 0usize;
+    let mut installable_targets = 0usize;
+    for device in crate::storage::all_devices() {
+        if !device.is_physical_install_target() {
+            continue;
+        }
+        let info = crate::storage::device_info(device);
+        if !info.present {
+            continue;
+        }
+        internal_targets += 1;
+        if install_plan(device).installable {
+            installable_targets += 1;
+        }
+    }
+
+    if source.usb_index().is_none() {
+        return HardwarePreflight {
+            verdict: "info",
+            reason: "not-usb-live-source",
+            source_usb_live,
+            internal_targets,
+            installable_targets,
+        };
+    }
+    if root.is_none() {
+        return HardwarePreflight {
+            verdict: "fail",
+            reason: "root-disk-not-resolved",
+            source_usb_live,
+            internal_targets,
+            installable_targets,
+        };
+    }
+    if source != boot {
+        return HardwarePreflight {
+            verdict: "fail",
+            reason: "usb-source-not-boot-disk",
+            source_usb_live,
+            internal_targets,
+            installable_targets,
+        };
+    }
+    if !source_info.present || !boot_info.present {
+        return HardwarePreflight {
+            verdict: "fail",
+            reason: "usb-source-not-present",
+            source_usb_live,
+            internal_targets,
+            installable_targets,
+        };
+    }
+    if source_esp_partition().is_none() {
+        return HardwarePreflight {
+            verdict: "fail",
+            reason: "usb-source-missing-esp",
+            source_usb_live,
+            internal_targets,
+            installable_targets,
+        };
+    }
+    if internal_targets == 0 {
+        return HardwarePreflight {
+            verdict: "fail",
+            reason: "no-internal-sata-nvme-targets",
+            source_usb_live,
+            internal_targets,
+            installable_targets,
+        };
+    }
+    if installable_targets == 0 {
+        return HardwarePreflight {
+            verdict: "fail",
+            reason: "no-installable-internal-targets",
+            source_usb_live,
+            internal_targets,
+            installable_targets,
+        };
+    }
+    HardwarePreflight {
+        verdict: "ok",
+        reason: "ready",
+        source_usb_live,
+        internal_targets,
+        installable_targets,
+    }
+}
+
+fn physical_preflight_error() -> Option<&'static str> {
+    let preflight = physical_hardware_preflight();
+    if preflight.verdict == "ok" {
+        None
+    } else {
+        Some(preflight.reason)
+    }
 }
 
 fn preferred_target_devices() -> Vec<BlockDevice> {
@@ -404,6 +535,12 @@ pub fn install_physical_to_device(target: BlockDevice) -> Vec<String> {
         lines.push(String::from(
             "install physical: requires a UEFI USB live source disk",
         ));
+        lines.extend(plan_lines(&plan));
+        return lines;
+    }
+    if let Some(reason) = physical_preflight_error() {
+        lines.push(format!("install physical: preflight failed: {}", reason));
+        lines.extend(hardware_preflight_lines());
         lines.extend(plan_lines(&plan));
         return lines;
     }
@@ -655,6 +792,14 @@ pub fn start_gui_install(target: BlockDevice) -> Result<InstallerJob, Vec<String
     let plan = install_plan(target);
     if !plan.installable {
         return Err(plan_lines(&plan));
+    }
+    if source_device().usb_index().is_some() && target.is_physical_install_target() {
+        if let Some(reason) = physical_preflight_error() {
+            let mut lines = alloc::vec![format!("install: preflight failed: {}", reason)];
+            lines.extend(hardware_preflight_lines());
+            lines.extend(plan_lines(&plan));
+            return Err(lines);
+        }
     }
     let Some(layout) = plan.layout else {
         return Err(plan_lines(&plan));

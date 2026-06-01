@@ -8,6 +8,8 @@ const MSC_CSW_OFF: u64 = 3584;
 const MSC_MAX_DATA_BYTES: usize = (MSC_CSW_OFF - MSC_DATA_OFF) as usize;
 const MSC_CSW_STATUS_OK: u8 = 0;
 const MSC_CSW_STATUS_FAILED: u8 = 1;
+const DESCRIPTOR_TYPE_HUB: u16 = 0x29;
+const DESCRIPTOR_TYPE_SUPERSPEED_HUB: u16 = 0x2a;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BotDirection {
@@ -88,6 +90,122 @@ fn parse_msc_interfaces(config: &[u8]) -> Vec<MscInterface> {
     );
 
     interfaces
+}
+
+fn parse_uasp_interfaces(config: &[u8]) -> Vec<UaspInterface> {
+    let mut interfaces = Vec::new();
+    let mut offset = 0usize;
+
+    while offset + 2 <= config.len() {
+        let len = config[offset] as usize;
+        if len < 2 || offset + len > config.len() {
+            break;
+        }
+
+        if config[offset + 1] == USB_DESC_TYPE_INTERFACE && len >= 9 {
+            let class = config[offset + 5];
+            let subclass = config[offset + 6];
+            let protocol = config[offset + 7];
+            if class == USB_CLASS_MASS_STORAGE
+                && subclass == USB_MSC_SUBCLASS_SCSI
+                && protocol == USB_MSC_PROTOCOL_UAS
+            {
+                interfaces.push(UaspInterface {
+                    number: config[offset + 2],
+                    alternate_setting: config[offset + 3],
+                });
+            }
+        }
+
+        offset += len;
+    }
+
+    interfaces
+}
+
+fn parse_hub_interfaces(config: &[u8]) -> Vec<HubInterface> {
+    let mut interfaces = Vec::new();
+    let mut offset = 0usize;
+
+    while offset + 2 <= config.len() {
+        let len = config[offset] as usize;
+        if len < 2 || offset + len > config.len() {
+            break;
+        }
+
+        if config[offset + 1] == USB_DESC_TYPE_INTERFACE && len >= 9 {
+            let class = config[offset + 5];
+            if class == USB_CLASS_HUB {
+                interfaces.push(HubInterface {
+                    number: config[offset + 2],
+                    alternate_setting: config[offset + 3],
+                    protocol: config[offset + 7],
+                });
+            }
+        }
+
+        offset += len;
+    }
+
+    interfaces
+}
+
+fn read_hub_port_count(
+    info: &XhciInfo,
+    event_ring: &mut EventRingState,
+    slot_id: u8,
+    ring: &mut TransferRingState,
+    buffer_phys: u64,
+    buffer_virt: u64,
+) -> Result<u8, &'static str> {
+    read_hub_port_count_with_type(
+        info,
+        event_ring,
+        slot_id,
+        ring,
+        buffer_phys,
+        buffer_virt,
+        DESCRIPTOR_TYPE_HUB,
+    )
+    .or_else(|_| {
+        read_hub_port_count_with_type(
+            info,
+            event_ring,
+            slot_id,
+            ring,
+            buffer_phys,
+            buffer_virt,
+            DESCRIPTOR_TYPE_SUPERSPEED_HUB,
+        )
+    })
+}
+
+fn read_hub_port_count_with_type(
+    info: &XhciInfo,
+    event_ring: &mut EventRingState,
+    slot_id: u8,
+    ring: &mut TransferRingState,
+    buffer_phys: u64,
+    buffer_virt: u64,
+    descriptor_type: u16,
+) -> Result<u8, &'static str> {
+    let bytes = control_transfer_in(
+        info,
+        event_ring,
+        slot_id,
+        ring,
+        buffer_phys,
+        buffer_virt,
+        REQUEST_TYPE_IN | REQUEST_TYPE_CLASS | REQUEST_RECIPIENT_DEVICE,
+        SETUP_GET_DESCRIPTOR,
+        descriptor_type << 8,
+        0,
+        8,
+    )?;
+    if bytes.len() < 3 {
+        return Err("hub descriptor short");
+    }
+    Ok(bytes[2])
 }
 
 fn push_msc_interface(

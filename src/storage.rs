@@ -262,6 +262,28 @@ pub fn root_disk() -> Option<RootDisk> {
     })
 }
 
+pub fn root_scan_lines() -> Vec<alloc::string::String> {
+    let mut lines = Vec::new();
+    for device in root_priority_devices() {
+        let info = device_info(device);
+        if !info.present {
+            continue;
+        }
+        lines.push(alloc::format!(
+            "storage root_scan device={} sectors={} state={}",
+            device.name(),
+            info.sectors,
+            root_probe_state(device, info.sectors),
+        ));
+    }
+    if lines.is_empty() {
+        lines.push(alloc::string::String::from(
+            "storage root_scan present=none state=no-block-devices",
+        ));
+    }
+    lines
+}
+
 pub fn read_sector(lba: u32, buf: &mut [u8; 512]) -> bool {
     let Some(root) = root_disk() else {
         return false;
@@ -499,11 +521,15 @@ fn log_root_disk(root: RootDisk) {
 }
 
 fn root_scan_summary() -> alloc::string::String {
-    let mut present = Vec::new();
+    let mut present: Vec<alloc::string::String> = Vec::new();
     for device in root_priority_devices() {
         let info = device_info(device);
         if info.present {
-            present.push(device.name());
+            present.push(alloc::format!(
+                "{}:{}",
+                device.name(),
+                root_probe_state(device, info.sectors),
+            ));
         }
     }
     if present.is_empty() {
@@ -514,9 +540,65 @@ fn root_scan_summary() -> alloc::string::String {
             if idx > 0 {
                 out.push(',');
             }
-            out.push_str(name);
+            out.push_str(name.as_str());
         }
         out
+    }
+}
+
+fn root_probe_state(device: BlockDevice, sectors: u32) -> &'static str {
+    let mut first = [0u8; crate::disk_layout::SECTOR_SIZE];
+    if !read_sector_from(device, 0, &mut first) {
+        return "read-failed";
+    }
+    if crate::disk_layout::has_coolfs_magic(&first) {
+        return "raw-coolfs";
+    }
+    if let Some(partitions) = crate::disk_layout::parse_mbr(&first) {
+        if let Some(partition) = crate::disk_layout::find_partition(
+            &partitions,
+            crate::disk_layout::COOLFS_PARTITION_TYPE,
+        ) {
+            if let Some(end_lba) = partition.end_lba() {
+                if partition.starting_lba < sectors && end_lba <= sectors {
+                    let mut root_first = [0u8; crate::disk_layout::SECTOR_SIZE];
+                    if read_sector_from(device, partition.starting_lba, &mut root_first)
+                        && crate::disk_layout::has_coolfs_magic(&root_first)
+                    {
+                        return "mbr-coolfs";
+                    }
+                    return "mbr-coolfs-magic-missing";
+                }
+            }
+            return "mbr-coolfs-out-of-range";
+        }
+    }
+    if let Some(partition) = find_gpt_partition(
+        device,
+        sectors,
+        crate::disk_layout::COOLFS_GPT_PARTITION_GUID,
+    ) {
+        if let Some(end_lba) = partition.end_lba() {
+            if partition.starting_lba < sectors && end_lba <= sectors {
+                let mut root_first = [0u8; crate::disk_layout::SECTOR_SIZE];
+                if read_sector_from(device, partition.starting_lba, &mut root_first)
+                    && crate::disk_layout::has_coolfs_magic(&root_first)
+                {
+                    return "gpt-coolfs";
+                }
+                return "gpt-coolfs-magic-missing";
+            }
+        }
+        return "gpt-coolfs-out-of-range";
+    }
+    if crate::disk_layout::has_protective_mbr(&first) {
+        "gpt-no-coolfs"
+    } else if crate::disk_layout::parse_mbr(&first).is_some() {
+        "mbr-no-coolfs"
+    } else if first.iter().all(|&byte| byte == 0) {
+        "blank"
+    } else {
+        "unknown-layout"
     }
 }
 

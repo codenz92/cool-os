@@ -218,6 +218,8 @@ fn prime_default_control_endpoint(
 
     let hid_interfaces = parse_hid_interfaces(&config);
     let msc_interfaces = parse_msc_interfaces(&config);
+    let uasp_interfaces = parse_uasp_interfaces(&config);
+    let hub_interfaces = parse_hub_interfaces(&config);
     let mut status = Vec::new();
     let mut devices = Vec::new();
     let mut storage_devices = Vec::new();
@@ -254,7 +256,11 @@ fn prime_default_control_endpoint(
         device.default_mps,
     ));
 
-    if hid_interfaces.is_empty() && msc_interfaces.is_empty() {
+    if hid_interfaces.is_empty()
+        && msc_interfaces.is_empty()
+        && uasp_interfaces.is_empty()
+        && hub_interfaces.is_empty()
+    {
         println!(
             "[xhci] slot {} config0 parsed but no boot HID or mass-storage interfaces were found",
             slot_id
@@ -275,6 +281,37 @@ fn prime_default_control_endpoint(
     ) {
         let _ = disable_slot(info, cmd_ring, event_ring, slot_id);
         return Err(err);
+    }
+
+    for hub in hub_interfaces {
+        let ports = read_hub_port_count(
+            info,
+            event_ring,
+            slot_id,
+            &mut device.transfer_ring,
+            device.descriptor_phys,
+            device.descriptor_virt,
+        )
+        .unwrap_or(0);
+        println!(
+            "[xhci] slot {} hub iface={} alt={} proto={:#04x} ports={} downstream=unsupported",
+            slot_id, hub.number, hub.alternate_setting, hub.protocol, ports,
+        );
+        status.push(format!(
+            "USB: port {} slot={} hub iface={} alt={} proto={:#04x} ports={} downstream=unsupported",
+            port_num, slot_id, hub.number, hub.alternate_setting, hub.protocol, ports,
+        ));
+    }
+
+    for uasp in uasp_interfaces {
+        println!(
+            "[xhci] slot {} UASP iface={} alt={} unsupported; BOT fallback required",
+            slot_id, uasp.number, uasp.alternate_setting,
+        );
+        status.push(format!(
+            "USB: port {} slot={} UASP unsupported iface={} alt={} fallback=BOT-required",
+            port_num, slot_id, uasp.number, uasp.alternate_setting,
+        ));
     }
 
     for msc in msc_interfaces {

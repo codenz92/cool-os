@@ -32,12 +32,13 @@ critical. Phase 64 makes service supervision durable with persisted desired
 state under `/CONFIG`, restart history under `/LOGS`, dependency metadata,
 restart backoff, admin-gated controls, and degraded-service diagnostics in
 Terminal, recovery, sysreport, Diagnostics, and System Monitor.
-Phase 80 through Phase 90 add first-boot owner setup, recovery/reset hardening,
+Phase 80 through Phase 91 add first-boot owner setup, recovery/reset hardening,
 self-booting BIOS/MBR and UEFI/GPT installers, AHCI/SATA storage, a raw
 USB-flashable UEFI/GPT image, runtime USB mass-storage root boot, and NVMe
 root boot, plus bare-metal USB boot diagnostics and a conservative safe USB
 image fallback, then guarded physical installation from USB to internal
-AHCI/SATA or NVMe disks. Phase 65 adds a service-aware staged update and rollback path: update manifests
+AHCI/SATA or NVMe disks, and QEMU-covered hardware readiness diagnostics for
+USB hub/UASP classification, root scans, and installer preflight. Phase 65 adds a service-aware staged update and rollback path: update manifests
 live under `/UPDATES/STAGED`, pre-apply file snapshots live under
 `/UPDATES/SNAPSHOTS/LAST`, `/LOGS/UPDATE.TXT` records stage/apply/rollback
 events, and `update rollback` plus `recovery rollback` can restore the previous
@@ -2741,6 +2742,31 @@ guarded UEFI/GPT path, and broad real-hardware variance remain future work.
 
 ---
 
+## ✅ Phase 91 — Bare-Metal Hardware Readiness
+
+**Goal:** Harden physical USB boot and installer diagnostics without changing
+the supported BIOS/UEFI/IDE/AHCI/USB/NVMe boot and install formats.
+
+- [x] Classify USB hub and UASP devices during xHCI enumeration so they appear
+      in `hardware`, `devices`, and `sysreport` instead of disappearing as
+      unknown USB devices.
+- [x] Keep USB MSC Bulk-Only Transport as the supported USB root path and report
+      UASP as unsupported with BOT fallback required.
+- [x] Add per-device storage root-scan lines that explain raw CoolFS, MBR
+      CoolFS, GPT CoolFS, blank, missing, or unsupported-layout states.
+- [x] Add physical-installer preflight reporting for live USB source validity,
+      ESP/root availability, and internal SATA/NVMe target availability.
+- [x] Add QEMU smoke support for extra USB hubs and UASP disks plus
+      `make smoke-phase91-hardware-readiness`.
+
+**Current status:** complete. QEMU coverage now boots the USB image through BOT
+storage while also attaching hub and UASP devices for diagnostics, and the
+physical installer reports a preflight verdict before destructive writes.
+Full downstream hub boot, UASP root boot, Secure Boot, and wider bare-metal
+driver variance remain later work.
+
+---
+
 ## Maintenance — Codebase Navigation Cleanup
 
 **Goal:** Keep the source tree easy to scan while avoiding broad behavior
@@ -2871,4 +2897,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.49 | Phase 87 complete: runtime USB mass-storage root boot |
 | v7.50 | Phase 88 complete: NVMe/PCIe storage root boot |
 | v7.51 | Phase 89 complete: bare-metal USB boot readiness |
-| v7.52 | Current — Phase 90 complete: physical disk installer guardrails |
+| v7.52 | Phase 90 complete: physical disk installer guardrails |
+| v7.53 | Current — Phase 91 complete: bare-metal hardware readiness |

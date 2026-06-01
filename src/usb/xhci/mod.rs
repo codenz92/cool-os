@@ -121,9 +121,11 @@ const USB_DESC_TYPE_ENDPOINT: u8 = 0x05;
 const USB_ENDPOINT_ATTR_BULK: u8 = 0x02;
 const USB_ENDPOINT_ATTR_INTERRUPT: u8 = 0x03;
 const USB_CLASS_HID: u8 = 0x03;
+const USB_CLASS_HUB: u8 = 0x09;
 const USB_CLASS_MASS_STORAGE: u8 = 0x08;
 const USB_MSC_SUBCLASS_SCSI: u8 = 0x06;
 const USB_MSC_PROTOCOL_BULK_ONLY: u8 = 0x50;
+const USB_MSC_PROTOCOL_UAS: u8 = 0x62;
 const USB_HID_SUBCLASS_BOOT: u8 = 0x01;
 const USB_HID_PROTOCOL_KEYBOARD: u8 = 0x01;
 const USB_HID_PROTOCOL_MOUSE: u8 = 0x02;
@@ -336,6 +338,17 @@ struct MscInterface {
     alternate_setting: u8,
     bulk_in: BulkEndpoint,
     bulk_out: BulkEndpoint,
+}
+
+struct UaspInterface {
+    number: u8,
+    alternate_setting: u8,
+}
+
+struct HubInterface {
+    number: u8,
+    alternate_setting: u8,
+    protocol: u8,
 }
 
 struct UsbStorageDeviceState {

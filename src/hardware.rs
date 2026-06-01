@@ -109,6 +109,7 @@ pub fn lines() -> Vec<String> {
     }
 
     lines.extend(storage_lines());
+    lines.extend(crate::storage::root_scan_lines());
     lines.extend(crate::installer::hardware_summary_lines());
     lines.extend(crate::ahci::status_lines());
     lines.extend(crate::nvme::status_lines());
@@ -123,6 +124,7 @@ pub fn device_lines() -> Vec<String> {
         if safe_mode() { "safe-mode" } else { "normal" }
     ));
     lines.extend(storage_lines());
+    lines.extend(crate::storage::root_scan_lines());
     lines.extend(crate::installer::hardware_summary_lines());
     lines.extend(crate::device_registry::lines());
     lines
