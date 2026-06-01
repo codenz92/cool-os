@@ -63,9 +63,10 @@ fn prime_attached_ports(
     dcbaa_virt: u64,
     cmd_ring: &mut CommandRingState,
     event_ring: &mut EventRingState,
-) -> (Vec<String>, Vec<HidDeviceState>) {
+) -> (Vec<String>, Vec<HidDeviceState>, Vec<UsbStorageDeviceState>) {
     let mut status = Vec::new();
     let mut devices = Vec::new();
+    let mut storage_devices = Vec::new();
 
     for port_num in 1..=info.max_ports {
         let Some(proto) = protocol_for_port(&info.protocols, port_num) else {
@@ -106,9 +107,10 @@ fn prime_attached_ports(
         match prime_default_control_endpoint(
             info, dcbaa_virt, cmd_ring, event_ring, proto, port_num, portsc,
         ) {
-            Ok((lines, maybe_devices)) => {
+            Ok((lines, maybe_devices, maybe_storage_devices)) => {
                 status.extend(lines);
                 devices.extend(maybe_devices);
+                storage_devices.extend(maybe_storage_devices);
             }
             Err(err) => status.push(format!(
                 "USB: port {} {} prime failed: {}",
@@ -117,7 +119,7 @@ fn prime_attached_ports(
         }
     }
 
-    (status, devices)
+    (status, devices, storage_devices)
 }
 
 fn prime_default_control_endpoint(
@@ -128,7 +130,7 @@ fn prime_default_control_endpoint(
     proto: &SupportedProtocol,
     port_num: u8,
     portsc: u32,
-) -> Result<(Vec<String>, Vec<HidDeviceState>), &'static str> {
+) -> Result<(Vec<String>, Vec<HidDeviceState>, Vec<UsbStorageDeviceState>), &'static str> {
     let speed_id = port_speed_id(portsc);
     if speed_id == 0 {
         return Err("port speed undefined");
@@ -215,8 +217,10 @@ fn prime_default_control_endpoint(
     };
 
     let hid_interfaces = parse_hid_interfaces(&config);
+    let msc_interfaces = parse_msc_interfaces(&config);
     let mut status = Vec::new();
     let mut devices = Vec::new();
+    let mut storage_devices = Vec::new();
     let config_value = config
         .get(5)
         .copied()
@@ -250,16 +254,16 @@ fn prime_default_control_endpoint(
         device.default_mps,
     ));
 
-    if hid_interfaces.is_empty() {
+    if hid_interfaces.is_empty() && msc_interfaces.is_empty() {
         println!(
-            "[xhci] slot {} config0 parsed but no boot HID interfaces were found",
+            "[xhci] slot {} config0 parsed but no boot HID or mass-storage interfaces were found",
             slot_id
         );
         status.push(format!(
-            "USB: port {} slot={} no boot HID interfaces in config 0",
+            "USB: port {} slot={} no boot HID or mass-storage interfaces in config 0",
             port_num, slot_id,
         ));
-        return Ok((status, devices));
+        return Ok((status, devices, storage_devices));
     }
 
     if let Err(err) = set_configuration(
@@ -271,6 +275,54 @@ fn prime_default_control_endpoint(
     ) {
         let _ = disable_slot(info, cmd_ring, event_ring, slot_id);
         return Err(err);
+    }
+
+    for msc in msc_interfaces {
+        let configured = match activate_msc_interface(
+            info,
+            cmd_ring,
+            event_ring,
+            slot_id,
+            port_num,
+            &msc,
+            &mut device,
+        ) {
+            Ok(configured) => configured,
+            Err(err) => {
+                let _ = disable_slot(info, cmd_ring, event_ring, slot_id);
+                return Err(err);
+            }
+        };
+        println!(
+            "[xhci] slot {} MSC usb{} iface={} alt={} in={:#04x} out={:#04x} sectors={} block={}",
+            slot_id,
+            configured.index,
+            configured.interface_number,
+            msc.alternate_setting,
+            configured.bulk_in.address,
+            configured.bulk_out.address,
+            configured.sectors,
+            configured.block_size,
+        );
+        status.push(format!(
+            "USB: port {} slot={} MSC usb{} iface={} alt={} in={:#04x} out={:#04x} sectors={} block={}",
+            port_num,
+            slot_id,
+            configured.index,
+            configured.interface_number,
+            msc.alternate_setting,
+            configured.bulk_in.address,
+            configured.bulk_out.address,
+            configured.sectors,
+            configured.block_size,
+        ));
+        crate::device_registry::set_usb_storage(
+            configured.index,
+            port_num,
+            configured.sectors,
+            configured.block_size,
+        );
+        storage_devices.push(configured);
     }
 
     for hid in hid_interfaces {
@@ -316,5 +368,9 @@ fn prime_default_control_endpoint(
         devices.push(configured);
     }
 
-    Ok((status, devices))
+    for storage in storage_devices.iter_mut() {
+        storage.control_ring = device.transfer_ring;
+    }
+
+    Ok((status, devices, storage_devices))
 }

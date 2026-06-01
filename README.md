@@ -17,12 +17,12 @@ tables.
 
 ---
 
-# Current state — v7.48
+# Current state — v7.49
 
 The kernel boots into a graphical desktop at **1920×1080, 24bpp** via the
 `bootloader 0.11` linear framebuffer on the default BIOS/VBE path and via the
-parallel QEMU OVMF UEFI/GPT path, including AHCI/SATA-attached disks. A terminal
-window opens on boot.
+parallel QEMU OVMF UEFI/GPT path, including AHCI/SATA-attached disks and
+QEMU xHCI USB mass-storage root disks. A terminal window opens on boot.
 Right-clicking the desktop opens a context menu to launch additional apps, and
 the shell also exposes desktop icons plus a start menu/taskbar flow, global
 keyboard shortcuts, `Ctrl+Space` Start-menu search, a task switcher overlay,
@@ -62,8 +62,9 @@ first-boot state can be inspected, reset, or repaired, Phase 82 adds a QEMU
 disk installer path, and Phase 83 makes that installed target self-booting by
 writing the BIOS bootloader plus a CoolFS root partition to the target disk.
 Phase 84 adds safer target selection and graphical progress, Phase 85 adds
-a parallel QEMU UEFI/GPT installer path while keeping BIOS/MBR supported, and
-Phase 86 adds AHCI/SATA storage plus a USB-flashable raw image artifact.
+a parallel QEMU UEFI/GPT installer path while keeping BIOS/MBR supported,
+Phase 86 adds AHCI/SATA storage plus a USB-flashable raw image artifact, and
+Phase 87 boots that image as runtime USB mass storage.
 Phase 32
 keeps copied kernel mappings supervisor-only for ring-3 tasks, removes broad
 lazy lower-half page allocation, and turns denied user pointers into task
@@ -239,7 +240,7 @@ built-in trust roots, and SAN-first hostname validation coverage.
 
 | Subsystem | Details |
 | :-------- | :------ |
-| **Framebuffer** | `bootloader 0.11` linear framebuffer at 1920×1080 on the normal QEMU `-vga std` BIOS/VBE path and the QEMU OVMF UEFI/GPT path, including AHCI-backed UEFI boots. 3bpp and 4bpp both handled. Shadow-buffer compositor with dirty row-span blits, adaptive 36/144 Hz frame pacing, and a hardware cursor overlay fast path that restores/draws only cursor rectangles for mouse-only motion. No tearing. |
+| **Framebuffer** | `bootloader 0.11` linear framebuffer at 1920×1080 on the normal QEMU `-vga std` BIOS/VBE path and the QEMU OVMF UEFI/GPT path, including AHCI-backed and USB-storage-backed UEFI boots. 3bpp and 4bpp both handled. Shadow-buffer compositor with dirty row-span blits, adaptive 36/144 Hz frame pacing, and a hardware cursor overlay fast path that restores/draws only cursor rectangles for mouse-only motion. No tearing. |
 | **PS/2 mouse** | Full hardware init (CCB, 0xF6/0xF4), 9-bit signed X/Y deltas, IRQ12 packet collection via atomics. |
 | **Window manager** | Z-ordered windows, focus-on-click, title-bar drag, edge snapping, keyboard snapping, task switcher overlay, minimise/maximise/restore, resize grip, close button, taskbar previews/right-click actions, per-window pixel back-buffer. |
 | **Desktop shell** | Wallpaper, desktop icons, right-click context menu, searchable start menu, taskbar window buttons, configurable shortcuts, login/lock greeter, Accounts settings, notification center, File Manager drag/drop/open-with routing, shared clipboard plumbing, userspace app lifecycle tracking with System Monitor controls, persistent settings, session restore, clock, and adaptive compositor smoothness telemetry. |
@@ -254,7 +255,7 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **Syscall table** | `0 exit`, `1 write`, `2 yield`, `3 getpid`, `4 mmap(addr, len, flags)`, `5 open(path, len)`, `6 read(fd, buf, len)`, `7 close(fd)`, `8 exec(path, len)`, `9 pipe(fds_ptr)`, `10 dup(fd)`, `11 shmem_create(len)`, `12 shmem_map(id)`, `13 waitpid(pid, status_ptr)`, `14 spawn(path, len)`, `15 sleep_ms(ms)`, `16 abi_version()`, `17 dns_resolve(host, len)`, `18 http_get(host, len)`, `19 socket(domain, type, proto)`, `20 connect(socket, ipv4, port)`, `21 send(socket, buf, len)`, `22 recv(socket, buf, len)`, `23 gui_open(title, len, dims)`, `24 gui_present(handle, pixels, len)`, `25 gui_poll_event(handle, packet, len)`, `26 gui_close(handle)`, `27 fs_write_file(desc)`, `28 fs_create_dir(path, len)`, `29 fs_delete_tree(path, len)`, `30 fs_list_dir(desc)`, `31 screenshot(path, len, flags)`, `32 signal(pid, signal)`, `33 setpgid(pid, pgid)`, `34 getpgid(pid)`, `35 signal_group(pgid, signal)`, `36 spawn_args(desc)`, `37 chdir(path, len)`, `38 getcwd(buf, len)`, `39 stat(desc)`, `40 rename(desc)`, `41 open_write(path, len)`, `42 spawn_fds_args(desc)`, `43 sync()`, `44 time()`, `45 poll(desc, count, timeout_ms)`, `46 tty_control(op, arg1, arg2)`, `47 thread_spawn(entry, arg, flags)`, `48 futex_wait(addr, expected, timeout_ms)`, `49 futex_wake(addr, count, flags)`, `50 thread_tls_set(base, flags)`, `51 thread_tls_get()`, `52 thread_spawn_tls(desc_ptr)`, `53 mprotect(addr, len, flags)`, and `54 mmap_file(desc_ptr)` where the descriptor is `[fd, addr, len, file_offset, flags]`. `mmap`/`mprotect`/`mmap_file` use bit 0 for writable and bit 1 for executable, reject writable+executable mappings, and keep the dynamic-loader path W^X; Phase 77 `mmap_file` intentionally allows only read-only or executable private file mappings. `sys_read(0)` reads from the current task's controlling TTY when assigned unless fd 0 is mapped; `sys_write` writes stdout/stderr to that TTY, falls back to the compositor ring for orphaned output, or writes pipe/file descriptors through the VFS fd table. |
 | **Userspace** | Ring-3 code can run either as the original isolation stubs or as real ELF64 binaries loaded from `/bin`. The `libcool` SDK crate now provides no_std entry/argv setup plus process, signal/process-group, file/open_flags, pipe, thread/futex/TLS, pthread-style mutex/condvar/once/key helpers, POSIX-shaped `pthread_*`/`errno`/`nanosleep` wrappers, ET_DYN `dynlink` single-object and dependency-graph loading, evented poll, TTY mode/size, mmap/mmap_file/mprotect, shared-memory, event, DNS/HTTP, TCP socket, filesystem utility, screenshot, time, and userspace GUI wrappers. `/bin/sh` reads stdin from the TTY, tracks the kernel cwd, parses quoting and escapes, runs builtins, resolves bare commands under `/bin`, supports `<`/`>` redirection and one-stage `|` pipelines, and can launch argv/fd-capable children with `spawn_args` or `spawn_fds_args`. `/bin/ls`, `/bin/cat`, `/bin/echo`, `/bin/pwd`, `/bin/mkdir`, `/bin/touch`, `/bin/rm`, `/bin/writefile`, `/bin/cp`, `/bin/mv`, `/bin/grep`, `/bin/head`, `/bin/tail`, `/bin/date`, `/bin/uname`, `/bin/clear`, `/bin/stat`, `/bin/sync`, `/bin/devkit`, `/bin/polldemo`, `/bin/tuidemo`, `/bin/threaddemo`, `/bin/tlsdemo`, `/bin/pthreaddemo`, `/bin/mmapdemo`, and `/bin/lddemo` cover practical command-line, evented, terminal-mode, thread/futex, TLS, POSIX pthread, file-backed mapping, and shared-object loading workflows. `sys_exec` replaces the current userspace image in-place by swapping CR3 and rewriting the saved syscall return frame. Shared memory (`sys_shmem_create`/`sys_shmem_map`) maps a region of physical frames into the caller's address space at a fixed VA. |
 | **ELF loader** | Kernel `exec` validates ELF64 headers, maps static `PT_LOAD` segments into a fresh address space, allocates a private user stack, builds an initial `argc/argv/envp` stack frame, and can either spawn a new task or prepare an image for `sys_exec`. Phase 77 userspace `libcool::dynlink` handles ET_DYN objects under `/lib`, with `PT_DYNAMIC`, RELA, dynsym, init-array, W^X `mprotect`, bounded `DT_NEEDED` dependency loading, global cross-object symbol resolution, ELF TLS template/relocation coverage, and read-only file-backed `PT_LOAD` segments through `mmap_file`. |
-| **Storage layer** | Generic block-device ids cover IDE (`ide0-master`, `ide0-slave`, `ide1-master`, `ide1-slave`) and QEMU AHCI/SATA (`sata0`, `sata1`, `sata2`, ...). IDE uses LBA28 PIO with bounded retries; AHCI v1 uses polled command slots for identify/read/write/flush on QEMU. Root discovery resolves legacy raw CoolFS disks, BIOS/MBR `0xc0` CoolFS partitions, and GPT CoolFS partitions across both buses. |
+| **Storage layer** | Generic block-device ids cover IDE (`ide0-master`, `ide0-slave`, `ide1-master`, `ide1-slave`), QEMU AHCI/SATA (`sata0`, `sata1`, `sata2`, ...), and QEMU xHCI USB mass storage (`usb0`, `usb1`, ...). IDE uses LBA28 PIO with bounded retries; AHCI v1 uses polled command slots for identify/read/write/flush on QEMU; USB MSC uses Bulk-Only Transport with SCSI inquiry/capacity/read/write/flush commands. Root discovery resolves legacy raw CoolFS disks, BIOS/MBR `0xc0` CoolFS partitions, and GPT CoolFS partitions across IDE, SATA, and USB. |
 | **CoolFS layer** | Native coolOS root filesystem mounted at `/`, stored directly at LBA 0 for live/dev images, inside a private MBR partition on BIOS-installed disks, or inside a coolOS GPT partition on UEFI-installed disks. It has a CoolFS superblock, fixed inode table with durable `uid`/`gid`/mode metadata, block bitmap, 4 KiB blocks, direct plus indirect data blocks, directory records, a 64-slot block cache with dirty 4 KiB writeback, pressure-triggered clean-cache trimming, VFS read/write/create/rename/delete/copy routing, stats, and boot self-tests. |
 | **FAT32 layer** | Optional legacy import mount at `/FAT`, formatted in a separate 8 MiB-offset region relative to the resolved root disk/partition. BPB parsing, FAT chain walking, short-name and long-filename lookup, directory traversal, cluster→sector mapping, mutation helpers, free-space stats, and `fsck` remain available without being required for CoolFS boot. |
 | **VFS** | CoolFS-root path routing, `/FAT` legacy routing, CoolFS read/write/execute permission enforcement, task-local cwd resolution, and task-local fd tables (16 slots, with explicit 0/1/2 mappings for child stdio) backed by shared file/pipe/shmem objects. `vfs_open` reads whole files into heap buffers after access checks and drops them if pressure admission fails; `vfs_open_write` buffers writable file descriptors and commits through safe CoolFS writes on close/exit; `vfs_read_fd_at` gives `mmap_file` stable read-at access to regular read-only fds without advancing offsets; `vfs_pipe` allocates a 512-byte kernel ring buffer only when the heap reserve allows it; `vfs_read_blocking` blocks tasks on empty pipes and wakes them on write/EOF; `ipc` and `spawn_fds_args` selectively inherit pipe/file fds into child processes; `vfs_shmem_create`/`vfs_shmem_map` manage a shared memory region pool indexed by ID. |
@@ -264,7 +265,7 @@ built-in trust roots, and SAN-first hostname validation coverage.
 | **Packages** | Ed25519-signed package archives under `/Packages` with detached `<package>.sig` files, public package trust keys under `/CONFIG/PACKAGE-KEYS.TXT`, version/dependency checks, payload tables with SHA-256 and mode metadata, per-install owner records under `/APPS/<command>/OWNER.TXT`, package history under `/LOGS/PACKAGES.TXT`, transaction state under `/LOGS/PACKAGE-TXN.TXT`, verified `pkg install\|run\|repair`, and recovery/sysreport package trust diagnostics. |
 | **Browser engine port** | Phase 71 selects WPE WebKit as the modern-browser target while keeping the native browser as fallback. Phase 77 marks threading/TLS/pthread support ready and moves dynamic linking/JIT execmem/file-mmap from missing to partial with ABI v14 `mmap_file` and W^X `mprotect`, `/lib` shared-object placement, read-only file-backed text, `DT_NEEDED` dependency loading, cross-object dynsym resolution, and ELF TLS records. `src/browser_engine.rs` defines port ABI v1, runtime requirement diagnostics, backend readiness probing through `/SYSTEM/BROWSER-ENGINE/WPE.READY`, Terminal `engine` commands, `browser://engine`, Recovery/Diagnostics/Sysreport lines, futex/TLS/dynamic-link/file-mmap telemetry, and SDK docs for the host contract. |
 | **Applications** | Terminal, System Monitor, Text Viewer, Color Picker, File Manager, Web Browser, ring-3 Notes, Text Editor, Trash Bin, Screenshot, Process Demo, and GUI Demo. Text-file opens route into `/bin/editor <path>` with kernel viewer fallback, while File Manager exposes explicit Open With Editor/Viewer actions. |
-| **Disk image** | `disk-image/src/fs_image.rs` builds `fs.img` as a 64 MiB raw OS disk: native CoolFS starts at LBA 0 with root-owned system paths, `/lib` shared objects including `/lib/libphase75.so`, `/lib/libphase76dep.so`, and `/lib/libphase76main.so`, user-owned writable paths including `/TMP`, executable `/bin` ELFs including `/bin/threaddemo`, `/bin/tlsdemo`, `/bin/pthreaddemo`, `/bin/mmapdemo`, and `/bin/lddemo`, `/RECOVERY` boot/repair docs, `/SDK` devkit docs/templates including `/SDK/BROWSER_ENGINE_PORT.TXT`, `/CONFIG/BROWSER-ENGINE.CFG`, `/SYSTEM/BROWSER-ENGINE`, `/Packages/guidemo.pkg`, `/Packages/guidemo.elf`, and `/Documents/package-demo.p25`; an optional FAT32 `/FAT` import region starts at 8 MiB. The Makefile can attach this live image as IDE or AHCI/SATA, the installer can copy it into BIOS/MBR or UEFI/GPT targets, and `build-usb-image` produces a single raw UEFI/GPT image suitable for flashing. |
+| **Disk image** | `disk-image/src/fs_image.rs` builds `fs.img` as a 64 MiB raw OS disk: native CoolFS starts at LBA 0 with root-owned system paths, `/lib` shared objects including `/lib/libphase75.so`, `/lib/libphase76dep.so`, and `/lib/libphase76main.so`, user-owned writable paths including `/TMP`, executable `/bin` ELFs including `/bin/threaddemo`, `/bin/tlsdemo`, `/bin/pthreaddemo`, `/bin/mmapdemo`, and `/bin/lddemo`, `/RECOVERY` boot/repair docs, `/SDK` devkit docs/templates including `/SDK/BROWSER_ENGINE_PORT.TXT`, `/CONFIG/BROWSER-ENGINE.CFG`, `/SYSTEM/BROWSER-ENGINE`, `/Packages/guidemo.pkg`, `/Packages/guidemo.elf`, and `/Documents/package-demo.p25`; an optional FAT32 `/FAT` import region starts at 8 MiB. The Makefile can attach this live image as IDE, AHCI/SATA, or USB mass storage, the installer can copy it into BIOS/MBR or UEFI/GPT targets, and `build-usb-image` produces a single raw UEFI/GPT image suitable for flashing and QEMU USB-storage boot testing. |
 
 ### Applications
 
@@ -448,6 +449,12 @@ To build a single USB-flashable raw UEFI/GPT image:
 
 ```bash
 make build-usb-image
+```
+
+To boot that image as an actual QEMU xHCI USB mass-storage disk:
+
+```bash
+make run-uefi-usb-storage
 ```
 
 The UEFI helpers use Homebrew QEMU's EDK2 firmware by default and can be
@@ -806,9 +813,16 @@ enumerates QEMU AHCI disks as `sata0`, `sata1`, `sata2`, and so on. The UEFI
 installer can boot from AHCI, refuse protected source boot/root disks, install
 to a SATA target, and boot the installed target alone under OVMF. `make
 build-usb-image` builds `coolos-usb.img`, a raw UEFI/GPT image with ESP plus
-CoolFS root that can be written to USB media later; runtime USB mass-storage
-root boot, NVMe, Secure Boot, and physical-machine installation remain future
-work.
+CoolFS root.
+
+**Runtime USB mass-storage root boot (Phase 87).** The xHCI stack now detects
+USB Mass Storage Class devices, configures bulk endpoints, speaks Bulk-Only
+Transport with the SCSI commands needed for block I/O, and exposes USB disks as
+`usb0`, `usb1`, and so on. The generic storage layer can discover the GPT
+CoolFS root on `usb0`, so `make run-uefi-usb-storage` boots `coolos-usb.img`
+through QEMU `usb-storage` without IDE or AHCI root disks. NVMe, Secure Boot,
+UASP, broad real-hardware USB variance, and physical-machine installation
+remain future work.
 
 **User/kernel isolation hardening (Phase 32).** Process address spaces still
 copy the kernel's upper-half PML4 entries so syscall and interrupt entry can run
@@ -1037,7 +1051,9 @@ review/confirmation/progress states, and `make smoke-phase84-installer-v2`.
 Phase 85 adds `uefi.img`, QEMU OVMF helpers, GPT CoolFS partition discovery,
 UEFI/GPT install/verify support, and `make smoke-phase85-uefi-gpt`. Phase 86
 adds AHCI/SATA block devices, AHCI installer targets, `make
-smoke-phase86-ahci-storage`, and `make build-usb-image`.
+smoke-phase86-ahci-storage`, and `make build-usb-image`. Phase 87 adds USB MSC
+Bulk-Only Transport, `usb*` block devices, `make run-uefi-usb-storage`, and
+`make smoke-phase87-usb-storage-root`.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
@@ -1141,5 +1157,6 @@ while kernel faults still panic.
 | 84 | Installer v2 — target preflight, review/confirmation, graphical progress, and safer disk refusal coverage | **Done** |
 | 85 | UEFI/GPT installer foundation — `uefi.img`, OVMF run helpers, GPT root discovery, and standalone UEFI installed-target smoke | **Done** |
 | 86 | AHCI/SATA storage and USB image foundation — `sata*` block devices, AHCI installer smoke, and raw UEFI/GPT USB image build | **Done** |
+| 87 | Runtime USB mass-storage root boot — USB MSC BOT, `usb*` block devices, and QEMU USB-storage first-boot smoke | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

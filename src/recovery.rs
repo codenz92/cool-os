@@ -7,7 +7,7 @@ const README_PATH: &str = "/RECOVERY/README.TXT";
 const BOOT_CFG_PATH: &str = "/RECOVERY/BOOT.CFG";
 const LAST_REPAIR_PATH: &str = "/RECOVERY/LAST-REPAIR.TXT";
 
-const README: &[u8] = b"coolOS recovery\n\nCommands:\n  recovery\n  recovery repair\n  recovery rollback\n  recovery firstboot status\n  recovery firstboot reset\n  recovery firstboot repair\n  recovery install disks\n  recovery install plan <block-device>\n  recovery install disk <block-device>\n  recovery install verify <block-device>\n  recovery fsck-on-boot on\n  recovery fsck-on-boot off\n\nThe normal boot path is auto-detected CoolFS root storage on IDE or AHCI/SATA. Keep this directory on the root filesystem so recovery instructions survive package, update, and user changes.\n";
+const README: &[u8] = b"coolOS recovery\n\nCommands:\n  recovery\n  recovery repair\n  recovery rollback\n  recovery firstboot status\n  recovery firstboot reset\n  recovery firstboot repair\n  recovery install disks\n  recovery install plan <block-device>\n  recovery install disk <block-device>\n  recovery install verify <block-device>\n  recovery fsck-on-boot on\n  recovery fsck-on-boot off\n\nThe normal boot path is auto-detected CoolFS root storage on IDE, AHCI/SATA, or USB mass storage. Keep this directory on the root filesystem so recovery instructions survive package, update, and user changes.\n";
 
 const BOOT_CFG: &[u8] = b"boot=normal\nroot=/\nrootfs=coolfs\nvideo=bios-vbe\nstorage=auto\nrecovery_command=recovery repair\n";
 

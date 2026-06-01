@@ -10,6 +10,17 @@ fn handle_runtime_transfer_event(runtime: &mut ActiveState, event: EventTrb) {
     let Some(device) = runtime.devices.iter_mut().find(|device| {
         device.slot_id == completion.slot_id && device.endpoint_dci == completion.endpoint_id
     }) else {
+        if runtime.storage_devices.iter().any(|device| {
+            device.slot_id == completion.slot_id
+                && (device.bulk_in.dci == completion.endpoint_id
+                    || device.bulk_out.dci == completion.endpoint_id)
+        }) {
+            runtime.last_runtime_note = format!(
+                "deferred storage event slot {} ep {}",
+                completion.slot_id, completion.endpoint_id,
+            );
+            return;
+        }
         println!(
             "[xhci] runtime transfer for unknown device slot={} ep={} ptr={:#x} code={}",
             completion.slot_id, completion.endpoint_id, completion.ptr, completion.completion_code,
@@ -96,10 +107,11 @@ fn handle_runtime_port_status_change(runtime: &mut ActiveState, port_num: u8) {
     );
 
     let had_connection_change = initial_portsc & PORTSC_CSC != 0;
-    let had_existing_device = runtime
-        .devices
-        .iter()
-        .any(|device| device.port_num == port_num);
+    let had_existing_device = runtime.devices.iter().any(|device| device.port_num == port_num)
+        || runtime
+            .storage_devices
+            .iter()
+            .any(|device| device.port_num == port_num);
 
     clear_port_changes(&runtime.info, port_num);
     let current_portsc = read_portsc(&runtime.info, port_num);
@@ -122,10 +134,11 @@ fn handle_runtime_port_status_change(runtime: &mut ActiveState, port_num: u8) {
         remove_port_devices(runtime, port_num);
     }
 
-    if runtime
-        .devices
-        .iter()
-        .any(|device| device.port_num == port_num)
+    if runtime.devices.iter().any(|device| device.port_num == port_num)
+        || runtime
+            .storage_devices
+            .iter()
+            .any(|device| device.port_num == port_num)
     {
         runtime.last_runtime_note =
             format!("port {} {} status change handled", port_num, proto.label);
@@ -183,9 +196,10 @@ fn handle_runtime_port_status_change(runtime: &mut ActiveState, port_num: u8) {
         port_num,
         portsc,
     ) {
-        Ok((lines, mut devices)) => {
+        Ok((lines, mut devices, mut storage_devices)) => {
             replace_port_status_lines(runtime, port_num, lines);
             runtime.devices.append(&mut devices);
+            runtime.storage_devices.append(&mut storage_devices);
             runtime.last_runtime_note = format!("port {} {} attached", port_num, proto.label);
         }
         Err(err) => {
@@ -210,6 +224,12 @@ fn remove_port_devices(runtime: &mut ActiveState, port_num: u8) {
         }
         slot_ids.push(device.slot_id);
     }
+    for device in runtime.storage_devices.iter() {
+        if device.port_num != port_num || slot_ids.contains(&device.slot_id) {
+            continue;
+        }
+        slot_ids.push(device.slot_id);
+    }
 
     for slot_id in slot_ids {
         let _ = disable_slot(
@@ -221,6 +241,10 @@ fn remove_port_devices(runtime: &mut ActiveState, port_num: u8) {
     }
 
     runtime.devices.retain(|device| device.port_num != port_num);
+    runtime
+        .storage_devices
+        .retain(|device| device.port_num != port_num);
+    crate::device_registry::disconnect_usb_storage_port(port_num);
 }
 
 fn replace_port_status_lines(runtime: &mut ActiveState, port_num: u8, mut new_lines: Vec<String>) {

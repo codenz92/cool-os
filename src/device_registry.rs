@@ -47,6 +47,39 @@ pub fn set_usb_input(keyboard: bool, mouse: bool) {
     );
 }
 
+pub fn set_usb_storage(index: u8, port_num: u8, sectors: u32, block_size: u32) {
+    let mut devices = DEVICES.lock();
+    let name = format!("usb{}", index);
+    if let Some(device) = devices
+        .iter_mut()
+        .find(|device| device.bus == "USB" && device.name == name)
+    {
+        device.location = format!("port {}", port_num);
+        device.class_name = String::from("storage/msc");
+        device.status = format!("active sectors={} block={}", sectors, block_size);
+        return;
+    }
+    devices.push(DeviceInfo {
+        bus: "USB",
+        location: format!("port {}", port_num),
+        name,
+        class_name: String::from("storage/msc"),
+        status: format!("active sectors={} block={}", sectors, block_size),
+    });
+}
+
+pub fn disconnect_usb_storage_port(port_num: u8) {
+    let mut devices = DEVICES.lock();
+    for device in devices
+        .iter_mut()
+        .filter(|device| device.bus == "USB" && device.class_name == "storage/msc")
+    {
+        if device.location == format!("port {}", port_num) {
+            device.status = String::from("disconnected");
+        }
+    }
+}
+
 pub fn register_virtual(name: &str, class_name: &str, status: &str) {
     let mut devices = DEVICES.lock();
     if let Some(device) = devices

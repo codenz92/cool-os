@@ -14,6 +14,14 @@ pub enum BlockDevice {
     Sata5,
     Sata6,
     Sata7,
+    Usb0,
+    Usb1,
+    Usb2,
+    Usb3,
+    Usb4,
+    Usb5,
+    Usb6,
+    Usb7,
 }
 
 #[derive(Clone, Copy)]
@@ -62,6 +70,14 @@ impl BlockDevice {
             BlockDevice::Sata5 => "sata5",
             BlockDevice::Sata6 => "sata6",
             BlockDevice::Sata7 => "sata7",
+            BlockDevice::Usb0 => "usb0",
+            BlockDevice::Usb1 => "usb1",
+            BlockDevice::Usb2 => "usb2",
+            BlockDevice::Usb3 => "usb3",
+            BlockDevice::Usb4 => "usb4",
+            BlockDevice::Usb5 => "usb5",
+            BlockDevice::Usb6 => "usb6",
+            BlockDevice::Usb7 => "usb7",
         }
     }
 
@@ -78,6 +94,14 @@ impl BlockDevice {
             "sata5" => Some(BlockDevice::Sata5),
             "sata6" => Some(BlockDevice::Sata6),
             "sata7" => Some(BlockDevice::Sata7),
+            "usb0" => Some(BlockDevice::Usb0),
+            "usb1" => Some(BlockDevice::Usb1),
+            "usb2" => Some(BlockDevice::Usb2),
+            "usb3" => Some(BlockDevice::Usb3),
+            "usb4" => Some(BlockDevice::Usb4),
+            "usb5" => Some(BlockDevice::Usb5),
+            "usb6" => Some(BlockDevice::Usb6),
+            "usb7" => Some(BlockDevice::Usb7),
             _ => None,
         }
     }
@@ -92,13 +116,36 @@ impl BlockDevice {
             BlockDevice::Sata5 => Some(5),
             BlockDevice::Sata6 => Some(6),
             BlockDevice::Sata7 => Some(7),
-            BlockDevice::Ide(_) => None,
+            BlockDevice::Ide(_)
+            | BlockDevice::Usb0
+            | BlockDevice::Usb1
+            | BlockDevice::Usb2
+            | BlockDevice::Usb3
+            | BlockDevice::Usb4
+            | BlockDevice::Usb5
+            | BlockDevice::Usb6
+            | BlockDevice::Usb7 => None,
+        }
+    }
+
+    pub const fn usb_index(self) -> Option<u8> {
+        match self {
+            BlockDevice::Usb0 => Some(0),
+            BlockDevice::Usb1 => Some(1),
+            BlockDevice::Usb2 => Some(2),
+            BlockDevice::Usb3 => Some(3),
+            BlockDevice::Usb4 => Some(4),
+            BlockDevice::Usb5 => Some(5),
+            BlockDevice::Usb6 => Some(6),
+            BlockDevice::Usb7 => Some(7),
+            _ => None,
         }
     }
 }
 
 pub fn init() {
     crate::ahci::init();
+    crate::usb::init_storage();
 }
 
 pub fn all_devices() -> Vec<BlockDevice> {
@@ -109,6 +156,7 @@ pub fn all_devices() -> Vec<BlockDevice> {
         BlockDevice::Ide(crate::ata::IdeDevice::Ide1Slave),
     ];
     devices.extend(crate::ahci::devices());
+    devices.extend(crate::usb::storage_devices());
     devices
 }
 
@@ -122,7 +170,15 @@ pub fn device_info(device: BlockDevice) -> BlockDeviceInfo {
                 sectors: info.sectors,
             }
         }
-        _ => crate::ahci::device_info(device),
+        BlockDevice::Sata0
+        | BlockDevice::Sata1
+        | BlockDevice::Sata2
+        | BlockDevice::Sata3
+        | BlockDevice::Sata4
+        | BlockDevice::Sata5
+        | BlockDevice::Sata6
+        | BlockDevice::Sata7 => crate::ahci::device_info(device),
+        _ => crate::usb::storage_device_info(device),
     }
 }
 
@@ -168,21 +224,45 @@ pub fn write_sector(lba: u32, buf: &[u8; 512]) -> bool {
 pub fn read_sector_from(device: BlockDevice, lba: u32, buf: &mut [u8; 512]) -> bool {
     match device {
         BlockDevice::Ide(ide) => crate::ata::read_sector_from(ide, lba, buf),
-        _ => crate::ahci::read_sector_from(device, lba, buf),
+        BlockDevice::Sata0
+        | BlockDevice::Sata1
+        | BlockDevice::Sata2
+        | BlockDevice::Sata3
+        | BlockDevice::Sata4
+        | BlockDevice::Sata5
+        | BlockDevice::Sata6
+        | BlockDevice::Sata7 => crate::ahci::read_sector_from(device, lba, buf),
+        _ => crate::usb::storage_read_sector(device, lba, buf),
     }
 }
 
 pub fn write_sector_to(device: BlockDevice, lba: u32, buf: &[u8; 512]) -> bool {
     match device {
         BlockDevice::Ide(ide) => crate::ata::write_sector_to(ide, lba, buf),
-        _ => crate::ahci::write_sector_to(device, lba, buf),
+        BlockDevice::Sata0
+        | BlockDevice::Sata1
+        | BlockDevice::Sata2
+        | BlockDevice::Sata3
+        | BlockDevice::Sata4
+        | BlockDevice::Sata5
+        | BlockDevice::Sata6
+        | BlockDevice::Sata7 => crate::ahci::write_sector_to(device, lba, buf),
+        _ => crate::usb::storage_write_sector(device, lba, buf),
     }
 }
 
 pub fn flush_device(device: BlockDevice) -> bool {
     match device {
         BlockDevice::Ide(ide) => crate::ata::flush_device(ide),
-        _ => crate::ahci::flush_device(device),
+        BlockDevice::Sata0
+        | BlockDevice::Sata1
+        | BlockDevice::Sata2
+        | BlockDevice::Sata3
+        | BlockDevice::Sata4
+        | BlockDevice::Sata5
+        | BlockDevice::Sata6
+        | BlockDevice::Sata7 => crate::ahci::flush_device(device),
+        _ => crate::usb::storage_flush(device),
     }
 }
 
@@ -236,16 +316,18 @@ fn detect_root_disk() -> Option<RootDisk> {
         }
         let mut first = [0u8; crate::disk_layout::SECTOR_SIZE];
         if read_sector_from(device, 0, &mut first) && crate::disk_layout::has_coolfs_magic(&first) {
-            return Some(RootDisk {
+            let root = RootDisk {
                 device,
                 base_lba: 0,
                 sectors: info.sectors,
                 layout: RootDiskLayout::RawCoolFs,
-            });
+            };
+            log_root_disk(root);
+            return Some(root);
         }
     }
 
-    for device in all_devices() {
+    for device in root_priority_devices() {
         let info = device_info(device);
         if !info.present {
             continue;
@@ -273,16 +355,18 @@ fn detect_root_disk() -> Option<RootDisk> {
         if read_sector_from(device, partition.starting_lba, &mut first)
             && crate::disk_layout::has_coolfs_magic(&first)
         {
-            return Some(RootDisk {
+            let root = RootDisk {
                 device,
                 base_lba: partition.starting_lba,
                 sectors: partition.sectors,
                 layout: RootDiskLayout::MbrCoolFs,
-            });
+            };
+            log_root_disk(root);
+            return Some(root);
         }
     }
 
-    for device in all_devices() {
+    for device in root_priority_devices() {
         let info = device_info(device);
         if !info.present {
             continue;
@@ -307,25 +391,42 @@ fn detect_root_disk() -> Option<RootDisk> {
         if read_sector_from(device, partition.starting_lba, &mut first)
             && crate::disk_layout::has_coolfs_magic(&first)
         {
-            return Some(RootDisk {
+            let root = RootDisk {
                 device,
                 base_lba: partition.starting_lba,
                 sectors: partition_sectors,
                 layout: RootDiskLayout::GptCoolFs,
-            });
+            };
+            log_root_disk(root);
+            return Some(root);
         }
     }
 
     None
 }
 
+fn log_root_disk(root: RootDisk) {
+    crate::println!(
+        "[storage] root device={} layout={} base_lba={} sectors={}",
+        root.device.name(),
+        match root.layout {
+            RootDiskLayout::RawCoolFs => "raw-coolfs",
+            RootDiskLayout::MbrCoolFs => "mbr-coolfs",
+            RootDiskLayout::GptCoolFs => "gpt-coolfs",
+        },
+        root.base_lba,
+        root.sectors,
+    );
+}
+
 fn root_priority_devices() -> Vec<BlockDevice> {
     let mut devices = vec![
         BlockDevice::Ide(crate::ata::IdeDevice::Ide0Slave),
         BlockDevice::Ide(crate::ata::IdeDevice::Ide0Master),
-        BlockDevice::Ide(crate::ata::IdeDevice::Ide1Master),
-        BlockDevice::Ide(crate::ata::IdeDevice::Ide1Slave),
     ];
+    devices.extend(crate::usb::storage_devices());
     devices.extend(crate::ahci::devices());
+    devices.push(BlockDevice::Ide(crate::ata::IdeDevice::Ide1Master));
+    devices.push(BlockDevice::Ide(crate::ata::IdeDevice::Ide1Slave));
     devices
 }

@@ -8,8 +8,8 @@
 ///      probed and logged.
 ///   3. The latest probe summary is retained so apps/commands can inspect USB
 ///      state without relying on the host terminal.
-///   4. Later phases: controller reset, command/event ring setup, device
-///      enumeration, HID class driver.
+///   4. The active runtime keeps HID input and USB mass-storage devices
+///      available to the compositor and storage layer.
 extern crate alloc;
 
 use crate::println;
@@ -20,6 +20,7 @@ pub mod xhci;
 
 static USB_STATUS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static LAST_INPUT_PRESENCE: Mutex<Option<(bool, bool)>> = Mutex::new(None);
+static USB_PROBED: Mutex<bool> = Mutex::new(false);
 
 pub fn status_lines() -> Vec<String> {
     let mut lines = USB_STATUS.lock().clone();
@@ -33,6 +34,34 @@ pub fn input_presence() -> (bool, bool) {
 
 pub fn pointer_kind() -> &'static str {
     xhci::runtime_pointer_kind()
+}
+
+pub fn storage_devices() -> Vec<crate::storage::BlockDevice> {
+    xhci::storage_devices()
+}
+
+pub fn storage_device_info(device: crate::storage::BlockDevice) -> crate::storage::BlockDeviceInfo {
+    xhci::storage_device_info(device)
+}
+
+pub fn storage_read_sector(
+    device: crate::storage::BlockDevice,
+    lba: u32,
+    buf: &mut [u8; 512],
+) -> bool {
+    xhci::storage_read_sector(device, lba, buf)
+}
+
+pub fn storage_write_sector(
+    device: crate::storage::BlockDevice,
+    lba: u32,
+    buf: &[u8; 512],
+) -> bool {
+    xhci::storage_write_sector(device, lba, buf)
+}
+
+pub fn storage_flush(device: crate::storage::BlockDevice) -> bool {
+    xhci::storage_flush(device)
 }
 
 pub fn reconcile_input_fallbacks() {
@@ -80,8 +109,17 @@ pub fn reconcile_input_fallbacks() {
 /// Called once from `kernel_main` after the VMM and interrupt controller are up.
 /// Logs a line on success; silently does nothing if no xHCI controller is present
 /// (the PS/2 path still owns input).
-pub fn init() {
+pub fn init_storage() {
+    let mut probed = USB_PROBED.lock();
+    if *probed {
+        return;
+    }
     *USB_STATUS.lock() = xhci::probe();
+    *probed = true;
+}
+
+pub fn init() {
+    init_storage();
     reconcile_input_fallbacks();
 }
 

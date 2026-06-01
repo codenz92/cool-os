@@ -178,6 +178,18 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 
     allocator::init_heap(&mut mapper, &mut heap_frame_allocator).expect("heap init failed");
     boot_splash::show("allocating heap", 7, boot_splash::BOOT_PROGRESS_TOTAL);
+
+    // Build a fresh allocator starting after the frames consumed by the heap
+    // (the heap allocator's `next` counter tells us how many frames it used).
+    let vmm_frame_allocator =
+        unsafe { memory::BootInfoFrameAllocator::init_from(regions, heap_frame_allocator.next()) };
+
+    // Storage probing for AHCI and USB mass-storage needs the physical-memory
+    // offset-backed VMM before the first disk-backed config or app load.
+    vmm::init(phys_mem_offset, vmm_frame_allocator);
+    vmm::harden_boot_mappings();
+    storage::init();
+
     klog::init();
     profiler::record_boot_stage("allocating heap", 7);
     boot_splash::show("mounting filesystems", 8, boot_splash::BOOT_PROGRESS_TOTAL);
@@ -213,17 +225,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     deferred::enqueue(deferred::DeferredWork::RefreshSearchIndex);
     deferred::enqueue(deferred::DeferredWork::FlushWriteback);
 
-    // Build a fresh allocator starting after the frames consumed by the heap
-    // (the heap allocator's `next` counter tells us how many frames it used).
-    let vmm_frame_allocator =
-        unsafe { memory::BootInfoFrameAllocator::init_from(regions, heap_frame_allocator.next()) };
     boot_splash::show("preparing page tables", 9, boot_splash::BOOT_PROGRESS_TOTAL);
-
-    // Initialise the VMM with the physical-memory offset and the remaining
-    // frame supply.  From here on, all page-table work goes through vmm::.
-    vmm::init(phys_mem_offset, vmm_frame_allocator);
-    vmm::harden_boot_mappings();
-    storage::init();
     font::load_from_disk();
     boot_splash::show(
         "mapping virtual memory",

@@ -7,7 +7,7 @@
 extern crate alloc;
 
 use alloc::{format, string::String, vec, vec::Vec};
-use core::sync::atomic::{fence, Ordering};
+use core::sync::atomic::{fence, AtomicU8, Ordering};
 use spin::Mutex;
 
 use crate::pci::{self, Header, Location};
@@ -70,6 +70,7 @@ const COMMAND_RING_TRBS: usize = 256;
 const CONTROL_RING_TRBS: usize = 256;
 const EVENT_RING_TRBS: usize = 256;
 const INTERRUPT_RING_TRBS: usize = 256;
+const BULK_RING_TRBS: usize = 256;
 const TRB_TYPE_NORMAL: u32 = 1;
 const TRB_TYPE_SETUP_STAGE: u32 = 2;
 const TRB_TYPE_DATA_STAGE: u32 = 3;
@@ -94,16 +95,20 @@ const COMPLETION_SUCCESS: u8 = 1;
 const COMPLETION_SHORT_PACKET: u8 = 13;
 const ERDP_EHB_CLEAR: u64 = 1 << 3;
 const CONTROL_ENDPOINT_DCI: u8 = 1;
+const SETUP_CLEAR_FEATURE: u8 = 1;
 const SETUP_GET_DESCRIPTOR: u8 = 6;
 const SETUP_SET_CONFIGURATION: u8 = 9;
 const SETUP_SET_IDLE: u8 = 10;
 const SETUP_SET_PROTOCOL: u8 = 11;
+const SETUP_MSC_BOT_RESET: u8 = 0xff;
+const USB_FEATURE_ENDPOINT_HALT: u16 = 0;
 const REQUEST_TYPE_IN: u8 = 0x80;
 const REQUEST_TYPE_OUT: u8 = 0x00;
 const REQUEST_TYPE_STANDARD: u8 = 0x00;
 const REQUEST_TYPE_CLASS: u8 = 0x20;
 const REQUEST_RECIPIENT_DEVICE: u8 = 0x00;
 const REQUEST_RECIPIENT_INTERFACE: u8 = 0x01;
+const REQUEST_RECIPIENT_ENDPOINT: u8 = 0x02;
 const DESCRIPTOR_TYPE_DEVICE: u16 = 1;
 const DESCRIPTOR_TYPE_CONFIGURATION: u16 = 2;
 const DESCRIPTOR_TYPE_HID: u8 = 0x21;
@@ -113,8 +118,12 @@ const DEVICE_DESCRIPTOR_LEN: usize = 18;
 const CONFIG_DESCRIPTOR_HEADER_LEN: usize = 9;
 const USB_DESC_TYPE_INTERFACE: u8 = 0x04;
 const USB_DESC_TYPE_ENDPOINT: u8 = 0x05;
+const USB_ENDPOINT_ATTR_BULK: u8 = 0x02;
 const USB_ENDPOINT_ATTR_INTERRUPT: u8 = 0x03;
 const USB_CLASS_HID: u8 = 0x03;
+const USB_CLASS_MASS_STORAGE: u8 = 0x08;
+const USB_MSC_SUBCLASS_SCSI: u8 = 0x06;
+const USB_MSC_PROTOCOL_BULK_ONLY: u8 = 0x50;
 const USB_HID_SUBCLASS_BOOT: u8 = 0x01;
 const USB_HID_PROTOCOL_KEYBOARD: u8 = 0x01;
 const USB_HID_PROTOCOL_MOUSE: u8 = 0x02;
@@ -125,6 +134,8 @@ const DESCRIPTOR_BUFFER_BYTES: usize = 4096;
 const BOOT_KEYBOARD_REPORT_BYTES: usize = 8;
 const BOOT_MOUSE_REPORT_BYTES: usize = 4;
 const TABLET_REPORT_BYTES: usize = 6;
+const MSC_MAX_DEVICES: usize = 8;
+const MSC_TRANSFER_BYTES: usize = 4096;
 
 const SPIN_TIMEOUT: u64 = 10_000_000;
 
@@ -186,6 +197,7 @@ struct ActiveState {
     event_ring: EventRingState,
     erst_phys: u64,
     devices: Vec<HidDeviceState>,
+    storage_devices: Vec<UsbStorageDeviceState>,
     poll_count: u64,
     event_count: u64,
     last_runtime_note: String,
@@ -199,6 +211,7 @@ struct CommandRingState {
     cycle: bool,
 }
 
+#[derive(Clone, Copy)]
 struct TransferRingState {
     phys: u64,
     virt: u64,
@@ -311,10 +324,46 @@ struct HidDeviceState {
     last_completion_code: u8,
 }
 
+#[derive(Clone, Copy)]
+struct BulkEndpoint {
+    address: u8,
+    dci: u8,
+    max_packet_size: u16,
+}
+
+struct MscInterface {
+    number: u8,
+    alternate_setting: u8,
+    bulk_in: BulkEndpoint,
+    bulk_out: BulkEndpoint,
+}
+
+struct UsbStorageDeviceState {
+    index: u8,
+    port_num: u8,
+    slot_id: u8,
+    interface_number: u8,
+    bulk_in: BulkEndpoint,
+    bulk_out: BulkEndpoint,
+    control_ring: TransferRingState,
+    bulk_in_ring: TransferRingState,
+    bulk_out_ring: TransferRingState,
+    buffer_phys: u64,
+    buffer_virt: u64,
+    sectors: u32,
+    block_size: u32,
+    tag: u32,
+    transfer_count: u64,
+    error_count: u64,
+    last_status: u8,
+}
+
 static RUNTIME: Mutex<Option<ActiveState>> = Mutex::new(None);
+static NEXT_STORAGE_INDEX: AtomicU8 = AtomicU8::new(0);
 
 pub fn probe() -> Vec<String> {
     *RUNTIME.lock() = None;
+    NEXT_STORAGE_INDEX.store(0, Ordering::Relaxed);
     let mut status = Vec::new();
     let mut runtime_started = false;
 
@@ -434,8 +483,9 @@ pub fn runtime_status_lines() -> Vec<String> {
 
     let mut lines = Vec::new();
     lines.push(format!(
-        "USB: runtime devices={} polls={} events={}",
+        "USB: runtime devices={} storage={} polls={} events={}",
         runtime.devices.len(),
+        runtime.storage_devices.len(),
         runtime.poll_count,
         runtime.event_count,
     ));
@@ -454,6 +504,21 @@ pub fn runtime_status_lines() -> Vec<String> {
             device.last_report_len,
             device.error_count,
             device.last_completion_code,
+        ));
+    }
+    for device in runtime.storage_devices.iter() {
+        lines.push(format!(
+            "USB: runtime port={} slot={} usb{} MSC in={:#04x} out={:#04x} sectors={} block={} transfers={} errors={} status={}",
+            device.port_num,
+            device.slot_id,
+            device.index,
+            device.bulk_in.address,
+            device.bulk_out.address,
+            device.sectors,
+            device.block_size,
+            device.transfer_count,
+            device.error_count,
+            device.last_status,
         ));
     }
     lines
@@ -507,6 +572,7 @@ include!("init.rs");
 include!("ports.rs");
 include!("control.rs");
 include!("hid.rs");
+include!("mass_storage.rs");
 include!("rings.rs");
 include!("runtime.rs");
 include!("discovery.rs");

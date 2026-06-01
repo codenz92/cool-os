@@ -4,7 +4,7 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–86 are complete. Recent milestones give coolOS a much more
+Phases 1–87 are complete. Recent milestones give coolOS a much more
 normal command-line, installer, and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
@@ -32,9 +32,9 @@ critical. Phase 64 makes service supervision durable with persisted desired
 state under `/CONFIG`, restart history under `/LOGS`, dependency metadata,
 restart backoff, admin-gated controls, and degraded-service diagnostics in
 Terminal, recovery, sysreport, Diagnostics, and System Monitor.
-Phase 80 through Phase 86 add first-boot owner setup, recovery/reset hardening,
-self-booting BIOS/MBR and UEFI/GPT installers, AHCI/SATA storage, and a raw
-USB-flashable UEFI/GPT image. Phase 65 adds a service-aware staged update and rollback path: update manifests
+Phase 80 through Phase 87 add first-boot owner setup, recovery/reset hardening,
+self-booting BIOS/MBR and UEFI/GPT installers, AHCI/SATA storage, a raw
+USB-flashable UEFI/GPT image, and runtime USB mass-storage root boot. Phase 65 adds a service-aware staged update and rollback path: update manifests
 live under `/UPDATES/STAGED`, pre-apply file snapshots live under
 `/UPDATES/SNAPSHOTS/LAST`, `/LOGS/UPDATE.TXT` records stage/apply/rollback
 events, and `update rollback` plus `recovery rollback` can restore the previous
@@ -103,7 +103,8 @@ layout and CoolFS root partition discovery. Phase 84 adds installer planning,
 explicit target confirmation, and graphical progress, while Phase 85 adds a
 parallel QEMU OVMF UEFI/GPT boot and install path with GPT CoolFS root
 discovery. Phase 86 adds QEMU AHCI/SATA storage plus a USB-flashable raw
-UEFI/GPT image. Phases 45-86
+UEFI/GPT image, and Phase 87 boots that image as a runtime USB mass-storage
+root disk. Phases 45-87
 focus on responsiveness,
 interactive terminal behavior, and
 desktop-browser compatibility:
@@ -2580,9 +2581,9 @@ existing BIOS/MBR/IDE developer and installer path.
 **Current status:** complete. coolOS boots live under OVMF, reports
 `FB 1920x1080`, installs to a GPT target on `ide1-master`, verifies ESP and
 CoolFS partitions, and boots that target alone under OVMF into first boot.
-BIOS/MBR remains supported. AHCI/SATA is covered by Phase 86; NVMe, runtime
-USB mass-storage boot, Secure Boot, and physical-machine installs remain later
-work.
+BIOS/MBR remains supported. AHCI/SATA is covered by Phase 86, runtime USB
+mass-storage root boot is covered by Phase 87, and NVMe, Secure Boot, and
+physical-machine installs remain later work.
 
 ---
 
@@ -2610,8 +2611,39 @@ UEFI/GPT image suitable for USB flashing while preserving BIOS/MBR/IDE flows.
 enumerates `sata*` disks, installs to a writable SATA target, verifies the
 UEFI/GPT layout, boots the installed SATA target alone into first boot, and
 boots the generated USB-flashable image through AHCI. Runtime USB mass-storage
-root boot, NVMe, Secure Boot, and physical-machine installation remain out of
-scope for this phase.
+root boot is covered by Phase 87; NVMe, Secure Boot, and physical-machine
+installation remain out of scope for this phase.
+
+---
+
+## ✅ Phase 87 — Runtime USB Mass-Storage Root Boot
+
+**Goal:** Boot the Phase 86 `coolos-usb.img` as a real QEMU xHCI USB
+mass-storage device and discover the GPT CoolFS root on `usb0`.
+
+- [x] Extend the xHCI stack to parse USB Mass Storage Class interfaces
+      (`0x08/0x06/0x50`) and configure bulk IN/OUT endpoints with bounded
+      synchronous transfers.
+- [x] Implement USB MSC Bulk-Only Transport with CBW/CSW handling, SCSI
+      `INQUIRY`, `TEST UNIT READY`, `READ CAPACITY(10)`, `READ(10)`,
+      `WRITE(10)`, `SYNCHRONIZE CACHE(10)`, `REQUEST SENSE`, and basic
+      reset/clear-halt recovery.
+- [x] Add stable `usb0` through `usb7` block-device names and route
+      `device_info`, read, write, and flush operations through the generic
+      storage layer.
+- [x] Reuse existing raw CoolFS, BIOS/MBR `0xc0`, and GPT CoolFS root
+      discovery for USB disks, with boot ordering that can find the root before
+      disk-backed config, font, and app loads.
+- [x] Add `make run-uefi-usb-storage`, `scripts/qemu_smoke.py --usb-storage`,
+      and `make smoke-phase87-usb-storage-root`.
+- [x] Report USB storage in USB status, `devices`, and `install disks`.
+
+**Current status:** complete. QEMU OVMF boots `coolos-usb.img` through
+`qemu-xhci` plus `usb-storage`, xHCI reports `MSC usb0`, the storage layer logs
+`root device=usb0 layout=gpt-coolfs`, and the image reaches the existing
+first-boot flow without IDE or AHCI root disks. UASP, NVMe, Secure Boot,
+broad real-hardware USB variance, and physical-machine installation remain
+future work.
 
 ---
 
@@ -2719,4 +2751,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.45 | Phase 83 complete: self-booting QEMU installed disk |
 | v7.46 | Phase 84 complete: installer v2 disk selection and progress |
 | v7.47 | Phase 85 complete: UEFI/GPT boot and installer foundation |
-| v7.48 | Current — Phase 86 complete: AHCI/SATA storage and USB image foundation |
+| v7.48 | Phase 86 complete: AHCI/SATA storage and USB image foundation |
+| v7.49 | Current — Phase 87 complete: runtime USB mass-storage root boot |

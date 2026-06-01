@@ -83,6 +83,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ahci", action="store_true", help="Attach disks through QEMU AHCI/SATA instead of IDE")
     parser.add_argument("--usb", action="store_true", help="Attach xHCI with USB keyboard and pointer")
     parser.add_argument(
+        "--usb-storage",
+        action="store_true",
+        help="Attach --boot-disk through qemu-xhci usb-storage instead of IDE/AHCI",
+    )
+    parser.add_argument(
         "--usb-pointer",
         choices=("mouse", "tablet"),
         default="mouse",
@@ -235,9 +240,20 @@ def build_command(args: argparse.Namespace, monitor_socket: str | None = None) -
         )
     if args.ahci:
         cmd.extend(["-device", "ich9-ahci,id=ahci"])
+    if args.usb_storage:
+        cmd.extend(["-device", "qemu-xhci,id=xhci"])
     if args.boot_disk:
         boot_snapshot = "" if args.boot_disk_writable else ",snapshot=on"
-        if args.ahci:
+        if args.usb_storage:
+            cmd.extend(
+                [
+                    "-drive",
+                    f"if=none,id=usbstorageboot,file={args.boot_disk},format=raw{boot_snapshot}",
+                    "-device",
+                    "usb-storage,drive=usbstorageboot,bus=xhci.0",
+                ]
+            )
+        elif args.ahci:
             cmd.extend(
                 [
                     "-drive",
@@ -321,16 +337,9 @@ def build_command(args: argparse.Namespace, monitor_socket: str | None = None) -
             if args.usb_pointer == "tablet"
             else "usb-mouse,bus=xhci.0"
         )
-        cmd.extend(
-            [
-                "-device",
-                "qemu-xhci,id=xhci",
-                "-device",
-                "usb-kbd,bus=xhci.0",
-                "-device",
-                pointer_device,
-            ]
-        )
+        if not args.usb_storage:
+            cmd.extend(["-device", "qemu-xhci,id=xhci"])
+        cmd.extend(["-device", "usb-kbd,bus=xhci.0", "-device", pointer_device])
     if args.net:
         cmd.extend(
             [

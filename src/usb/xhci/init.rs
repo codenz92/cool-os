@@ -126,7 +126,7 @@ fn active_init(info: &XhciInfo) -> Result<ActiveState, &'static str> {
         read_u32(info.op_base + OP_USBSTS) & USBSTS_HCH == 0
     })?;
     run_command_ring_noop(info, &mut cmd_ring, &mut event_ring)?;
-    let (port_status, devices) =
+    let (port_status, devices, storage_devices) =
         prime_attached_ports(info, dcbaa_virt, &mut cmd_ring, &mut event_ring);
 
     Ok(ActiveState {
@@ -141,6 +141,7 @@ fn active_init(info: &XhciInfo) -> Result<ActiveState, &'static str> {
         event_ring,
         erst_phys,
         devices,
+        storage_devices,
         poll_count: 0,
         event_count: 0,
         last_runtime_note: String::from("polling ready"),
