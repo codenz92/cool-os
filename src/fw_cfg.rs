@@ -12,6 +12,7 @@ const SMOKE_COMMAND_FILE: &[u8] = b"opt/coolos/smoke";
 const SMOKE_MODE_FILE: &[u8] = b"opt/coolos/smoke-mode";
 const INSTALLER_MODE_FILE: &[u8] = b"opt/coolos/installer";
 const SAFE_MODE_FILE: &[u8] = b"opt/coolos/safe-mode";
+const SECURE_BOOT_FILE: &[u8] = b"opt/coolos/secure-boot";
 const MAX_SMOKE_COMMAND: usize = 256;
 static SMOKE_MODE_CACHE: AtomicU8 = AtomicU8::new(0);
 static INSTALLER_MODE_CACHE: AtomicU8 = AtomicU8::new(0);
@@ -101,6 +102,22 @@ pub fn safe_mode() -> bool {
             .unwrap_or(false);
     SAFE_MODE_CACHE.store(if active { 2 } else { 1 }, Ordering::Relaxed);
     active
+}
+
+pub fn secure_boot_status() -> Option<String> {
+    if !has_qemu_signature() {
+        return None;
+    }
+    let bytes = read_named_file(SECURE_BOOT_FILE)?;
+    let mut value = String::from_utf8(bytes).ok()?;
+    while value.ends_with('\0') || value.ends_with('\n') || value.ends_with('\r') {
+        value.pop();
+    }
+    if value.trim().is_empty() {
+        None
+    } else {
+        Some(value)
+    }
 }
 
 fn read_named_file(name: &[u8]) -> Option<Vec<u8>> {

@@ -67,6 +67,7 @@ fn uefi_main() {
 fn build_uefi_bootloader() -> PathBuf {
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    println!("cargo:rerun-if-env-changed=COOLOS_KERNEL_SHA256");
     let mut cmd = Command::new(cargo);
     cmd.arg("install").arg("bootloader-x86_64-uefi");
     if Path::new("uefi").exists() {
@@ -83,6 +84,10 @@ fn build_uefi_bootloader() -> PathBuf {
     cmd.arg("-Zbuild-std=core")
         .arg("-Zbuild-std-features=compiler-builtins-mem");
     cmd.arg("--root").arg(&out_dir);
+    if let Ok(kernel_sha256) = std::env::var("COOLOS_KERNEL_SHA256") {
+        cmd.arg("--force");
+        cmd.env("COOLOS_KERNEL_SHA256", kernel_sha256);
+    }
     cmd.arg("-vv");
     cmd.env_remove("RUSTFLAGS");
     cmd.env_remove("CARGO_ENCODED_RUSTFLAGS");

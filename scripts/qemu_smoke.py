@@ -25,6 +25,27 @@ def default_uefi_code() -> str:
     return "edk2-x86_64-code.fd"
 
 
+def default_uefi_secure_code() -> str:
+    env_path = os.environ.get("QEMU_EFI_SECURE_CODE")
+    if env_path:
+        return env_path
+    for path in (
+        "/opt/homebrew/share/qemu/edk2-x86_64-secure-code.fd",
+        "/usr/local/share/qemu/edk2-x86_64-secure-code.fd",
+        "/opt/homebrew/Cellar/qemu/10.2.2/share/qemu/edk2-x86_64-secure-code.fd",
+    ):
+        if os.path.exists(path):
+            return path
+    return "edk2-x86_64-secure-code.fd"
+
+
+def default_uefi_vars() -> str:
+    env_path = os.environ.get("QEMU_EFI_SECURE_VARS")
+    if env_path:
+        return env_path
+    return os.path.join(os.getcwd(), "target", "secure-boot", "OVMF_VARS.secboot.fd")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run coolOS under headless QEMU for a short smoke test.")
     parser.add_argument("--bios", help="Path to bios.img")
@@ -47,6 +68,16 @@ def parse_args() -> argparse.Namespace:
         "--uefi-code",
         default=default_uefi_code(),
         help="Path to OVMF/EDK2 x86_64 code firmware; defaults to QEMU_EFI_CODE or Homebrew QEMU",
+    )
+    parser.add_argument(
+        "--uefi-secure",
+        action="store_true",
+        help="Use QEMU OVMF Secure Boot firmware settings and a writable vars store",
+    )
+    parser.add_argument(
+        "--uefi-vars",
+        default=default_uefi_vars(),
+        help="Path to writable OVMF vars image for --uefi-secure",
     )
     parser.add_argument("--target-disk", help="Optional installer target disk image")
     parser.add_argument(
@@ -234,6 +265,10 @@ def parse_args() -> argparse.Namespace:
         help="Expose opt/coolos/safe-mode=1 through QEMU fw_cfg",
     )
     parser.add_argument(
+        "--secure-boot-status",
+        help="Expose opt/coolos/secure-boot status text through QEMU fw_cfg",
+    )
+    parser.add_argument(
         "--interact-after",
         default="[boot] desktop ready",
         help="Output substring to wait for before HMP/input/screendump actions; empty disables the pre-interaction wait",
@@ -258,6 +293,10 @@ def parse_args() -> argparse.Namespace:
         help="Assert the screendump contains an open shell dialog",
     )
     args = parser.parse_args()
+    if args.uefi_secure:
+        args.uefi = True
+        if args.uefi_code == default_uefi_code():
+            args.uefi_code = default_uefi_secure_code()
     if args.boot_disk:
         if args.bios or args.fsimg:
             parser.error("--boot-disk cannot be combined with --bios or --fsimg")
@@ -265,6 +304,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("--bios and --fsimg are required unless --boot-disk is used")
     if args.boot_disk_writable and not args.boot_disk:
         parser.error("--boot-disk-writable requires --boot-disk")
+    if args.uefi_secure and not args.uefi_vars:
+        parser.error("--uefi-secure requires --uefi-vars")
     if args.nvme and not args.boot_disk:
         parser.error("--nvme requires --boot-disk")
     if args.nvme and (args.ahci or args.usb_storage):
@@ -282,6 +323,15 @@ def parse_args() -> argparse.Namespace:
 
 def build_command(args: argparse.Namespace, monitor_socket: str | None = None) -> list[str]:
     cmd = ["qemu-system-x86_64"]
+    if args.uefi_secure:
+        cmd.extend(
+            [
+                "-machine",
+                "q35,smm=on",
+                "-global",
+                "driver=cfi.pflash01,property=secure,value=on",
+            ]
+        )
     if args.uefi:
         cmd.extend(
             [
@@ -289,6 +339,13 @@ def build_command(args: argparse.Namespace, monitor_socket: str | None = None) -
                 f"if=pflash,format=raw,readonly=on,file={args.uefi_code}",
             ]
         )
+        if args.uefi_secure:
+            cmd.extend(
+                [
+                    "-drive",
+                    f"if=pflash,format=raw,file={args.uefi_vars}",
+                ]
+            )
     if args.ahci or args.ahci_target_disk:
         cmd.extend(["-device", "ich9-ahci,id=ahci"])
     needs_xhci = args.usb_storage or args.usb or args.usb_hub or args.usb_uas_disk
@@ -446,6 +503,8 @@ def build_command(args: argparse.Namespace, monitor_socket: str | None = None) -
         cmd.extend(["-fw_cfg", "name=opt/coolos/installer,string=1"])
     if args.safe_mode:
         cmd.extend(["-fw_cfg", "name=opt/coolos/safe-mode,string=1"])
+    if args.secure_boot_status:
+        cmd.extend(["-fw_cfg", f"name=opt/coolos/secure-boot,string={args.secure_boot_status}"])
     if not args.first_boot:
         cmd.extend(["-fw_cfg", "name=opt/coolos/smoke-mode,string=1"])
     return cmd

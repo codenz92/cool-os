@@ -4,7 +4,7 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–90 are complete. Recent milestones give coolOS a much more
+Phases 1–92 are complete. Recent milestones give coolOS a much more
 normal command-line, installer, and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
@@ -38,7 +38,9 @@ USB-flashable UEFI/GPT image, runtime USB mass-storage root boot, and NVMe
 root boot, plus bare-metal USB boot diagnostics and a conservative safe USB
 image fallback, then guarded physical installation from USB to internal
 AHCI/SATA or NVMe disks, and QEMU-covered hardware readiness diagnostics for
-USB hub/UASP classification, root scans, and installer preflight. Phase 65 adds a service-aware staged update and rollback path: update manifests
+USB hub/UASP classification, root scans, and installer preflight, plus a
+Secure Boot foundation with secure OVMF helpers, digest-bound UEFI loader
+handoff verification, and secure USB-image smoke coverage. Phase 65 adds a service-aware staged update and rollback path: update manifests
 live under `/UPDATES/STAGED`, pre-apply file snapshots live under
 `/UPDATES/SNAPSHOTS/LAST`, `/LOGS/UPDATE.TXT` records stage/apply/rollback
 events, and `update rollback` plus `recovery rollback` can restore the previous
@@ -109,7 +111,9 @@ parallel QEMU OVMF UEFI/GPT boot and install path with GPT CoolFS root
 discovery. Phase 86 adds QEMU AHCI/SATA storage plus a USB-flashable raw
 UEFI/GPT image, Phase 87 boots that image as a runtime USB mass-storage
 root disk, Phase 88 boots it from NVMe, Phase 89 adds bare-metal USB
-diagnostics, and Phase 90 adds guarded physical-install simulation. Phases 45-90
+diagnostics, Phase 90 adds guarded physical-install simulation, Phase 91 adds
+hardware-readiness topology diagnostics, and Phase 92 adds Secure Boot
+foundation coverage. Phases 45-92
 focus on responsiveness,
 interactive terminal behavior, and
 desktop-browser compatibility:
@@ -2762,8 +2766,38 @@ the supported BIOS/UEFI/IDE/AHCI/USB/NVMe boot and install formats.
 **Current status:** complete. QEMU coverage now boots the USB image through BOT
 storage while also attaching hub and UASP devices for diagnostics, and the
 physical installer reports a preflight verdict before destructive writes.
-Full downstream hub boot, UASP root boot, Secure Boot, and wider bare-metal
-driver variance remain later work.
+Full downstream hub boot, UASP root boot, production Secure Boot, and wider
+bare-metal driver variance remain later work.
+
+---
+
+## ✅ Phase 92 — Secure Boot Test-Key Foundation
+
+**Goal:** Prove a controlled QEMU Secure Boot firmware path and protect the
+UEFI loader-to-kernel handoff before production PE/COFF signing and
+Microsoft/shim compatibility work.
+
+- [x] Add local Secure Boot artifact generation under `target/secure-boot`,
+      including development PK/KEK/db material and an OVMF vars copy for QEMU.
+- [x] Add `uefi-secure.img` and `coolos-usb-secure.img` alongside the existing
+      unsigned UEFI and USB images.
+- [x] Rebuild the vendored UEFI loader for secure images with the current
+      kernel SHA-256 embedded, and refuse handoff if `kernel-x86_64` does not
+      match.
+- [x] Add secure firmware QEMU helpers:
+      `make build-secure-boot-keys`, `make build-uefi-secure`,
+      `make build-usb-secure-image`, `make run-uefi-secure`,
+      `make run-uefi-usb-storage-secure`, and
+      `make smoke-phase92-secure-boot`.
+- [x] Report `secure_boot ... kernel=verified` in boot logs, `hardware`,
+      `devices`, and `sysreport`.
+
+**Current status:** complete as a Secure Boot foundation. QEMU secure OVMF
+firmware boots the secure USB image, the UEFI loader verifies the kernel digest
+before handoff, and the Phase 92 smoke reaches first boot and diagnostics.
+Full OVMF variable enrollment, PE/COFF Authenticode signing, Microsoft/shim
+compatibility, production key handling, and signed-update integration remain
+later Secure Boot work.
 
 ---
 
@@ -2898,4 +2932,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.50 | Phase 88 complete: NVMe/PCIe storage root boot |
 | v7.51 | Phase 89 complete: bare-metal USB boot readiness |
 | v7.52 | Phase 90 complete: physical disk installer guardrails |
-| v7.53 | Current — Phase 91 complete: bare-metal hardware readiness |
+| v7.53 | Phase 91 complete: bare-metal hardware readiness |
+| v7.54 | Current — Phase 92 complete: Secure Boot test-key foundation |

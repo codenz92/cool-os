@@ -1,13 +1,16 @@
-.PHONY: run run-uefi run-uefi-ahci run-uefi-nvme run-uefi-usb-storage run-uefi-usb-storage-safe run-physical-installer-sim run-installer run-uefi-installer run-uefi-ahci-installer run-uefi-nvme-installer run-installed run-uefi-installed run-uefi-ahci-installed run-uefi-nvme-installed run-net run-usb run-usb-init run-smooth run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-phase31-accounts smoke-phase32-isolation smoke-phase33-process-control smoke-phase34-tty-jobs smoke-phase35-tty-input smoke-phase36-userspace-shell smoke-phase37-coreutils smoke-phase38-apps smoke-phase39-recovery smoke-phase40-shell-semantics smoke-phase41-fs-durability smoke-phase42-app-consistency smoke-phase43-observability smoke-phase44-devkit smoke-phase45-smoothness smoke-phase46-adaptive-refresh smoke-pointer-tablet smoke-phase47-evented-userspace smoke-phase48-terminal-tui smoke-phase49-browser-engine smoke-phase50-css-layout smoke-phase51-browser-forms smoke-phase52-dom-events smoke-phase53-dom-forms smoke-phase54-browser-post smoke-phase55-browser-session smoke-phase56-css-box-model smoke-phase57-browser-layout smoke-phase58-browser-subresources smoke-phase59-browser-js smoke-phase60-browser-webapi smoke-phase61-browser-compat smoke-phase62-resource-limits smoke-phase63-memory-pressure smoke-phase64-services smoke-phase65-update-rollback smoke-phase66-boot-health smoke-phase67-update-trust smoke-phase68-update-keys smoke-phase69-package-trust smoke-phase70-package-payloads smoke-phase71-browser-engine-port smoke-phase72-threads-futex smoke-phase73-tls-pthread smoke-phase74-pthread-libc smoke-phase75-dynlink smoke-phase76-dynlink-deps smoke-phase77-file-mmap smoke-phase80-firstboot reset-firstboot-smoke-image smoke-phase81-firstboot-recovery smoke-phase82-installer smoke-phase83-self-booting-installer smoke-phase84-installer-v2 smoke-phase85-uefi-gpt smoke-phase86-ahci-storage smoke-phase87-usb-storage-root smoke-phase88-nvme-storage smoke-phase89-baremetal-readiness smoke-phase90-physical-installer smoke-phase91-hardware-readiness smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-uefi build-uefi-safe build-usb-image build-usb-safe-image build-usb-init clean
+.PHONY: run run-uefi run-uefi-secure run-uefi-ahci run-uefi-nvme run-uefi-usb-storage run-uefi-usb-storage-secure run-uefi-usb-storage-safe run-physical-installer-sim run-installer run-uefi-installer run-uefi-ahci-installer run-uefi-nvme-installer run-installed run-uefi-installed run-uefi-ahci-installed run-uefi-nvme-installed run-net run-usb run-usb-init run-smooth run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-phase31-accounts smoke-phase32-isolation smoke-phase33-process-control smoke-phase34-tty-jobs smoke-phase35-tty-input smoke-phase36-userspace-shell smoke-phase37-coreutils smoke-phase38-apps smoke-phase39-recovery smoke-phase40-shell-semantics smoke-phase41-fs-durability smoke-phase42-app-consistency smoke-phase43-observability smoke-phase44-devkit smoke-phase45-smoothness smoke-phase46-adaptive-refresh smoke-pointer-tablet smoke-phase47-evented-userspace smoke-phase48-terminal-tui smoke-phase49-browser-engine smoke-phase50-css-layout smoke-phase51-browser-forms smoke-phase52-dom-events smoke-phase53-dom-forms smoke-phase54-browser-post smoke-phase55-browser-session smoke-phase56-css-box-model smoke-phase57-browser-layout smoke-phase58-browser-subresources smoke-phase59-browser-js smoke-phase60-browser-webapi smoke-phase61-browser-compat smoke-phase62-resource-limits smoke-phase63-memory-pressure smoke-phase64-services smoke-phase65-update-rollback smoke-phase66-boot-health smoke-phase67-update-trust smoke-phase68-update-keys smoke-phase69-package-trust smoke-phase70-package-payloads smoke-phase71-browser-engine-port smoke-phase72-threads-futex smoke-phase73-tls-pthread smoke-phase74-pthread-libc smoke-phase75-dynlink smoke-phase76-dynlink-deps smoke-phase77-file-mmap smoke-phase80-firstboot reset-firstboot-smoke-image smoke-phase81-firstboot-recovery smoke-phase82-installer smoke-phase83-self-booting-installer smoke-phase84-installer-v2 smoke-phase85-uefi-gpt smoke-phase86-ahci-storage smoke-phase87-usb-storage-root smoke-phase88-nvme-storage smoke-phase89-baremetal-readiness smoke-phase90-physical-installer smoke-phase91-hardware-readiness smoke-phase92-secure-boot smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-uefi build-uefi-safe build-secure-boot-keys build-uefi-secure build-usb-image build-usb-safe-image build-usb-secure-image build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
 BIOS    := $(CURDIR)/target/x86_64-unknown-none/release/bios.img
 UEFI    := $(CURDIR)/target/x86_64-unknown-none/release/uefi.img
 UEFI_SAFE := $(CURDIR)/target/x86_64-unknown-none/release/uefi-safe.img
+UEFI_SECURE := $(CURDIR)/target/x86_64-unknown-none/release/uefi-secure.img
 FSIMG   := $(CURDIR)/target/x86_64-unknown-none/release/fs.img
 USB_IMAGE := $(CURDIR)/target/x86_64-unknown-none/release/coolos-usb.img
 USB_SAFE_IMAGE := $(CURDIR)/target/x86_64-unknown-none/release/coolos-usb-safe.img
+USB_SECURE_IMAGE := $(CURDIR)/target/x86_64-unknown-none/release/coolos-usb-secure.img
+SECURE_BOOT_DIR ?= $(CURDIR)/target/secure-boot
 USB_IMAGE_SIZE_MIB ?= 96
 USB_SAFE_FB_WIDTH ?= 1024
 USB_SAFE_FB_HEIGHT ?= 768
@@ -19,6 +22,11 @@ QEMU_VNC ?= 127.0.0.1:1
 QEMU_DISPLAY ?= cocoa,zoom-to-fit=on
 QEMU_EFI_CODE ?= $(shell if [ -f /opt/homebrew/share/qemu/edk2-x86_64-code.fd ]; then echo /opt/homebrew/share/qemu/edk2-x86_64-code.fd; elif [ -f /usr/local/share/qemu/edk2-x86_64-code.fd ]; then echo /usr/local/share/qemu/edk2-x86_64-code.fd; else echo edk2-x86_64-code.fd; fi)
 QEMU_UEFI := -drive if=pflash,format=raw,readonly=on,file="$(QEMU_EFI_CODE)"
+QEMU_EFI_SECURE_CODE ?= $(shell if [ -f /opt/homebrew/share/qemu/edk2-x86_64-secure-code.fd ]; then echo /opt/homebrew/share/qemu/edk2-x86_64-secure-code.fd; elif [ -f /usr/local/share/qemu/edk2-x86_64-secure-code.fd ]; then echo /usr/local/share/qemu/edk2-x86_64-secure-code.fd; else echo edk2-x86_64-secure-code.fd; fi)
+QEMU_EFI_VARS_TEMPLATE ?= $(shell if [ -f /opt/homebrew/share/qemu/edk2-i386-vars.fd ]; then echo /opt/homebrew/share/qemu/edk2-i386-vars.fd; elif [ -f /usr/local/share/qemu/edk2-i386-vars.fd ]; then echo /usr/local/share/qemu/edk2-i386-vars.fd; else echo edk2-i386-vars.fd; fi)
+QEMU_EFI_SECURE_VARS ?= $(SECURE_BOOT_DIR)/OVMF_VARS.secboot.fd
+QEMU_SECURE_STATUS ?= mode=qemu-secure-fw loader=digest-bound kernel=verified vars=ovmf-template
+QEMU_UEFI_SECURE := -machine q35,smm=on -global driver=cfi.pflash01,property=secure,value=on -drive if=pflash,format=raw,readonly=on,file="$(QEMU_EFI_SECURE_CODE)" -drive if=pflash,format=raw,file="$(QEMU_EFI_SECURE_VARS)"
 QEMU_POINTER ?= tablet
 ifeq ($(QEMU_POINTER),mouse)
 QEMU_POINTER_DEVICE := usb-mouse,bus=xhci.0
@@ -130,6 +138,24 @@ run-uefi: build-uefi
 		-display "$(QEMU_DISPLAY)" \
 		-debugcon stdio
 
+run-uefi-secure: build-uefi-secure
+	@echo "Booting coolOS in QEMU Secure Boot test-key mode..."
+	qemu-system-x86_64 \
+		$(QEMU_UEFI_SECURE) \
+		-device ich9-ahci,id=ahci \
+		-drive if=none,id=securebootdisk,format=raw,file="$(UEFI_SECURE)",snapshot=on \
+		-device ide-hd,drive=securebootdisk,bus=ahci.0 \
+		-drive if=none,id=securerootdisk,file="$(FSIMG)",format=raw,snapshot=on \
+		-device ide-hd,drive=securerootdisk,bus=ahci.1 \
+		-m 512M \
+		-cpu "$(QEMU_CPU)" \
+		$(QEMU_RTC) \
+		-vga std \
+		$(QEMU_USB_INPUT) \
+		-fw_cfg name=opt/coolos/secure-boot,string="$(QEMU_SECURE_STATUS)" \
+		-display "$(QEMU_DISPLAY)" \
+		-debugcon stdio
+
 run-uefi-ahci: build-uefi
 	@echo "Booting coolOS in QEMU UEFI mode through AHCI/SATA..."
 	qemu-system-x86_64 \
@@ -174,6 +200,23 @@ run-uefi-usb-storage: build-usb-image
 		-vga std \
 		-device usb-kbd,bus=xhci.0 \
 		-device $(QEMU_POINTER_DEVICE) \
+		-display "$(QEMU_DISPLAY)" \
+		-debugcon stdio
+
+run-uefi-usb-storage-secure: build-usb-secure-image
+	@echo "Booting coolOS signed USB image through QEMU Secure Boot test-key mode..."
+	qemu-system-x86_64 \
+		$(QEMU_UEFI_SECURE) \
+		-device qemu-xhci,id=xhci \
+		-drive if=none,id=secureusbdisk,file="$(USB_SECURE_IMAGE)",format=raw \
+		-device usb-storage,drive=secureusbdisk,bus=xhci.0 \
+		-m 512M \
+		-cpu "$(QEMU_CPU)" \
+		$(QEMU_RTC) \
+		-vga std \
+		-device usb-kbd,bus=xhci.0 \
+		-device $(QEMU_POINTER_DEVICE) \
+		-fw_cfg name=opt/coolos/secure-boot,string="$(QEMU_SECURE_STATUS)" \
 		-display "$(QEMU_DISPLAY)" \
 		-debugcon stdio
 
@@ -1833,6 +1876,49 @@ smoke-phase91-hardware-readiness: build-usb-image
 		--expect "[boot] installer ready" \
 		--expect "[boot] desktop ready"
 
+smoke-phase92-secure-boot: build-usb-secure-image
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-firstboot" \
+		--uefi-secure \
+		--uefi-code "$(QEMU_EFI_SECURE_CODE)" \
+		--uefi-vars "$(QEMU_EFI_SECURE_VARS)" \
+		--boot-disk "$(USB_SECURE_IMAGE)" \
+		--usb-storage \
+		--first-boot \
+		--usb \
+		--seconds 120 \
+		--no-auto-login \
+		--expect-framebuffer-login \
+		--secure-boot-status "$(QEMU_SECURE_STATUS)" \
+		--expect "FB 1920x1080" \
+		--expect "[secureboot] $(QEMU_SECURE_STATUS)" \
+		--expect "MSC usb0" \
+		--expect "[storage] root device=usb0 layout=gpt-coolfs" \
+		--expect "[boot] first boot ready" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-diagnostics" \
+		--uefi-secure \
+		--uefi-code "$(QEMU_EFI_SECURE_CODE)" \
+		--uefi-vars "$(QEMU_EFI_SECURE_VARS)" \
+		--boot-disk "$(USB_SECURE_IMAGE)" \
+		--usb-storage \
+		--usb \
+		--seconds 120 \
+		--secure-boot-status "$(QEMU_SECURE_STATUS)" \
+		--fw-cmd "hardware;;sysreport;;flush" \
+		--expect "FB 1920x1080" \
+		--expect "[secureboot] $(QEMU_SECURE_STATUS)" \
+		--expect "secure_boot $(QEMU_SECURE_STATUS)" \
+		--expect "MSC usb0" \
+		--expect "[storage] root device=usb0 layout=gpt-coolfs" \
+		--expect "storage root=usb0 layout=gpt-coolfs" \
+		--expect "SYSREPORT" \
+		--expect "flush: ok" \
+		--expect "[boot] desktop ready"
+
 smoke-phase32-isolation: build
 	python3 $(CURDIR)/scripts/qemu_smoke.py \
 		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
@@ -3384,11 +3470,23 @@ build-uefi: build
 build-uefi-safe: build
 	(cd disk-image && COOLOS_IMAGE_SUFFIX="-safe" COOLOS_FB_WIDTH="$(USB_SAFE_FB_WIDTH)" COOLOS_FB_HEIGHT="$(USB_SAFE_FB_HEIGHT)" cargo run --features uefi --bin disk-image -- "$(KERNEL)")
 
+build-secure-boot-keys:
+	python3 scripts/secure_boot_artifacts.py keys \
+		--out "$(SECURE_BOOT_DIR)" \
+		--vars-template "$(QEMU_EFI_VARS_TEMPLATE)" \
+		--secure-code "$(QEMU_EFI_SECURE_CODE)"
+
+build-uefi-secure: build build-secure-boot-keys
+	(cd disk-image && COOLOS_IMAGE_SUFFIX="-secure" COOLOS_KERNEL_SHA256="$$(python3 ../scripts/secure_boot_artifacts.py kernel-hash "$(KERNEL)")" cargo run --features uefi --bin disk-image -- "$(KERNEL)")
+
 build-usb-image: build-uefi
 	(cd disk-image && cargo run --bin usb_image -- "$(UEFI)" "$(FSIMG)" "$(USB_IMAGE)" "$(USB_IMAGE_SIZE_MIB)")
 
 build-usb-safe-image: build-uefi-safe
 	(cd disk-image && cargo run --bin usb_image -- "$(UEFI_SAFE)" "$(FSIMG)" "$(USB_SAFE_IMAGE)" "$(USB_IMAGE_SIZE_MIB)")
+
+build-usb-secure-image: build-uefi-secure
+	(cd disk-image && cargo run --bin usb_image -- "$(UEFI_SECURE)" "$(FSIMG)" "$(USB_SECURE_IMAGE)" "$(USB_IMAGE_SIZE_MIB)")
 
 build-usb-init: build
 

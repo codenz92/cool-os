@@ -17,7 +17,7 @@ tables.
 
 ---
 
-# Current state — v7.53
+# Current state — v7.54
 
 The kernel boots into a graphical desktop at **1920×1080, 24bpp** via the
 `bootloader 0.11` linear framebuffer on the default BIOS/VBE path and via the
@@ -73,7 +73,12 @@ candidate targets, and installs require explicit target-name confirmation plus
 flush/verify before rebooting the internal disk. Phase 91 hardens bare-metal
 readiness diagnostics with USB hub/UASP classification, detailed root-scan
 reasons, physical-installer preflight verdicts, and QEMU topology smoke
-coverage while keeping BOT USB storage as the supported USB boot path.
+coverage while keeping BOT USB storage as the supported USB boot path. Phase 92
+adds a QEMU Secure Boot firmware path with local development key material,
+`uefi-secure.img`, `coolos-usb-secure.img`, and a digest-bound UEFI loader that
+verifies the kernel before handoff. Full PE/COFF signing with enrolled OVMF
+variables, Microsoft/shim compatibility, and production key management remain
+future work.
 Phase 32
 keeps copied kernel mappings supervisor-only for ring-3 tasks, removes broad
 lazy lower-half page allocation, and turns denied user pointers into task
@@ -913,6 +918,17 @@ covering the live USB source, ESP/root availability, and internal SATA/NVMe
 candidate targets. `make smoke-phase91-hardware-readiness` exercises USB
 topology diagnostics and installer preflight under QEMU.
 
+**Secure Boot test-key foundation (Phase 92).** The repo now builds Secure
+Boot foundation artifacts under `target/secure-boot`, plus `uefi-secure.img`
+and `coolos-usb-secure.img`. Secure images rebuild the vendored UEFI loader
+with the current kernel SHA-256 embedded, and the loader verifies
+`kernel-x86_64` before handing off. `make run-uefi-secure`,
+`make run-uefi-usb-storage-secure`, and `make smoke-phase92-secure-boot` use
+QEMU secure OVMF firmware and report `secure_boot ... kernel=verified` through
+boot logs, `hardware`, and `sysreport`. Full OVMF variable enrollment,
+PE/COFF Authenticode signing, Microsoft/shim compatibility, and production key
+handling remain later Secure Boot work.
+
 **User/kernel isolation hardening (Phase 32).** Process address spaces still
 copy the kernel's upper-half PML4 entries so syscall and interrupt entry can run
 without rebuilding mappings, but those copied entries stay supervisor-only for
@@ -1152,6 +1168,9 @@ internal AHCI/NVMe candidate reporting, `install physical <device>`, `make
 run-physical-installer-sim`, and `make smoke-phase90-physical-installer`.
 Phase 91 adds USB hub/UASP diagnostics, detailed storage root-scan output,
 installer hardware preflight reporting, and `make smoke-phase91-hardware-readiness`.
+Phase 92 adds Secure Boot foundation artifacts, `make build-uefi-secure`,
+`make build-usb-secure-image`, `make run-uefi-secure`,
+`make run-uefi-usb-storage-secure`, and `make smoke-phase92-secure-boot`.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
@@ -1260,5 +1279,6 @@ while kernel faults still panic.
 | 89 | Bare-metal USB boot readiness — hardware diagnostics, safe USB image fallback, and physical-boot troubleshooting docs | **Done** |
 | 90 | Physical disk installer guardrails — USB-source protection, internal SATA/NVMe install targets, and guarded install verification | **Done** |
 | 91 | Bare-metal hardware readiness — USB hub/UASP diagnostics, root-scan reasons, installer preflight, and topology smoke coverage | **Done** |
+| 92 | Secure Boot test-key foundation — secure OVMF helpers, digest-bound UEFI loader, secure USB image, and Phase 92 smoke | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

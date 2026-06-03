@@ -62,6 +62,7 @@ mod resource_limits;
 mod rtc;
 mod scheduler;
 mod search_index;
+mod secure_boot;
 mod security;
 mod selftest;
 mod services;
@@ -209,6 +210,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     let safe_mode = hardware::safe_mode();
     if safe_mode {
         println!("[boot] safe mode");
+    }
+    for line in secure_boot::boot_log_lines() {
+        println!("{}", line);
     }
 
     klog::init();
