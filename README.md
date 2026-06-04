@@ -17,7 +17,7 @@ tables.
 
 ---
 
-# Current state — v7.54
+# Current state — v7.55
 
 The kernel boots into a graphical desktop at **1920×1080, 24bpp** via the
 `bootloader 0.11` linear framebuffer on the default BIOS/VBE path and via the
@@ -76,9 +76,12 @@ reasons, physical-installer preflight verdicts, and QEMU topology smoke
 coverage while keeping BOT USB storage as the supported USB boot path. Phase 92
 adds a QEMU Secure Boot firmware path with local development key material,
 `uefi-secure.img`, `coolos-usb-secure.img`, and a digest-bound UEFI loader that
-verifies the kernel before handoff. Full PE/COFF signing with enrolled OVMF
-variables, Microsoft/shim compatibility, and production key management remain
-future work.
+verifies the kernel before handoff. Phase 93 turns that into an enforced
+QEMU/OVMF local-key chain with enrolled PK/KEK/db variables, a PE/COFF-signed
+`BOOTX64.EFI`, artifact verification, and negative smoke coverage for unsigned
+loaders, tampered signed loaders, and kernel digest mismatches. Microsoft/shim
+compatibility, production key management, signed update rollout, and arbitrary
+real-PC Secure Boot remain future work.
 Phase 32
 keeps copied kernel mappings supervisor-only for ring-3 tasks, removes broad
 lazy lower-half page allocation, and turns denied user pointers into task
@@ -925,9 +928,20 @@ with the current kernel SHA-256 embedded, and the loader verifies
 `kernel-x86_64` before handing off. `make run-uefi-secure`,
 `make run-uefi-usb-storage-secure`, and `make smoke-phase92-secure-boot` use
 QEMU secure OVMF firmware and report `secure_boot ... kernel=verified` through
-boot logs, `hardware`, and `sysreport`. Full OVMF variable enrollment,
-PE/COFF Authenticode signing, Microsoft/shim compatibility, and production key
-handling remain later Secure Boot work.
+boot logs, `hardware`, and `sysreport`.
+
+**Enforced Secure Boot test-key chain (Phase 93).** Secure Boot artifacts now
+include local PK/KEK/db certs, ESL/auth enrollment material, and an enrolled
+writable OVMF vars image with Secure Boot enabled. `make build-uefi-secure`
+signs the vendored UEFI loader as `EFI/BOOT/BOOTX64.EFI` using `sbsign`/`sbverify`
+when available, or `osslsigncode` on macOS. `make verify-secure-boot-artifacts`
+checks the PE/COFF signature plus enrolled vars, and
+`make smoke-phase93-secure-boot` verifies the signed USB boot path reports
+`loader=signed-pe kernel=verified vars=enrolled enforcement=on`. The same smoke
+also confirms OVMF rejects unsigned and tampered loaders, while the signed
+loader rejects a tampered kernel digest before handoff. Generated keys stay
+under `target/secure-boot`; Microsoft/shim compatibility, production keys, and
+signed update rollout remain later work.
 
 **User/kernel isolation hardening (Phase 32).** Process address spaces still
 copy the kernel's upper-half PML4 entries so syscall and interrupt entry can run
@@ -1171,6 +1185,9 @@ installer hardware preflight reporting, and `make smoke-phase91-hardware-readine
 Phase 92 adds Secure Boot foundation artifacts, `make build-uefi-secure`,
 `make build-usb-secure-image`, `make run-uefi-secure`,
 `make run-uefi-usb-storage-secure`, and `make smoke-phase92-secure-boot`.
+Phase 93 adds enforced local-key OVMF variables, PE/COFF loader signing,
+`make verify-secure-boot-artifacts`, `make tamper-secure-boot-artifacts`, and
+`make smoke-phase93-secure-boot`.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
@@ -1280,5 +1297,6 @@ while kernel faults still panic.
 | 90 | Physical disk installer guardrails — USB-source protection, internal SATA/NVMe install targets, and guarded install verification | **Done** |
 | 91 | Bare-metal hardware readiness — USB hub/UASP diagnostics, root-scan reasons, installer preflight, and topology smoke coverage | **Done** |
 | 92 | Secure Boot test-key foundation — secure OVMF helpers, digest-bound UEFI loader, secure USB image, and Phase 92 smoke | **Done** |
+| 93 | Enforced Secure Boot test-key chain — enrolled OVMF vars, signed `BOOTX64.EFI`, artifact verification, and tamper/rejection smoke coverage | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

@@ -68,6 +68,10 @@ fn build_uefi_bootloader() -> PathBuf {
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     println!("cargo:rerun-if-env-changed=COOLOS_KERNEL_SHA256");
+    println!("cargo:rerun-if-env-changed=COOLOS_SIGN_EFI_LOADER");
+    println!("cargo:rerun-if-env-changed=COOLOS_TAMPER_SIGNED_EFI_LOADER");
+    println!("cargo:rerun-if-env-changed=COOLOS_SECURE_BOOT_DIR");
+    println!("cargo:rerun-if-env-changed=COOLOS_SECURE_BOOT_SCRIPT");
     let mut cmd = Command::new(cargo);
     cmd.arg("install").arg("bootloader-x86_64-uefi");
     if Path::new("uefi").exists() {
@@ -100,10 +104,72 @@ fn build_uefi_bootloader() -> PathBuf {
             path.exists(),
             "uefi bootloader executable does not exist after building"
         );
-        path
+        maybe_sign_uefi_bootloader(&path)
     } else {
         panic!("failed to build uefi bootloader");
     }
+}
+
+#[cfg(feature = "uefi")]
+fn secure_boot_enabled_env(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+#[cfg(feature = "uefi")]
+fn maybe_sign_uefi_bootloader(unsigned_path: &Path) -> PathBuf {
+    if !secure_boot_enabled_env("COOLOS_SIGN_EFI_LOADER") {
+        return unsigned_path.to_path_buf();
+    }
+
+    let secure_dir = PathBuf::from(
+        std::env::var("COOLOS_SECURE_BOOT_DIR")
+            .expect("COOLOS_SIGN_EFI_LOADER requires COOLOS_SECURE_BOOT_DIR"),
+    );
+    let script = PathBuf::from(
+        std::env::var("COOLOS_SECURE_BOOT_SCRIPT")
+            .expect("COOLOS_SIGN_EFI_LOADER requires COOLOS_SECURE_BOOT_SCRIPT"),
+    );
+    let image_suffix = std::env::var("COOLOS_IMAGE_SUFFIX").unwrap_or_default();
+    let signed_path = if secure_boot_enabled_env("COOLOS_TAMPER_SIGNED_EFI_LOADER") {
+        secure_dir.join("BOOTX64.EFI.signed-loader-tamper-base")
+    } else if image_suffix == "-secure-kernel-tamper" {
+        secure_dir.join("BOOTX64.EFI.signed-kernel-tamper")
+    } else {
+        secure_dir.join("BOOTX64.EFI.signed")
+    };
+    let status = Command::new("python3")
+        .arg(&script)
+        .arg("sign-loader")
+        .arg("--input")
+        .arg(unsigned_path)
+        .arg("--output")
+        .arg(&signed_path)
+        .arg("--cert")
+        .arg(secure_dir.join("db.crt.pem"))
+        .arg("--key")
+        .arg(secure_dir.join("db.key.pem"))
+        .status()
+        .expect("failed to run secure boot loader signer");
+    assert!(status.success(), "failed to sign UEFI bootloader");
+
+    if secure_boot_enabled_env("COOLOS_TAMPER_SIGNED_EFI_LOADER") {
+        let tampered_path = secure_dir.join("BOOTX64.EFI.signed-loader-tampered");
+        let status = Command::new("python3")
+            .arg(&script)
+            .arg("tamper-loader")
+            .arg("--input")
+            .arg(&signed_path)
+            .arg("--output")
+            .arg(&tampered_path)
+            .status()
+            .expect("failed to run secure boot loader tamper helper");
+        assert!(status.success(), "failed to tamper signed UEFI bootloader");
+        return tampered_path;
+    }
+
+    signed_path
 }
 
 // dummy implementation because docsrs builds have no network access.

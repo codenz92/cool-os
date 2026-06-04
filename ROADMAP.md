@@ -4,7 +4,7 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–92 are complete. Recent milestones give coolOS a much more
+Phases 1–93 are complete. Recent milestones give coolOS a much more
 normal command-line, installer, and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
@@ -40,7 +40,9 @@ image fallback, then guarded physical installation from USB to internal
 AHCI/SATA or NVMe disks, and QEMU-covered hardware readiness diagnostics for
 USB hub/UASP classification, root scans, and installer preflight, plus a
 Secure Boot foundation with secure OVMF helpers, digest-bound UEFI loader
-handoff verification, and secure USB-image smoke coverage. Phase 65 adds a service-aware staged update and rollback path: update manifests
+handoff verification, secure USB-image smoke coverage, and an enforced
+QEMU/OVMF local-key chain with PE/COFF loader signing, enrolled variables, and
+negative tamper checks. Phase 65 adds a service-aware staged update and rollback path: update manifests
 live under `/UPDATES/STAGED`, pre-apply file snapshots live under
 `/UPDATES/SNAPSHOTS/LAST`, `/LOGS/UPDATE.TXT` records stage/apply/rollback
 events, and `update rollback` plus `recovery rollback` can restore the previous
@@ -112,8 +114,9 @@ discovery. Phase 86 adds QEMU AHCI/SATA storage plus a USB-flashable raw
 UEFI/GPT image, Phase 87 boots that image as a runtime USB mass-storage
 root disk, Phase 88 boots it from NVMe, Phase 89 adds bare-metal USB
 diagnostics, Phase 90 adds guarded physical-install simulation, Phase 91 adds
-hardware-readiness topology diagnostics, and Phase 92 adds Secure Boot
-foundation coverage. Phases 45-92
+hardware-readiness topology diagnostics, Phase 92 adds Secure Boot foundation
+coverage, and Phase 93 enforces the QEMU test-key chain with signed loader and
+tamper rejection coverage. Phases 45-93
 focus on responsiveness,
 interactive terminal behavior, and
 desktop-browser compatibility:
@@ -2795,9 +2798,36 @@ Microsoft/shim compatibility work.
 **Current status:** complete as a Secure Boot foundation. QEMU secure OVMF
 firmware boots the secure USB image, the UEFI loader verifies the kernel digest
 before handoff, and the Phase 92 smoke reaches first boot and diagnostics.
-Full OVMF variable enrollment, PE/COFF Authenticode signing, Microsoft/shim
-compatibility, production key handling, and signed-update integration remain
-later Secure Boot work.
+Phase 93 adds enforced OVMF variable enrollment and PE/COFF loader signing.
+Microsoft/shim compatibility, production key handling, and signed-update
+integration remain later Secure Boot work.
+
+---
+
+## ✅ Phase 93 — Enforced Secure Boot Test-Key Chain
+
+**Goal:** Make the QEMU/OVMF Secure Boot path actually enforce local
+development keys while preserving all unsigned BIOS/UEFI/storage flows.
+
+- [x] Generate local PK/KEK/db certs, ESL/auth enrollment material, and an
+      enrolled writable OVMF vars image under `target/secure-boot`.
+- [x] Sign the vendored UEFI loader as `EFI/BOOT/BOOTX64.EFI` during
+      `make build-uefi-secure`, with `sbsign`/`sbverify` preferred and
+      `osslsigncode` supported on macOS.
+- [x] Keep the embedded kernel SHA-256 verification before handoff, and report
+      `loader=signed-pe kernel=verified vars=enrolled enforcement=on` through
+      boot logs, `hardware`, and `sysreport`.
+- [x] Add `make verify-secure-boot-artifacts` and
+      `make tamper-secure-boot-artifacts` for signed-loader/varstore checks and
+      negative-test images.
+- [x] Add `make smoke-phase93-secure-boot` to verify the signed USB path and
+      confirm OVMF rejects unsigned or tampered loaders while the signed loader
+      rejects a kernel digest mismatch.
+
+**Current status:** complete for QEMU/OVMF local test keys. Generated keys stay
+under `target/secure-boot` and are not committed. Microsoft CA/shim/MOK,
+production key management, signed update rollout, and arbitrary real-PC Secure
+Boot remain later phases.
 
 ---
 
@@ -2933,4 +2963,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.51 | Phase 89 complete: bare-metal USB boot readiness |
 | v7.52 | Phase 90 complete: physical disk installer guardrails |
 | v7.53 | Phase 91 complete: bare-metal hardware readiness |
-| v7.54 | Current — Phase 92 complete: Secure Boot test-key foundation |
+| v7.54 | Phase 92 complete: Secure Boot test-key foundation |
+| v7.55 | Current — Phase 93 complete: enforced Secure Boot test-key chain |
