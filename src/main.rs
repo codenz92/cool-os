@@ -204,6 +204,10 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     vmm::init(phys_mem_offset, vmm_frame_allocator);
     vmm::harden_boot_mappings();
     storage::init();
+    secure_boot::init_from_boot_info(
+        boot_info.ramdisk_addr.as_ref().copied(),
+        boot_info.ramdisk_len,
+    );
     if fw_cfg::safe_mode() {
         hardware::enable_safe_mode();
     }

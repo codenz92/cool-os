@@ -4,7 +4,7 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–93 are complete. Recent milestones give coolOS a much more
+Phases 1–94 are complete. Recent milestones give coolOS a much more
 normal command-line, installer, and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
@@ -115,8 +115,9 @@ UEFI/GPT image, Phase 87 boots that image as a runtime USB mass-storage
 root disk, Phase 88 boots it from NVMe, Phase 89 adds bare-metal USB
 diagnostics, Phase 90 adds guarded physical-install simulation, Phase 91 adds
 hardware-readiness topology diagnostics, Phase 92 adds Secure Boot foundation
-coverage, and Phase 93 enforces the QEMU test-key chain with signed loader and
-tamper rejection coverage. Phases 45-93
+coverage, Phase 93 enforces the QEMU test-key chain with signed loader and
+tamper rejection coverage, and Phase 94 adds real-PC custom-key enrollment
+artifacts plus loader-to-kernel firmware Secure Boot diagnostics. Phases 45-94
 focus on responsiveness,
 interactive terminal behavior, and
 desktop-browser compatibility:
@@ -2831,6 +2832,36 @@ Boot remain later phases.
 
 ---
 
+## ✅ Phase 94 — Real-PC Secure Boot Enrollment And Diagnostics
+
+**Goal:** Make the Phase 93 signed USB path usable on real UEFI PCs that
+support custom Secure Boot key enrollment, while keeping Microsoft/shim
+production compatibility out of scope.
+
+- [x] Generate a public enrollment bundle under `target/secure-boot/enroll/`
+      with DER certs, ESL/auth files, fingerprints, `SHA256SUMS`, and
+      firmware-enrollment instructions.
+- [x] Verify private key material stays out of the enrollment bundle and fail
+      artifact verification if `.key.pem`/private material is copied there.
+- [x] Embed the enrollment bundle into `coolos-usb-secure.img` at
+      `/EFI/COOLOS/ENROLL/`, plus `/EFI/COOLOS/SECUREBOOT.TXT` with loader,
+      db-cert, kernel, and image-mode fingerprints.
+- [x] Have the signed UEFI loader query `SecureBoot` and `SetupMode`, keep the
+      digest-bound kernel verification, and pass a private
+      `COOLOS_BOOT_STATUS v1` payload to the kernel when no real ramdisk is
+      present.
+- [x] Update Secure Boot diagnostics so `hardware`, `devices`, `sysreport`,
+      and boot logs distinguish QEMU fw_cfg enforcement, firmware Secure Boot,
+      setup mode, signed loader, verified kernel, and unknown/unsigned boots.
+- [x] Add `make build-secure-boot-enrollment` and
+      `make smoke-phase94-secure-boot-enrollment`.
+
+**Current status:** complete for user-enrolled firmware keys. Real PCs should
+use firmware custom Secure Boot enrollment for `db.cer`/`db.esl`; Microsoft CA,
+shim/MOK, production signing, and signed update rollout remain later phases.
+
+---
+
 ## Maintenance — Codebase Navigation Cleanup
 
 **Goal:** Keep the source tree easy to scan while avoiding broad behavior
@@ -2964,4 +2995,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.52 | Phase 90 complete: physical disk installer guardrails |
 | v7.53 | Phase 91 complete: bare-metal hardware readiness |
 | v7.54 | Phase 92 complete: Secure Boot test-key foundation |
-| v7.55 | Current — Phase 93 complete: enforced Secure Boot test-key chain |
+| v7.55 | Phase 93 complete: enforced Secure Boot test-key chain |
+| v7.56 | Current — Phase 94 complete: real-PC Secure Boot enrollment and diagnostics |

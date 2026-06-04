@@ -32,6 +32,7 @@ use uefi::{
     table::boot::{
         AllocateType, MemoryType, OpenProtocolAttributes, OpenProtocolParams, ScopedProtocol,
     },
+    table::runtime::VariableVendor,
     CStr16, CStr8,
 };
 use x86_64::{
@@ -42,6 +43,7 @@ use x86_64::{
 mod memory_descriptor;
 
 const SECURE_KERNEL_SHA256_HEX: Option<&str> = option_env!("COOLOS_KERNEL_SHA256");
+const BOOT_STATUS_MAGIC: &[u8] = b"COOLOS_BOOT_STATUS v1\n";
 
 static SYSTEM_TABLE: RacyCell<Option<SystemTable<Boot>>> = RacyCell::new(None);
 
@@ -137,6 +139,11 @@ fn main_inner(image: Handle, mut st: SystemTable<Boot>) -> Status {
             None => "Ramdisk not found.",
         }
     );
+    let secure_boot_status = if ramdisk.is_none() {
+        build_secure_boot_status_payload(&mut st)
+    } else {
+        None
+    };
 
     log::trace!("exiting boot services");
     let (system_table, mut memory_map) = st.exit_boot_services();
@@ -152,6 +159,9 @@ fn main_inner(image: Handle, mut st: SystemTable<Boot>) -> Status {
     let ramdisk_addr = if let Some(rd) = ramdisk {
         ramdisk_len = rd.len() as u64;
         Some(rd.as_ptr() as usize as u64)
+    } else if let Some(status) = secure_boot_status {
+        ramdisk_len = status.len() as u64;
+        Some(status.as_ptr() as usize as u64)
     } else {
         None
     };
@@ -222,6 +232,68 @@ fn verify_kernel_digest(kernel: &[u8]) {
     if actual != expected {
         panic!("coolOS secure boot kernel verification failed");
     }
+}
+
+fn build_secure_boot_status_payload(st: &mut SystemTable<Boot>) -> Option<&'static mut [u8]> {
+    SECURE_KERNEL_SHA256_HEX?;
+
+    let secure_boot = read_global_bool(st, "SecureBoot").unwrap_or(false);
+    let setup_mode = read_global_bool(st, "SetupMode").unwrap_or(true);
+    let mode = if setup_mode {
+        "firmware-setup-mode"
+    } else if secure_boot {
+        "firmware-secureboot-on"
+    } else {
+        "firmware-secureboot-off"
+    };
+    let setup = if setup_mode { "on" } else { "off" };
+    let enforcement = if secure_boot && !setup_mode { "on" } else { "off" };
+    let kernel = if SECURE_KERNEL_SHA256_HEX.is_some() {
+        "verified"
+    } else {
+        "unchecked"
+    };
+
+    let mut payload = [0u8; 256];
+    let mut len = 0usize;
+    append_ascii(&mut payload, &mut len, BOOT_STATUS_MAGIC);
+    append_ascii(&mut payload, &mut len, b"mode=");
+    append_ascii(&mut payload, &mut len, mode.as_bytes());
+    append_ascii(&mut payload, &mut len, b" loader=signed-pe kernel=");
+    append_ascii(&mut payload, &mut len, kernel.as_bytes());
+    append_ascii(&mut payload, &mut len, b" setup_mode=");
+    append_ascii(&mut payload, &mut len, setup.as_bytes());
+    append_ascii(&mut payload, &mut len, b" enforcement=");
+    append_ascii(&mut payload, &mut len, enforcement.as_bytes());
+    append_ascii(&mut payload, &mut len, b"\n");
+
+    let ptr = st
+        .boot_services()
+        .allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, 1)
+        .ok()? as *mut u8;
+    unsafe {
+        ptr::write_bytes(ptr, 0, 4096);
+        ptr::copy_nonoverlapping(payload.as_ptr(), ptr, len);
+        Some(slice::from_raw_parts_mut(ptr, len))
+    }
+}
+
+fn append_ascii(out: &mut [u8], len: &mut usize, bytes: &[u8]) {
+    let remaining = out.len().saturating_sub(*len);
+    let copy_len = remaining.min(bytes.len());
+    out[*len..*len + copy_len].copy_from_slice(&bytes[..copy_len]);
+    *len += copy_len;
+}
+
+fn read_global_bool(st: &mut SystemTable<Boot>, name: &str) -> Option<bool> {
+    let mut name_buf = [0u16; 32];
+    let name = CStr16::from_str_with_buf(name, &mut name_buf).ok()?;
+    let mut data = [0u8; 1];
+    let (value, _) = st
+        .runtime_services()
+        .get_variable(name, &VariableVendor::GLOBAL_VARIABLE, &mut data)
+        .ok()?;
+    value.first().map(|byte| *byte != 0)
 }
 
 fn parse_sha256_hex(value: &str) -> Option<[u8; 32]> {

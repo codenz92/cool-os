@@ -9,6 +9,22 @@ import sys
 from pathlib import Path
 
 OWNER_GUID = "c001c0de-93c0-4f6a-9a3d-434f4f4c4653"
+ENROLL_REQUIRED_FILES = (
+    "PK.cer",
+    "KEK.cer",
+    "db.cer",
+    "PK.esl",
+    "KEK.esl",
+    "db.esl",
+    "auth/PK.auth",
+    "auth/KEK.auth",
+    "auth/db.auth",
+    "auth/dbx.auth",
+    "FINGERPRINTS.TXT",
+    "README.TXT",
+    "SECUREBOOT.TXT",
+    "SHA256SUMS",
+)
 
 
 def find_tool(name: str) -> str | None:
@@ -114,6 +130,10 @@ def kernel_hash(path: Path) -> None:
     print(hashlib.sha256(data).hexdigest())
 
 
+def sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def ensure_cert(out_dir: Path, name: str) -> None:
     key = out_dir / f"{name}.key.pem"
     cert = out_dir / f"{name}.crt.pem"
@@ -141,6 +161,36 @@ def ensure_cert(out_dir: Path, name: str) -> None:
         ],
         check=True,
     )
+
+
+def write_der_cert(src_pem: Path, dst_der: Path) -> None:
+    subprocess.run(
+        [
+            require_tool("openssl"),
+            "x509",
+            "-in",
+            str(src_pem),
+            "-outform",
+            "DER",
+            "-out",
+            str(dst_der),
+        ],
+        check=True,
+    )
+
+
+def cert_fingerprint(cert_pem: Path) -> str:
+    der = subprocess.check_output(
+        [
+            require_tool("openssl"),
+            "x509",
+            "-in",
+            str(cert_pem),
+            "-outform",
+            "DER",
+        ]
+    )
+    return hashlib.sha256(der).hexdigest()
 
 
 def write_sigdb(pydeps_path: str, out_dir: Path, name: str, cert: Path) -> None:
@@ -240,11 +290,96 @@ def build_keys(args: argparse.Namespace) -> None:
                 "loader_integrity=pe-coff-authenticode",
                 "kernel_integrity=sha256-embedded",
                 "enforcement=ovmf-secure-boot",
+                "enrollment=build-secure-boot-enrollment",
                 "",
             ]
         )
     )
     print(status)
+
+
+def build_enrollment(args: argparse.Namespace) -> None:
+    out_dir = args.dir
+    enroll = out_dir / "enroll"
+    auth_src = out_dir / "auth"
+    if not args.loader.exists():
+        raise SystemExit(f"signed loader not found: {args.loader}")
+    if not auth_src.exists():
+        raise SystemExit(f"auth directory not found: {auth_src}")
+
+    enroll.mkdir(parents=True, exist_ok=True)
+    enroll_auth = enroll / "auth"
+    enroll_auth.mkdir(parents=True, exist_ok=True)
+
+    for name in ("PK", "KEK", "db"):
+        cert = out_dir / f"{name}.crt.pem"
+        esl = out_dir / f"{name}.esl"
+        if not cert.exists():
+            raise SystemExit(f"missing certificate: {cert}")
+        if not esl.exists():
+            raise SystemExit(f"missing ESL: {esl}")
+        write_der_cert(cert, enroll / f"{name}.cer")
+        shutil.copy2(esl, enroll / f"{name}.esl")
+
+    for auth_name in ("PK.auth", "KEK.auth", "db.auth", "dbx.auth"):
+        src = auth_src / auth_name
+        if not src.exists():
+            raise SystemExit(f"missing auth file: {src}")
+        shutil.copy2(src, enroll_auth / auth_name)
+
+    pk_fp = cert_fingerprint(out_dir / "PK.crt.pem")
+    kek_fp = cert_fingerprint(out_dir / "KEK.crt.pem")
+    db_fp = cert_fingerprint(out_dir / "db.crt.pem")
+    loader_fp = sha256_file(args.loader)
+    manifest = "\n".join(
+        [
+            "coolOS Secure Boot manifest",
+            "phase=94",
+            f"image_build_mode={args.image_mode}",
+            f"signed_loader_sha256={loader_fp}",
+            f"db_cert_sha256={db_fp}",
+            f"kernel_sha256={args.kernel_hash}",
+            "enrollment=user-firmware-db",
+            "",
+        ]
+    )
+    (enroll / "SECUREBOOT.TXT").write_text(manifest)
+
+    fingerprints = "\n".join(
+        [
+            "coolOS Phase 94 Secure Boot enrollment fingerprints",
+            f"PK.cer sha256={pk_fp}",
+            f"KEK.cer sha256={kek_fp}",
+            f"db.cer sha256={db_fp}",
+            f"BOOTX64.EFI.signed sha256={loader_fp}",
+            f"kernel-x86_64 sha256={args.kernel_hash}",
+            "",
+        ]
+    )
+    (enroll / "FINGERPRINTS.TXT").write_text(fingerprints)
+
+    readme = "\n".join(
+        [
+            "coolOS Secure Boot enrollment bundle",
+            "",
+            "Use this bundle only on firmware that supports custom Secure Boot key enrollment.",
+            "Enroll db.cer or db.esl through your firmware UI, then boot coolos-usb-secure.img.",
+            "PK/KEK material is included for QEMU/test-key workflows; real firmware usually only needs db.",
+            "",
+            "Private keys are intentionally excluded from this directory.",
+            "Secure Boot must be enabled after enrollment. Microsoft CA/shim/MOK is not used in Phase 94.",
+            "",
+            "Expected diagnostics after boot:",
+            "  hardware",
+            "  sysreport",
+            "",
+        ]
+    )
+    (enroll / "README.TXT").write_text(readme)
+
+    assert_no_private_keys(enroll)
+    write_sha256sums(enroll)
+    print(enroll)
 
 
 def sign_loader(args: argparse.Namespace) -> None:
@@ -338,7 +473,92 @@ def verify_artifacts(args: argparse.Namespace) -> None:
     missing = [item for item in required if item not in output]
     if missing:
         raise SystemExit("Secure Boot varstore missing expected entries: " + ", ".join(missing))
+    if args.enroll:
+        verify_enrollment(args.enroll, args.loader, args.kernel_hash)
+    if args.usb_image:
+        verify_usb_image(args.usb_image)
     print("secure boot artifacts verified")
+
+
+def assert_no_private_keys(enroll: Path) -> None:
+    leaked = []
+    for path in enroll.rglob("*"):
+        if not path.is_file():
+            continue
+        name = path.name.lower()
+        if name.endswith(".pem") or ".key" in name:
+            leaked.append(str(path.relative_to(enroll)))
+    if leaked:
+        raise SystemExit("private key material must not be in enrollment bundle: " + ", ".join(leaked))
+
+
+def write_sha256sums(enroll: Path) -> None:
+    entries = []
+    for path in sorted(enroll.rglob("*")):
+        if not path.is_file() or path.name == "SHA256SUMS":
+            continue
+        rel = path.relative_to(enroll).as_posix()
+        entries.append(f"{sha256_file(path)}  {rel}")
+    (enroll / "SHA256SUMS").write_text("\n".join(entries) + "\n")
+
+
+def verify_sha256sums(enroll: Path) -> None:
+    sums = enroll / "SHA256SUMS"
+    if not sums.exists():
+        raise SystemExit(f"missing enrollment SHA256SUMS: {sums}")
+    for line in sums.read_text().splitlines():
+        if not line.strip():
+            continue
+        parts = line.split()
+        if len(parts) != 2:
+            raise SystemExit(f"malformed SHA256SUMS line: {line}")
+        expected, rel = parts
+        path = enroll / rel
+        if not path.exists():
+            raise SystemExit(f"SHA256SUMS references missing file: {rel}")
+        actual = sha256_file(path)
+        if actual != expected:
+            raise SystemExit(f"SHA256SUMS mismatch for {rel}: {actual} != {expected}")
+
+
+def verify_enrollment(enroll: Path, loader: Path, kernel_hash_value: str | None) -> None:
+    if not enroll.exists():
+        raise SystemExit(f"enrollment bundle not found: {enroll}")
+    assert_no_private_keys(enroll)
+    missing = [name for name in ENROLL_REQUIRED_FILES if not (enroll / name).exists()]
+    if missing:
+        raise SystemExit("enrollment bundle missing expected files: " + ", ".join(missing))
+    verify_sha256sums(enroll)
+
+    manifest = (enroll / "SECUREBOOT.TXT").read_text()
+    loader_fp = sha256_file(loader)
+    if f"signed_loader_sha256={loader_fp}" not in manifest:
+        raise SystemExit("enrollment manifest signed-loader fingerprint does not match")
+    db_fp = hashlib.sha256((enroll / "db.cer").read_bytes()).hexdigest()
+    if f"db_cert_sha256={db_fp}" not in manifest:
+        raise SystemExit("enrollment manifest db fingerprint does not match")
+    if kernel_hash_value and f"kernel_sha256={kernel_hash_value}" not in manifest:
+        raise SystemExit("enrollment manifest kernel hash does not match")
+
+
+def verify_usb_image(image: Path) -> None:
+    if not image.exists():
+        raise SystemExit(f"secure USB image not found: {image}")
+    data = image.read_bytes()
+    required = [
+        b"coolOS Secure Boot enrollment bundle",
+        b"coolOS Secure Boot manifest",
+        b"db_cert_sha256=",
+        b"signed_loader_sha256=",
+        b"kernel_sha256=",
+    ]
+    missing = [needle.decode("ascii") for needle in required if needle not in data]
+    if missing:
+        raise SystemExit("secure USB image missing embedded enrollment data: " + ", ".join(missing))
+    forbidden = [b"BEGIN PRIVATE KEY", b"BEGIN RSA PRIVATE KEY", b".key.pem"]
+    leaked = [needle.decode("ascii") for needle in forbidden if needle in data]
+    if leaked:
+        raise SystemExit("secure USB image contains private key material: " + ", ".join(leaked))
 
 
 def tamper_loader(args: argparse.Namespace) -> None:
@@ -375,11 +595,20 @@ def main() -> None:
     verify_parser.add_argument("--dir", type=Path, required=True)
     verify_parser.add_argument("--loader", type=Path, required=True)
     verify_parser.add_argument("--vars", type=Path, required=True)
+    verify_parser.add_argument("--enroll", type=Path)
+    verify_parser.add_argument("--usb-image", type=Path)
+    verify_parser.add_argument("--kernel-hash")
     verify_parser.add_argument("--pydeps", type=Path)
 
     tamper_parser = sub.add_parser("tamper-loader", help="flip a byte in a signed UEFI loader")
     tamper_parser.add_argument("--input", type=Path, required=True)
     tamper_parser.add_argument("--output", type=Path, required=True)
+
+    enroll_parser = sub.add_parser("enrollment", help="build public firmware enrollment bundle")
+    enroll_parser.add_argument("--dir", type=Path, required=True)
+    enroll_parser.add_argument("--loader", type=Path, required=True)
+    enroll_parser.add_argument("--kernel-hash", required=True)
+    enroll_parser.add_argument("--image-mode", default="secure-usb-user-enrolled-db")
 
     args = parser.parse_args()
     if args.cmd == "kernel-hash":
@@ -392,6 +621,8 @@ def main() -> None:
         verify_artifacts(args)
     elif args.cmd == "tamper-loader":
         tamper_loader(args)
+    elif args.cmd == "enrollment":
+        build_enrollment(args)
 
 
 if __name__ == "__main__":

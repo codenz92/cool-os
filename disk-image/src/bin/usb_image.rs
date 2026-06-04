@@ -2,7 +2,7 @@ use std::{
     env,
     fs::OpenOptions,
     io::{Read, Seek, SeekFrom, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 const SECTOR_SIZE: usize = 512;
@@ -41,13 +41,18 @@ struct Partition {
 
 fn main() {
     let mut args = env::args().skip(1);
-    let uefi = PathBuf::from(args.next().expect("usage: usb-image <uefi.img> <fs.img> <out.img> [size_mib]"));
-    let fs = PathBuf::from(args.next().expect("usage: usb-image <uefi.img> <fs.img> <out.img> [size_mib]"));
-    let out = PathBuf::from(args.next().expect("usage: usb-image <uefi.img> <fs.img> <out.img> [size_mib]"));
+    let usage = "usage: usb-image <uefi.img> <fs.img> <out.img> [size_mib] [secure_boot_enroll_dir]";
+    let uefi = PathBuf::from(args.next().expect(usage));
+    let fs = PathBuf::from(args.next().expect(usage));
+    let out = PathBuf::from(args.next().expect(usage));
     let size_mib = args
         .next()
         .map(|value| value.parse::<u64>().expect("size_mib must be an integer"))
         .unwrap_or(DEFAULT_SIZE_MIB);
+    let enroll_dir = args
+        .next()
+        .map(PathBuf::from)
+        .or_else(|| env::var("COOLOS_SECURE_BOOT_ENROLL_DIR").ok().map(PathBuf::from));
 
     let esp = find_esp(&uefi).expect("source uefi.img has no readable ESP GPT partition");
     let fs_len = std::fs::metadata(&fs).expect("fs.img metadata failed").len();
@@ -78,6 +83,11 @@ fn main() {
 
     copy_sectors(&uefi, &mut out_file, esp.start, esp.start, esp.end - esp.start + 1)
         .expect("copy ESP failed");
+    let mut enroll_files = 0usize;
+    if let Some(enroll_dir) = enroll_dir.as_deref() {
+        enroll_files = embed_secure_boot_enrollment(&out, esp, enroll_dir)
+            .expect("embed Secure Boot enrollment bundle failed");
+    }
     copy_file_to_lba(&fs, &mut out_file, root_start).expect("copy CoolFS failed");
     write_gpt(
         &mut out_file,
@@ -92,13 +102,14 @@ fn main() {
     .expect("write GPT failed");
 
     println!(
-        "{} size_mib={} esp_lba={} esp_sectors={} root_lba={} root_sectors={}",
+        "{} size_mib={} esp_lba={} esp_sectors={} root_lba={} root_sectors={} secure_boot_enroll_files={}",
         out.display(),
         size_mib,
         esp.start,
         esp.end - esp.start + 1,
         root_start,
-        root_sectors
+        root_sectors,
+        enroll_files
     );
 }
 
@@ -164,6 +175,62 @@ fn copy_file_to_lba(src: &PathBuf, out: &mut std::fs::File, dst_lba: u64) -> std
     Ok(())
 }
 
+fn embed_secure_boot_enrollment(
+    out: &Path,
+    esp: Partition,
+    enroll_dir: &Path,
+) -> std::io::Result<usize> {
+    if !enroll_dir.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("Secure Boot enrollment directory not found: {}", enroll_dir.display()),
+        ));
+    }
+    let esp_file = OpenOptions::new().read(true).write(true).open(out)?;
+    let esp_base = esp.start * SECTOR_SIZE as u64;
+    let esp_len = (esp.end - esp.start + 1) * SECTOR_SIZE as u64;
+    let region = RegionFile::new(esp_file, esp_base, esp_len);
+    let fs = fatfs::FileSystem::new(region, fatfs::FsOptions::new())?;
+    let root = fs.root_dir();
+    let efi = root.create_dir("EFI")?;
+    let coolos = efi.create_dir("COOLOS")?;
+    let target = coolos.create_dir("ENROLL")?;
+    let count = copy_dir_to_fat(enroll_dir, &target)?;
+    let manifest = enroll_dir.join("SECUREBOOT.TXT");
+    if manifest.exists() {
+        write_fat_file(&coolos, "SECUREBOOT.TXT", &std::fs::read(manifest)?)?;
+    }
+    Ok(count)
+}
+
+fn copy_dir_to_fat(src: &Path, dst: &fatfs::Dir<'_, RegionFile>) -> std::io::Result<usize> {
+    let mut copied = 0usize;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if path.is_dir() {
+            let child = dst.create_dir(&name)?;
+            copied += copy_dir_to_fat(&path, &child)?;
+        } else if path.is_file() {
+            write_fat_file(dst, &name, &std::fs::read(&path)?)?;
+            copied += 1;
+        }
+    }
+    Ok(copied)
+}
+
+fn write_fat_file(
+    dir: &fatfs::Dir<'_, RegionFile>,
+    name: &str,
+    bytes: &[u8],
+) -> std::io::Result<()> {
+    let mut file = dir.create_file(name)?;
+    file.truncate()?;
+    file.write_all(bytes)
+}
+
 fn write_gpt(
     out: &mut std::fs::File,
     target_sectors: u64,
@@ -225,6 +292,78 @@ fn write_gpt(
     );
     write_sector(out, backup_header_lba, &backup_header)?;
     out.flush()
+}
+
+struct RegionFile {
+    file: std::fs::File,
+    base: u64,
+    len: u64,
+    pos: u64,
+}
+
+impl RegionFile {
+    fn new(file: std::fs::File, base: u64, len: u64) -> Self {
+        Self {
+            file,
+            base,
+            len,
+            pos: 0,
+        }
+    }
+}
+
+impl Read for RegionFile {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.pos >= self.len || buf.is_empty() {
+            return Ok(0);
+        }
+        let max_len = (self.len - self.pos).min(buf.len() as u64) as usize;
+        self.file.seek(SeekFrom::Start(self.base + self.pos))?;
+        let read = self.file.read(&mut buf[..max_len])?;
+        self.pos += read as u64;
+        Ok(read)
+    }
+}
+
+impl Write for RegionFile {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        if self.pos >= self.len {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                "region write past end",
+            ));
+        }
+        let max_len = (self.len - self.pos).min(buf.len() as u64) as usize;
+        self.file.seek(SeekFrom::Start(self.base + self.pos))?;
+        let written = self.file.write(&buf[..max_len])?;
+        self.pos += written as u64;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
+}
+
+impl Seek for RegionFile {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        let next = match pos {
+            SeekFrom::Start(offset) => offset as i128,
+            SeekFrom::End(offset) => self.len as i128 + offset as i128,
+            SeekFrom::Current(offset) => self.pos as i128 + offset as i128,
+        };
+        if next < 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "negative region seek",
+            ));
+        }
+        self.pos = next as u64;
+        Ok(self.pos)
+    }
 }
 
 fn write_protective_mbr(sector: &mut [u8; SECTOR_SIZE], total_sectors: u64) {

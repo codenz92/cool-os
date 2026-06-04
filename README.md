@@ -79,9 +79,14 @@ adds a QEMU Secure Boot firmware path with local development key material,
 verifies the kernel before handoff. Phase 93 turns that into an enforced
 QEMU/OVMF local-key chain with enrolled PK/KEK/db variables, a PE/COFF-signed
 `BOOTX64.EFI`, artifact verification, and negative smoke coverage for unsigned
-loaders, tampered signed loaders, and kernel digest mismatches. Microsoft/shim
-compatibility, production key management, signed update rollout, and arbitrary
-real-PC Secure Boot remain future work.
+loaders, tampered signed loaders, and kernel digest mismatches. Phase 94 makes
+that secure USB path usable on real UEFI PCs that allow custom key enrollment:
+`target/secure-boot/enroll/` contains public DER certs, ESL/auth files,
+fingerprints, checksums, and firmware-enrollment instructions, and
+`coolos-usb-secure.img` embeds the same bundle under `/EFI/COOLOS/ENROLL/`
+plus `/EFI/COOLOS/SECUREBOOT.TXT`. Microsoft/shim compatibility, production
+key management, signed update rollout, and arbitrary real-PC Secure Boot
+remain future work.
 Phase 32
 keeps copied kernel mappings supervisor-only for ring-3 tasks, removes broad
 lazy lower-half page allocation, and turns denied user pointers into task
@@ -943,6 +948,19 @@ loader rejects a tampered kernel digest before handoff. Generated keys stay
 under `target/secure-boot`; Microsoft/shim compatibility, production keys, and
 signed update rollout remain later work.
 
+**Real-PC Secure Boot enrollment diagnostics (Phase 94).** `make
+build-secure-boot-enrollment` creates a public enrollment bundle under
+`target/secure-boot/enroll/` with DER certs, ESL/auth files, fingerprints,
+`SHA256SUMS`, and `README.TXT`; verification fails if private key material is
+copied there. `make build-usb-secure-image` embeds that bundle into the secure
+USB ESP at `/EFI/COOLOS/ENROLL/` and writes `/EFI/COOLOS/SECUREBOOT.TXT` with
+the signed-loader fingerprint, db cert fingerprint, kernel SHA-256, and build
+mode. The signed UEFI loader reports firmware `SecureBoot`/`SetupMode` state to
+the kernel, so `hardware` and `sysreport` can distinguish QEMU-enforced,
+firmware-secureboot-on, firmware-setup-mode, signed-loader, kernel-verified,
+and unknown/unsigned boots. `make smoke-phase94-secure-boot-enrollment`
+validates the embedded ESP bundle and diagnostics under QEMU OVMF.
+
 **User/kernel isolation hardening (Phase 32).** Process address spaces still
 copy the kernel's upper-half PML4 entries so syscall and interrupt entry can run
 without rebuilding mappings, but those copied entries stay supervisor-only for
@@ -1187,7 +1205,10 @@ Phase 92 adds Secure Boot foundation artifacts, `make build-uefi-secure`,
 `make run-uefi-usb-storage-secure`, and `make smoke-phase92-secure-boot`.
 Phase 93 adds enforced local-key OVMF variables, PE/COFF loader signing,
 `make verify-secure-boot-artifacts`, `make tamper-secure-boot-artifacts`, and
-`make smoke-phase93-secure-boot`.
+`make smoke-phase93-secure-boot`. Phase 94 adds
+`make build-secure-boot-enrollment`, embeds public enrollment material into
+`coolos-usb-secure.img`, passes firmware Secure Boot state from the loader to
+the kernel, and adds `make smoke-phase94-secure-boot-enrollment`.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
@@ -1298,5 +1319,6 @@ while kernel faults still panic.
 | 91 | Bare-metal hardware readiness — USB hub/UASP diagnostics, root-scan reasons, installer preflight, and topology smoke coverage | **Done** |
 | 92 | Secure Boot test-key foundation — secure OVMF helpers, digest-bound UEFI loader, secure USB image, and Phase 92 smoke | **Done** |
 | 93 | Enforced Secure Boot test-key chain — enrolled OVMF vars, signed `BOOTX64.EFI`, artifact verification, and tamper/rejection smoke coverage | **Done** |
+| 94 | Real-PC Secure Boot enrollment and diagnostics — public enrollment bundle, secure USB ESP manifest, loader firmware-status handoff, and Phase 94 smoke | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).
