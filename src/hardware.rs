@@ -134,6 +134,7 @@ pub fn lines() -> Vec<String> {
         lines.push(String::from("memory map unavailable"));
     }
 
+    lines.push(primary_failure_line());
     lines.extend(readiness_lines());
     lines.extend(crate::secure_boot::lines());
     lines.extend(storage_lines());
@@ -191,6 +192,55 @@ fn storage_lines() -> Vec<String> {
     lines
 }
 
+fn primary_failure_line() -> String {
+    let reason = primary_failure_reason();
+    format!(
+        "hardware primary_failure={} detail={}",
+        reason.code, reason.detail
+    )
+}
+
+struct PrimaryFailure {
+    code: &'static str,
+    detail: &'static str,
+}
+
+fn primary_failure_reason() -> PrimaryFailure {
+    if FRAMEBUFFER.lock().is_none() {
+        return PrimaryFailure {
+            code: "no-framebuffer",
+            detail: "bootloader did not provide a usable framebuffer",
+        };
+    }
+
+    if crate::storage::root_disk().is_none() {
+        return PrimaryFailure {
+            code: "no-root",
+            detail: "no CoolFS root found on any probed block device",
+        };
+    }
+
+    let (usb_keyboard, usb_pointer) = crate::usb::input_presence();
+    if !usb_keyboard && !usb_pointer && !crate::acpi::has_8042() {
+        return PrimaryFailure {
+            code: "no-input",
+            detail: "no USB HID input and no PS/2 fallback controller",
+        };
+    }
+
+    if safe_mode() {
+        return PrimaryFailure {
+            code: "safe-framebuffer",
+            detail: "safe-mode framebuffer fallback active",
+        };
+    }
+
+    PrimaryFailure {
+        code: "none",
+        detail: "boot hardware checks passed",
+    }
+}
+
 fn readiness_lines() -> Vec<String> {
     let mut lines = Vec::new();
     let framebuffer_ok = FRAMEBUFFER.lock().is_some();
@@ -226,6 +276,13 @@ fn readiness_lines() -> Vec<String> {
     if !root_ok {
         lines.push(String::from(
             "boot_issue no-root failed: no CoolFS root discovered; see storage root_scan lines",
+        ));
+    }
+    let primary = primary_failure_reason();
+    if primary.code != "none" {
+        lines.push(format!(
+            "boot_issue primary failed: {} ({})",
+            primary.code, primary.detail
         ));
     }
     lines

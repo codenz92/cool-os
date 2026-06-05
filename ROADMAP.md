@@ -4,7 +4,7 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–95 are complete. Recent milestones give coolOS a much more
+Phases 1–96 are complete. Recent milestones give coolOS a much more
 normal command-line, installer, and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
@@ -119,7 +119,9 @@ coverage, Phase 93 enforces the QEMU test-key chain with signed loader and
 tamper rejection coverage, and Phase 94 adds real-PC custom-key enrollment
 artifacts plus loader-to-kernel firmware Secure Boot diagnostics. Phase 95 adds
 real-hardware validation artifacts, a compatibility matrix, automatic hardware
-report export, and a redacted support bundle command. Phases 45-95
+report export, and a redacted support bundle command. Phase 96 adds primary
+boot-failure classification, field-fix tracking, and simulated no-input
+coverage. Phases 45-96
 focus on responsiveness,
 interactive terminal behavior, and
 desktop-browser compatibility:
@@ -2890,6 +2892,28 @@ through the matrix should be fixed narrowly in follow-up phases.
 
 ---
 
+## ✅ Phase 96 — Real-PC Field Fixes And Boot Reliability
+
+**Goal:** Make field reports actionable by giving every boot a single primary
+failure reason and a clear matrix workflow for known-good, known-failed, and
+workaround status.
+
+- [x] Add a normalized `hardware primary_failure=<code> detail=<reason>` line
+      covering no framebuffer, no root, no input, safe-framebuffer fallback,
+      and clean boots.
+- [x] Keep `/LOGS/HARDWARE.TXT` and `/LOGS/SUPPORT-BUNDLE.TXT` as the main
+      support artifacts, now including the primary failure classifier.
+- [x] Expand `HARDWARE.md` with field result workflow, known-good,
+      known-failed/workaround, primary-failure, and fix-status tracking.
+- [x] Add `make smoke-phase96-field-fixes` to validate a clean USB boot and a
+      simulated no-input field failure under QEMU.
+
+**Current status:** complete for the first field-fix workflow. No new broad
+driver support was added; future real-PC blockers should be fixed narrowly and
+recorded in `HARDWARE.md`.
+
+---
+
 ## Maintenance — Codebase Navigation Cleanup
 
 **Goal:** Keep the source tree easy to scan while avoiding broad behavior
@@ -3025,4 +3049,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.54 | Phase 92 complete: Secure Boot test-key foundation |
 | v7.55 | Phase 93 complete: enforced Secure Boot test-key chain |
 | v7.56 | Phase 94 complete: real-PC Secure Boot enrollment and diagnostics |
-| v7.57 | Current — Phase 95 complete: real-hardware validation and compatibility matrix |
+| v7.57 | Phase 95 complete: real-hardware validation and compatibility matrix |
+| v7.58 | Current — Phase 96 complete: real-PC field fixes and boot reliability |

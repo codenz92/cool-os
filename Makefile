@@ -1,4 +1,4 @@
-.PHONY: run run-uefi run-uefi-secure run-uefi-ahci run-uefi-nvme run-uefi-usb-storage run-uefi-usb-storage-secure run-uefi-usb-storage-safe run-physical-installer-sim run-installer run-uefi-installer run-uefi-ahci-installer run-uefi-nvme-installer run-installed run-uefi-installed run-uefi-ahci-installed run-uefi-nvme-installed run-net run-usb run-usb-init run-smooth run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-phase31-accounts smoke-phase32-isolation smoke-phase33-process-control smoke-phase34-tty-jobs smoke-phase35-tty-input smoke-phase36-userspace-shell smoke-phase37-coreutils smoke-phase38-apps smoke-phase39-recovery smoke-phase40-shell-semantics smoke-phase41-fs-durability smoke-phase42-app-consistency smoke-phase43-observability smoke-phase44-devkit smoke-phase45-smoothness smoke-phase46-adaptive-refresh smoke-pointer-tablet smoke-phase47-evented-userspace smoke-phase48-terminal-tui smoke-phase49-browser-engine smoke-phase50-css-layout smoke-phase51-browser-forms smoke-phase52-dom-events smoke-phase53-dom-forms smoke-phase54-browser-post smoke-phase55-browser-session smoke-phase56-css-box-model smoke-phase57-browser-layout smoke-phase58-browser-subresources smoke-phase59-browser-js smoke-phase60-browser-webapi smoke-phase61-browser-compat smoke-phase62-resource-limits smoke-phase63-memory-pressure smoke-phase64-services smoke-phase65-update-rollback smoke-phase66-boot-health smoke-phase67-update-trust smoke-phase68-update-keys smoke-phase69-package-trust smoke-phase70-package-payloads smoke-phase71-browser-engine-port smoke-phase72-threads-futex smoke-phase73-tls-pthread smoke-phase74-pthread-libc smoke-phase75-dynlink smoke-phase76-dynlink-deps smoke-phase77-file-mmap smoke-phase80-firstboot reset-firstboot-smoke-image smoke-phase81-firstboot-recovery smoke-phase82-installer smoke-phase83-self-booting-installer smoke-phase84-installer-v2 smoke-phase85-uefi-gpt smoke-phase86-ahci-storage smoke-phase87-usb-storage-root smoke-phase88-nvme-storage smoke-phase89-baremetal-readiness smoke-phase90-physical-installer smoke-phase91-hardware-readiness smoke-phase92-secure-boot smoke-phase93-secure-boot smoke-phase94-secure-boot-enrollment smoke-phase95-hardware-validation smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-uefi build-uefi-safe build-secure-boot-keys build-secure-boot-enrollment build-uefi-secure build-uefi-secure-loader-tamper build-uefi-secure-kernel-tamper build-usb-image build-usb-safe-image build-usb-secure-image build-usb-secure-loader-tamper-image build-usb-secure-kernel-tamper-image verify-secure-boot-artifacts tamper-secure-boot-artifacts build-usb-init clean
+.PHONY: run run-uefi run-uefi-secure run-uefi-ahci run-uefi-nvme run-uefi-usb-storage run-uefi-usb-storage-secure run-uefi-usb-storage-safe run-physical-installer-sim run-installer run-uefi-installer run-uefi-ahci-installer run-uefi-nvme-installer run-installed run-uefi-installed run-uefi-ahci-installed run-uefi-nvme-installed run-net run-usb run-usb-init run-smooth run-remote run-remote-net run-vnc run-vnc-net run-headless run-headless-net run-headless-usb run-headless-usb-init smoke smoke-ui smoke-login-screen smoke-lock-screen smoke-ui-ready-state smoke-framebuffer smoke-ui-goldens smoke-browser-png smoke-browser-html smoke-ui-settings smoke-ui-visual-assertions smoke-start-menu smoke-userspace-sdk smoke-userspace-gui smoke-userspace-utils smoke-userspace-file-open smoke-package-app smoke-coolfs-root smoke-coolfs-native smoke-phase28-permissions smoke-phase29-sessions smoke-phase31-accounts smoke-phase32-isolation smoke-phase33-process-control smoke-phase34-tty-jobs smoke-phase35-tty-input smoke-phase36-userspace-shell smoke-phase37-coreutils smoke-phase38-apps smoke-phase39-recovery smoke-phase40-shell-semantics smoke-phase41-fs-durability smoke-phase42-app-consistency smoke-phase43-observability smoke-phase44-devkit smoke-phase45-smoothness smoke-phase46-adaptive-refresh smoke-pointer-tablet smoke-phase47-evented-userspace smoke-phase48-terminal-tui smoke-phase49-browser-engine smoke-phase50-css-layout smoke-phase51-browser-forms smoke-phase52-dom-events smoke-phase53-dom-forms smoke-phase54-browser-post smoke-phase55-browser-session smoke-phase56-css-box-model smoke-phase57-browser-layout smoke-phase58-browser-subresources smoke-phase59-browser-js smoke-phase60-browser-webapi smoke-phase61-browser-compat smoke-phase62-resource-limits smoke-phase63-memory-pressure smoke-phase64-services smoke-phase65-update-rollback smoke-phase66-boot-health smoke-phase67-update-trust smoke-phase68-update-keys smoke-phase69-package-trust smoke-phase70-package-payloads smoke-phase71-browser-engine-port smoke-phase72-threads-futex smoke-phase73-tls-pthread smoke-phase74-pthread-libc smoke-phase75-dynlink smoke-phase76-dynlink-deps smoke-phase77-file-mmap smoke-phase80-firstboot reset-firstboot-smoke-image smoke-phase81-firstboot-recovery smoke-phase82-installer smoke-phase83-self-booting-installer smoke-phase84-installer-v2 smoke-phase85-uefi-gpt smoke-phase86-ahci-storage smoke-phase87-usb-storage-root smoke-phase88-nvme-storage smoke-phase89-baremetal-readiness smoke-phase90-physical-installer smoke-phase91-hardware-readiness smoke-phase92-secure-boot smoke-phase93-secure-boot smoke-phase94-secure-boot-enrollment smoke-phase95-hardware-validation smoke-phase96-field-fixes smoke-net-api smoke-net-wget smoke-net-https smoke-net-https-negative smoke-net-browser-https smoke-net-browser-google smoke-usb-init smoke-hotplug-usb-init smoke-kernel-units smoke-boot-budget smoke-lowmem smoke-smp2 smoke-vga-cirrus build build-uefi build-uefi-safe build-secure-boot-keys build-secure-boot-enrollment build-uefi-secure build-uefi-secure-loader-tamper build-uefi-secure-kernel-tamper build-usb-image build-usb-safe-image build-usb-secure-image build-usb-secure-loader-tamper-image build-usb-secure-kernel-tamper-image verify-secure-boot-artifacts tamper-secure-boot-artifacts build-usb-init clean
 
 TARGET  := x86_64-unknown-none.json
 KERNEL  := $(CURDIR)/target/x86_64-unknown-none/release/cool_os
@@ -2089,6 +2089,38 @@ smoke-phase95-hardware-validation: build-usb-image build-usb-safe-image build-us
 		--expect "[secureboot] mode=firmware-secureboot-on loader=signed-pe kernel=verified setup_mode=off enforcement=on" \
 		--expect "secure_boot mode=firmware-secureboot-on loader=signed-pe kernel=verified setup_mode=off enforcement=on" \
 		--expect "secure_boot_source uefi-loader" \
+		--expect "support_bundle redacted=yes passwords=excluded private_keys=excluded" \
+		--expect "flush: ok" \
+		--expect "[boot] desktop ready"
+
+smoke-phase96-field-fixes: build-usb-image
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-usb-ok" \
+		--uefi \
+		--uefi-code "$(QEMU_EFI_CODE)" \
+		--boot-disk "$(USB_IMAGE)" \
+		--usb-storage \
+		--usb \
+		--seconds 100 \
+		--fw-cmd "hardware;;support bundle;;cat /LOGS/SUPPORT-BUNDLE.TXT;;flush" \
+		--expect "hardware primary_failure=none" \
+		--expect "hardware readiness framebuffer=ok input=usb-keyboard-pointer root=ok" \
+		--expect "storage root=usb0 layout=gpt-coolfs" \
+		--expect "support_bundle redacted=yes passwords=excluded private_keys=excluded" \
+		--expect "flush: ok" \
+		--expect "[boot] desktop ready"
+	python3 $(CURDIR)/scripts/qemu_smoke.py \
+		--artifact-dir "$(SMOKE_ARTIFACT_DIR)" \
+		--artifact-name "$@-no-input" \
+		--bios "$(BIOS)" \
+		--fsimg "$(FSIMG)" \
+		--seconds 60 \
+		--fw-cmd "hardware;;support bundle;;cat /LOGS/SUPPORT-BUNDLE.TXT;;flush" \
+		--expect "hardware primary_failure=no-input" \
+		--expect "boot_issue no-input failed: no USB HID or PS/2 fallback detected" \
+		--expect "boot_issue primary failed: no-input" \
+		--expect "storage root=ide0-slave layout=raw-coolfs" \
 		--expect "support_bundle redacted=yes passwords=excluded private_keys=excluded" \
 		--expect "flush: ok" \
 		--expect "[boot] desktop ready"

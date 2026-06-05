@@ -17,7 +17,7 @@ tables.
 
 ---
 
-# Current state — v7.57
+# Current state — v7.58
 
 The kernel boots into a graphical desktop at **1920×1080, 24bpp** via the
 `bootloader 0.11` linear framebuffer on the default BIOS/VBE path and via the
@@ -90,7 +90,10 @@ remain future work. Phase 95 adds a repeatable real-hardware validation loop:
 `HARDWARE.md` tracks physical-machine results, `/LOGS/HARDWARE.TXT` is written
 at boot, and Terminal `support bundle` writes a redacted diagnostics bundle
 with hardware, devices, installer preflight, Secure Boot, sysreport, and boot
-log sections for troubleshooting.
+log sections for troubleshooting. Phase 96 adds a normalized
+`hardware primary_failure=...` line, known-good/known-failed field-result
+tracking, and smoke coverage for both clean USB boots and a simulated no-input
+field failure.
 Phase 32
 keeps copied kernel mappings supervisor-only for ring-3 tasks, removes broad
 lazy lower-half page allocation, and turns denied user pointers into task
@@ -976,6 +979,14 @@ smoke-phase95-hardware-validation` exercises normal USB diagnostics, safe USB
 fallback, Secure Boot diagnostics, hardware report export, support-bundle
 creation, and first-boot readiness under QEMU.
 
+**Real-PC field fixes and boot reliability (Phase 96).** Hardware diagnostics
+now include a single primary failure classifier such as `none`, `no-input`,
+`no-root`, `no-framebuffer`, or `safe-framebuffer`, making support bundles and
+manual hardware reports easier to triage. `HARDWARE.md` now separates known-good
+and known-failed machines, records workaround/fix status, and points field
+testing at the primary-failure line. `make smoke-phase96-field-fixes` validates
+the clean USB path and a simulated no-input field failure.
+
 **User/kernel isolation hardening (Phase 32).** Process address spaces still
 copy the kernel's upper-half PML4 entries so syscall and interrupt entry can run
 without rebuilding mappings, but those copied entries stay supervisor-only for
@@ -1226,7 +1237,9 @@ Phase 93 adds enforced local-key OVMF variables, PE/COFF loader signing,
 `coolos-usb-secure.img`, passes firmware Secure Boot state from the loader to
 the kernel, and adds `make smoke-phase94-secure-boot-enrollment`. Phase 95 adds
 `HARDWARE.md`, automatic `/LOGS/HARDWARE.TXT` export, Terminal
-`support bundle`, and `make smoke-phase95-hardware-validation`.
+`support bundle`, and `make smoke-phase95-hardware-validation`. Phase 96 adds
+primary-failure classification, field-fix tracking, and
+`make smoke-phase96-field-fixes`.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
@@ -1339,5 +1352,6 @@ while kernel faults still panic.
 | 93 | Enforced Secure Boot test-key chain — enrolled OVMF vars, signed `BOOTX64.EFI`, artifact verification, and tamper/rejection smoke coverage | **Done** |
 | 94 | Real-PC Secure Boot enrollment and diagnostics — public enrollment bundle, secure USB ESP manifest, loader firmware-status handoff, and Phase 94 smoke | **Done** |
 | 95 | Real-hardware validation and compatibility matrix — hardware report export, support bundle, manual QA matrix, and Phase 95 smoke | **Done** |
+| 96 | Real-PC field fixes and boot reliability — primary-failure classification, field-fix tracking, and Phase 96 smoke | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

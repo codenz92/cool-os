@@ -1,6 +1,6 @@
 # coolOS Hardware Compatibility Matrix
 
-Phase 95 tracks real-PC USB boot and physical-install readiness. Use this file
+Phase 96 tracks real-PC USB boot and physical-install readiness. Use this file
 to record every physical machine tested with `coolos-usb.img`,
 `coolos-usb-safe.img`, or `coolos-usb-secure.img`.
 
@@ -23,6 +23,20 @@ to record every physical machine tested with `coolos-usb.img`,
 6. Copy the relevant results from `/LOGS/HARDWARE.TXT`,
    `/LOGS/SYSREPORT.TXT`, and `/LOGS/SUPPORT-BUNDLE.TXT` into the matrix below.
 
+## Field Result Workflow
+
+For every real machine, record one row in the compatibility matrix and, when
+something fails, one row in the field-fix tracker. The most important support
+bundle line is:
+
+```text
+hardware primary_failure=<code> detail=<reason>
+```
+
+Use that line as the first failure reason. Keep the raw support bundle around
+until the fix is verified, but do not paste passwords, private keys, or personal
+files into this document.
+
 ## Result Labels
 
 | Field | Labels |
@@ -32,26 +46,41 @@ to record every physical machine tested with `coolos-usb.img`,
 | Storage root | `usb-ok`, `sata-ok`, `nvme-ok`, `missing`, `failed` |
 | Secure Boot | `off-ok`, `custom-db-ok`, `setup-mode`, `rejected`, `untested` |
 | Install | `not-tested`, `plan-ok`, `installed-ok`, `refused-safe`, `failed` |
+| Fix status | `new`, `triaged`, `fixed`, `workaround`, `deferred` |
+
+## Known Good
+
+| Machine | Firmware | Image | Primary failure | Notes |
+| :------ | :------- | :---- | :-------------- | :---- |
+| QEMU OVMF | UEFI | `coolos-usb.img` | `none` | Normal Phase 96 smoke baseline |
+| QEMU OVMF | UEFI | `coolos-usb-secure.img` | `none` | Secure Boot diagnostics baseline |
+
+## Known Failed / Workaround
+
+| Machine | Firmware | Image | Primary failure | Workaround | Fix status |
+| :------ | :------- | :---- | :-------------- | :--------- | :--------- |
+| QEMU BIOS without USB input | BIOS | `bios.img` + `fs.img` | `no-input` | Attach USB keyboard/mouse/tablet for interactive use | triaged |
 
 ## Compatibility Matrix
 
-| Machine | Firmware | Image | Secure Boot | Framebuffer | Input | Storage root | Install | Notes / Workaround |
-| :------ | :------- | :---- | :---------- | :---------- | :---- | :----------- | :------ | :----------------- |
-| QEMU OVMF | UEFI | `coolos-usb.img` | off-ok | ok | usb-ok | usb-ok | not-tested | Phase 95 smoke baseline |
-| QEMU OVMF | UEFI | `coolos-usb-safe.img` | off-ok | safe-only | usb-ok | usb-ok | not-tested | Safe-mode smoke baseline |
-| QEMU OVMF | UEFI | `coolos-usb-secure.img` | custom-db-ok | ok | usb-ok | usb-ok | not-tested | Secure Boot enrollment smoke baseline |
+| Machine | Firmware | Image | Secure Boot | Framebuffer | Input | Storage root | Install | Primary failure | Notes / Workaround |
+| :------ | :------- | :---- | :---------- | :---------- | :---- | :----------- | :------ | :-------------- | :----------------- |
+| QEMU OVMF | UEFI | `coolos-usb.img` | off-ok | ok | usb-ok | usb-ok | not-tested | none | Phase 96 smoke baseline |
+| QEMU OVMF | UEFI | `coolos-usb-safe.img` | off-ok | safe-only | usb-ok | usb-ok | not-tested | safe-framebuffer | Safe-mode smoke baseline |
+| QEMU OVMF | UEFI | `coolos-usb-secure.img` | custom-db-ok | ok | usb-ok | usb-ok | not-tested | none | Secure Boot enrollment smoke baseline |
+| QEMU BIOS without USB input | BIOS | `bios.img` + `fs.img` | untested | ok | failed | ide raw | not-tested | no-input | Simulated field-failure smoke |
 
 ## Failure Notes
 
 When a real machine fails, keep the first actionable reason from the support
 bundle:
 
-| Machine | Symptom | First failed line | Follow-up |
-| :------ | :------ | :---------------- | :-------- |
-| _example_ | no root disk | `boot_issue no-root failed: ...` | inspect USB MSC/UASP lines |
+| Machine | Symptom | First failed line | Follow-up | Fix status |
+| :------ | :------ | :---------------- | :-------- | :--------- |
+| _example_ | no root disk | `hardware primary_failure=no-root ...` | inspect USB MSC/UASP lines | new |
 
 ## Deferred Hardware Work
 
-Phase 95 is validation and targeted hardening. It does not add Secure Boot shim
+Phase 96 is validation and targeted hardening. It does not add Secure Boot shim
 or Microsoft CA support, UASP root support, broad GPU drivers, physical MBR
 installs, or destructive host-disk tooling.
