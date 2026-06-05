@@ -1,22 +1,27 @@
 impl TerminalApp {
     pub fn print_char(&mut self, c: char) {
         self.refresh_layout();
+        self.clear_cursor_overlay();
         if self.ansi_state != AnsiState::Ground {
             self.feed_ansi(c);
+            self.touch_cursor_blink();
             return;
         }
         if c == '\u{001B}' {
             self.ansi_state = AnsiState::Escape;
+            self.touch_cursor_blink();
             return;
         }
         if c == '\r' {
             self.col = 0;
+            self.touch_cursor_blink();
             return;
         }
         if c == '\n' {
             mirror_debug_char(c);
             self.col = 0;
             self.advance_row();
+            self.touch_cursor_blink();
             return;
         }
         if c == '\u{0008}' {
@@ -24,6 +29,7 @@ impl TerminalApp {
                 self.col -= 1;
                 self.draw_char_at(self.col, self.row, ' ');
             }
+            self.touch_cursor_blink();
             return;
         }
         if c == '\t' {
@@ -31,9 +37,11 @@ impl TerminalApp {
             for _ in 0..spaces {
                 self.print_char(' ');
             }
+            self.touch_cursor_blink();
             return;
         }
         if c.is_control() {
+            self.touch_cursor_blink();
             return;
         }
         if self.col >= self.cols {
@@ -43,6 +51,7 @@ impl TerminalApp {
         mirror_debug_char(c);
         self.draw_char_at(self.col, self.row, c);
         self.col += 1;
+        self.touch_cursor_blink();
     }
 
     pub fn print_str(&mut self, s: &str) {
@@ -358,12 +367,14 @@ impl TerminalApp {
 
     fn print_prompt(&mut self) {
         self.scroll_to_bottom();
+        self.reset_cursor_blink();
         self.set_fg(FG_PROMPT);
         self.print_str("cool");
         self.set_fg(FG_ACCENT);
         self.print_str("> ");
         self.set_fg(FG_INPUT);
         self.input_start_col = self.col;
+        self.reset_cursor_blink();
     }
 
     fn fill_background(&mut self) {
@@ -542,6 +553,7 @@ impl TerminalApp {
     }
 
     fn render_visible(&mut self) {
+        self.cursor_painted_cell = None;
         self.fill_background();
         for screen_row in 0..self.rows {
             let logical_row = self.scroll_top + screen_row;
@@ -554,6 +566,97 @@ impl TerminalApp {
         }
         self.sync_scroll_state();
         self.window.mark_dirty_all();
+    }
+
+    fn update_cursor_blink(&mut self, active: bool) {
+        let can_show = active
+            && self.foreground_job.is_none()
+            && self.cursor_screen_cell().is_some();
+        if !can_show {
+            self.clear_cursor_overlay();
+            return;
+        }
+
+        let now = crate::interrupts::ticks();
+        let interval = crate::interrupts::ticks_for_millis(CURSOR_BLINK_MS);
+        if now.wrapping_sub(self.cursor_last_blink_tick) >= interval {
+            self.cursor_last_blink_tick = now;
+            self.cursor_blink_on = !self.cursor_blink_on;
+        }
+
+        if self.cursor_blink_on {
+            if let Some(cell) = self.cursor_screen_cell() {
+                if self.cursor_painted_cell != Some(cell) {
+                    self.clear_cursor_overlay();
+                }
+                self.paint_cursor_overlay(cell);
+            }
+        } else {
+            self.clear_cursor_overlay();
+        }
+    }
+
+    fn reset_cursor_blink(&mut self) {
+        self.clear_cursor_overlay();
+        self.touch_cursor_blink();
+    }
+
+    fn touch_cursor_blink(&mut self) {
+        self.cursor_blink_on = true;
+        self.cursor_last_blink_tick = crate::interrupts::ticks();
+    }
+
+    fn clear_cursor_overlay(&mut self) {
+        let Some((screen_row, col)) = self.cursor_painted_cell.take() else {
+            return;
+        };
+        self.repaint_visible_cell(screen_row, col);
+    }
+
+    fn cursor_screen_cell(&self) -> Option<(usize, usize)> {
+        if self.rows == 0 || self.cols == 0 {
+            return None;
+        }
+        let logical_row = self.scrollback.len().saturating_add(self.row);
+        let screen_row = self.visible_screen_row(logical_row)?;
+        let col = self.col.min(self.cols.saturating_sub(1));
+        Some((screen_row, col))
+    }
+
+    fn repaint_visible_cell(&mut self, screen_row: usize, col: usize) {
+        if screen_row >= self.rows || col >= self.cols {
+            return;
+        }
+        let logical_row = self.scroll_top.saturating_add(screen_row);
+        let cell = self.display_cell(logical_row, col);
+        self.paint_cell(col, screen_row, cell);
+    }
+
+    fn paint_cursor_overlay(&mut self, cell: (usize, usize)) {
+        let (screen_row, col) = cell;
+        if self.cursor_painted_cell == Some(cell) {
+            return;
+        }
+        self.repaint_visible_cell(screen_row, col);
+
+        let px0 = TERM_PAD_X + col * CHAR_W;
+        let py0 = TERM_PAD_Y + screen_row * LINE_H + GLYPH_Y_INSET;
+        let stride = self.window.width.max(0) as usize;
+        if stride == 0 {
+            return;
+        }
+        for gy in 0..CHAR_H {
+            let py = py0 + gy;
+            for dx in 0..2usize {
+                let idx = py.saturating_mul(stride).saturating_add(px0 + dx);
+                if idx < self.window.buf.len() {
+                    self.window.buf[idx] = FG_CURSOR;
+                }
+            }
+        }
+        self.cursor_painted_cell = Some(cell);
+        self.window
+            .mark_dirty(px0 as i32, py0 as i32, 2, CHAR_H as i32);
     }
 
     fn paint_cell(&mut self, col: usize, screen_row: usize, cell: TerminalCell) {

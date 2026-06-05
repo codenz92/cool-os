@@ -590,9 +590,9 @@ impl AppWindow {
         }
         self.window_mut().mark_dirty_all();
     }
-    pub fn update(&mut self) {
+    pub fn update(&mut self, active: bool) {
         match self {
-            AppWindow::Terminal(t) => t.update(),
+            AppWindow::Terminal(t) => t.update(active),
             AppWindow::SysMon(s) => s.update(),
             AppWindow::TextViewer(v) => v.update(),
             AppWindow::Browser(b) => b.update(),
@@ -4239,8 +4239,17 @@ impl WindowManager {
         self.maybe_save_session(uptime_ticks);
 
         // ── Render ────────────────────────────────────────────────────────────
-        for w in self.windows.iter_mut() {
-            w.update();
+        let focused_window = self.focused;
+        let shell_overlay_active = self.session_locked
+            || self.start_menu_open
+            || self.context_menu.is_some()
+            || self.taskbar_menu.is_some()
+            || self.dialog.is_some()
+            || self.notification_center_open
+            || self.task_switcher_until_tick > uptime_ticks;
+        for (idx, w) in self.windows.iter_mut().enumerate() {
+            let active = !shell_overlay_active && focused_window == Some(idx) && !w.is_minimized();
+            w.update(active);
         }
         self.reap_unresponsive_user_gui_closes(uptime_ticks);
         self.collect_app_dirty_spans(sw, sh);

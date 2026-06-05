@@ -29,9 +29,11 @@ const FG_DIM: u32 = theme::TEXT_MUTED;
 const FG_ERROR: u32 = theme::DANGER;
 const FG_DIR: u32 = theme::ACCENT_HOVER;
 const FG_WARN: u32 = theme::WARNING;
+const FG_CURSOR: u32 = theme::ACCENT;
 
 const HISTORY_MAX: usize = 32;
 const SCROLLBACK_MAX_LINES: usize = 2000;
+const CURSOR_BLINK_MS: u64 = 500;
 
 static DEBUG_MIRROR: AtomicBool = AtomicBool::new(false);
 
@@ -89,6 +91,9 @@ pub struct TerminalApp {
     ansi_private: bool,
     saved_col: usize,
     saved_row: usize,
+    cursor_blink_on: bool,
+    cursor_last_blink_tick: u64,
+    cursor_painted_cell: Option<(usize, usize)>,
 }
 
 // Section files are included into this module so the split stays behavior-neutral.

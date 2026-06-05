@@ -36,23 +36,25 @@ impl TerminalApp {
             ansi_private: false,
             saved_col: 0,
             saved_row: 0,
+            cursor_blink_on: true,
+            cursor_last_blink_tick: crate::interrupts::ticks(),
+            cursor_painted_cell: None,
         };
         t.fill_background();
         t.refresh_layout();
         t.set_fg(FG_ACCENT);
-        t.print_str(" ____            _  ___  ____\n");
-        t.print_str("/ ___|___   ___ | |/ _ \\/ ___|\n");
-        t.print_str("| |   / _ \\ / _ \\| | | | \\___ \\\n");
-        t.print_str("| |__| (_) | (_) | | |_| |___) |\n");
-        t.print_str("\\____\\___/ \\___/|_|\\___/|____/\n");
+        t.print_str("             _  ___  ____\n");
+        t.print_str("  ___ ___   ___ | |/ _ \\/ ___|\n");
+        t.print_str(" / __/ _ \\ / _ \\| | | | \\___ \\\n");
+        t.print_str("| (_| (_) | (_) | | |_| |___) |\n");
+        t.print_str(" \\___\\___/ \\___/|_|\\___/|____/\n");
         t.set_fg(FG_DIM);
-        t.print_str("      *  modern desktop shell\n");
-        t.print_str("      type help for commands\n\n");
+        t.print_str("        type help for commands\n\n");
         t.print_prompt();
         t
     }
 
-    pub fn update(&mut self) {
+    pub fn update(&mut self, active: bool) {
         self.drain_tty_output();
         self.poll_foreground_job();
         let size_changed = self.window.width != self.last_width || self.window.height != self.last_height;
@@ -63,6 +65,7 @@ impl TerminalApp {
             self.render_visible();
         }
         self.sync_scrollbar_drag();
+        self.update_cursor_blink(active);
     }
 
     pub fn is_busy(&self) -> bool {
@@ -75,6 +78,7 @@ impl TerminalApp {
         }
         self.refresh_layout();
         self.scroll_to_bottom();
+        self.reset_cursor_blink();
         match c {
             // Arrow keys (private-use Unicode set by keyboard drivers)
             '\u{F700}' => self.history_up(),
@@ -264,6 +268,7 @@ impl TerminalApp {
         }
         self.refresh_layout();
         self.scroll_to_bottom();
+        self.reset_cursor_blink();
         for c in command.chars() {
             if !c.is_control() {
                 self.print_char(c);
