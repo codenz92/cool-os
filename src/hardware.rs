@@ -4,6 +4,8 @@ use alloc::{format, string::String, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
+const REPORT_PATH: &str = "/LOGS/HARDWARE.TXT";
+
 #[derive(Clone, Copy)]
 struct FramebufferReport {
     width: usize,
@@ -79,12 +81,36 @@ pub fn safe_mode() -> bool {
     SAFE_MODE.load(Ordering::Relaxed)
 }
 
+pub fn report_path() -> &'static str {
+    REPORT_PATH
+}
+
+pub fn write_report() -> Result<(), &'static str> {
+    let mut report = String::from("coolOS hardware report\n");
+    report.push_str(&format!("tick={}\n", crate::interrupts::ticks()));
+    if let Some(dt) = crate::rtc::read_datetime() {
+        report.push_str(&format!(
+            "rtc={:04}-{:02}-{:02} {:02}:{:02}\n",
+            dt.year, dt.month, dt.day, dt.hour, dt.minute
+        ));
+    }
+    push_section(&mut report, "hardware", lines());
+    push_section(&mut report, "devices", device_lines());
+
+    let _ = crate::vfs::vfs_kernel_create_dir("/LOGS");
+    crate::vfs::vfs_kernel_safe_write_file(REPORT_PATH, report.as_bytes())
+        .map_err(|_| "hardware report write failed")?;
+    crate::writeback::barrier()?;
+    Ok(())
+}
+
 pub fn lines() -> Vec<String> {
     let mut lines = Vec::new();
     lines.push(format!(
         "hardware mode={}",
         if safe_mode() { "safe" } else { "normal" }
     ));
+    lines.push(format!("hardware report_path={}", report_path()));
 
     if let Some(fb) = *FRAMEBUFFER.lock() {
         lines.push(format!(
@@ -108,6 +134,7 @@ pub fn lines() -> Vec<String> {
         lines.push(String::from("memory map unavailable"));
     }
 
+    lines.extend(readiness_lines());
     lines.extend(crate::secure_boot::lines());
     lines.extend(storage_lines());
     lines.extend(crate::storage::root_scan_lines());
@@ -153,11 +180,65 @@ fn storage_lines() -> Vec<String> {
             "not-present"
         };
         lines.push(format!(
-            "storage device={} state={} sectors={}",
+            "storage device={} bus={} role={} state={} sectors={}",
             device.name(),
+            device.bus_label(),
+            crate::installer::device_role(device),
             state,
             info.sectors
         ));
     }
     lines
+}
+
+fn readiness_lines() -> Vec<String> {
+    let mut lines = Vec::new();
+    let framebuffer_ok = FRAMEBUFFER.lock().is_some();
+    let root_ok = crate::storage::root_disk().is_some();
+    let (usb_keyboard, usb_pointer) = crate::usb::input_presence();
+    let input = if usb_keyboard && usb_pointer {
+        "usb-keyboard-pointer"
+    } else if usb_keyboard {
+        "usb-keyboard-only"
+    } else if usb_pointer {
+        "usb-pointer-only"
+    } else if crate::acpi::has_8042() {
+        "ps2-fallback"
+    } else {
+        "missing"
+    };
+    lines.push(format!(
+        "hardware readiness framebuffer={} input={} root={}",
+        if framebuffer_ok { "ok" } else { "failed" },
+        input,
+        if root_ok { "ok" } else { "missing" },
+    ));
+    if !framebuffer_ok {
+        lines.push(String::from(
+            "boot_issue no-framebuffer failed: unavailable",
+        ));
+    }
+    if input == "missing" {
+        lines.push(String::from(
+            "boot_issue no-input failed: no USB HID or PS/2 fallback detected",
+        ));
+    }
+    if !root_ok {
+        lines.push(String::from(
+            "boot_issue no-root failed: no CoolFS root discovered; see storage root_scan lines",
+        ));
+    }
+    lines
+}
+
+fn push_section(report: &mut String, title: &str, lines: Vec<String>) {
+    report.push_str(&format!("== {} ==\n", title));
+    if lines.is_empty() {
+        report.push_str("(empty)\n");
+    } else {
+        for line in lines {
+            report.push_str(&line);
+            report.push('\n');
+        }
+    }
 }

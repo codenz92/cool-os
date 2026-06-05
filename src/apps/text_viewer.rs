@@ -64,6 +64,7 @@ const ABOUT: &[&str] = &[
     " hardware     - boot hardware readiness report",
     " memory       - heap pressure and per-task memory",
     " sysreport    - write /LOGS/SYSREPORT.TXT",
+    " support      - write /LOGS/SUPPORT-BUNDLE.TXT",
     " devkit       - SDK paths and templates",
     " smoothness   - compositor pacing and latency telemetry",
     " boot         - boot health and last-known-good status",

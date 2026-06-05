@@ -4,7 +4,7 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–94 are complete. Recent milestones give coolOS a much more
+Phases 1–95 are complete. Recent milestones give coolOS a much more
 normal command-line, installer, and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
@@ -117,7 +117,9 @@ diagnostics, Phase 90 adds guarded physical-install simulation, Phase 91 adds
 hardware-readiness topology diagnostics, Phase 92 adds Secure Boot foundation
 coverage, Phase 93 enforces the QEMU test-key chain with signed loader and
 tamper rejection coverage, and Phase 94 adds real-PC custom-key enrollment
-artifacts plus loader-to-kernel firmware Secure Boot diagnostics. Phases 45-94
+artifacts plus loader-to-kernel firmware Secure Boot diagnostics. Phase 95 adds
+real-hardware validation artifacts, a compatibility matrix, automatic hardware
+report export, and a redacted support bundle command. Phases 45-95
 focus on responsiveness,
 interactive terminal behavior, and
 desktop-browser compatibility:
@@ -2862,6 +2864,32 @@ shim/MOK, production signing, and signed update rollout remain later phases.
 
 ---
 
+## ✅ Phase 95 — Real-Hardware Validation And Compatibility Matrix
+
+**Goal:** Turn the USB boot, physical install, and Secure Boot work into a
+repeatable real-PC validation loop without changing the storage or installer
+write paths.
+
+- [x] Write a structured hardware readiness report to `/LOGS/HARDWARE.TXT`
+      after boot reaches the desktop.
+- [x] Keep `hardware`, `devices`, and `sysreport` aligned with framebuffer,
+      input, storage root, Secure Boot, root-scan, and installer preflight
+      diagnostics.
+- [x] Add Terminal `support bundle`, writing a redacted
+      `/LOGS/SUPPORT-BUNDLE.TXT` with hardware, devices, installer disks,
+      installer preflight, Secure Boot, sysreport, and boot-log sections.
+- [x] Add `HARDWARE.md` as the physical-machine compatibility matrix and
+      manual QA procedure for normal, safe, and secure USB images.
+- [x] Add `make smoke-phase95-hardware-validation` covering normal USB
+      diagnostics, safe USB fallback, Secure Boot diagnostics, hardware report
+      export, support-bundle creation, and first-boot readiness.
+
+**Current status:** complete for QEMU validation and ready for real-PC matrix
+population. Phase 95 does not add new drivers; hardware blockers discovered
+through the matrix should be fixed narrowly in follow-up phases.
+
+---
+
 ## Maintenance — Codebase Navigation Cleanup
 
 **Goal:** Keep the source tree easy to scan while avoiding broad behavior
@@ -2996,4 +3024,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.53 | Phase 91 complete: bare-metal hardware readiness |
 | v7.54 | Phase 92 complete: Secure Boot test-key foundation |
 | v7.55 | Phase 93 complete: enforced Secure Boot test-key chain |
-| v7.56 | Current — Phase 94 complete: real-PC Secure Boot enrollment and diagnostics |
+| v7.56 | Phase 94 complete: real-PC Secure Boot enrollment and diagnostics |
+| v7.57 | Current — Phase 95 complete: real-hardware validation and compatibility matrix |

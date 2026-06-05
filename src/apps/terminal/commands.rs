@@ -230,6 +230,8 @@ impl TerminalApp {
 
             Some("sysreport") => self.cmd_sysreport(words.next()),
 
+            Some("support") => self.cmd_support(words.collect()),
+
             Some("devkit") => self.cmd_devkit(),
 
             Some("profiler") => {
@@ -738,6 +740,7 @@ impl TerminalApp {
             ),
             ("engine [op]", "browser engine port ABI and WPE readiness"),
             ("sysreport [write]", "combined diagnostics report"),
+            ("support bundle", "write redacted hardware support bundle"),
             ("devkit", "SDK docs and app templates"),
             ("profiler", "boot/service/task timing"),
             ("boot <op>", "boot health and last-known-good state"),
@@ -1243,6 +1246,31 @@ impl TerminalApp {
                 }
             },
             _ => self.cmd_lines("SYSREPORT", crate::sysreport::lines()),
+        }
+    }
+
+    fn cmd_support(&mut self, args: Vec<&str>) {
+        match args.as_slice() {
+            ["bundle"] => match crate::support::write_bundle() {
+                Ok(()) => {
+                    self.set_fg(FG_ACCENT);
+                    self.print_str("support bundle wrote ");
+                    self.set_fg(FG_OUTPUT);
+                    self.print_str(crate::support::bundle_path());
+                    self.print_char('\n');
+                }
+                Err(err) => {
+                    self.set_fg(FG_ERROR);
+                    self.print_str("support bundle: ");
+                    self.set_fg(FG_OUTPUT);
+                    self.print_str(err);
+                    self.print_char('\n');
+                }
+            },
+            _ => {
+                self.set_fg(FG_ERROR);
+                self.print_str("usage: support bundle\n");
+            }
         }
     }
 

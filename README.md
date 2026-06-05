@@ -17,7 +17,7 @@ tables.
 
 ---
 
-# Current state — v7.55
+# Current state — v7.57
 
 The kernel boots into a graphical desktop at **1920×1080, 24bpp** via the
 `bootloader 0.11` linear framebuffer on the default BIOS/VBE path and via the
@@ -86,7 +86,11 @@ fingerprints, checksums, and firmware-enrollment instructions, and
 `coolos-usb-secure.img` embeds the same bundle under `/EFI/COOLOS/ENROLL/`
 plus `/EFI/COOLOS/SECUREBOOT.TXT`. Microsoft/shim compatibility, production
 key management, signed update rollout, and arbitrary real-PC Secure Boot
-remain future work.
+remain future work. Phase 95 adds a repeatable real-hardware validation loop:
+`HARDWARE.md` tracks physical-machine results, `/LOGS/HARDWARE.TXT` is written
+at boot, and Terminal `support bundle` writes a redacted diagnostics bundle
+with hardware, devices, installer preflight, Secure Boot, sysreport, and boot
+log sections for troubleshooting.
 Phase 32
 keeps copied kernel mappings supervisor-only for ring-3 tasks, removes broad
 lazy lower-half page allocation, and turns denied user pointers into task
@@ -339,7 +343,7 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `hash <path>` | Print file length and byte-sum for storage checks |
 | `whoami` | Print current user and task capabilities |
 | `setup <user> <pass>` | Complete first-run admin setup and replace the default `root` handoff if needed |
-| `install [status\|reset\|repair\|disks\|plan <device>\|disk <device>\|verify <device>]` | Report, reset, or repair first-boot state, list block devices, preflight an installer target, install to a target disk, or verify an installed target; mutating operations require admin, recovery, or installer context |
+| `install [status\|reset\|repair\|disks\|plan <device>\|disk <device>\|physical <device>\|verify <device>]` | Report, reset, or repair first-boot state, list block devices, preflight an installer target, install to a target disk, or verify an installed target; mutating operations require admin, recovery, or installer context |
 | `account <op>` | Admin account management: `list`, `add`, `enable`, `disable`, `role`, `pass`, and `delete` |
 | `perm <path>` | Print owner, group, mode, type, and size |
 | `chmod <mode> <path>` | Change a CoolFS inode mode |
@@ -383,6 +387,7 @@ window session state to `/CONFIG/SESSION.CFG`, so desktop state survives reboot.
 | `memory` | Print heap pressure, reclaim counters, OOM state, and per-task memory estimates |
 | `diagnostics` | Print kernel, profiler, boot-health, hardware, service, update, browser-engine, compositor, heap, memory-pressure, resource-limit, filesystem, VFS, and crash diagnostics |
 | `sysreport [write]` | Print the generated system report or write it to `/LOGS/SYSREPORT.TXT` |
+| `support bundle` | Write a redacted real-hardware troubleshooting bundle to `/LOGS/SUPPORT-BUNDLE.TXT` |
 | `devkit` | Print SDK paths, ABI version, and userspace template locations |
 | `compositor` | Print FPS, frame pacing, frame budget, damage, and cursor overlay telemetry |
 | `smoothness` | Alias for compositor pacing/latency telemetry |
@@ -961,6 +966,16 @@ firmware-secureboot-on, firmware-setup-mode, signed-loader, kernel-verified,
 and unknown/unsigned boots. `make smoke-phase94-secure-boot-enrollment`
 validates the embedded ESP bundle and diagnostics under QEMU OVMF.
 
+**Real-hardware validation and compatibility matrix (Phase 95).** The boot path
+now writes `/LOGS/HARDWARE.TXT` with the structured hardware readiness report,
+and Terminal `support bundle` writes `/LOGS/SUPPORT-BUNDLE.TXT` with redacted
+hardware, device, installer preflight, Secure Boot, sysreport, and boot-log
+sections. `HARDWARE.md` provides the physical-machine compatibility matrix and
+manual QA steps for normal, safe, and Secure Boot USB images. `make
+smoke-phase95-hardware-validation` exercises normal USB diagnostics, safe USB
+fallback, Secure Boot diagnostics, hardware report export, support-bundle
+creation, and first-boot readiness under QEMU.
+
 **User/kernel isolation hardening (Phase 32).** Process address spaces still
 copy the kernel's upper-half PML4 entries so syscall and interrupt entry can run
 without rebuilding mappings, but those copied entries stay supervisor-only for
@@ -1012,7 +1027,8 @@ pipe or file descriptors. The toolset now includes `/bin/cp`, `/bin/mv`,
 `/bin/grep`, `/bin/head`, `/bin/tail`, `/bin/date`, `/bin/uname`, `/bin/clear`,
 `/bin/stat`, `/bin/sync`, and `/bin/devkit`. Terminal diagnostics gained
 `sysreport [write]` and `devkit`, `/LOGS/SYSREPORT.TXT` gives a persistent
-report bundle, and the generated image ships `/SDK/README.TXT`,
+report bundle, Phase 95 adds `/LOGS/HARDWARE.TXT` plus
+`/LOGS/SUPPORT-BUNDLE.TXT`, and the generated image ships `/SDK/README.TXT`,
 `/SDK/APP_TEMPLATE.RS`, `/SDK/PACKAGE_TEMPLATE.PKG`, and the Phase 71
 `/SDK/BROWSER_ENGINE_PORT.TXT` WebKit port contract.
 
@@ -1208,7 +1224,9 @@ Phase 93 adds enforced local-key OVMF variables, PE/COFF loader signing,
 `make smoke-phase93-secure-boot`. Phase 94 adds
 `make build-secure-boot-enrollment`, embeds public enrollment material into
 `coolos-usb-secure.img`, passes firmware Secure Boot state from the loader to
-the kernel, and adds `make smoke-phase94-secure-boot-enrollment`.
+the kernel, and adds `make smoke-phase94-secure-boot-enrollment`. Phase 95 adds
+`HARDWARE.md`, automatic `/LOGS/HARDWARE.TXT` export, Terminal
+`support bundle`, and `make smoke-phase95-hardware-validation`.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
@@ -1320,5 +1338,6 @@ while kernel faults still panic.
 | 92 | Secure Boot test-key foundation — secure OVMF helpers, digest-bound UEFI loader, secure USB image, and Phase 92 smoke | **Done** |
 | 93 | Enforced Secure Boot test-key chain — enrolled OVMF vars, signed `BOOTX64.EFI`, artifact verification, and tamper/rejection smoke coverage | **Done** |
 | 94 | Real-PC Secure Boot enrollment and diagnostics — public enrollment bundle, secure USB ESP manifest, loader firmware-status handoff, and Phase 94 smoke | **Done** |
+| 95 | Real-hardware validation and compatibility matrix — hardware report export, support bundle, manual QA matrix, and Phase 95 smoke | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

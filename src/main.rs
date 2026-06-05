@@ -70,6 +70,7 @@ mod settings_state;
 mod shortcuts;
 mod slab;
 mod storage;
+mod support;
 mod syscall;
 mod sysreport;
 mod task_snapshot;
@@ -334,6 +335,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         println!("[boot] login ready");
     }
     println!("[boot] desktop ready");
+    if let Err(err) = hardware::write_report() {
+        println!("[hardware] report write skipped: {}", err);
+    }
     profiler::record_boot_stage("desktop ready", boot_splash::BOOT_PROGRESS_TOTAL);
     boot_watchdog::complete();
     boot_health::mark_good("desktop ready");
