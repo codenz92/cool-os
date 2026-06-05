@@ -27,6 +27,10 @@ name = "guidemo"
 path = "src/bin/guidemo.rs"
 
 [[bin]]
+name = "browserhost"
+path = "src/bin/browserhost.rs"
+
+[[bin]]
 name = "notes"
 path = "src/bin/notes.rs"
 

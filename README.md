@@ -17,7 +17,7 @@ tables.
 
 ---
 
-# Current state — v7.58
+# Current state — v7.59
 
 The kernel boots into a graphical desktop at **1920×1080, 24bpp** via the
 `bootloader 0.11` linear framebuffer on the default BIOS/VBE path and via the
@@ -93,7 +93,12 @@ with hardware, devices, installer preflight, Secure Boot, sysreport, and boot
 log sections for troubleshooting. Phase 96 adds a normalized
 `hardware primary_failure=...` line, known-good/known-failed field-result
 tracking, and smoke coverage for both clean USB boots and a simulated no-input
-field failure.
+field failure. Phase 97 turns the WPE/WebKit browser-engine track from a
+diagnostic plan into a host bootstrap: `browser://engine` launches
+`/bin/browserhost`, writes `/SYSTEM/BROWSER-ENGINE/HOST.REQUEST`, the
+deterministic userspace test backend renders an RGBA GUI surface, and
+`/SYSTEM/BROWSER-ENGINE/HOST.READY` plus `/LOGS/BROWSER-ENGINE-HOST.TXT`
+prove the bridge while normal pages continue to use the native renderer.
 Phase 32
 keeps copied kernel mappings supervisor-only for ring-3 tasks, removes broad
 lazy lower-half page allocation, and turns denied user pointers into task
@@ -987,6 +992,16 @@ and known-failed machines, records workaround/fix status, and points field
 testing at the primary-failure line. `make smoke-phase96-field-fixes` validates
 the clean USB path and a simulated no-input field failure.
 
+**Browser engine host bootstrap (Phase 97).** `browser://engine` now starts the
+first real browser-engine host path by writing
+`/SYSTEM/BROWSER-ENGINE/HOST.REQUEST` and spawning `/bin/browserhost`. The
+deterministic userspace test backend opens a GUI surface, renders a Phase 97
+test document, handles GUI input events, writes
+`/SYSTEM/BROWSER-ENGINE/HOST.READY`, and records
+`/LOGS/BROWSER-ENGINE-HOST.TXT`. `engine`, `browser://engine`, recovery, and
+sysreport expose host state, bridge paths, process state, and why native
+fallback remains active until a real WPE backend is ready.
+
 **User/kernel isolation hardening (Phase 32).** Process address spaces still
 copy the kernel's upper-half PML4 entries so syscall and interrupt entry can run
 without rebuilding mappings, but those copied entries stay supervisor-only for
@@ -1239,7 +1254,9 @@ the kernel, and adds `make smoke-phase94-secure-boot-enrollment`. Phase 95 adds
 `HARDWARE.md`, automatic `/LOGS/HARDWARE.TXT` export, Terminal
 `support bundle`, and `make smoke-phase95-hardware-validation`. Phase 96 adds
 primary-failure classification, field-fix tracking, and
-`make smoke-phase96-field-fixes`.
+`make smoke-phase96-field-fixes`. Phase 97 adds `/bin/browserhost`,
+`/SYSTEM/BROWSER-ENGINE/HOST.REQUEST`, `/SYSTEM/BROWSER-ENGINE/HOST.READY`,
+`/LOGS/BROWSER-ENGINE-HOST.TXT`, and `make smoke-phase97-browser-engine-host`.
 
 **Per-process virtual memory (Phase 10).** Each user task owns a PML4 cloned
 from the kernel's boot PML4 (upper-half entries 256–511 copied; lower half
@@ -1353,5 +1370,6 @@ while kernel faults still panic.
 | 94 | Real-PC Secure Boot enrollment and diagnostics — public enrollment bundle, secure USB ESP manifest, loader firmware-status handoff, and Phase 94 smoke | **Done** |
 | 95 | Real-hardware validation and compatibility matrix — hardware report export, support bundle, manual QA matrix, and Phase 95 smoke | **Done** |
 | 96 | Real-PC field fixes and boot reliability — primary-failure classification, field-fix tracking, and Phase 96 smoke | **Done** |
+| 97 | Browser engine host bootstrap — Browser-launched `/bin/browserhost`, host bridge artifacts, deterministic test surface, and Phase 97 smoke | **Done** |
 
 Full task checklists and technical notes in [ROADMAP.md](ROADMAP.md).

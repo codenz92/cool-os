@@ -4,7 +4,7 @@ The goal is to evolve coolOS from a kernel-mode GUI demo into a real desktop
 operating system — one that can load and run user programs, manage storage, and
 support multiple processes without any one of them being able to crash the machine.
 
-Phases 1–96 are complete. Recent milestones give coolOS a much more
+Phases 1–97 are complete. Recent milestones give coolOS a much more
 normal command-line, installer, and platform layer: cwd-aware userspace syscalls, shell
 quoting/redirection/pipelines, writable file descriptors with durable close
 commit, metadata and rename APIs, persistent sysreports under `/LOGS`, an
@@ -121,7 +121,10 @@ artifacts plus loader-to-kernel firmware Secure Boot diagnostics. Phase 95 adds
 real-hardware validation artifacts, a compatibility matrix, automatic hardware
 report export, and a redacted support bundle command. Phase 96 adds primary
 boot-failure classification, field-fix tracking, and simulated no-input
-coverage. Phases 45-96
+coverage. Phase 97 adds a Browser-launched `/bin/browserhost` test backend,
+host bridge artifacts, a deterministic userspace GUI surface, and diagnostics
+that prove the browser shell can drive an external engine host while native
+fallback remains active. Phases 45-97
 focus on responsiveness,
 interactive terminal behavior, and
 desktop-browser compatibility:
@@ -2914,6 +2917,34 @@ recorded in `HARDWARE.md`.
 
 ---
 
+## ✅ Phase 97 — Browser Engine Host Bootstrap
+
+**Goal:** Prove the browser shell can launch and observe an external
+browser-engine host process before attempting a real WPE/WebKit integration.
+
+- [x] Add `/bin/browserhost`, a deterministic userspace GUI helper that renders
+      a Phase 97 engine test surface through the existing GUI API.
+- [x] Make `browser://engine` write
+      `/SYSTEM/BROWSER-ENGINE/HOST.REQUEST` and spawn `/bin/browserhost` when
+      the configured target remains `wpe-webkit`.
+- [x] Have the host write `/SYSTEM/BROWSER-ENGINE/HOST.READY` and
+      `/LOGS/BROWSER-ENGINE-HOST.TXT` so readiness is inspectable through
+      normal VFS diagnostics.
+- [x] Extend `engine`, `browser://engine`, recovery, and sysreport lines with
+      host helper, host process, host bridge, readiness, and native fallback
+      reason.
+- [x] Keep normal Browser pages on the native renderer unless a future real WPE
+      backend becomes ready and selected.
+- [x] Add `make smoke-phase97-browser-engine-host` covering Browser-triggered
+      host launch, helper surface presentation, host artifacts, sysreport, and
+      native fallback.
+
+**Current status:** complete as a host bootstrap. This is not a full WebKit
+port; Phase 98 should replace the deterministic backend with the first
+software-rendered WPE/WebKit integration once the bridge is stable.
+
+---
+
 ## Maintenance — Codebase Navigation Cleanup
 
 **Goal:** Keep the source tree easy to scan while avoiding broad behavior
@@ -3050,4 +3081,5 @@ real machines. Everything in between can be developed entirely in QEMU.
 | v7.55 | Phase 93 complete: enforced Secure Boot test-key chain |
 | v7.56 | Phase 94 complete: real-PC Secure Boot enrollment and diagnostics |
 | v7.57 | Phase 95 complete: real-hardware validation and compatibility matrix |
-| v7.58 | Current — Phase 96 complete: real-PC field fixes and boot reliability |
+| v7.58 | Phase 96 complete: real-PC field fixes and boot reliability |
+| v7.59 | Current — Phase 97 complete: browser engine host bootstrap |

@@ -29,6 +29,10 @@ fn browser_engine_lines() -> Vec<BrowserLine> {
             } else if idx < 5
                 || text.starts_with("engine-port")
                 || text.starts_with("goal=")
+                || text.starts_with("mode=")
+                || text.starts_with("host_")
+                || text.starts_with("fallback ")
+                || text.starts_with("engine_host")
                 || text.starts_with("requirements")
                 || text.starts_with("readiness=")
                 || text.starts_with("coolOS browser engine port manifest")

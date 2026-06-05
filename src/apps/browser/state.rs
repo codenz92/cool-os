@@ -389,6 +389,8 @@ impl BrowserApp {
                 self.lines = self.browser_compat_lines();
             }
             ENGINE_INTERNAL_URL => {
+                let launch_lines =
+                    crate::browser_engine::ensure_host_started(url, self.window.width, self.window.height);
                 self.title = String::from("Engine Port");
                 self.status = format!(
                     "target={} active={}",
@@ -396,6 +398,10 @@ impl BrowserApp {
                     crate::browser_engine::active_engine_name()
                 );
                 self.lines = browser_engine_lines();
+                for launch in launch_lines {
+                    self.lines
+                        .push(BrowserLine::new(launch, None, BrowserLineKind::Muted));
+                }
             }
             JS_INTERNAL_URL => {
                 self.title = String::from("Scripts");

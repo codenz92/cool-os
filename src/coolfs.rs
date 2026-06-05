@@ -19,7 +19,7 @@ const VERSION: u32 = 1;
 const SECTOR_SIZE: usize = 512;
 const SECTORS_PER_BLOCK: u32 = 8;
 const BLOCK_SIZE: usize = 4096;
-const TOTAL_BLOCKS: u32 = 1024;
+const TOTAL_BLOCKS: u32 = 1536;
 const INODE_COUNT: u32 = 512;
 const INODE_SIZE: usize = 256;
 const DIRECT_BLOCKS: usize = 48;
@@ -1092,7 +1092,7 @@ fn ensure_image(slot: &mut Option<Image>) -> Result<&mut Image, FsError> {
 fn load_or_format() -> Result<Image, FsError> {
     let first = read_disk_block(0)?;
     if let Some(sb) = Superblock::parse(&first) {
-        if sb.total_blocks == TOTAL_BLOCKS {
+        if (1024..=TOTAL_BLOCKS).contains(&sb.total_blocks) {
             return Ok(Image {
                 sb,
                 cache: BlockCache::with_clean_block(0, first),
